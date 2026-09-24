@@ -10,6 +10,12 @@ Flow the UI drives:
 The log row is created BEFORE the send is attempted, so a message that fails in
 transit still leaves a record of what was going to be said and why it did not
 arrive. The worker owns the queued -> sent | failed transition.
+
+Every row is written by `services/email_outbox`, the one writer of candidate
+email: it records the corporate sender (the one the recruiter chose, else the
+tenant's default), binds the email to the recruiter's thread with the
+candidate so a reply can land there, and dispatches the send after the
+request commits.
 """
 from __future__ import annotations
 
@@ -22,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_current_user, get_tenant_db, require_capability
 from app.core.config import get_settings
 from app.models.candidate import Candidate, JobCandidateLink
-from app.models.email_log import STATUS_QUEUED, EmailLog
+from app.models.email_log import EmailLog
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.emails import (
@@ -35,10 +41,9 @@ from app.schemas.emails import (
 )
 from app.services import capabilities as caps
 from app.services import generation_sufficiency
-from app.services import assessment_invite, lifecycle_email
+from app.services import assessment_invite, email_outbox, lifecycle_email
 from app.services.audit import audit
 from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
-from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -222,51 +227,56 @@ async def send_emails(
 ) -> EmailSendOut:
     """Record and queue the messages exactly as the recruiter left them.
 
-    The `email_log` row is written FIRST and the task is dispatched after
-    the flush, so the worker can never pick up an id that is not yet visible.
+    Every `email_log` row carries the sender it will go out under: the one the
+    recruiter chose, else the tenant's default, else the platform mailbox.
+    The deliveries are dispatched AFTER the request commits, so a request that
+    fails part way queues nothing at all.
     """
     by_link = {m.link_id: m for m in body.messages}
     targets, skipped = await _load_targets(session, user, list(by_link))
 
     # Queue-time sender validation (Corporate Email System spec section 6):
-    # the chosen corporate sender must exist in THIS tenant and be active.
-    # The worker re-validates at send time (spec section 11), so this check is
-    # the early, actionable refusal, not the security boundary.
-    if body.sender_id is not None:
-        from app.models.email_sender import SENDER_ACTIVE, ClientEmailSender
-
-        sender = await session.get(ClientEmailSender, body.sender_id)
-        if sender is None or sender.tenant_id != user.tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Sender not found"
-            )
-        if sender.status != SENDER_ACTIVE:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="That sender is not active. Only an active, authorized "
-                "sender can be used for automated emails.",
-            )
+    # a chosen corporate sender must exist in THIS tenant and be active. The
+    # worker re-validates at send time (spec section 11), so this check is the
+    # early, actionable refusal, not the security boundary. Resolved ONCE,
+    # before any row is written, so a refusal leaves nothing behind.
+    try:
+        sender_id = await email_outbox.resolve_sender(
+            session, user.tenant_id, body.sender_id
+        )
+    except email_outbox.SenderNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except email_outbox.SenderNotActive as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
     logs: list[EmailLog] = []
     for link, candidate, job in targets:
         message = by_link[link.id]
-        log = EmailLog(
+        log = await email_outbox.queue_candidate_email(
+            session,
             tenant_id=user.tenant_id,
             email_type=body.email_type,
             recipient_email=candidate.email,
             candidate_id=candidate.id,
             job_id=job.id,
-            job_candidate_link_id=link.id,
+            link_id=link.id,
             subject=message.subject,
             body=message.body,
-            status=STATUS_QUEUED,
-            edited_by_human=message.edited_by_human,
             generated_by_ai=message.generated_by_ai,
+            edited_by_human=message.edited_by_human,
             sent_by=user.user_id,
+            requested_sender_id=sender_id,
+            candidate_name=candidate.full_name,
         )
-        session.add(log)
+        if log is None:
+            # A human send carries no dedupe key, so the outbox cannot skip
+            # it; None here is a programming error, never a runtime state.
+            raise RuntimeError("the outbox deduplicated an email with no key")
         logs.append(log)
-    await session.flush()
 
     await audit(
         session,
@@ -284,10 +294,6 @@ async def send_emails(
             "edited": sum(1 for m in body.messages if m.edited_by_human),
         },
     )
-    # Enqueue only after the flush, so every id below exists in the database.
-    for log in logs:
-        dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
-
     return EmailSendOut(
         queued=len(logs),
         logs=[EmailLogOut.model_validate(row) for row in logs],

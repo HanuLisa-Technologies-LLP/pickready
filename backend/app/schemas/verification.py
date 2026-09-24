@@ -1,36 +1,9 @@
-"""Outreach + employer verification schemas (API_CONTRACT.md `/verification`)."""
-import uuid
-from datetime import date, datetime
+"""The inbound-email webhook's schemas (API_CONTRACT.md `/verification`).
 
+The outreach request and response went with the retired outreach route
+(Phase 6); only the inbound relay's payload and answer remain.
+"""
 from pydantic import BaseModel, ConfigDict, Field
-
-
-
-class OutreachIn(BaseModel):
-    job_id: uuid.UUID
-    candidate_ids: list[uuid.UUID] = Field(min_length=1)
-
-
-class OutreachOut(BaseModel):
-    sent: list[uuid.UUID] = []
-    # Databank candidates never re-enter the outreach/verification flow
-    # (claude.md rule 7) — they are reported here, not silently dropped.
-    skipped_databank: list[uuid.UUID] = []
-    not_linked: list[uuid.UUID] = []
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class InboundEmailIn(BaseModel):

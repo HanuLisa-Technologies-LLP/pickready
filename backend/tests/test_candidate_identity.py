@@ -435,7 +435,6 @@ async def test_a_link_owned_by_a_signed_in_record_is_never_taken(
 #: longer needs it (remove the entry in the same change that converts the file).
 LEGACY_RESOLVERS: dict[str, str] = {
     "app/api/bgv.py": "WP6-D: _candidate_id_for replaced by require_candidate",
-    "app/api/conversations.py": "WP6-C: _candidate_id_for replaced by resolve_candidate_id",
     "app/api/assessment_conversation.py": "Phase 3: one-line swap to resolve_candidate_id",
     "app/api/proctoring.py": "Phase 3: one-line swap to resolve_candidate_id",
     "app/api/candidates.py": "WP6-D or Phase 2: upload dedupe via find_canonical_by_email",

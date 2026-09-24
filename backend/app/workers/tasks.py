@@ -404,31 +404,48 @@ def send_email(
 # ── Lifecycle emails (spec §6) ───────────────────────────────────────────────
 
 async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) -> dict:
-    """Deliver one already-recorded lifecycle email and settle its log row.
+    """Deliver one already-recorded candidate email and settle its log row.
 
-    The row exists before this runs (api/emails.send_emails writes it), so this
-    task never invents content  -  it sends exactly what the recruiter approved
-    and then records the outcome. `queued` is the only state it will act on:
-    a re-delivery of an already-`sent` row would double-mail the candidate,
-    which is worse than the retry being a no-op.
+    The row exists before this runs (`services/email_outbox` is its one
+    writer), so this task never invents content: it sends exactly what was
+    recorded and then records the outcome.
+
+    THE ROW IS CLAIMED BEFORE ANYTHING IS SENT. `email_outbox.claim` moves it
+    from `queued` to `processing` in one conditional UPDATE and the claim is
+    COMMITTED before the transport is called, so two invocations for one row
+    (a redelivery, a re-dispatch by `reconcile_queued_emails`, a double
+    dispatch) cannot both send it: the loser finds no row to claim and does
+    nothing. Reading the status and then sending, as this used to, let both
+    through. A transient failure puts the row back to `queued` for the retry;
+    every other outcome is terminal.
     """
-    from app.models.email_log import STATUS_FAILED, STATUS_QUEUED, STATUS_SENT, EmailLog
+    from app.models.conversation import DELIVERY_FAILED, DELIVERY_SENT
+    from app.models.email_log import (
+        STATUS_FAILED,
+        STATUS_QUEUED,
+        STATUS_SENT,
+        EmailLog,
+    )
+    from app.services import conversations, email_outbox
     from app.services.lifecycle_email import to_html
 
-    row = await session.get(EmailLog, uuid.UUID(str(email_log_id)))
+    row_id = uuid.UUID(str(email_log_id))
+    claimed = await email_outbox.claim(session, row_id)
+    await session.commit()
+    row = await session.get(EmailLog, row_id, populate_existing=True)
     if row is None:
         logger.warning("lifecycle_email.log_row_missing id=%s", email_log_id)
         return {"status": "skipped", "reason": "log row not found"}
-    if row.status != STATUS_QUEUED:
+    if not claimed:
         logger.info(
-            "lifecycle_email.already_settled id=%s status=%s  -  not resending",
+            "lifecycle_email.already_claimed id=%s status=%s  -  not resending",
             row.id, row.status,
         )
         return {"status": row.status, "resent": False}
 
     # ── The sender validation chokepoint (Corporate Email System spec
     #    sections 10 and 11) ─────────────────────────────────────────────────
-    # When the job carries a sender, the sender is re-loaded HERE, at send
+    # When the row carries a sender, the sender is re-loaded HERE, at send
     # time, not trusted from queue time. That is what makes revocation take
     # effect for already-queued emails: a sender revoked between queue and
     # send fails the message honestly rather than sending under an identity
@@ -445,6 +462,9 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             )
             row.status = STATUS_FAILED
             row.error = f"Refused at send time: {reason}"
+            await email_outbox.settle_thread_message(
+                session, row.id, state=DELIVERY_FAILED, detail=row.error
+            )
             await session.commit()
             await _audit(
                 session, str(row.tenant_id), "lifecycle_email_sender_refused",
@@ -457,6 +477,21 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             )
             return {"status": "failed", "error": "sender_not_active"}
 
+    # THE THREAD'S OWN ADDRESS, when this email belongs to a conversation, so
+    # an emailed answer lands in the thread rather than in a mailbox nobody
+    # watches. None when the deployment receives no mail (pilot, 2026-09):
+    # the transport then keeps its previous Reply-To.
+    reply_to = None
+    if row.conversation_id is not None:
+        token = (
+            await session.execute(
+                text("SELECT thread_token FROM conversations WHERE id = :cid"),
+                {"cid": str(row.conversation_id)},
+            )
+        ).scalar_one_or_none()
+        if token:
+            reply_to = conversations.reply_address(token)
+
     try:
         provider_message_id = await _deliver_email(
             to=row.recipient_email,
@@ -464,6 +499,7 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             html=to_html(row.body),
             text=row.body,
             sender=sender,
+            reply_to=reply_to,
             # Correlation for the SES event that comes back minutes later.
             # `notification_id` IS the email_log row id: that is the record an
             # event has to find, so naming anything else here would leave the
@@ -485,6 +521,9 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
         # over a transport, and knowing which one is most of the diagnosis.
         row.failed_at = datetime.now(timezone.utc)
         row.transport = get_settings().email_transport
+        await email_outbox.settle_thread_message(
+            session, row.id, state=DELIVERY_FAILED, detail=err.error_name
+        )
         await session.commit()
         log_delivery_error("lifecycle_email", err)
         await _audit(
@@ -494,8 +533,12 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
         )
         return {"status": "failed", "error": err.error_name}
     except TransientDeliveryError:
-        # Leave the row `queued` so a retry can pick it up; the runtime's
-        # autoretry_for handles the backoff.
+        # RELEASE THE CLAIM so the retry can take it again; the runtime owns
+        # the backoff. Committed before re-raising, or the retry would find
+        # the row still `processing` and do nothing.
+        row.status = STATUS_QUEUED
+        row.claimed_at = None
+        await session.commit()
         raise
 
     row.status = STATUS_SENT
@@ -510,6 +553,9 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
     # matched back on (spec section 8). The SMTP Message-ID is recorded too;
     # Gmail simply never reports events against it.
     row.provider_message_id = provider_message_id
+    await email_outbox.settle_thread_message(
+        session, row.id, state=DELIVERY_SENT, detail=None
+    )
     await session.commit()
     await _audit(
         session, str(row.tenant_id), "lifecycle_email_sent",
@@ -548,8 +594,14 @@ def send_lifecycle_email(ctx: TaskContext, email_log_id: str):
                 async with _worker_session() as session:
                     row = await session.get(EmailLog, uuid.UUID(str(email_log_id)))
                     if row is not None and row.status == STATUS_QUEUED:
+                        from app.models.conversation import DELIVERY_FAILED
+                        from app.services import email_outbox
+
                         row.status = STATUS_FAILED
                         row.error = "Delivery retries exhausted"
+                        await email_outbox.settle_thread_message(
+                            session, row.id, state=DELIVERY_FAILED, detail=row.error
+                        )
                         await session.commit()
 
             _run(_mark_failed())
@@ -557,7 +609,12 @@ def send_lifecycle_email(ctx: TaskContext, email_log_id: str):
 
 
 async def _autosend_lifecycle_email(
-    session: AsyncSession, link_id: str, email_type: str, extra_context: dict | None = None
+    session: AsyncSession,
+    link_id: str,
+    email_type: str,
+    extra_context: dict | None = None,
+    *,
+    dedupe_key: str,
 ) -> dict:
     """Draft and queue one of the AUTOMATIC lifecycle emails.
 
@@ -570,11 +627,19 @@ async def _autosend_lifecycle_email(
     Types 3, 4 and 5 deliberately do NOT come through here: telling someone
     they were rejected, shortlisted, or put on hold is a decision a person
     makes and should read before it is sent (api/emails).
+
+    IDEMPOTENT BY `dedupe_key`, which names the STAGE. It used to be "any row
+    of this type for this application", so the 72 hour reminder always found
+    the 24 hour one and was never sent. The key is checked BEFORE drafting, so
+    a redelivery does not pay for a model call, and the outbox's insert is
+    `ON CONFLICT DO NOTHING` on the unique key, so two concurrent runs still
+    produce one row. The row carries the tenant's DEFAULT sender, resolved by
+    the outbox, and is not threaded: nobody watches replies to a message
+    nobody wrote.
     """
     from app.models.candidate import Candidate, JobCandidateLink
-    from app.models.email_log import STATUS_QUEUED, EmailLog
     from app.models.job import Job
-    from app.services import assessment_invite, lifecycle_email
+    from app.services import assessment_invite, email_outbox, lifecycle_email
 
     link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
     if link is None:
@@ -583,19 +648,7 @@ async def _autosend_lifecycle_email(
     job = await session.get(Job, link.job_id)
     if candidate is None or job is None or not candidate.email:
         return {"status": "skipped", "reason": "no recipient"}
-
-    # Idempotence: never send the same automatic type twice for one
-    # application. A retry after a partial failure would otherwise
-    # double-mail the candidate.
-    already = (
-        await session.execute(
-            select(EmailLog.id).where(
-                EmailLog.job_candidate_link_id == link.id,
-                EmailLog.email_type == email_type,
-            ).limit(1)
-        )
-    ).first()
-    if already is not None:
+    if await email_outbox.dedupe_key_exists(session, dedupe_key):
         return {"status": "skipped", "reason": "already sent"}
 
     tenant = await session.get(Tenant, link.tenant_id)
@@ -615,22 +668,26 @@ async def _autosend_lifecycle_email(
     }
     draft = await lifecycle_email.draft(email_type, context, session=session)
 
-    row = EmailLog(
+    row = await email_outbox.queue_candidate_email(
+        session,
         tenant_id=link.tenant_id,
         email_type=email_type,
         recipient_email=candidate.email,
         candidate_id=candidate.id,
         job_id=job.id,
-        job_candidate_link_id=link.id,
+        link_id=link.id,
         subject=draft["subject"],
         body=draft["body"],
-        status=STATUS_QUEUED,
-        edited_by_human=False,      # automatic: no recruiter reviewed it
         generated_by_ai=draft["generated_by_ai"],
+        edited_by_human=False,      # automatic: no recruiter reviewed it
+        sent_by=None,
+        dedupe_key=dedupe_key,
+        thread=False,
     )
-    session.add(row)
+    # The commit is what dispatches the send (dispatch_after_commit).
     await session.commit()
-    dispatch("pickready.send_lifecycle_email", args=[str(row.id)])
+    if row is None:
+        return {"status": "skipped", "reason": "already sent"}
     return {"status": "queued", "email_log_id": str(row.id)}
 
 
@@ -641,28 +698,132 @@ async def _autosend_lifecycle_email(
 def send_application_confirmation(link_id: str):
     """Email type 1: confirm an application was received (spec §6.1)."""
     async def _task():
+        from app.services import email_outbox
+
         async with _worker_session() as session:
             return await _autosend_lifecycle_email(
-                session, link_id, "application_confirmation"
+                session,
+                link_id,
+                "application_confirmation",
+                dedupe_key=email_outbox.confirmation_key(link_id),
             )
 
     return _run(_task())
+
+
+def reminder_stage_for(hours_elapsed: int) -> int:
+    """The schedule stage a reminder payload with no explicit stage belongs to.
+
+    The largest `REMINDER_SCHEDULE_HOURS` entry at or below the elapsed hours,
+    which is what a payload queued before stages were explicit meant; below the
+    first entry it is the first. Only such in-flight payloads reach this: the
+    reconciliation passes the stage itself.
+    """
+    from app.services.credit_reconciliation import REMINDER_SCHEDULE_HOURS
+
+    due = [hours for hours in REMINDER_SCHEDULE_HOURS if hours <= int(hours_elapsed)]
+    return max(due) if due else REMINDER_SCHEDULE_HOURS[0]
 
 
 @task(
     name="pickready.send_assessment_reminder",
     route=Route.LAMBDA,
 )
-def send_assessment_reminder(link_id: str, hours_elapsed: int = 24):
-    """Email type 2: nudge a candidate whose assessment is still unfinished."""
+def send_assessment_reminder(
+    link_id: str, hours_elapsed: int = 24, reminder_stage: int | None = None
+):
+    """Email type 2: nudge a candidate whose assessment is still unfinished.
+
+    `reminder_stage` is the schedule entry in hours (24, then 72) and it keys
+    the idempotence, so each stage sends once. It is TRAILING and optional
+    because a payload queued before this release carries only the elapsed
+    hours; `reminder_stage_for` derives its stage.
+    """
     async def _task():
+        from app.services import email_outbox
+
+        stage = (
+            int(reminder_stage)
+            if reminder_stage is not None
+            else reminder_stage_for(hours_elapsed)
+        )
         async with _worker_session() as session:
             return await _autosend_lifecycle_email(
                 session,
                 link_id,
                 "assessment_reminder",
                 {"hours_elapsed": str(hours_elapsed)},
+                dedupe_key=email_outbox.reminder_key(link_id, stage),
             )
+
+    return _run(_task())
+
+
+@task(
+    name="pickready.notify_candidate_of_message",
+    route=Route.LAMBDA,
+)
+def notify_candidate_of_message(conversation_id: str, message_id: str):
+    """Tell a candidate a recruiter wrote to them: one Updates entry and one
+    email per burst (`services/candidate_message_notifications`). Dispatched
+    after the message commits; the email's own send is dispatched by this
+    task's commit."""
+    async def _task():
+        from app.services import candidate_message_notifications
+
+        async with _worker_session() as session:
+            outcome = await candidate_message_notifications.notify(
+                session,
+                conversation_id=uuid.UUID(str(conversation_id)),
+                message_id=uuid.UUID(str(message_id)),
+            )
+            await session.commit()
+            logger.info(
+                "candidate_message_notification conversation=%s notified=%s "
+                "emailed=%s reason=%s",
+                conversation_id, outcome.notified, outcome.emailed, outcome.reason,
+            )
+            return outcome.as_dict()
+
+    return _run(_task())
+
+
+@task(
+    name="pickready.reconcile_queued_emails",
+    route=Route.LAMBDA,
+)
+def reconcile_queued_emails():
+    """Every fifteen minutes: re-dispatch candidate emails whose send was lost.
+
+    `email_outbox` dispatches a send after its request commits, and that invoke
+    can fail after the row is durable. Such a row sits `queued` for ever, and
+    "not sent" and "nothing to send" produce the same empty log. This sweep
+    asks the TABLE (`email_outbox.reconcile_queued`), re-dispatches what is
+    recent enough to still be worth sending, and reports at ERROR what is not
+    and what is stuck mid-send. It never resends a `processing` row: that send
+    may have happened, and the worker's claim is what stops a re-dispatch from
+    doubling one that has not.
+    """
+    async def _task():
+        from app.services import email_outbox
+
+        async with _worker_session() as session:
+            found = await email_outbox.reconcile_queued(session)
+        for email_log_id in found["redispatch"]:
+            dispatch("pickready.send_lifecycle_email", args=[email_log_id])
+        if found["abandoned_queued"] or found["stuck_processing"]:
+            logger.error(
+                "email_outbox.needs_attention abandoned_queued=%s "
+                "stuck_processing=%s  -  not resent; a person decides",
+                found["abandoned_queued"], found["stuck_processing"],
+            )
+        result = {
+            "redispatched": len(found["redispatch"]),
+            "abandoned_queued": found["abandoned_queued"],
+            "stuck_processing": found["stuck_processing"],
+        }
+        logger.info("email_outbox.reconciled %s", result)
+        return result
 
     return _run(_task())
 
@@ -2298,12 +2459,19 @@ def reconcile_assessment_credits():
     async def _task():
         from app.services import credit_reconciliation
 
-        def _queue(link_id: str, hours_elapsed: int) -> None:
-            dispatch(
-                "pickready.send_assessment_reminder", args=[link_id, hours_elapsed]
-            )
+        from app.workers.dispatch import dispatch_after_commit
 
         async with _worker_session() as session:
+
+            def _queue(link_id: str, hours_elapsed: int, stage_hours: int) -> None:
+                # AFTER the commit that increments `reminders_sent`: a run that
+                # rolls back queues nothing, and the next run re-derives it.
+                dispatch_after_commit(
+                    session,
+                    "pickready.send_assessment_reminder",
+                    args=[link_id, hours_elapsed, stage_hours],
+                )
+
             result = await credit_reconciliation.reconcile(session, queue_reminder=_queue)
             await session.commit()
             return result.as_dict()

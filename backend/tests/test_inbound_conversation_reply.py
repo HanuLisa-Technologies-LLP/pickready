@@ -34,7 +34,7 @@ from app.api.deps import get_public_db
 from app.core.config import get_settings
 from app.core.db import superadmin_scope
 from app.main import app
-from app.models.conversation import KIND_BGV, PARTY_EMPLOYER_HR
+from app.models.conversation import KIND_BGV, PARTY_CANDIDATE, PARTY_EMPLOYER_HR
 from app.services import conversations
 
 INBOUND = "/api/v1/verification/inbound-email"
@@ -402,3 +402,137 @@ def test_with_no_inbound_domain_there_is_no_reply_address(
     must not do is pretend the reply will come back to the thread."""
     monkeypatch.setattr(get_settings(), "inbound_email_domain", "", raising=False)
     assert conversations.reply_address(conversations.mint_thread_token()) is None
+
+
+# ── A CANDIDATE's emailed reply (Phase 6 WP6-C) ──────────────────────────────
+#
+# The same routing, now also on every email a recruiter sends a candidate and
+# every new-message notification. What changes is WHO is writing, and that is
+# read from the thread's KIND: posting a candidate's reply as `employer_hr`,
+# which is what the router did for every thread, would have told the recruiter
+# a former employer had written. Inert in pilot, where no inbound domain is
+# configured; see `api/verification._match_conversation_reply`.
+
+
+def _candidate_thread(thread: Thread) -> tuple[uuid.UUID, str]:
+    sessions = _sessions()
+
+    async def _open() -> tuple[uuid.UUID, str]:
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    row = await conversations.ensure_candidate_conversation(
+                        session,
+                        tenant_id=thread.tenant,
+                        candidate_id=thread.candidate,
+                        candidate_name="Karthik Kumar",
+                        actor_user_id=None,
+                    )
+                    return uuid.UUID(str(row["id"])), row["thread_token"]
+
+    return _run(_open())
+
+
+GMAIL_REPLY = (
+    "Thursday at 3pm works for me.\n"
+    "\n"
+    "On Tue, 22 Sep 2026 at 10:00, Priya Raman <\n"
+    "priya@comms.test> wrote:\n"
+    "> Are you free on Thursday?\n"
+    "> Priya\n"
+)
+
+
+def test_a_candidates_reply_is_the_candidates_with_the_quote_removed(
+    client: TestClient, thread: Thread
+) -> None:
+    conversation, token = _candidate_thread(thread)
+    response = client.post(
+        INBOUND,
+        json={
+            "to": [conversations.reply_address(token)],
+            "from": "karthik.personal@elsewhere.test",
+            "subject": "Re: New message from Inbound",
+            "text": GMAIL_REPLY,
+            "messageId": "<candidate-reply-1@elsewhere.test>",
+        },
+    )
+    assert response.status_code == 200 and response.json()["matched"] is True
+
+    stored = _messages(conversation)
+    assert len(stored) == 1
+    assert stored[0]["author_party"] == PARTY_CANDIDATE
+    assert stored[0]["channel"] == "email"
+    assert stored[0]["body"] == "Thursday at 3pm works for me."
+    # The address it CAME from, even though it is not the one on file: shown
+    # to the recruiter rather than silently attributed.
+    assert stored[0]["author_email"] == "karthik.personal@elsewhere.test"
+    # And the BGV thread for the same candidate is untouched.
+    assert _messages(thread.conversation) == []
+
+
+def test_a_bgv_reply_keeps_its_whole_text(client: TestClient, thread: Thread) -> None:
+    """An employer's reply is evidence for a verification decision, so its
+    quoted history is kept exactly as it arrived."""
+    client.post(
+        INBOUND,
+        json={
+            "to": [conversations.reply_address(thread.token)],
+            "from": "meera.nair@acme.test",
+            "text": GMAIL_REPLY,
+            "messageId": "<bgv-whole-1@acme.test>",
+        },
+    )
+    stored = _messages(thread.conversation)
+    assert stored[0]["author_party"] == PARTY_EMPLOYER_HR
+    assert stored[0]["body"] == GMAIL_REPLY.strip()
+
+
+def test_an_empty_candidate_reply_says_who_replied(
+    client: TestClient, thread: Thread
+) -> None:
+    conversation, token = _candidate_thread(thread)
+    client.post(
+        INBOUND,
+        json={
+            "to": [conversations.reply_address(token)],
+            "from": "karthik@inbound.test",
+            "text": "",
+            "messageId": "<candidate-empty-1@inbound.test>",
+        },
+    )
+    assert _messages(conversation)[0]["body"] == (
+        "The candidate replied with no message text."
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "kept"),
+    [
+        (GMAIL_REPLY, "Thursday at 3pm works for me."),
+        (
+            "Yes.\n\nOn Mon, Sep 21, 2026, Priya <p@x.test> wrote:\n> Hi",
+            "Yes.",
+        ),
+        (
+            "Sounds good.\n-----Original Message-----\nFrom: Priya\nHi",
+            "Sounds good.",
+        ),
+        ("Agreed.\n\n> quoted line\n>\n> another", "Agreed."),
+        # "wrote:" inside the candidate's own sentence is not a header.
+        (
+            "My manager wrote: great work, and I agree.",
+            "My manager wrote: great work, and I agree.",
+        ),
+        # A sentence starting with "On" above a real header is the
+        # candidate's own words and is kept.
+        (
+            "On second thought, Friday.\nOn Tue, 22 Sep 2026, Priya <p@x.test> wrote:\n> Hi",
+            "On second thought, Friday.",
+        ),
+        # Nothing but a quote: the original is kept rather than nothing.
+        ("> only a quote", "> only a quote"),
+    ],
+)
+def test_quoted_history_is_cut_and_nothing_else_is(raw: str, kept: str) -> None:
+    assert conversations.strip_quoted_reply(raw) == kept

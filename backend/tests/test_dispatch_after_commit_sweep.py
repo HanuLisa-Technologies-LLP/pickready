@@ -63,8 +63,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/candidates.py", "schedule_interview"): (1, "P6 proposed"),
     ("api/candidates.py", "upload_resume"): (1, "P6"),
     ("api/companies.py", "_issue_invite"): (1, "P6 proposed"),
-    ("api/email_senders.py", "_alert_candidate_of_bgv_bounce"): (1, "P6 proposed"),
-    ("api/emails.py", "send_emails"): (1, "P6"),
     ("api/jobs.py", "_queue_databank_invitation"): (1, "P6"),
     ("api/jobs.py", "upload_databank_candidates"): (2, "P2"),
     ("api/matching.py", "run_matching"): (1, "P2"),
@@ -74,8 +72,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
     ("api/support.py", "_notify"): (1, "P6"),
-    ("api/verification.py", "_match_bgv_reply"): (1, "P6 proposed"),
-    ("api/verification.py", "send_outreach"): (1, "P6 proposed"),
     ("services/proctoring/ingestion.py", "enqueue_assessment"): (1, "P3"),
     ("services/video/processing.py", "complete_assessment"): (1, "P3"),
 }
@@ -83,9 +79,8 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
 #: (file relative to app/, the alias) -> proposed owner phase. The same
 #: shrink-to-empty rule as the call sites.
 LEGACY_ALIASES: dict[tuple[str, str], str] = {
-    # A function-local alias kept so a test's monkeypatch of the dispatch
-    # module intercepts the send; the comment beside it says so.
-    ("api/email_senders.py", "dispatch_email"): "P6 proposed",
+    # EMPTY since Phase 6 WP6-C: the one alias (`dispatch_email` in
+    # api/email_senders.py) went when its call became dispatch_after_commit.
 }
 
 

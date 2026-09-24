@@ -160,6 +160,19 @@ class Conversation(Base, UUIDPKMixin, CreatedAtMixin):
     thread_token: Mapped[str] = mapped_column(String(64), nullable=False)
     #: Denormalised so a conversation list sorts without touching messages.
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: THE CANDIDATE'S READ WATERMARK (migration 0122). A candidate has no
+    #: tenant and is never a `conversation_participants` row, and a candidate
+    #: thread has exactly one candidate, so their watermark lives on the
+    #: thread. Moved forward only, like a participant's `last_read_at`.
+    candidate_last_read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: When the candidate was last TOLD about a message (email plus Updates
+    #: entry). The debounce: a burst of five messages is one notification, and
+    #: reading the thread re-arms it.
+    candidate_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )

@@ -269,6 +269,21 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "the send does not silently skip the tenant it died on."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-reconcile-queued-emails",
+        task="pickready.reconcile_queued_emails",
+        interval_minutes=15,
+        why=(
+            "Phase 6: every candidate email is queued by `email_outbox` and "
+            "its send is dispatched AFTER the request commits, so an invoke "
+            "that fails leaves a durable row sitting `queued` with nothing "
+            "working on it. This asks the TABLE and re-dispatches rows between "
+            "ten minutes and a day old; the send worker's atomic claim makes a "
+            "re-dispatch of a row that is merely slow a no-op. Rows stuck "
+            "mid-send are reported, never resent. Every fifteen minutes "
+            "because a confirmation or a reminder is only useful on the day."
+        ),
+    ),
 
 )
 
