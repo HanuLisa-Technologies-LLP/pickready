@@ -7,7 +7,7 @@ from sqlalchemy import func, select, text
 from app.core.db import get_session_factory
 from app.core.security import AUDIENCE_ORG, create_access_token
 from app.models.assessment import (
-    CandidateTechnicalQuestion,
+    CandidateQuestion,
     FunctionalSkillsReport,
     ReportDimension,
 )
@@ -39,10 +39,11 @@ async def main() -> None:
             await session.execute(select(ReportDimension).where(ReportDimension.report_id == report.id))
         ).scalars().all()
         report_count = (await session.execute(select(func.count(FunctionalSkillsReport.id)))).scalar_one()
-        # Per CANDIDATE as of 2026-08-06, so this counts slots across every
-        # application rather than stored bank rows across every job.
+        # Per CANDIDATE, so this counts issued questions across every
+        # application. The retired technical track's table is gone (0128);
+        # `candidate_questions` is the one questions table.
         question_count = (
-            await session.execute(select(func.count(CandidateTechnicalQuestion.id)))
+            await session.execute(select(func.count(CandidateQuestion.id)))
         ).scalar_one()
         mock_links = (
             await session.execute(

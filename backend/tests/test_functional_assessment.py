@@ -175,7 +175,7 @@ def _job(grade: str = "managerial") -> SimpleNamespace:
         jd_json={"skills": ["Python", "SQL", "Docker"]}, jd_markdown="",
         experience_min_years=None, experience_max_years=None,
         assessment_grade=grade, assessment_status="questions_pending_review",
-        questions_generated_at=None, questions_approved_at=None,
+        questions_generated_at=None,
         framework_generated_at=None, framework_approved_at=None,
     )
 

@@ -241,23 +241,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         "Per-candidate questions generated against the old scorecard.",
         order=32,
     ),
-    TableRule(
-        "candidate_technical_questions",
-        PURGE,
-        "Per-candidate technical questions and the rubric written with each. "
-        "Scored against a scorecard that is being replaced.",
-        order=33,
-    ),
-    TableRule(
-        "technical_questions",
-        PURGE,
-        "The retired per-job preset bank. CLAUDE.md kept this table unread so "
-        "'what was this candidate asked' stayed answerable for existing "
-        "reports; those reports are themselves being purged, so the reason no "
-        "longer holds and the history moves to the export.",
-        order=34,
-        named_by_d2=False,
-    ),
     # ── purged: the scorecard and the pre-screen criteria ────────────────────
     TableRule(
         "job_competencies",
@@ -355,7 +338,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
             ("matching_categories_finalized_at", "NULL"),
             ("question_reminder_sent_at", "NULL"),
             ("questions_generated_at", "NULL"),
-            ("questions_approved_at", "NULL"),
             ("assessment_status", "'questions_pending_review'"),
         ),
         order=71,
@@ -491,20 +473,8 @@ CLASSIFICATION: tuple[TableRule, ...] = (
     TableRule("staff_invites", PRESERVE, "Staff invitations that have not been accepted yet. Deleting one would "
         "silently revoke an invite already in somebody's inbox.", named_by_d2=False),
     TableRule(
-        "otp_challenges", PRESERVE, "Short-lived authentication challenges. They expire on their own and "
-        "deleting them early would fail a login in flight.", named_by_d2=False
-    ),
-    TableRule(
         "role_permissions", PRESERVE, "The permission model is data rather than code, so this table IS the "
         "authorisation rules. Nothing about the reset touches them.", named_by_d2=False
-    ),
-    TableRule(
-        "llm_provider_keys",
-        PRESERVE,
-        "Provider credentials, encrypted at rest. A global table, and nothing "
-        "here is client hiring data.",
-        tenant_column=None,
-        named_by_d2=False,
     ),
     TableRule(
         "pricing_plans",
@@ -1663,8 +1633,6 @@ def render_survey(survey: Survey) -> str:
         "job_competencies",
         "job_matching_categories",
         "candidate_questions",
-        "candidate_technical_questions",
-        "technical_questions",
         "assessment_conversations",
         "assessment_messages",
         "evidence_items",

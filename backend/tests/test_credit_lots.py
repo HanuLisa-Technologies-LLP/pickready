@@ -485,8 +485,6 @@ async def test_a_demo_tenant_bypasses_the_refusal_and_still_gets_its_rows() -> N
             # REFUSALS: only the paying tenant is gated.
             assert await credits.has_positive_balance(session, demo_id)
             assert not await credits.has_positive_balance(session, paying_id)
-            assert await credits.has_credit_headroom(session, demo_id)
-            assert not await credits.has_credit_headroom(session, paying_id)
             await session.commit()
     finally:
         await engine.dispose()

@@ -18,10 +18,6 @@ from app.models.assessment import (
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
-    # LEGACY, read-only: a transcript written before Draft v4 keyed its
-    # technical exchanges on this table, and the recruiter's transcript view
-    # still has to resolve those keys to a label.
-    CandidateTechnicalQuestion,
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
@@ -378,18 +374,17 @@ async def _criterion_labels(
     resolves them in a fixed number of queries rather than one per exchange --
     the N+1 here would be 60 round trips on an ordinary interview.
 
-    THREE key shapes, because a transcript outlives the design that wrote it:
+    TWO key shapes, because a transcript outlives the design that wrote it:
 
-      CandidateQuestion.id           what the unified conversation stamps today
-      JobCompetency.id               what PPI questions were keyed on before
-                                     Draft v4
-      CandidateTechnicalQuestion.id  what the separate technical track was keyed
-                                     on, for conversations that ran before it
-                                     was folded into Must-have
+      CandidateQuestion.id  what the unified conversation stamps today
+      JobCompetency.id      what PPI questions were keyed on before Draft v4
 
-    All three are resolved rather than only the current one. A recruiter opening
-    a report written last month is the exact case this screen exists for, and an
-    unresolved key renders as a UUID beside the answer it labels.
+    Both are resolved rather than only the current one. A recruiter opening a
+    report written last month is the exact case this screen exists for, and an
+    unresolved key renders as a UUID beside the answer it labels. A third shape,
+    the retired per-candidate technical track's row id, is gone with its table
+    (migration 0128): it held no row anywhere it was dropped, so no stored
+    transcript carries one.
     """
     labels: dict[str, str] = {}
     competencies = (
@@ -408,15 +403,6 @@ async def _criterion_labels(
         if name:
             labels[str(question.id)] = name
 
-    legacy = (
-        await session.execute(
-            select(CandidateTechnicalQuestion.id, CandidateTechnicalQuestion.skill).where(
-                CandidateTechnicalQuestion.job_candidate_link_id == link.id
-            )
-        )
-    ).all()
-    for question_id, skill in legacy:
-        labels[str(question_id)] = skill
     return labels
 
 

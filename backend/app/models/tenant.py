@@ -97,16 +97,16 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     #: `WHERE ... < :month RETURNING id`, so a re-run, a redelivered dispatch
     #: and two sweeps racing all send exactly one letter.
     usage_alert_last_month: Mapped[int | None] = mapped_column(Integer)
-    # Derived from the ledger (balance < 0) but STORED: the invitation gate runs
-    # on every send and must not re-aggregate the whole ledger to answer it.
-    credit_deficit: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
+    # The stored deficit flag (a copy of "the ledger sums below zero") is
+    # DROPPED by migration 0128: nothing read it, and the comment that said it
+    # drove a dunning email and a deficit banner described neither. The
+    # ledger is the balance; ask `credits.balance_subunits`.
+    #
     # A permanent demonstration company (Sarkar Corp, ACRM Corp, Specter & Co.).
     # Billing still RECORDS everything for these tenants -- a demo of a billing
     # page with no usage on it proves nothing -- but it never refuses anything:
-    # `credits.has_credit_headroom` is unconditionally true and `credit_deficit`
-    # is never set. Kept as a column rather than a UUID list in Python so the
+    # every billing gate (`credits.has_positive_balance`,
+    # `credits.can_start_assessment`) answers yes for it. Kept as a column rather than a UUID list in Python so the
     # exemption is visible in the table and a future demo tenant is an UPDATE
     # rather than a release (migration 0037).
     is_demo: Mapped[bool] = mapped_column(
@@ -115,9 +115,8 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     # ── Two-tier credit warnings (Master Directive Part 5 §4) ────────────────
     # "Sent" flags for the LOW (<= 20 credits) and CRITICAL (<= 10 credits)
     # warning emails. Rule 5: BOTH reset to false on every new purchase, so the
-    # warning system starts fresh after each top-up. Stored here for the same
-    # reason `credit_deficit` is: the check runs after every deduction and must
-    # not re-aggregate the ledger.
+    # warning system starts fresh after each top-up. Stored because each is a
+    # LATCH (was this warning sent?), which the ledger cannot answer.
     credit_warning_1_sent: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -240,15 +239,3 @@ class AuditLog(Base, UUIDPKMixin):
     # recorded; spec-doc6 C13 requires the same of an HR Manager publish).
     exceptional: Mapped[bool | None] = mapped_column(Boolean)
 
-
-class LLMProviderKey(Base, UUIDPKMixin, CreatedAtMixin):
-    """Nine keys (3× Groq/Gemini/OpenRouter), encrypted at rest, with a
-    circuit-breaker health flag (ESD §8.4). Global table."""
-    __tablename__ = "llm_provider_keys"
-
-    provider: Mapped[str] = mapped_column(String(30), nullable=False)
-    key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    role_hint: Mapped[str] = mapped_column(String(30), nullable=False)
-    priority: Mapped[int] = mapped_column(nullable=False, default=0)
-    healthy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

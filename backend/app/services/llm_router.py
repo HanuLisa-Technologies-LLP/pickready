@@ -351,13 +351,10 @@ def key_for_model(model: str) -> _RouterKey | None:
     different remedies and a shared return value would hide one behind the
     other.
 
-    THE `llm_provider_keys` TABLE IS NO LONGER READ, and it was deliberately not
-    dropped in the same change that stopped reading it. It holds encrypted rows
-    for three retired vendors, an audit trail of which credential served which
-    call is still attached to it through the telemetry, and a rollback of the
-    consolidation would need those rows intact rather than restored from a
-    backup. It is unread, not gone -- the same treatment `technical_questions`
-    got for the same reason.
+    Credentials come from settings and nowhere else. The multi-vendor key
+    table this router once read was kept unread for a release so a rollback
+    could find its rows, then dropped by migration 0128 once every
+    environment reported it empty.
     """
     from app.core.config import get_settings  # noqa: PLC0415 -- import cycle
 
@@ -1594,10 +1591,11 @@ async def invoke_llm(
     twenty-odd call sites.
 
     `session` is retained in the signature and is now unused. It used to load
-    credentials from `llm_provider_keys`; it is kept because roughly twenty
-    callers pass it, and churning all of them to remove an argument would be a
-    large diff whose only effect is a smaller signature. Removing it is a
-    reasonable later cleanup, not part of a vendor consolidation.
+    credentials from the retired multi-vendor key table; it is kept because
+    roughly twenty callers pass it, and churning all of them to remove an
+    argument would be a large diff whose only effect is a smaller signature.
+    Removing it is a reasonable later cleanup, not part of a vendor
+    consolidation.
 
     `validate` is the caller's DETERMINISTIC output check, and passing one turns
     a schema violation into a retry that carries the validator's own message

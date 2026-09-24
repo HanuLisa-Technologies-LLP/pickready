@@ -13,10 +13,11 @@ was deleted.
 
 WHAT IS STILL HERE, AND WHY THAT IS NOT AN EXEMPTION
 -----------------------------------------------------
-The OTP model and enum, the `otp_challenges` table, the `pickready.send_sms`
-task, `services/sms_service.py`, the MSG91 settings and the MSG91 secret sit in
-files shared with every other phase of this release, so their removal is
-Phase 7 Wave B, after those phases merge. `WAVE_B_PENDING` names the exact
+The OTP model and enum and the `otp_challenges` table went in Wave B's
+WP-B2 (migration 0128 drops the table only when it is empty). The
+`pickready.send_sms` task, `services/sms_service.py`, the MSG91 settings and
+the MSG91 secret sit in files shared with every other phase of this release,
+so their removal is the rest of Phase 7 Wave B, after those phases merge. `WAVE_B_PENDING` names the exact
 files that may still mention them, and it is a RATCHET in both directions: a
 mention in any other file fails, and an entry whose file no longer mentions
 them fails too, so the list can only shrink.
@@ -48,14 +49,8 @@ WAVE_B_PENDING = frozenset(
         ".env.example",
         "backend/app/core/config.py",
         "backend/app/main.py",
-        "backend/app/models/__init__.py",
-        "backend/app/models/enums.py",
-        "backend/app/models/user.py",
-        "backend/app/scripts/legacy_reset.py",
         "backend/app/services/sms_service.py",
         "backend/app/workers/tasks.py",
-        "backend/tests/fixtures/legacy_reset/schema_snapshot.json",
-        "backend/tests/fixtures/reembed/schema_snapshot.json",
         "backend/tests/test_deploy_secret_hygiene.py",
         "backend/tests/test_email_delivery.py",
         "infra/.checkov.yml",

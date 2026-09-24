@@ -230,7 +230,8 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     benefits: Mapped[str | None] = mapped_column(Text)
 
     questions_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    questions_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The retired technical-bank approval stamp sat here, written by nothing
+    # and read by nothing since 2026-08-04; migration 0128 drops the column.
     question_reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # ── PPI framework review (migration 0030) ────────────────────────────────
     # Tracked separately from the technical bank because the two are generated

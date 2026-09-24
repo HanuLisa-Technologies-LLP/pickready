@@ -6,9 +6,11 @@ Two tables joined the original Functional Skills set on 2026-07-30:
                           Skills and Behavioural Competencies, generated once
                           per job and FIXED once the Hiring Manager saves it.
   `candidate_questions` -- the PPI questions generated for ONE candidate
-                          against that framework. Per candidate, unlike
-                          `technical_questions`, which stay per job so every
-                          applicant answers the same technical set.
+                          against that framework.
+
+The two technical-question tables that used to sit beside them, the per-job
+preset bank and the per-candidate technical track, were empty on pilot and
+are DROPPED by migration 0128 together with their mappings.
 """
 import uuid
 from datetime import datetime
@@ -50,37 +52,6 @@ END_REASON_VALUES: tuple[str, ...] = (
     "evidence_sufficient",
     "prompts_exhausted",
 )
-
-
-class TechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
-    """RETIRED 2026-08-06. The per-job PRESET technical bank.
-
-    Companies could create, edit and store these, and every applicant to a job
-    answered the same stored strings. That is gone: technical questions are now
-    written per candidate, at the moment they are asked, from the JD, that
-    candidate's resume and the live transcript
-    (`services/technical_interview`, `CandidateTechnicalQuestion` below).
-
-    Nothing in the application reads or writes this table any more. It survives
-    unread rather than being dropped because reports written before the change
-    were scored against these rows, and a dropped table turns a historic audit
-    question ("what was this person actually asked?") into an unanswerable one.
-    """
-
-    __tablename__ = "technical_questions"
-    __table_args__ = (
-        UniqueConstraint("job_id", "ordinal", name="uq_technical_question_job_ordinal"),
-        Index("ix_technical_questions_job", "job_id"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    skill: Mapped[str] = mapped_column(String(255), nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    rubric_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 #: `job_competencies.authored_by`. Mirrored by a CHECK constraint (0118).
@@ -208,8 +179,9 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     `rubric_json` is what makes that possible. A Must-have or Nice-to-have answer
     is scored against ITS OWN question's rubric, so the rubric is written by the
     same model call that writes the question and persisted before the candidate
-    reads either -- the guarantee `candidate_technical_questions` was built to
-    give, now given by the row the unified conversation actually asks from.
+    reads either -- the guarantee the retired per-candidate technical track was
+    built to give, now given by the row the unified conversation actually asks
+    from.
 
     It is NULL on a Behavioural row, and that is a statement rather than an
     omission: a Behavioural answer is scored by judgement because there is no
@@ -318,66 +290,6 @@ class AssessmentAnswer(Base, UUIDPKMixin, CreatedAtMixin):
     auto_score: Mapped[float | None] = mapped_column(Float)
     ai_evaluation_json: Mapped[dict | None] = mapped_column(JSONB)
     revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-
-
-class CandidateTechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
-    """One technical question written for ONE candidate (2026-08-06).
-
-    WHY THIS REPLACED A PER-JOB PRESET BANK
-    ---------------------------------------
-    `technical_questions` was a stored bank a company authored and edited, and
-    every applicant read the same strings whatever their resume said. The
-    questions are now written during the conversation from the JD, this
-    candidate's resume and everything said so far, which is the whole point of
-    an adaptive interview.
-
-    THE INVARIANT THAT MADE THIS SAFE
-    ---------------------------------
-    A technical answer is scored against ITS OWN rubric
-    (`functional_assessment._llm_score`), so a generated question is only sound
-    if the rubric is generated WITH it and stored alongside it. That is exactly
-    what this row is: `prompt` and `rubric_json` are written in the same
-    transaction, by the same model call, before the candidate ever reads the
-    question. The rubric therefore always belongs to the question that was
-    actually asked -- which is a stronger guarantee than the preset bank gave,
-    because a company could edit a stored prompt and leave its rubric behind.
-
-    THE COVERAGE PLAN STAYS DETERMINISTIC
-    -------------------------------------
-    `skill` and `ordinal` are assigned up front by
-    `technical_interview.skill_plan`, a pure function of the job's JD. Two
-    candidates for one job are therefore probed on the SAME skills in the SAME
-    order -- which is what keeps their reports comparable -- while the question
-    asked about each skill is written for the person answering it. What varies
-    is how a criterion is approached, never which criteria there are.
-
-    A row exists before its question does. It is created with a deterministic
-    placeholder `prompt` and a default `rubric_json` so the conversation always
-    has something askable even if every provider is down, then overwritten in
-    place with the generated pair the moment before the question is delivered.
-    `generated_at` is the evidence of which happened: NULL means the candidate
-    read the deterministic fallback.
-    """
-
-    __tablename__ = "candidate_technical_questions"
-    __table_args__ = (
-        UniqueConstraint(
-            "job_candidate_link_id", "ordinal", name="uq_candidate_technical_ordinal"
-        ),
-        Index("ix_candidate_technical_link", "job_candidate_link_id", "ordinal"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    job_candidate_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("job_candidate_links.id", ondelete="CASCADE"), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    skill: Mapped[str] = mapped_column(String(255), nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    rubric_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    #: Stamped only when a model actually wrote this pair. NULL is the honest
-    #: record that the candidate read the deterministic fallback, and it is what
-    #: `interview_telemetry` counts to make a silent degradation visible.
-    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):

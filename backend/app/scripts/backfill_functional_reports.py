@@ -75,7 +75,7 @@ async def backfill(apply: bool) -> dict[str, int]:
             # Technical questions are per CANDIDATE as of 2026-08-06, so they
             # are created per link below rather than once per job here. The
             # per-job block that used to live at this point built preset
-            # `TechnicalQuestion` rows from a JD-derived fallback bank; there is
+            # technical-question rows from a JD-derived fallback bank; there is
             # no such bank any more.
 
             grade = job.assessment_grade or infer_grade_fallback(job)
@@ -121,7 +121,6 @@ async def backfill(apply: bool) -> dict[str, int]:
                 now = datetime.now(timezone.utc)
                 job.assessment_grade = grade
                 job.questions_generated_at = job.questions_generated_at or now
-                job.questions_approved_at = job.questions_approved_at or now
                 job.framework_generated_at = job.framework_generated_at or now
                 job.framework_approved_at = job.framework_approved_at or now
                 if job.assessment_context_json is None:

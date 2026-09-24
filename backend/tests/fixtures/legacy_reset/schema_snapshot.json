@@ -139,24 +139,6 @@
       "table": "candidate_team_reviews"
     },
     {
-      "column": "job_candidate_link_id",
-      "on_delete": "CASCADE",
-      "references": "job_candidate_links",
-      "table": "candidate_technical_questions"
-    },
-    {
-      "column": "job_id",
-      "on_delete": "CASCADE",
-      "references": "jobs",
-      "table": "candidate_technical_questions"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "candidate_technical_questions"
-    },
-    {
       "column": "main_profile_id",
       "on_delete": "SET NULL",
       "references": "profiles",
@@ -553,12 +535,6 @@
       "table": "old_profile_reviews"
     },
     {
-      "column": "user_id",
-      "on_delete": "CASCADE",
-      "references": "users",
-      "table": "otp_challenges"
-    },
-    {
       "column": "job_candidate_link_id",
       "on_delete": "CASCADE",
       "references": "job_candidate_links",
@@ -661,18 +637,6 @@
       "table": "staff_invites"
     },
     {
-      "column": "job_id",
-      "on_delete": "CASCADE",
-      "references": "jobs",
-      "table": "technical_questions"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "technical_questions"
-    },
-    {
       "column": "current_plan_id",
       "on_delete": "SET NULL",
       "references": "pricing_plans",
@@ -703,8 +667,8 @@
       "table": "verification_requests"
     }
   ],
-  "note": "Recorded from a database migrated to 0062_embedding_provenance, then amended by hand for 0088_remove_company_dna: the `company_dna` table and its inbound key are gone and `job_company_dna_bindings` is `job_scorecard_bindings`. THIS SNAPSHOT IS STALE BY DESIGN AND MORE STALE THAN IT LOOKS: a database at head carries 63 tables and 154 foreign keys against the 50 and 114 recorded here, so the cascade assertions below cover the graph as it stood at 0062 and not as it stands today. Regenerating it is a separate change: every table added since must also be classified in `legacy_reset.CLASSIFICATION` in the same commit, or `unclassified_tables` fails. Amended by hand again for 0118_skills_contract: `job_skill_snapshots` and its two inbound cascades (tenant, job) are added, with `assessment_conversations.skill_snapshot_id` as ON DELETE SET NULL, because `legacy_reset.CLASSIFICATION` now classifies that table and a classified table the snapshot does not list reads as a database behind the migrations.",
-  "revision": "0062_embedding_provenance+0088_remove_company_dna+0118_skills_contract",
+  "note": "Recorded from a database migrated to 0062_embedding_provenance, then amended by hand for 0088_remove_company_dna: the `company_dna` table and its inbound key are gone and `job_company_dna_bindings` is `job_scorecard_bindings`. THIS SNAPSHOT IS STALE BY DESIGN AND MORE STALE THAN IT LOOKS: a database at head carries 63 tables and 154 foreign keys against the 50 and 114 recorded here, so the cascade assertions below cover the graph as it stood at 0062 and not as it stands today. Regenerating it is a separate change: every table added since must also be classified in `legacy_reset.CLASSIFICATION` in the same commit, or `unclassified_tables` fails. Amended by hand again for 0118_skills_contract: `job_skill_snapshots` and its two inbound cascades (tenant, job) are added, with `assessment_conversations.skill_snapshot_id` as ON DELETE SET NULL, because `legacy_reset.CLASSIFICATION` now classifies that table and a classified table the snapshot does not list reads as a database behind the migrations. Amended by hand again for 0128_legacy_scrap: the four legacy tables it drops when empty, and their six outbound keys, are gone.",
+  "revision": "0062_embedding_provenance+0088_remove_company_dna+0118_skills_contract+0128_legacy_scrap",
   "tables": [
     "agent_execution_traces",
     "agent_learnings",
@@ -717,7 +681,6 @@
     "calibration_records",
     "candidate_questions",
     "candidate_team_reviews",
-    "candidate_technical_questions",
     "candidates",
     "companies",
     "compliance_documents",
@@ -741,9 +704,7 @@
     "job_skill_snapshots",
     "job_swot_intakes",
     "jobs",
-    "llm_provider_keys",
     "old_profile_reviews",
-    "otp_challenges",
     "pipeline_status",
     "pricing_plans",
     "profiles",
@@ -752,7 +713,6 @@
     "review_dispositions",
     "role_permissions",
     "staff_invites",
-    "technical_questions",
     "tenants",
     "users",
     "verification_requests",

@@ -1962,8 +1962,7 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
                            assessment_context_json,
                            CAST(:context AS jsonb)
                        ),
-                       questions_generated_at = COALESCE(questions_generated_at, now()),
-                       questions_approved_at = COALESCE(questions_approved_at, now())
+                       questions_generated_at = COALESCE(questions_generated_at, now())
                  WHERE archived_at IS NULL
                    AND EXISTS (
                        SELECT 1 FROM job_competencies c

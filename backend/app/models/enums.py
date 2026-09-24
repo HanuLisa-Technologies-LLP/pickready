@@ -41,11 +41,6 @@ class UserStatus(str, enum.Enum):
     disabled = "disabled"
 
 
-class OTPChannel(str, enum.Enum):
-    email = "email"
-    sms = "sms"
-
-
 class JobStatus(str, enum.Enum):
     """Approval FSM states (ESD §7). `draft` precedes the chain; `ratified` is
     terminal — only then does HR gain access (FR-3.4)."""
@@ -130,18 +125,3 @@ class PipelineStatus(str, enum.Enum):
     hold = "hold"  # requires mandatory remarks (FR-8.2)
     #: Legacy synonym of `offer_extended`, retained so historic rows still read.
     offered = "offered"
-
-
-
-
-
-
-class LLMProvider(str, enum.Enum):
-    groq = "groq"
-    gemini = "gemini"
-    openrouter = "openrouter"
-
-
-class LLMRoleHint(str, enum.Enum):
-    rerank = "rerank"          # Groq-first chain (latency-sensitive)
-    extraction = "extraction"  # Gemini-first chain (long context)

@@ -44,7 +44,6 @@ _SUBSCRIPTION_COLUMNS = (
     "subscription_status",
     "subscription_current_end",
     "subscription_started_at",
-    "credit_deficit",
     "credit_warning_1_sent",
     "credit_warning_2_sent",
     "trial_used",
