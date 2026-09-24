@@ -20,7 +20,7 @@ one handler and would double the states every reader has to handle.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -64,6 +64,13 @@ class ClientEmailSender(Base, UUIDPKMixin, CreatedAtMixin):
     __tablename__ = "client_email_senders"
     __table_args__ = (
         Index("ix_client_email_senders_tenant", "tenant_id", "created_at"),
+        # Migration 0122: at most ONE default sender per tenant.
+        Index(
+            "uq_client_email_sender_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -92,6 +99,15 @@ class ClientEmailSender(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: THE SENDER AUTOMATIC EMAILS GO OUT UNDER (migration 0122). A
+    #: confirmation or a reminder has no request to name a sender in, so
+    #: without a default a corporate sender could never be used for them.
+    #: Only an ACTIVE sender may hold it, and every transition away from
+    #: active clears it in the same UPDATE, so the next email falls back to
+    #: the platform mailbox rather than failing at send time.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
