@@ -31,7 +31,7 @@ from app.models.email_sender import (
     SENDER_VERIFICATION_EXPIRED,
 )
 from app.services import email_outbox
-from app.services.sms_service import TransientDeliveryError
+from app.services.delivery_errors import TransientDeliveryError
 from app.workers import tasks
 from tests import comms_world
 
