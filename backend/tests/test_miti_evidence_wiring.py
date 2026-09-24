@@ -8,14 +8,15 @@ had no answer, and every review of the ledger read like an enforced property.
 
 Since 2026-09-24 the writer is `assessment_pipeline.evidence.
 record_answer_evidence`, the ONLY ledger writer in the product, called per
-answer during the conversation and again here as the scoring backfill
+answer during the conversation and again as the scoring backfill
 (`tests/test_answer_evidence_idempotent.py` proves the two calls write once).
-This file keeps asserting the scoring side of it.
+This file keeps asserting the scoring side of it, which since WP5-B lives in
+Miti's item stage (`miti/items.py`), the only code that grades a skill.
 
 What is asserted here is not "evidence is recorded". It is the five rules that
 decide whether recording it is safe to do at all:
 
-  1. a ledger failure never costs the report, because the report is the work a
+  1. a ledger failure never costs the grade, because the report is the work a
      candidate has already done and a customer has already been charged for;
   2. the ledger stores a LOCATOR and never the sentence, because it is readable
      by anyone with database access while the transcript needs a capability;
@@ -36,9 +37,11 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from app.services import functional_assessment as fa
+from app.services.assessment_contract import ContractSkill
 from app.services.assessment_pipeline import evidence as answer_evidence
 from app.services.assessment_pipeline.types import AnswerRecord
 from app.services.evidence import contradictions, ledger
+from app.services.miti import items
 
 _ANSWER = "I rebuilt the ingest pipeline and cut the nightly batch to minutes."
 _GIBBERISH = "ewidjverip"
@@ -155,25 +158,52 @@ def _fixture(*, answer: str = _ANSWER, category: str = "must_have"):
     return state, competency, question, message_id
 
 
+async def _score_stub(task, messages, **kwargs):
+    """The injected model: the item stage's judgement, always 80. Scoring is not
+    what this file is about, and an unstubbed call would make every assertion
+    depend on whether a provider happened to answer."""
+    return json.dumps({"score": 80, "band": "75_89"})
+
+
+def _context(state) -> items.ItemContext:
+    return items.ItemContext(
+        tenant_id=state["job"].tenant_id,
+        job_id=state["job"].id,
+        link_id=state["link"].id,
+        candidate_id=state["link"].candidate_id,
+    )
+
+
+def _skill(competency) -> ContractSkill:
+    return ContractSkill(
+        id=competency.id,
+        name=competency.name,
+        bucket=competency.category,
+        priority=1,
+        evidence_line="",
+    )
+
+
+async def _grade(state, competency, question):
+    """Miti's item stage for the one skill in the fixture."""
+    return await items.evaluate_skill(
+        state["session"],
+        context=_context(state),
+        skill=_skill(competency),
+        questions=[question],
+        answers=state["answers"],
+        locators=state["answer_refs"],
+        structured={},
+        invoke=_score_stub,
+    )
+
+
 @pytest.fixture(autouse=True)
-def _no_provider(monkeypatch):
-    """Scoring and remark writing both call a model. Neither is what this file
-    is about, and an unstubbed call would make every assertion here depend on
-    whether a provider happened to answer."""
-
-    async def _score(session, question, rubric, answer):
-        return 80
-
-    async def _remark(session, name, evidence, minimum=25, maximum=30, *, rating=None):
-        return "A stubbed remark for a wiring test."
-
-    monkeypatch.setattr(fa, "_llm_score", _score)
-    monkeypatch.setattr(fa, "bounded_remark", _remark)
-
-    async def _no_claims(session, **kwargs):
+def _no_claims(monkeypatch):
+    async def _none(session, **kwargs):
         return []
 
-    monkeypatch.setattr(ledger, "load_claims", _no_claims)
+    monkeypatch.setattr(ledger, "load_claims", _none)
 
 
 # ── 1. a ledger failure never costs the report ───────────────────────────────
@@ -186,16 +216,14 @@ async def test_a_ledger_failure_never_fails_scoring(monkeypatch) -> None:
     already been charged for, so an audit trail that could destroy the artifact
     it exists to explain would be worse than no audit trail at all."""
     recorder = _Recorder(raising=True).install(monkeypatch)
-    state, competency, _question, _message_id = _fixture()
+    state, competency, question, _message_id = _fixture()
 
-    result = await fa.ppi_scoring_node(state)
+    grade = await _grade(state, competency, question)
 
     assert not recorder.evidence, "the injected failure did not fire"
-    rows = result["ppi"]
-    assert len(rows) == 1
-    assert rows[0]["name"] == competency.name
-    assert rows[0]["score"] == 80
-    assert rows[0]["remark"]
+    assert grade.name == competency.name
+    assert grade.score == 80
+    assert grade.status == "graded"
 
 
 @pytest.mark.asyncio
@@ -209,18 +237,24 @@ async def test_a_ledger_read_failure_never_fails_scoring(monkeypatch) -> None:
         raise RuntimeError("the ledger is unreadable")
 
     monkeypatch.setattr(ledger, "load_claims", _explode)
-    state, _competency, _question, _message_id = _fixture()
+    state, competency, question, _message_id = _fixture()
 
-    result = await fa.ppi_scoring_node(state)
+    grade = await _grade(state, competency, question)
+    review, _findings = await fa._uncertainty_from_evidence(state)
 
-    assert result["ppi"][0]["score"] == 80
-    assert result["evidence_review"] is False
+    assert grade.score == 80
+    assert review is False
 
 
 @pytest.mark.asyncio
-async def test_a_locator_read_failure_leaves_scoring_untouched(monkeypatch) -> None:
-    """A transcript whose row ids cannot be read is a report with no evidence
-    trail, never a report that fails."""
+async def test_a_locator_read_failure_raises_rather_than_scoring_unanswered(
+    monkeypatch,
+) -> None:
+    """REVERSED IN WP5-B. An unreadable locator table used to be absorbed into
+    an empty map, and an unreadable answer table into "everything unanswered",
+    which is a synthetic Not Matching written from an outage. The inputs are
+    read before Miti runs, and a failed read raises: the scoring task fails and
+    is retried rather than writing a grade from nothing."""
     recorder = _Recorder().install(monkeypatch)
 
     async def _explode(session, link_id):
@@ -229,10 +263,10 @@ async def test_a_locator_read_failure_leaves_scoring_untouched(monkeypatch) -> N
     monkeypatch.setattr(answer_evidence, "answer_records", _explode)
     state, _competency, _question, _message_id = _fixture()
     state.pop("answer_refs")
+    state["conversation"] = SimpleNamespace(id=uuid.uuid4())
 
-    result = await fa.ppi_scoring_node(state)
-
-    assert result["ppi"][0]["score"] == 80
+    with pytest.raises(RuntimeError, match="no locators"):
+        await fa.ppi_scoring_node(state)
     assert not recorder.evidence
 
 
@@ -253,9 +287,9 @@ def test_the_writes_run_inside_a_savepoint() -> None:
 @pytest.mark.asyncio
 async def test_the_savepoint_is_actually_entered(monkeypatch) -> None:
     _Recorder().install(monkeypatch)
-    state, _competency, _question, _message_id = _fixture()
+    state, competency, question, _message_id = _fixture()
 
-    await fa.ppi_scoring_node(state)
+    await _grade(state, competency, question)
 
     assert state["session"].savepoints == 1
 
@@ -273,7 +307,7 @@ async def test_the_ledger_is_given_a_locator_and_never_the_answer(
     recorder = _Recorder().install(monkeypatch)
     state, competency, question, message_id = _fixture()
 
-    await fa.ppi_scoring_node(state)
+    await _grade(state, competency, question)
 
     assert len(recorder.evidence) == 1
     written = recorder.evidence[0]
@@ -307,7 +341,7 @@ async def test_the_evidence_carries_the_turn_the_answer_was_given_on(
     recorder = _Recorder().install(monkeypatch)
     state, competency, question, _message_id = _fixture()
 
-    await fa.ppi_scoring_node(state)
+    await _grade(state, competency, question)
 
     provenance = recorder.evidence[0]["provenance"]
     assert provenance["agent"] == "miti"
@@ -323,9 +357,9 @@ async def test_the_evidence_is_attached_to_a_claim_for_that_matrix_item(
     monkeypatch,
 ) -> None:
     recorder = _Recorder().install(monkeypatch)
-    state, competency, _question, _message_id = _fixture()
+    state, competency, question, _message_id = _fixture()
 
-    await fa.ppi_scoring_node(state)
+    await _grade(state, competency, question)
 
     assert len(recorder.claims) == 1
     claim = recorder.claims[0]
@@ -354,13 +388,14 @@ async def test_a_non_answer_never_becomes_evidence(monkeypatch) -> None:
     unanswered scoring path; recording it would put a row in the ledger
     asserting that something stood behind a grade of Not Matching."""
     recorder = _Recorder().install(monkeypatch)
-    state, _competency, _question, _message_id = _fixture(answer=_GIBBERISH)
+    state, competency, question, _message_id = _fixture(answer=_GIBBERISH)
 
-    result = await fa.ppi_scoring_node(state)
+    grade = await _grade(state, competency, question)
 
     assert not recorder.evidence
     assert not recorder.claims
-    assert result["ppi"][0]["score"] == fa.UNANSWERED_SCORE
+    assert grade.score == items.UNANSWERED_SCORE
+    assert grade.status == "unanswered"
 
 
 @pytest.mark.asyncio
@@ -371,9 +406,10 @@ async def test_a_locator_pointing_at_a_non_answer_is_dropped(monkeypatch) -> Non
     recorder = _Recorder().install(monkeypatch)
     state, competency, question, message_id = _fixture()
 
-    await fa._record_answer_evidence(
-        state,
-        competency,
+    await items._record_evidence(
+        state["session"],
+        _context(state),
+        _skill(competency),
         question,
         [
             AnswerRecord(
@@ -454,17 +490,17 @@ async def test_a_material_contradiction_flags_the_report_and_moves_no_grade(
 
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
-    contradicted = await fa.ppi_scoring_node(state)
+    grade = await _grade(state, competency, _question)
+    review, findings = await fa._uncertainty_from_evidence(state)
 
-    assert contradicted["evidence_review"] is True
-    findings = contradicted["evidence_findings"]
+    assert review is True
     assert findings, "a flagged report must say why"
     assert all(
         finding["issue"] == contradictions.AXIS_CONCLUSIONS_VS_EVIDENCE
         for finding in findings
     )
     # The grade is untouched. Not lowered, not raised, not blended.
-    assert contradicted["ppi"][0]["score"] == 80
+    assert grade.score == 80
 
 
 @pytest.mark.asyncio
@@ -480,9 +516,9 @@ async def test_a_flagged_finding_carries_no_report_prose(monkeypatch) -> None:
 
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
-    result = await fa.ppi_scoring_node(state)
+    _review, findings = await fa._uncertainty_from_evidence(state)
 
-    for finding in result["evidence_findings"]:
+    for finding in findings:
         assert set(finding) == {"severity", "issue", "location", "recommendation"}
         # One severity vocabulary in the column, the verifier's, because
         # `review_findings_json` already holds gate findings on that scale.
@@ -523,9 +559,9 @@ async def test_a_minor_disagreement_does_not_flag_a_report(monkeypatch) -> None:
 
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
-    result = await fa.ppi_scoring_node(state)
-    assert result["evidence_review"] is False
-    assert result["evidence_findings"] == []
+    review, findings = await fa._uncertainty_from_evidence(state)
+    assert review is False
+    assert findings == []
 
 
 @pytest.mark.asyncio
@@ -535,9 +571,9 @@ async def test_an_empty_ledger_is_not_a_contradiction(monkeypatch) -> None:
     _Recorder(raising=True).install(monkeypatch)
     state, _competency, _question, _message_id = _fixture()
 
-    result = await fa.ppi_scoring_node(state)
+    review, _findings = await fa._uncertainty_from_evidence(state)
 
-    assert result["evidence_review"] is False
+    assert review is False
 
 
 def test_the_report_row_carries_the_flag_beside_the_gates() -> None:
@@ -574,16 +610,17 @@ async def test_grades_are_identical_with_the_ledger_enabled_and_disabled(
     product would depend on the health of a table nobody scores from."""
     with_ledger = _Recorder()
     with_ledger.install(monkeypatch)
-    state, _competency, _question, _message_id = _fixture()
-    enabled = await fa.ppi_scoring_node(state)
+    state, competency, question, _message_id = _fixture()
+    enabled = await _grade(state, competency, question)
 
     _Recorder(raising=True).install(monkeypatch)
-    state, _competency, _question, _message_id = _fixture()
-    disabled = await fa.ppi_scoring_node(state)
+    state, competency, question, _message_id = _fixture()
+    disabled = await _grade(state, competency, question)
 
     assert with_ledger.evidence, "the enabled run recorded nothing"
-    assert enabled["ppi"] == disabled["ppi"]
-    assert enabled["ppi_mode"] == disabled["ppi_mode"]
+    assert (enabled.status, enabled.score, enabled.grade) == (
+        disabled.status, disabled.score, disabled.grade
+    )
 
 
 @pytest.mark.asyncio
@@ -595,28 +632,31 @@ async def test_a_behavioural_item_grades_the_same_and_is_still_recorded(
     for the same claim -- filed individually, so a recruiter can be shown the
     specific turn a behavioural grade rests on."""
     recorder = _Recorder().install(monkeypatch)
-    state, competency, _question, _message_id = _fixture(category="behavioural")
+    state, competency, question, _message_id = _fixture(category="behavioural")
 
-    result = await fa.ppi_scoring_node(state)
+    grade = await _grade(state, competency, question)
 
-    assert result["ppi"][0]["score"] == 80
+    assert grade.score == 80
     assert len(recorder.evidence) == 1
     assert recorder.claims[0]["dimension"] == competency.name
 
 
 def test_the_scoring_path_reads_the_locators_for_nothing_else() -> None:
     """Recording evidence is a side effect of scoring and never an input to it.
-    A locator map that could reach `_llm_score` or a rubric would make a grade
-    depend on how much of the transcript happened to be readable."""
-    source = inspect.getsource(fa._score_item)
-    for line in source.splitlines():
-        if "located" not in line or line.strip().startswith("#"):
-            continue
-        assert (
-            "_record_answer_evidence" in line
-            or "located = locators" in line
-            or "located.get(" in line
-        ), f"the locator map leaked into scoring: {line.strip()}"
+    A locator map that could reach the judge or a rubric would make a grade
+    depend on how much of the transcript happened to be readable. Read in
+    Miti's item stage, where every per-skill grade is written since WP5-B."""
+    for function in (items._rubric_scored, items._behavioural):
+        source = inspect.getsource(function)
+        for line in source.splitlines():
+            stripped = line.strip()
+            if "locators" not in stripped or stripped.startswith("#"):
+                continue
+            assert (
+                "_record_evidence(" in stripped
+                or stripped.startswith("locators: Mapping")
+                or stripped == "locators=locators,"
+            ), f"the locator map leaked into scoring: {stripped}"
 
 
 def test_the_evidence_path_can_reach_no_grading_rule() -> None:
@@ -624,7 +664,7 @@ def test_the_evidence_path_can_reach_no_grading_rule() -> None:
     name the four-grade scale, the unanswered score or the Must-have hard cap,
     so neither is in a position to change any of them."""
     for name, source in (
-        ("_record_answer_evidence", inspect.getsource(fa._record_answer_evidence)),
+        ("items._record_evidence", inspect.getsource(items._record_evidence)),
         ("_uncertainty_from_evidence", inspect.getsource(fa._uncertainty_from_evidence)),
         ("record_answer_evidence", inspect.getsource(answer_evidence)),
     ):

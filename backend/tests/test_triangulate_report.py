@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import dataclasses
 
-import pytest
 
 from app.services.evidence import contradictions as detector
 from app.services.miti import triangulation

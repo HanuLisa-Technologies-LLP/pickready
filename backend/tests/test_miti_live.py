@@ -31,7 +31,6 @@ import subprocess
 import sys
 import types
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 
@@ -151,6 +150,7 @@ class _Harness:
             return self.disposition
 
         self.monkeypatch.setattr(live, "latest_disposition", latest_disposition)
+
         async def load_claims(session, *, tenant_id, job_id, link_id=None):
             return list(self.claims)
 

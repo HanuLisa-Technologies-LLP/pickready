@@ -59,12 +59,12 @@ def test_provenance_is_gated_on_the_model_backed_mode_in_source() -> None:
     source = inspect.getsource(fa)
     assert re.search(
         r'"model_id":\s*\(\s*\n?\s*llm_providers\.model_for\("report_synthesis"\)'
-        r"\s*\n?\s*if scoring_mode == MODE_LLM_RUBRIC",
+        r"\s*\n?\s*if scoring_mode == MODE_MITI",
         source,
     ), "model_id must be written only for a model-backed run"
     assert re.search(
         r'"prompt_version":\s*\(\s*\n?\s*_report_prompt_versions\(\)'
-        r"\s*if scoring_mode == MODE_LLM_RUBRIC",
+        r"\s*if scoring_mode == MODE_MITI",
         source,
     ), "prompt_version must be written only for a model-backed run"
 
