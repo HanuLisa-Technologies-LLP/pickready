@@ -138,6 +138,12 @@ async def gate_delivery(session: Any, report: Any) -> DeliveryClearance:
     from app.services.hiring import gates
     from sqlalchemy import select
 
+    if report is None:
+        # `getattr(None, "needs_human_review", False)` is False, so an absent
+        # report would otherwise sail through as "nothing to review" and mint
+        # a clearance for a document that does not exist. The caller looked a
+        # report up and found none: that is its 404 to answer, never G4's pass.
+        raise ValueError("G4 gates a PRISM report; there is no report to gate")
     needs_review = bool(getattr(report, "needs_human_review", False))
     disposition: str | None = None
     decided_by: Any = None

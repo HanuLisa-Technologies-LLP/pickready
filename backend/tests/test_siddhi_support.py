@@ -221,3 +221,24 @@ def test_only_an_unsupported_or_misattributed_statement_carries_a_marker() -> No
         support.SUPPORT_NOTES[support.REASON_ELSEWHERE]
     )
     assert support.note_for(None, None) is None
+
+
+@pytest.mark.parametrize("value", [0.0, -0.2, 1.01, 55.0])
+def test_a_threshold_outside_the_cosine_range_refuses_to_boot(value) -> None:
+    """Above one nothing reaches it (every paraphrase unsupported, every report
+    to review); at or below zero every unrelated sentence is supported. Both
+    would read as the check working, so the setting is refused at load. 55.0
+    is the percentage somebody would type meaning 0.55."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="SIDDHI_SUPPORT_SIMILARITY_MIN"):
+        Settings(siddhi_support_similarity_min=value)
+
+
+@pytest.mark.parametrize("value", [0.01, 0.55, 1.0])
+def test_a_threshold_inside_the_cosine_range_loads(value) -> None:
+    from app.core.config import Settings
+
+    assert Settings(siddhi_support_similarity_min=value).siddhi_support_similarity_min == value

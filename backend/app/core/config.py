@@ -621,6 +621,20 @@ class Settings(BaseSettings):
     #: new code.
     siddhi_support_similarity_min: float = 0.55
 
+    @model_validator(mode="after")
+    def _siddhi_support_similarity_in_range(self) -> "Settings":
+        """A cosine floor outside (0, 1] is a verdict decided by configuration.
+
+        Above one nothing can reach it, so every paraphrase is `unsupported`
+        and every report goes to review; at or below zero every unrelated
+        sentence is `supported`. Both would look like the check working.
+        """
+        if not 0.0 < self.siddhi_support_similarity_min <= 1.0:
+            raise ValueError(
+                "SIDDHI_SUPPORT_SIMILARITY_MIN must be above 0 and at most 1"
+            )
+        return self
+
     # ── Assessment question formats (assessment-spec-doc.md) ────────────────
     #
     # Composition is enforced in code, not suggested in a prompt: evidence
