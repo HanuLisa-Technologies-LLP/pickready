@@ -40,6 +40,17 @@ terraform {
 
 locals {
   name = "${var.project}-${var.environment}-private"
+
+  # Prefixes whose objects are SHORT-LIVED by rule, each with its own expiry
+  # below. Excluded from the Infrequent Access transition, which carries a
+  # 30-day minimum-duration charge an object deleted in hours or days would
+  # pay in full for nothing, and which would otherwise overlap an expiry.
+  short_lived_prefixes = [
+    "project-intake",
+    "assessment-raw",
+    "assessment-compressed",
+    "voice-answers",
+  ]
 }
 
 resource "aws_s3_bucket" "private" {
@@ -120,7 +131,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "private" {
   # minimum-duration charge, and a temporary project original that lives for
   # minutes would pay it in full for nothing.
   dynamic "rule" {
-    for_each = toset([for prefix in var.application_prefixes : prefix if prefix != "project-intake"])
+    for_each = toset([for prefix in var.application_prefixes : prefix if !contains(local.short_lived_prefixes, prefix)])
     content {
       id     = "cool-old-objects-${rule.value}"
       status = "Enabled"
@@ -155,6 +166,66 @@ resource "aws_s3_bucket_lifecycle_configuration" "private" {
     # The noncurrent version too. Versioning is on for this bucket, so a plain
     # delete leaves a version behind, and a deleted original that is still
     # readable at a version id is an original that was not deleted.
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
+  # ── Assessment media (owner decision D4) ──────────────────────────────────
+  #
+  # A HEAD-CONFIRMED DELETE IS NOT A PURGE ON A VERSIONED BUCKET. The delete
+  # places a marker and the bytes stay readable at their version id for
+  # `noncurrent_retain_days` (thirty in pilot). For a candidate's recording
+  # that is thirty days past a deletion the product has reported done, so each
+  # media prefix expires its noncurrent versions after ONE day. When two rules
+  # apply to one object S3 honours the shorter expiration, so the bucket-wide
+  # rule below does not lengthen these.
+  rule {
+    id     = "expire-assessment-compressed"
+    status = "Enabled"
+
+    filter {
+      prefix = "assessment-compressed/"
+    }
+
+    expiration {
+      days = var.assessment_media_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
+  rule {
+    id     = "expire-assessment-raw"
+    status = "Enabled"
+
+    filter {
+      prefix = "assessment-raw/"
+    }
+
+    expiration {
+      days = var.assessment_raw_backstop_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
+  rule {
+    id     = "expire-voice-answers"
+    status = "Enabled"
+
+    filter {
+      prefix = "voice-answers/"
+    }
+
+    expiration {
+      days = var.voice_answer_backstop_days
+    }
+
     noncurrent_version_expiration {
       noncurrent_days = 1
     }
@@ -197,8 +268,32 @@ data "aws_iam_policy_document" "private" {
     }
   }
 
+  # ENCRYPTION AT REST IS THIS ENVIRONMENT'S KMS KEY, AND THE DENIES BELOW SAY
+  # SO WITHOUT REFUSING A MULTIPART UPLOAD (2026-09-24).
+  #
+  # The previous single statement denied `s3:PutObject` whenever the
+  # `x-amz-server-side-encryption` header was not `aws:kms`, using
+  # `StringNotEquals`, which also matches when the header is ABSENT. UploadPart
+  # and CompleteMultipartUpload authorize as `s3:PutObject` and carry no
+  # encryption header (a multipart upload declares its encryption once, at
+  # CreateMultipartUpload), so that statement denied every part of every
+  # multipart upload: the segmented session recording, and the managed
+  # transfer that stores the compressed recording. It never fired only
+  # because no recording had ever been written (pilot held zero, CONTRACT v3).
+  #
+  # So the rule is stated as three facts instead of one header test:
+  #   1. a request that NAMES an encryption other than aws:kms is refused;
+  #   2. a request that names a KMS key other than this environment's is
+  #      refused;
+  #   3. a request that names aws:kms WITHOUT a key id is refused, because S3
+  #      would then encrypt under the AWS-managed `aws/s3` key rather than
+  #      this one.
+  # A request that names nothing (every UploadPart) is encrypted by the bucket
+  # default above, which is this key, so every object ends up under the one
+  # key whichever way it arrived. `services/video/storage._sse` sends both
+  # headers on every write that carries them.
   statement {
-    sid    = "DenyUnencryptedObjectUploads"
+    sid    = "DenyEncryptionOtherThanKms"
     effect = "Deny"
     principals {
       type        = "*"
@@ -207,9 +302,46 @@ data "aws_iam_policy_document" "private" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.private.arn}/*"]
     condition {
-      test     = "StringNotEquals"
+      test     = "StringNotEqualsIfExists"
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
+    }
+  }
+
+  statement {
+    sid    = "DenyAnotherKmsKey"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.private.arn}/*"]
+    condition {
+      test     = "StringNotEqualsIfExists"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [var.kms_key_arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyKmsWithoutThisKey"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.private.arn}/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["aws:kms"]
+    }
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = ["true"]
     }
   }
 }
@@ -226,17 +358,31 @@ resource "aws_s3_bucket_policy" "private" {
 # ── The application's grant ──────────────────────────────────────────────────
 #
 # SCOPED TO THE PREFIXES THE APPLICATION ACTUALLY WRITES, not to the bucket.
-# `resumes/*` and `compliance/*` are the two `object_storage` uses; a grant on
-# the whole bucket would also cover whatever the next feature puts there,
-# without anybody deciding that it should.
+# `application_prefixes` enumerates them; a grant on the whole bucket would
+# also cover whatever the next feature puts there, without anybody deciding
+# that it should.
+#
+# THE ENCRYPTION HEADERS THE BUCKET POLICY ACCEPTS are `aws:kms` with THIS
+# key's ARN, or none at all (the bucket default, which is this key). Every
+# assessment-media write names both (`services/video/storage._sse`,
+# S3_KMS_KEY_ID, which must be the key's ARN because the policy compares the
+# string); an UploadPart names neither. The `kms:ViaService` statement below
+# is what lets the application use the key through S3 for both.
 data "aws_iam_policy_document" "application" {
   statement {
     sid    = "ReadWriteTheApplicationPrefixes"
     effect = "Allow"
+    # The two multipart actions are the session recording's: a segment is one
+    # multipart upload (CreateMultipartUpload, UploadPart and
+    # CompleteMultipartUpload authorize as s3:PutObject), the sweep lists an
+    # abandoned upload's parts to complete it without the browser, and a
+    # segment that never received a part is aborted rather than left billed.
     actions = [
       "s3:GetObject",
       "s3:PutObject",
       "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
     ]
     resources = [
       for prefix in var.application_prefixes :

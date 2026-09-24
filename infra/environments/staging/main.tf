@@ -554,6 +554,7 @@ module "ecs" {
     ENVIRONMENT                   = local.environment
     AWS_REGION                    = var.region
     S3_BUCKET                     = module.s3.bucket_name
+    S3_KMS_KEY_ID                 = aws_kms_key.this.arn
     EMBEDDING_DIMENSIONS          = "1024"
     RESUME_SIGNED_URL_TTL_SECONDS = "300"
     # The origin the product is actually served on. `jobs.public_job_url` builds
@@ -845,6 +846,7 @@ module "lambda" {
         # application agree with the platform rather than with a literal.
         ENVIRONMENT                     = local.environment
         S3_BUCKET                       = module.s3.bucket_name
+        S3_KMS_KEY_ID                   = aws_kms_key.this.arn
         FRONTEND_URL                    = "https://${var.domain_name}"
         EMBEDDING_DIMENSIONS            = "1024"
         RESUME_SIGNED_URL_TTL_SECONDS   = "300"
@@ -948,6 +950,23 @@ module "lambda" {
   }
 
   tags = local.tags
+}
+
+# ── The task worker's object-store grant ─────────────────────────────────────
+#
+# THE TASK WORKER HAD NONE, IN ANY ENVIRONMENT. The ECS services get the
+# application prefixes through `needs_s3`; the Lambda that runs every short
+# task got only its secrets, logs and VPC policies. Yet the sweeps that delete
+# stored objects run there: `purge_assessment_media` (owner decision D4),
+# `reconcile_assessment_recordings` (the raw-deletion retry),
+# `purge_closed_job_assessments` and the erasure reconciler. Each would have
+# answered AccessDenied on its first real object, counted a failure, and come
+# back the next hour to fail again. Found on 2026-09-24 while wiring the
+# recording's retry sweep; nothing had ever been deleted in an applied
+# environment, which is why nothing had ever reported it.
+resource "aws_iam_role_policy_attachment" "task_worker_s3" {
+  role       = element(split("/", module.lambda.execution_role_arns["task-worker"]), 1)
+  policy_arn = module.s3.access_policy_arn
 }
 
 # ── The schedule ─────────────────────────────────────────────────────────────

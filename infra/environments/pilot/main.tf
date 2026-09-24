@@ -709,10 +709,11 @@ module "s3" {
 
 # ── Speech to text, in the one region that has it ────────────────────────────
 #
-# A WORKING BUCKET, not a store. `run_transcription` copies the extracted audio
-# in, runs the job, copies the transcript back to the product's own bucket and
-# deletes both objects. The expiry rule below is the backstop for a delete that
-# did not happen, not the mechanism.
+# A WORKING BUCKET, not a store. The transcription step copies a spoken
+# answer's audio in from `voice-answers/`, runs the job, copies the transcript
+# back to the product's own bucket and deletes both working objects. The
+# expiry rule below is the backstop for a delete that did not happen, not the
+# mechanism.
 #
 # SSE-S3 rather than the environment's KMS key, and that is forced rather than
 # chosen: the key is regional and lives in `var.region`, so an object encrypted
@@ -774,8 +775,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "transcribe" {
   }
 }
 
-# The agent task is the only caller: video processing is Route.ECS. Scoped to
-# this product's own job names and to the working bucket, never `*`.
+# The task worker is the only caller: a spoken answer is transcribed by a
+# Route.LAMBDA task. This grant sat on the ECS agent role while the deleted
+# video-interview mode transcribed whole recordings there. Scoped to this
+# product's own job names and to the working bucket, never `*`.
 data "aws_iam_policy_document" "transcribe" {
   count = var.transcribe_enabled ? 1 : 0
 
@@ -801,11 +804,11 @@ data "aws_iam_policy_document" "transcribe" {
   }
 }
 
-resource "aws_iam_role_policy" "agent_transcribe" {
+resource "aws_iam_role_policy" "task_worker_transcribe" {
   count = var.transcribe_enabled ? 1 : 0
 
   name   = "${var.project}-${local.environment}-transcribe"
-  role   = element(split("/", module.ecs.task_role_arns["agent"]), 1)
+  role   = element(split("/", module.lambda.execution_role_arns["task-worker"]), 1)
   policy = data.aws_iam_policy_document.transcribe[0].json
 }
 
@@ -965,6 +968,23 @@ resource "aws_sns_topic_subscription" "ses_events_webhook" {
   # Terraform waits for the endpoint to confirm. If it cannot, that is a real
   # failure worth surfacing rather than a subscription silently left pending.
   confirmation_timeout_in_minutes = 5
+}
+
+# ── The task worker's object-store grant ─────────────────────────────────────
+#
+# THE TASK WORKER HAD NONE, IN ANY ENVIRONMENT. The ECS services get the
+# application prefixes through `needs_s3`; the Lambda that runs every short
+# task got only its secrets, logs and VPC policies. Yet the sweeps that delete
+# stored objects run there: `purge_assessment_media` (owner decision D4),
+# `reconcile_assessment_recordings` (the raw-deletion retry),
+# `purge_closed_job_assessments` and the erasure reconciler. Each would have
+# answered AccessDenied on its first real object, counted a failure, and come
+# back the next hour to fail again. Found on 2026-09-24 while wiring the
+# recording's retry sweep; nothing had ever been deleted in an applied
+# environment, which is why nothing had ever reported it.
+resource "aws_iam_role_policy_attachment" "task_worker_s3" {
+  role       = element(split("/", module.lambda.execution_role_arns["task-worker"]), 1)
+  policy_arn = module.s3.access_policy_arn
 }
 
 resource "aws_iam_role_policy" "task_worker_ses" {
@@ -1238,6 +1258,7 @@ module "ecs" {
     ENVIRONMENT                   = local.app_environment
     AWS_REGION                    = var.region
     S3_BUCKET                     = module.s3.bucket_name
+    S3_KMS_KEY_ID                 = aws_kms_key.this.arn
     EMBEDDING_DIMENSIONS          = "1024"
     RESUME_SIGNED_URL_TTL_SECONDS = "300"
     FRONTEND_URL                  = local.frontend_url
@@ -1412,20 +1433,6 @@ module "ecs" {
       readonly_root = false
       environment = {
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
-        # SPEECH TO TEXT. `pickready.process_assessment_video` is Route.ECS, so
-        # this task is the only thing that ever calls Transcribe. The region is
-        # separate from `AWS_REGION` because ap-south-2 has no Transcribe
-        # endpoint, and the bucket travels with the region because a job cannot
-        # read a bucket outside its own. With the feature off, a recording
-        # lands in `transcription_failed` saying so rather than carrying a
-        # fabricated transcript.
-        TRANSCRIBE_ENABLED = var.transcribe_enabled ? "true" : "false"
-        TRANSCRIBE_REGION  = var.transcribe_region
-        # A SPLAT AND A JOIN, never `[0]` behind a conditional. Terraform does
-        # not reliably short-circuit an index expression, so `[0]` on a
-        # count = 0 resource fails the plan even on the branch that never runs.
-        # An empty splat joins to "", which is exactly "no working bucket".
-        TRANSCRIBE_BUCKET = join("", aws_s3_bucket.transcribe[*].id)
       }
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business reading the service account.
@@ -1667,6 +1674,7 @@ module "lambda" {
         ENVIRONMENT                   = local.app_environment
         REQUIRE_JWT_SECRET            = "1"
         S3_BUCKET                     = module.s3.bucket_name
+        S3_KMS_KEY_ID                 = aws_kms_key.this.arn
         FRONTEND_URL                  = local.frontend_url
         EMBEDDING_DIMENSIONS          = "1024"
         RESUME_SIGNED_URL_TTL_SECONDS = "300"
@@ -1692,6 +1700,21 @@ module "lambda" {
         # publishes no event, and every row stays `sent` for ever.
         SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
         SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
+        # SPEECH TO TEXT RUNS HERE NOW. A spoken answer is transcribed by a
+        # Route.LAMBDA task, so this function is the only caller of Amazon
+        # Transcribe; the agent task lost the grant and these three values
+        # when the video-interview transcription it served was deleted. The
+        # region is separate from AWS_REGION because ap-south-2 has no
+        # Transcribe endpoint, and the bucket travels with the region because
+        # a job cannot read a bucket outside its own. With the feature off the
+        # product hides the microphone rather than fabricating a transcript.
+        TRANSCRIBE_ENABLED = var.transcribe_enabled ? "true" : "false"
+        TRANSCRIBE_REGION  = var.transcribe_region
+        # A SPLAT AND A JOIN, never `[0]` behind a conditional. Terraform does
+        # not reliably short-circuit an index expression, so `[0]` on a
+        # count = 0 resource fails the plan even on the branch that never runs.
+        # An empty splat joins to "", which is exactly "no working bucket".
+        TRANSCRIBE_BUCKET = join("", aws_s3_bucket.transcribe[*].id)
       }
     }
 
