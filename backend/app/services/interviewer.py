@@ -20,51 +20,48 @@ returned three files and this was not one of them.
 
 WHAT THIS IS NOW
 ----------------
-Two compiled LangGraph state machines, and every line the candidate reads comes
-out of one of them:
+One compiled LangGraph state machine, and the deterministic helpers the live
+conversation reads:
 
     _DECIDE_GRAPH   after an answer: is there something specific worth pressing
                     on, and if so what would a competent interviewer say?
                     budget -> substance -> assess (LLM) -> validate
 
-    _DELIVER_GRAPH  before a base question: say it the way an interviewer would
-                    say it here, having heard everything said so far.
-                    plan -> compose (LLM) -> validate
+    challenge_non_answer   the re-ask after a non-answer, worded by label
+    is_semantic_repeat     the deterministic repeat detector the question
+                           writer's loop refuses a repeat with
+    conversation_state     the operator's view of where a conversation stands
 
-Both run against the running transcript, so both can refer back to what the
-candidate actually said. Nodes are explicit and each one can refuse: a graph
-whose every hop is a plain function is the point, because the failure paths are
-the part of this module that has to be right.
+THE BASE QUESTION IS WRITTEN ELSEWHERE. `services/ppi_interview.write_question`
+writes each base question with its rubric in one call. The second graph that
+lived here (`_DELIVER_GRAPH`, `compose_next_question`, the GENERATE and REWORD
+modes, `_substance_preserved`) had no caller on the live path and was reached
+only by the offline eval; it was DELETED on 2026-09-24 with its two prompts
+(`tests/test_dead_interviewer_modes_removed.py`). `challenge_prompt` and
+`interview_challenge.txt` are LIVE, through `challenge_non_answer`, and stay.
 
 THE FOUR THINGS IT MUST NOT BREAK
 ---------------------------------
-Pinned by `tests/test_conversation_flow.py`, and all four survive because the
-graphs change WORDING and never BOOKKEEPING:
+Pinned by `tests/test_conversation_flow.py`:
 
 1. **Scoring and grouping.** A follow-up is answered under the SAME
    `question_key` as the question that produced it, so `answers_by_key` files it
    with that question's other answers. No new key is ever invented.
 2. **Billing and completion.** `charge_completed` fires when
-   `next_question_index >= len(prompts)`. Neither graph extends the prompt list
+   `next_question_index >= len(prompts)`. Nothing here extends the prompt list
    or advances the index.
-3. **Termination.** At most ONE follow-up per base question and MAX_FOLLOW_UPS
-   per conversation, counted in a PERSISTED column. Total turns are
-   `len(prompts) + MAX_FOLLOW_UPS` whatever any model returns.
-4. **What is ASKED is fixed; only how it is SAID varies.** `_DELIVER_GRAPH` may
-   rephrase and may add a bridging clause. It may not change the substance,
-   drop a named technology, or ask a second thing. Every base question is
-   scored against its own stored rubric, so a delivery that quietly changed the
-   question would be graded against a rubric for a question nobody was asked.
-   `_substance_preserved` enforces this and falls back to the stored text.
+3. **Termination.** At most ONE follow-up per base question and a
+   length-scaled budget per conversation, counted in a PERSISTED column.
+4. **Every item is asked.** There is no early close (2026-09-24): a
+   conversation ends when its written questions are exhausted, and
+   `conversation_state` REPORTS coverage without deciding anything.
 
 EVERY FAILURE PATH IS THE PRODUCT'S PREVIOUS BEHAVIOUR
 ------------------------------------------------------
-`next_follow_up` returns None ("ask the next scripted question") and
-`compose_next_question` returns the stored text verbatim. Outage, timeout,
-malformed JSON, a model echoing "null", a response long enough to be a speech.
-A candidate is mid-assessment on a live request, so a provider problem costs the
-adaptivity and nothing else. Unlike `_llm_score`'s old fallback, which invented
-a grade, this one is honest: it is exactly what the product did yesterday.
+`next_follow_up` returns None ("ask the next scripted question") on an outage,
+a timeout, malformed JSON, a model echoing "null" or a response long enough to
+be a speech. A candidate is mid-assessment on a live request, so a provider
+problem costs the adaptivity and nothing else.
 
 TEMPERATURE
 -----------
@@ -85,7 +82,7 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from app.prompts import fragments, registry
-from app.services import agent_loop, answer_quality, llm_router, prompt_cache
+from app.services import agent_loop, answer_quality, llm_router
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +107,8 @@ __all__ = [
     "ConversationState",
     "DimensionEvidence",
     "challenge_non_answer",
-    "compose_next_question",
+    "challenge_prompt",
     "conversation_state",
-    "extension_ceiling",
     "follow_up_budget",
     "is_semantic_repeat",
     "next_follow_up",
@@ -165,33 +161,10 @@ TRANSCRIPT_TURNS = 6
 #: A follow-up longer than this is not a question, it is a speech.
 MAX_FOLLOW_UP_CHARS = 320
 
-#: A delivered base question may gain a bridging clause, not a paragraph. Scaled
-#: off the stored text rather than fixed, because a two-line scenario question
-#: and a one-line factual one have very different honest ceilings.
-DELIVERY_GROWTH_FACTOR = 2.0
-DELIVERY_MIN_CEILING = 400
-
 #: Text in `app/prompts/interview_follow_up_decision.txt`, loaded through the registry so a
 #: wording change is a versioned diff in a prompt file rather than a string
 #: literal in a module of code. What is sent is unchanged.
 _DECIDE_SYSTEM = registry.render("interview_follow_up_decision")
-
-#: Text in `app/prompts/interview_write_question.txt`, loaded through the registry so a
-#: wording change is a versioned diff in a prompt file rather than a string
-#: literal in a module of code. What is sent is unchanged.
-_GENERATE_SYSTEM = registry.render(
-    "interview_write_question",
-    one_question=fragments.ONE_QUESTION,
-    no_evaluation=fragments.NO_EVALUATION,
-    candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
-)
-
-#: Text in `app/prompts/interview_deliver_question.txt`, loaded through the registry so a
-#: wording change is a versioned diff in a prompt file rather than a string
-#: literal in a module of code. What is sent is unchanged.
-_DELIVER_SYSTEM = registry.render(
-    "interview_deliver_question", no_evaluation=fragments.NO_EVALUATION
-)
 
 #: Words that turn an interviewer into a cheerleader. The brief called these out
 #: by name, and they are checked rather than merely forbidden in the prompt: a
@@ -282,23 +255,6 @@ def _tokens(text: str) -> set[str]:
             if specific:
                 found.add(word.lower())
     return found
-
-
-def _substance_preserved(original: str, delivered: str) -> bool:
-    """Whether a delivered question still asks the ORIGINAL question.
-
-    The specific terms are the load-bearing part. A rewrite that dropped
-    'Kafka' would be scored against a rubric for a Kafka question the candidate
-    was never asked, which is the one failure mode that would reach a client as
-    an unexplainable grade.
-    """
-    if not delivered:
-        return False
-    ceiling = max(DELIVERY_MIN_CEILING, int(len(original) * DELIVERY_GROWTH_FACTOR))
-    if len(delivered) > ceiling:
-        return False
-    missing = _tokens(original) - _tokens(delivered)
-    return not missing
 
 
 # ── Graph 1: should we press on that answer? ─────────────────────────────────
@@ -569,207 +525,6 @@ def _build_decide_graph():
     return graph.compile()
 
 
-# ── Graph 2: how do we say the next question? ────────────────────────────────
-
-
-#: How freely the next question may be written, and it is decided by how the
-#: answer will be SCORED. This is the load-bearing distinction in this module.
-#:
-#:   GENERATE  A PPI answer is scored against its COMPETENCY, across all the
-#:             answers filed under it (functional_assessment, the competency
-#:             scorer). No per-question rubric exists, so the question may be
-#:             written fresh from the JD, the resume and the transcript. This is
-#:             where a conversation can actually be adaptive.
-#:
-#:   REWORD    A technical answer is scored against THAT QUESTION'S OWN stored
-#:             prompt and rubric_json (functional_assessment, `_llm_score`).
-#:             Generating a fresh technical question would grade the answer
-#:             against a rubric written for a question nobody was asked, and
-#:             the candidate would receive an unexplainable mark. So the
-#:             substance is pinned and only the phrasing may move.
-MODE_GENERATE = "generate"
-MODE_REWORD = "reword"
-
-
-class _DeliverState(TypedDict, total=False):
-    session: Any
-    question: str            # the stored question, and the fallback
-    mode: str
-    competency: str          # what this turn must probe (generate mode)
-    competency_hint: str
-    jd_excerpt: str
-    resume_excerpt: str
-    asked_before: list[str]
-    transcript: list[dict[str, Any]]
-    # working
-    stop: bool
-    raw: str | None
-    delivered: str
-
-
-async def _deliver_plan(state: _DeliverState) -> _DeliverState:
-    """Decide whether this turn is worth a model call at all."""
-    question = (state.get("question") or "").strip()
-    mode = state.get("mode") or MODE_REWORD
-    if not question and mode == MODE_REWORD:
-        # Nothing to reword and nothing to fall back to.
-        return {"stop": True}
-    if mode == MODE_REWORD and not _recent(state.get("transcript")):
-        # The opening question has nothing to connect to. With an empty
-        # transcript a reword could only paraphrase for its own sake, against
-        # the one question whose stored wording was written to stand alone.
-        return {"stop": True}
-    if mode == MODE_GENERATE and not (state.get("competency") or "").strip():
-        # Generating without a named criterion would produce an answer that no
-        # scorer has anywhere to file.
-        return {"stop": True}
-    return {"stop": False}
-
-
-async def _deliver_compose(state: _DeliverState) -> _DeliverState:
-    """The model call, inside the bounded loop.
-
-    THIS NODE USED TO BE ONE SHOT, AND THAT COST A MEASURABLE AMOUNT OF THE
-    ADAPTIVITY THE WHOLE MODULE EXISTS FOR
-    ----------------------------------------------------------------------
-    `_deliver_validate` below rejects a delivery for four specific, testable
-    reasons: it dropped a named technology, it grew into an essay, it repeated
-    ground already covered, or it is not a question at all. Each rejection fell
-    straight through to the STORED text -- so the failure mode of "the model
-    said 'a message queue' instead of 'Kafka'" was identical to the failure mode
-    of "every provider is down", and the candidate read a scripted line either
-    way while the logs recorded a rejection nobody could act on.
-
-    Every one of those is a defect a model fixes when told. The loop tells it,
-    once, and only then falls back. The criteria are unchanged and still live in
-    `_deliver_validate`, which is also what keeps the LangGraph node's contract
-    intact: it still returns `{"raw": ...}` or `{"stop": True}`, so the graph
-    around it is untouched.
-    """
-    generate = (state.get("mode") or MODE_REWORD) == MODE_GENERATE
-    if generate:
-        system = _GENERATE_SYSTEM
-        # THE FIELDS AND THEIR VALUES ARE UNCHANGED; ONLY THE ORDER MOVED.
-        #
-        # This payload used to open with `competency_to_probe`, which is the
-        # most volatile thing in it, followed by the job description and the
-        # resume, which do not change for the whole of a candidate's
-        # conversation. Chat Completions caches a long IDENTICAL PREFIX and
-        # reports the hit in `usage.prompt_tokens_details.cached_tokens`; a
-        # body that diverges in its first field shares no prefix with anything,
-        # so the JD and the resume were being re-read at full price on every
-        # single turn of every interview.
-        #
-        # `prompt_cache.ordered_fields` writes the stable segments first and
-        # the per-turn segment last. It is not a rewrite of the prompt: the
-        # same six keys carry the same six values, and the only thing a model
-        # sees differently is which order they arrive in.
-        payload = prompt_cache.ordered_fields(
-            {
-                "job_description": {
-                    "job_description": (state.get("jd_excerpt") or "")[:2500]
-                },
-                "candidate": {
-                    "candidate_resume": (state.get("resume_excerpt") or "")[:2500]
-                },
-                "turn": {
-                    "competency_to_probe": state.get("competency"),
-                    "what_it_means": state.get("competency_hint") or "",
-                    "conversation_so_far": _recent(state.get("transcript")),
-                    # Named explicitly so the model can avoid repeating ground.
-                    # Asking the same thing twice is the single most obvious
-                    # tell that an interviewer is not listening.
-                    "already_asked": list(state.get("asked_before") or [])[-20:],
-                },
-            }
-        )
-    else:
-        system = _DELIVER_SYSTEM
-        # No static half worth ordering: both fields change every turn. Written
-        # through the same helper anyway, so a segment added here later lands
-        # in the right place instead of wherever it was typed.
-        payload = prompt_cache.ordered_fields(
-            {
-                "turn": {
-                    "question_to_ask": state.get("question"),
-                    "conversation_so_far": _recent(state.get("transcript")),
-                }
-            }
-        )
-
-    original = state.get("question") or ""
-    asked_before = list(state.get("asked_before") or [])
-
-    async def execute(reflection: str) -> str:
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(payload)},
-        ]
-        if reflection:
-            messages.append({"role": "user", "content": reflection})
-        raw = await llm_router.invoke_llm(
-            "conversation_turn",
-            messages,
-            response_format_json=True,
-            session=state.get("session"),
-        )
-        # Parsed here so a malformed body is a FAILED ATTEMPT the loop can
-        # retry, rather than something `_deliver_validate` silently converts
-        # into the stored text with no second chance.
-        text = _strip_praise(" ".join(str(json.loads(raw).get("question") or "").split()))
-        if not text:
-            raise ValueError("no question in response")
-        return text
-
-    def evaluate(text: str) -> agent_loop.Critique:
-        # Deliberately the SAME rules `_deliver_validate` applies, phrased as
-        # instructions. Duplicating the checks would let the two drift and the
-        # loop would then "fix" something the validator still rejects.
-        if generate:
-            if len(text) > max(DELIVERY_MIN_CEILING, len(original) * 3):
-                return agent_loop.reject(
-                    "ask one short question; the previous attempt was too long"
-                )
-            if is_semantic_repeat(text, asked_before):
-                return agent_loop.reject(
-                    "the candidate has already been asked this; ask about a "
-                    "different aspect of the competency"
-                )
-            return agent_loop.ok()
-        if not _substance_preserved(original, text):
-            missing = sorted(_tokens(original) - _tokens(text))
-            if missing:
-                return agent_loop.reject(
-                    "keep every specific term from the original question; the "
-                    "previous attempt dropped: " + ", ".join(missing)
-                )
-            return agent_loop.reject(
-                "say the same question more briefly; the previous attempt grew "
-                "well beyond the original"
-            )
-        return agent_loop.ok()
-
-    result = await agent_loop.run_loop(
-        name=f"interviewer_deliver_{state.get('mode') or MODE_REWORD}",
-        execute=execute,
-        evaluate=evaluate,
-        # Empty means "no usable delivery", which `_deliver_validate` reads as
-        # the stored question -- exactly the product's previous behaviour.
-        fallback="",
-        max_attempts=agent_loop.INTERACTIVE_ATTEMPTS,
-        deadline_seconds=agent_loop.INTERACTIVE_DEADLINE,
-    )
-    if result.degraded:
-        logger.info(
-            "interviewer.delivery_unavailable mode=%s attempts=%d error=%s reasons=%s",
-            state.get("mode"), result.attempts, result.error, list(result.reasons),
-        )
-        return {"stop": True}
-    # Re-wrapped into the shape `_deliver_validate` already parses, so that node
-    # stays the single place the acceptance rules are enforced.
-    return {"raw": json.dumps({"question": result.value}), "stop": False}
-
-
 # ── Repetition detection ─────────────────────────────────────────────────────
 #
 # DETERMINISTIC, AND IT HAS TO BE. Asking the same thing twice is the single
@@ -778,7 +533,7 @@ async def _deliver_compose(state: _DeliverState) -> _DeliverState:
 # to stored text or to a thinner prompt. A model asked "is this a repeat?" is
 # absent in precisely that moment, and its "no" would be indistinguishable from
 # a real "no". Same reasoning as `answer_classification` settling gibberish
-# without a model call, and as `ppi.conversation_may_close` calling none.
+# without a model call.
 #
 # TWO SIGNALS, both cheap and both explainable:
 #
@@ -902,65 +657,9 @@ def is_semantic_repeat(text: str, asked_before: Sequence[str] | None) -> bool:
     return False
 
 
-async def _deliver_validate(state: _DeliverState) -> _DeliverState:
-    """Fall back to the STORED question on any doubt.
-
-    The stored question is always a correct thing to ask: under REWORD it is the
-    rubric's own question, and under GENERATE it is the question that was
-    pre-generated for this competency from this candidate's resume. So a
-    doubtful result is never worth accepting.
-    """
-    original = state.get("question") or ""
-    if state.get("stop"):
-        return {"delivered": original}
-    try:
-        value = json.loads(state.get("raw") or "").get("question")
-    except Exception:  # noqa: BLE001
-        return {"delivered": original}
-    text = _strip_praise(" ".join(str(value or "").split()))
-    if not text:
-        return {"delivered": original}
-
-    if (state.get("mode") or MODE_REWORD) == MODE_REWORD:
-        if not _substance_preserved(original, text):
-            logger.info("interviewer.delivery_rejected reason=substance")
-            return {"delivered": original}
-        return {"delivered": text}
-
-    # GENERATE mode. There is no original to compare against, so the checks are
-    # that it is a question, that it is not an essay, and that it is not ground
-    # already covered.
-    if len(text) > max(DELIVERY_MIN_CEILING, len(original) * 3):
-        logger.info("interviewer.delivery_rejected reason=length")
-        return {"delivered": original}
-    if is_semantic_repeat(text, state.get("asked_before")):
-        logger.info("interviewer.delivery_rejected reason=repeat")
-        return {"delivered": original}
-    return {"delivered": text}
-
-
-def _deliver_route(state: _DeliverState) -> str:
-    return "validate" if state.get("stop") else "continue"
-
-
-def _build_deliver_graph():
-    graph = StateGraph(_DeliverState)
-    graph.add_node("plan", _deliver_plan)
-    graph.add_node("compose", _deliver_compose)
-    graph.add_node("validate", _deliver_validate)
-    graph.add_edge(START, "plan")
-    graph.add_conditional_edges(
-        "plan", _deliver_route, {"continue": "compose", "validate": "validate"}
-    )
-    graph.add_edge("compose", "validate")
-    graph.add_edge("validate", END)
-    return graph.compile()
-
-
 # Compiled once at import. Building a StateGraph per turn would add latency to a
 # request a candidate is waiting on, for no behavioural difference.
 _DECIDE_GRAPH = _build_decide_graph()
-_DELIVER_GRAPH = _build_deliver_graph()
 
 
 # ── Vaada's explicit conversation state ──────────────────────────────────────
@@ -1002,9 +701,9 @@ CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_LOW = "low"
 
-#: The grade's minimum has been reached. Without it a fluent candidate is
-#: assessed on fewer criteria than a hesitant one and two reports on the same
-#: job stop being comparable (ppi.conversation_may_close says the same).
+#: Every written question has been asked. Since 2026-09-24 the floor IS the
+#: whole plan (every item is asked), so this and `prompts_exhausted` hold
+#: together.
 STOP_FLOOR_REACHED = "floor_reached"
 STOP_EVERY_DIMENSION_COVERED = "every_dimension_covered"
 STOP_NO_PROBE_OUTSTANDING = "no_probe_outstanding"
@@ -1026,10 +725,12 @@ STOP_EVIDENCE_SUFFICIENT = "evidence_sufficient"
 #: literals in SQL and hoping they keep step with six in Python is the drift
 #: `test_runbook_parity` exists to catch elsewhere.
 #:
-#: NOT every member is reachable as an end reason today, and that is
-#: deliberate rather than an oversight. Two are written (`prompts_exhausted`
-#: and `every_dimension_covered`, the assessment's two ways to finish); the
-#: rest are conditions that HOLD at a stop without being the reason for it.
+#: ONE member is written as an end reason since 2026-09-24:
+#: `prompts_exhausted`, because every item is asked and the early close that
+#: wrote `every_dimension_covered` is DELETED. That word stays in the tuple
+#: (and in the CHECK) so a row written while the early close existed still
+#: reads; the rest are conditions that HOLD at a stop without being the
+#: reason for it.
 #: The constraint states the rule that a reason is one of Vaada's named stop
 #: conditions, so recording a different one later is a code change rather than
 #: a production write that a forgotten migration refuses.
@@ -1060,13 +761,6 @@ class DimensionEvidence:
     #: False so a caller that has not marked any keeps the strict reading below
     #: rather than silently getting a weaker one.
     must_have: bool = False
-    #: The question key an extension probe on this item would be filed under.
-    #: EMPTY IS NOT A DEFAULT VALUE, it is "this item cannot be extended": an
-    #: extension needs an existing `candidate_questions` row to answer under, or
-    #: the answer lands on a key `answers_by_key` has never heard of and every
-    #: scorer drops it silently.
-    question_key: str = ""
-
     @property
     def state(self) -> str:
         """One word, resolved in a fixed precedence.
@@ -1098,11 +792,6 @@ class ConversationState:
     total_written: int = 0
     floor: int = 0
     probe_outstanding: bool = False
-    #: How many extension probes this conversation has already spent. Counted
-    #: against `follow_ups_used`, which is already a persisted column, so an
-    #: extension survives a retry and needs no migration.
-    extensions_used: int = 0
-
     def _named(self, state: str) -> tuple[str, ...]:
         return tuple(
             item.dimension for item in self.dimensions if item.state == state
@@ -1203,37 +892,14 @@ class ConversationState:
     def evidence_sufficient(self) -> bool:
         return bool(self.dimensions) and not self.unevidenced
 
-    def extension_targets(self, ceiling: int) -> tuple[DimensionEvidence, ...]:
-        """Which unevidenced items an extension may still probe, bounded.
-
-        `ceiling` is `evidence_graph.extension_ceiling()`, taken from 38.3 and
-        passed in rather than imported, so this stays a pure function and the
-        derivation stays in one place.
-
-        AN ITEM WITH NO `question_key` IS EXCLUDED, not extended under a new
-        key. An extension probe is answered under an EXISTING matrix item's
-        question key so `answers_by_key` files it with that item's other
-        answers; inventing a key would hand every scorer an entry it drops
-        silently, which is the failure the follow-up contract has always
-        prevented.
-        """
-        remaining = max(0, int(ceiling) - int(self.extensions_used))
-        if remaining <= 0:
-            return ()
-        return tuple(
-            item for item in self.unevidenced if item.question_key
-        )[:remaining]
-
     @property
     def stop_conditions(self) -> tuple[str, ...]:
         """Which stop conditions currently hold, in a stable order.
 
-        REPORTING, NOT DECIDING. `ppi.conversation_may_close` remains the only
-        function that decides whether a conversation may end early, including
-        its floor. Two functions that could both end an assessment is one more
-        than the number anybody would remember to keep in step, and the one that
-        got forgotten would be the one that let a candidate be graded on half a
-        matrix.
+        REPORTING, NOT DECIDING. Nothing ends an assessment early: it ends when
+        its written questions are exhausted (2026-09-24, "every item is
+        asked"). A second decider here would be one more than anybody would
+        remember to keep in step.
         """
         met: list[str] = []
         if self.asked >= self.floor:
@@ -1267,7 +933,6 @@ class ConversationState:
             "remaining": len(self.remaining),
             "asked": self.asked,
             "unevidenced": len(self.unevidenced),
-            "extensions_used": self.extensions_used,
             "confidence": self.confidence,
             "stop_conditions": list(self.stop_conditions),
         }
@@ -1280,13 +945,13 @@ def conversation_state(
     total_written: int,
     floor: int,
     probe_outstanding: bool,
-    extensions_used: int = 0,
 ) -> ConversationState:
     """Assemble the state. Pure, deterministic, and calls no model.
 
     A model asked to summarise its own conversation would be absent during an
-    outage and confidently wrong during a degraded one, and this is read on the
-    turn that decides whether a candidate's assessment ends.
+    outage and confidently wrong during a degraded one. REPORTING ONLY since
+    2026-09-24: there is no early close, so nothing reads this to decide
+    whether an assessment ends; it is the operator's log line.
     """
     return ConversationState(
         dimensions=tuple(dimensions),
@@ -1294,33 +959,7 @@ def conversation_state(
         total_written=int(total_written),
         floor=int(floor),
         probe_outstanding=bool(probe_outstanding),
-        extensions_used=int(extensions_used),
     )
-
-
-def extension_ceiling() -> int:
-    """How many probes a conversation may add above Sutra's written plan.
-
-    RE-EXPORTED FROM `evidence_graph`, imported lazily, and NEVER restated as a
-    number here. The derivation and its citation live in one place, and this is
-    the seam the conversation reads it through so a caller does not have to
-    reach into the hiring package for one integer.
-
-    Returns MAX_FOLLOW_UPS when the Runbook data is unreachable. That is the
-    floor this module already uses for a caller that passes no budget, so an
-    unreadable data package costs the conversation its extension and nothing
-    else -- a candidate is mid-assessment, and refusing the turn over a data
-    file would end their assessment rather than shorten it.
-    """
-    from app.services.hiring import evidence_graph  # noqa: PLC0415
-
-    try:
-        return int(evidence_graph.extension_ceiling())
-    except Exception as exc:  # noqa: BLE001 -- see the docstring
-        logger.info(
-            "interviewer.extension_ceiling_unavailable error=%s", type(exc).__name__
-        )
-        return MAX_FOLLOW_UPS
 
 
 # ── Public entry points ──────────────────────────────────────────────────────
@@ -1463,46 +1102,3 @@ async def challenge_non_answer(
     if not text or len(text) > MAX_FOLLOW_UP_CHARS:
         return fallback
     return text
-
-
-async def compose_next_question(
-    *,
-    session: Any,
-    question: str,
-    transcript: list[dict[str, Any]] | None,
-    mode: str = MODE_REWORD,
-    competency: str = "",
-    competency_hint: str = "",
-    jd_excerpt: str = "",
-    resume_excerpt: str = "",
-    asked_before: list[str] | None = None,
-) -> str:
-    """The next base question, written for THIS candidate at THIS point.
-
-    Two modes, and which one applies is decided by how the answer will be
-    SCORED, not by preference. See MODE_GENERATE / MODE_REWORD above: a PPI
-    answer is graded against its competency so the question may be written
-    fresh; a technical answer is graded against its own stored rubric so only
-    the phrasing may move.
-
-    Returns the STORED text whenever the result is unavailable or doubtful, so
-    the worst case is exactly the product's previous behaviour.
-    """
-    try:
-        result = await _DELIVER_GRAPH.ainvoke(
-            {
-                "session": session,
-                "question": question,
-                "transcript": transcript or [],
-                "mode": mode,
-                "competency": competency,
-                "competency_hint": competency_hint,
-                "jd_excerpt": jd_excerpt,
-                "resume_excerpt": resume_excerpt,
-                "asked_before": asked_before or [],
-            }
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.info("interviewer.deliver_graph_failed error=%s", type(exc).__name__)
-        return question
-    return result.get("delivered") or question
