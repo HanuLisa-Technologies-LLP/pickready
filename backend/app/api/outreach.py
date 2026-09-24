@@ -304,7 +304,6 @@ async def preview_outreach(
 
 
 @router.post("/send", response_model=OutreachSendOut)
-@router.post("/send-email", response_model=OutreachSendOut)
 async def send_outreach(
     payload: OutreachSendIn,
     user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),

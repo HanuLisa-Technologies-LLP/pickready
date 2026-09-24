@@ -137,7 +137,7 @@ async def run() -> dict:
         preview.raise_for_status()
         preview_data = preview.json()
         send = await client.post(
-            "/outreach/send-email",
+            "/outreach/send",
             json={
                 "job_id": job_id,
                 "link_ids": [link_id],

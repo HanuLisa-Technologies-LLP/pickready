@@ -554,7 +554,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     """Interactive, so it runs in-request, which is only acceptable because it
     is time-boxed: the request returns rather than hanging."""
     monkeypatch.setattr(web_research, "tavily_api_key", lambda: "test-key")
-    await web_research.reset_breaker()
+    await web_research._clear_breaker()
 
     class _SlowGraph:
         async def ainvoke(self, _state):
@@ -568,7 +568,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     )
     assert result["status"] == "timeout"
     assert result["jobs"] == []
-    await web_research.reset_breaker()
+    await web_research._clear_breaker()
 
 
 def test_the_graph_has_the_four_named_nodes_in_order() -> None:

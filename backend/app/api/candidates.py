@@ -42,7 +42,6 @@ from app.models.user import User
 from app.schemas.candidates import (
     CandidateOut,
     DecisionIn,
-    GrantAccessOut,
     InterviewIn,
     InterviewOut,
     JobLinksOut,
@@ -517,24 +516,6 @@ async def get_candidate_ranking(
         education_comment=payload["education_comment"],
         overall_comment=payload["overall_comment"],
     )
-
-
-@router.post("/links/{link_id}/grant-access", response_model=GrantAccessOut)
-async def grant_access(
-    link_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> GrantAccessOut:
-    """HR grants Hiring Manager access to a reviewed profile (FR-8.1).
-    # ASSUMPTION: gated by SEND_OUTREACH — the HR-exclusive candidate-management
-    # capability — since the PRD matrix has no dedicated grant capability."""
-    link = await _get_link(session, user, link_id)
-    link.hm_access_granted = True
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="hm_access_granted", target_type="job_candidate_link",
-                target_id=link.id)
-    return GrantAccessOut(link_id=link.id)
 
 
 @router.delete("/links/{link_id}", response_model=LinkArchiveOut)

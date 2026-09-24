@@ -35,9 +35,6 @@ COUNT_FIELDS = frozenset(
         "page",
         "page_size",
         "team_review_count",
-        "comparable",
-        "diverged",
-        "rate",
         "scorecard_version",
         "databank_matched",
         "fresh_sourced",
@@ -48,12 +45,12 @@ COUNT_FIELDS = frozenset(
     }
 )
 
-#: The two schemas D8 licenses to carry an assessment number, and what each
-#: one is. Anything else with a numeric field is a leak.
+#: The schema D8 licenses to carry an assessment number, and what it is.
+#: Anything else with a numeric field is a leak. The audited calibration view
+#: (`CalibrationInternalsOut`, `CalibrationDimensionOut`) was deleted with its
+#: route in the Vivekium release (PLAN-p7 WP-B6).
 NUMERIC_SCHEMAS = {
     "DashboardRowOut": "column 4, the Vivekium Score (D8)",
-    "CalibrationDimensionOut": "the audited Super Admin / HR Manager view (D8)",
-    "CalibrationInternalsOut": "the audited Super Admin / HR Manager view (D8)",
 }
 
 
@@ -126,18 +123,17 @@ def test_the_team_review_panel_carries_no_number():
     assert not _numeric_fields(schemas.TeamReviewEntryOut)
 
 
-def test_the_two_artefacts_are_distinguishable_in_the_payload_itself():
-    """spec-doc6 C10, enforced with the type system.
-
-    Each artefact declares its own literal `artifact` discriminator, so a
-    consumer switching on it cannot be handed the other one, and a reader
-    looking at a captured response can tell which they are holding.
-    """
+def test_the_profile_declares_its_artefact_in_the_payload_itself():
+    """spec-doc6 C10, enforced with the type system: a reader looking at a
+    captured response can tell which artefact they are holding."""
     profile = schemas.ReadyPickProfileOut.model_fields["artifact"]
-    calibration = schemas.CalibrationInternalsOut.model_fields["artifact"]
     assert typing.get_args(profile.annotation) == ("ready_pick_profile",)
-    assert typing.get_args(calibration.annotation) == ("calibration_internals",)
-    assert profile.annotation != calibration.annotation
+
+
+def test_no_schema_carries_the_calibration_internals_any_more():
+    """The raw D1-D5 view is deleted, not hidden (PLAN-p7 WP-B6)."""
+    assert not hasattr(schemas, "CalibrationInternalsOut")
+    assert not hasattr(schemas, "CalibrationDimensionOut")
 
 
 def test_the_dashboard_service_type_for_a_delivered_report_cannot_hold_a_score():

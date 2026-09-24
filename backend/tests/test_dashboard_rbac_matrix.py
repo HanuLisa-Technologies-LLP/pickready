@@ -78,7 +78,6 @@ CONTROLS: dict[str, tuple[str, str]] = {
         "POST",
         "/jobs/{job_id}/candidates/{link_id}/integrity-disposition",
     ),
-    "calibration": ("GET", "/jobs/{job_id}/candidates/{link_id}/calibration"),
 }
 
 SCOPES = ("assigned", "unassigned", "other_tenant")
@@ -310,11 +309,11 @@ def _no_permission_cache(monkeypatch):
 async def _reset(state: World) -> None:
     """Put every application back to `applied` with no reviews or dispositions.
 
-    THREE OF THE FIVE CONTROLS MUTATE, and the matrix runs each of them 15
+    THREE OF THE FOUR CONTROLS MUTATE, and the matrix runs each of them 15
     times against the same three rows. Without this, the second stage move
     answers 409 ("already assessment_invited") and the assertion reads as an
     authorization failure when it is an ordering artifact. Resetting between
-    cases is what keeps every one of the 75 assertions about authorization and
+    cases is what keeps every one of the 60 assertions about authorization and
     nothing else.
     """
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
@@ -488,9 +487,10 @@ def test_dashboard_control_matrix(
 
 
 def test_the_case_count_covers_the_whole_table() -> None:
-    """Five roles x five controls x three scopes. Stated so a silently
-    shrunken parametrisation is visible in the diff."""
-    assert len(CASES) == len(MATRIX_ROLES) * len(CONTROLS) * len(SCOPES) == 75
+    """Five roles x four controls x three scopes. Stated so a silently
+    shrunken parametrisation is visible in the diff. It was five controls
+    until the calibration view was deleted (PLAN-p7 WP-B6)."""
+    assert len(CASES) == len(MATRIX_ROLES) * len(CONTROLS) * len(SCOPES) == 60
 
 
 def test_a_recruiter_sees_only_their_assigned_jobs_candidates(
@@ -548,25 +548,3 @@ def test_a_disabled_stage_control_explains_itself(
     assert body["can_move"] is False
     assert body["disabled_reason"]
     assert body["allowed_transitions"] == []
-
-
-def test_the_calibration_view_reaches_exactly_super_admin_and_hr_manager(
-    client: Caller, world: World
-) -> None:
-    """spec-doc6 D8, pinned as a POPULATION rather than as a capability name.
-
-    The route borrows `INTEGRITY_DISPOSITION`, whose §24-derived cell set is
-    the same population D8 names. This test is what makes that borrowing safe:
-    the day the two populations diverge, this fails rather than a screen
-    leaking the engine's internals.
-    """
-    reached = set()
-    for role in MATRIX_ROLES:
-        client.as_role(world, role, world.tenant_a)
-        response = client.http.get(
-            f"{BASE}/jobs/{world.job_assigned}/candidates/"
-            f"{world.link[world.job_assigned]}/calibration"
-        )
-        if response.status_code == 200:
-            reached.add(role)
-    assert reached == {Role.client, Role.hr_manager}
