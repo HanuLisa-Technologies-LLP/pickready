@@ -36,17 +36,33 @@ class FakeTimeline:
 
 
 class FakeAnnotation:
-    """The two calls `summarise` makes on a pyannote `Annotation`."""
+    """The three calls `summarise` makes on a pyannote `Annotation`.
 
-    def __init__(self, speakers: list[str], speech_seconds: float) -> None:
+    `durations` is each label's own total (`Annotation.label_duration`). When
+    a test does not care, every speaker is given an equal share of the speech.
+    """
+
+    def __init__(
+        self,
+        speakers: list[str],
+        speech_seconds: float,
+        durations: dict[str, float] | None = None,
+    ) -> None:
         self._speakers = speakers
         self._speech_seconds = speech_seconds
+        if durations is None:
+            share = speech_seconds / len(speakers) if speakers else 0.0
+            durations = {label: share for label in speakers}
+        self._durations = durations
 
     def labels(self) -> list[str]:
         return list(self._speakers)
 
     def get_timeline(self) -> FakeTimeline:
         return FakeTimeline(self._speech_seconds)
+
+    def label_duration(self, label: str) -> float:
+        return self._durations[label]
 
 
 @dataclass
@@ -60,12 +76,13 @@ class FakeDiarizeOutput:
 class FakePipeline:
     speakers: list[str] = field(default_factory=lambda: ["SPEAKER_00"])
     speech_seconds: float = 9.5
+    durations: dict[str, float] | None = None
     legacy: bool = False
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(self, file: dict[str, Any]) -> Any:
         self.calls.append(file)
-        annotation = FakeAnnotation(self.speakers, self.speech_seconds)
+        annotation = FakeAnnotation(self.speakers, self.speech_seconds, self.durations)
         return annotation if self.legacy else FakeDiarizeOutput(annotation)
 
 

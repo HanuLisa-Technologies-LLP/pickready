@@ -13,7 +13,7 @@ threshold from the environment with a documented default.
 
 | Route | Request | Response |
 |---|---|---|
-| `POST /diarize` | multipart field `chunk`, `audio/webm` or `audio/wav`, at most `MAX_CHUNK_BYTES` | `{"speaker_count": int, "speech_seconds": float}` |
+| `POST /diarize` | multipart field `chunk`, `audio/webm` or `audio/wav`, at most `MAX_CHUNK_BYTES` | `{"speaker_count": int, "speech_seconds": float, "speaker_seconds": [float, ...]}`, each speaker's own total, longest first, one entry per speaker |
 | `POST /ai-text` | `{"text": str}` | `{"probability_ai": float, "model": str, "note": str}` |
 | `GET /health` | | `{"status": "ok" or "degraded", "diarization": ..., "ai_text": ...}` |
 
