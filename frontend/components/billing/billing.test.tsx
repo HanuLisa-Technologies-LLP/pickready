@@ -102,7 +102,7 @@ describe("credit statement", () => {
     expect(screen.getAllByText("Invitation never opened").length).toBe(2);
     expect(container.textContent).not.toContain(LINK_ID);
     expect(container.textContent).not.toContain("expiry");
-    expect(container.textContent).not.toContain("—");
+    expect(container.textContent).not.toContain(String.fromCharCode(8212));
     // One page, no pager.
     expect(screen.queryByRole("button", { name: /older/i })).toBeNull();
   });
