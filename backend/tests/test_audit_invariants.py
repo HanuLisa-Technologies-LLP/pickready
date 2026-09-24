@@ -11,9 +11,10 @@ against a rendered response. `test_the_trail_exists_with_nothing_rendered`
 runs the entire scripted scenario with no view, no route and no serialiser in
 the process at all.
 
-The scripted scenario is spec-doc6 9.3's: create job -> send to hiring manager
--> finalise -> publish -> apply -> shortlist -> flag -> dispose. It asserts
-every expected row exists with the correct previous and new state.
+The scripted scenario is spec-doc6 9.3's, less the approval chain the Vivekium
+release deleted: create job -> edit criteria -> finalise -> publish -> apply
+-> shortlist -> flag -> dispose. It asserts every expected row exists with the
+correct previous and new state.
 
 The recording session is a capture, not a mock. `_RecordingSession` stores the
 real `AuditLog` objects the real `audit.record_action` builds, so what is
@@ -232,7 +233,7 @@ def _migration_source() -> str:
 # ── spec-doc6 9.3: the scripted end-to-end scenario ─────────────────────────
 
 async def _run_the_scenario(session) -> None:
-    """create job -> send -> finalise -> publish -> apply -> shortlist ->
+    """create job -> edit criteria -> finalise -> publish -> apply -> shortlist ->
     flag -> dispose, as audit rows.
 
     Written as the writer calls a real handler would make, so the previous and
@@ -248,24 +249,17 @@ async def _run_the_scenario(session) -> None:
             JobLifecycleState.DRAFT.value,
         ),
         (
-            audit_service.JOB_SENT_TO_HIRING_MANAGER,
-            RECRUITER,
-            Role.recruiter,
-            JobLifecycleState.DRAFT.value,
-            JobLifecycleState.SENT_TO_HIRING_MANAGER.value,
-        ),
-        (
             audit_service.JOB_CRITERIA_EDITED,
             HIRING_MANAGER,
             Role.hiring_manager,
-            JobLifecycleState.SENT_TO_HIRING_MANAGER.value,
-            JobLifecycleState.IN_REVIEW.value,
+            JobLifecycleState.DRAFT.value,
+            JobLifecycleState.DRAFT.value,
         ),
         (
             audit_service.JOB_FINALIZED,
             HIRING_MANAGER,
             Role.hiring_manager,
-            JobLifecycleState.IN_REVIEW.value,
+            JobLifecycleState.DRAFT.value,
             JobLifecycleState.FINALIZED.value,
         ),
         (
@@ -357,9 +351,8 @@ async def _run_the_scenario(session) -> None:
 #: Every row spec-doc6 9.3's scenario must produce.
 EXPECTED_SCENARIO_ROWS: tuple[tuple[str, str | None, str], ...] = (
     (audit_service.JOB_CREATED, None, "DRAFT"),
-    (audit_service.JOB_SENT_TO_HIRING_MANAGER, "DRAFT", "SENT_TO_HIRING_MANAGER"),
-    (audit_service.JOB_CRITERIA_EDITED, "SENT_TO_HIRING_MANAGER", "IN_REVIEW"),
-    (audit_service.JOB_FINALIZED, "IN_REVIEW", "FINALIZED"),
+    (audit_service.JOB_CRITERIA_EDITED, "DRAFT", "DRAFT"),
+    (audit_service.JOB_FINALIZED, "DRAFT", "FINALIZED"),
     (audit_service.JOB_PUBLISHED, "FINALIZED", "PUBLISHED"),
 )
 
@@ -369,7 +362,6 @@ async def test_the_scripted_scenario_writes_every_expected_row(session) -> None:
     actions = [row.action for row in session.rows]
     for action in (
         audit_service.JOB_CREATED,
-        audit_service.JOB_SENT_TO_HIRING_MANAGER,
         audit_service.JOB_CRITERIA_EDITED,
         audit_service.JOB_FINALIZED,
         audit_service.JOB_PUBLISHED,

@@ -293,7 +293,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.services.capabilities import (
-    HIRING_MANAGER_CONTROLLED,
+    SKILL_CAPABILITIES,
     EXCEPTIONAL,
     Invariant,
     invariant_for,
@@ -410,6 +410,10 @@ class Resource:
     #: auto-rejects, so this never blocks reading; it blocks MOVING the
     #: candidate until a human has disposed of the finding (spec-doc6 C7).
     under_integrity_review: bool = False
+    #: The job's skills are LOCKED (D5): a `job_skill_snapshots` row exists,
+    #: because a candidate has started the assessment. Read from the TABLE by
+    #: `load_job_resource`, never from a timestamp (rule 8).
+    skills_locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -562,17 +566,25 @@ def _state_rules(
                 Decision.DENY, "publish_requires_finalized", invariant
             )
 
-    # 26: after finalization the Recruiter may not change the
-    # Hiring-Manager-controlled criteria. The NEVER cells already refuse the
-    # Recruiter outright; this rule catches everyone whose cell is SCOPED,
-    # which is the Hiring Manager editing their OWN finalized definition.
-    # 12 and 22 both say that needs an explicit revision workflow rather than
-    # a silent mutation, and no such workflow exists yet, so it is refused.
-    if capability in HIRING_MANAGER_CONTROLLED and state is not None:
-        if state in _finalized_states() and capability != _finalize_capability():
-            return Authorization(
-                Decision.DENY, "criteria_frozen_after_finalization", invariant
-            )
+    # 22 and 26, as the Vivekium release reads them (owner decision D5): the
+    # skills are the contract every candidate on the job is assessed against,
+    # and they stop being editable at the FIRST CANDIDATE START, not at
+    # finalization. The rule this replaces refused every
+    # Hiring-Manager-controlled capability from FINALIZED onward, which
+    # refused a SWOT edit the moment the skills were first saved, although a
+    # SWOT edit changes no contract, and refused a skills correction on a job
+    # nobody had yet been assessed on.
+    #
+    # Now the LOCK decides, and the lock is a ROW (`job_skill_snapshots`),
+    # loaded into `skills_locked`. Only the capabilities that write the
+    # contract are refused; the SWOT and the job philosophy stay editable,
+    # because the snapshot is immutable whatever happens to the documents it
+    # was drafted from. The Recruiter's NEVER cells refuse them earlier, at
+    # the ceiling, whatever the lock says. Handlers re-check the lock inside
+    # the skills advisory lock too, because a start can land between this
+    # decision and the write.
+    if capability in SKILL_CAPABILITIES and resource.skills_locked:
+        return Authorization(Decision.DENY, "skills_locked", invariant)
 
     # spec-doc6 C7 / claude.md: no flag ever auto-rejects, and a candidate row
     # carrying an open integrity finding does not move until a human has
@@ -596,12 +608,6 @@ def caps_publish_job() -> str:
     from app.services import capabilities
 
     return capabilities.PUBLISH_JOB
-
-
-def _finalize_capability() -> str:
-    from app.services import capabilities
-
-    return capabilities.FINALIZE_ROLE_DEFINITION
 
 
 def _state_gated_capabilities() -> frozenset[str]:
@@ -645,7 +651,10 @@ async def load_job_resource(
     row = (
         await session.execute(
             text(
-                "SELECT id, tenant_id, lifecycle_state FROM jobs WHERE id = :jid"
+                "SELECT j.id, j.tenant_id, j.lifecycle_state, "
+                "EXISTS (SELECT 1 FROM job_skill_snapshots s WHERE s.job_id = j.id) "
+                "AS skills_locked "
+                "FROM jobs j WHERE j.id = :jid"
             ),
             {"jid": str(job_id)},
         )
@@ -660,6 +669,7 @@ async def load_job_resource(
         job_id=row["id"],
         lifecycle_state=row["lifecycle_state"],
         assignments=assignments,
+        skills_locked=bool(row["skills_locked"]),
     )
 
 
@@ -677,6 +687,56 @@ async def load_assignments(
         )
     ).all()
     return frozenset((str(r[0]), str(r[1])) for r in rows)
+
+
+def assignment_role_for(role: Role) -> str | None:
+    """The per-job assignment a SCOPED cell requires of `role`, or None.
+
+    None means the role is never scoped by assignment (the Super Admin and the
+    HR Manager reach every job in their own tenant). Data, read from the one
+    map `decide` itself reads, so "whom does a creator become" and "whom does
+    the scope check look for" can never disagree.
+    """
+    return _ASSIGNMENT_FOR_ROLE.get(role)
+
+
+async def assign_creator(
+    session: AsyncSession,
+    job: Any,
+    user_id: uuid.UUID,
+    role: Role,
+) -> bool:
+    """Make a job's creator its assigned holder of their own role. True when a
+    row was written.
+
+    SCOPED cells (RBAC 24) read `job_assignments` and, until this release,
+    nothing in the product wrote it, so the Recruiter who created a job could
+    not publish it and the Hiring Manager who created one could not edit its
+    skills. Migration 0118 backfilled existing jobs with the same rule; this
+    is the same rule at creation: only the creator, only in the assignment
+    their own role maps to, and never beside an active holder (the partial
+    unique indexes from 0061 would refuse a second one anyway, so the NOT
+    EXISTS turns that refusal into a no-op rather than a 500).
+    """
+    assignment = assignment_role_for(role)
+    if assignment is None:
+        return False
+    written = await session.execute(
+        text(
+            "INSERT INTO job_assignments "
+            "(tenant_id, job_id, user_id, assignment_role, active) "
+            "SELECT :tid, :jid, :uid, :arole, true "
+            "WHERE NOT EXISTS (SELECT 1 FROM job_assignments "
+            "WHERE job_id = :jid AND assignment_role = :arole AND active)"
+        ),
+        {
+            "tid": str(job.tenant_id),
+            "jid": str(job.id),
+            "uid": str(user_id),
+            "arole": assignment,
+        },
+    )
+    return bool(written.rowcount)
 
 
 async def authorize(
@@ -882,17 +942,22 @@ AGENT_CAPABILITIES: dict[str, frozenset[str]] = {
     permissions.AGENT_VAADA: frozenset(),
     permissions.AGENT_MITI: frozenset(),
     permissions.AGENT_SIDDHI: frozenset(),
-    # The pre-existing agents. `job_setup` is the surface that runs framework
-    # generation today, so it carries the same criteria reach as Sutra; the
-    # rest write nothing.
-    permissions.AGENT_JOB_SETUP: frozenset(
+    # The runtime surfaces. Bodha and Sutra no longer share one: the single
+    # `job_setup` surface held the UNION of both agents' reach, so the SWOT
+    # writer could have written skills. Each now executes under its own id
+    # with exactly its own agent's reach (least privilege, Vivekium release).
+    permissions.AGENT_SWOT: frozenset(
+        {
+            capabilities_mod.EDIT_SWOT,
+            capabilities_mod.EDIT_JOB_PHILOSOPHY,
+        }
+    ),
+    permissions.AGENT_SKILLS: frozenset(
         {
             capabilities_mod.EDIT_MUST_HAVE_SKILLS,
             capabilities_mod.EDIT_NICE_TO_HAVE_SKILLS,
             capabilities_mod.EDIT_BEHAVIOURAL_COMPETENCIES,
             capabilities_mod.EDIT_EVALUATION_RUBRICS,
-            capabilities_mod.EDIT_SWOT,
-            capabilities_mod.EDIT_JOB_PHILOSOPHY,
         }
     ),
     permissions.AGENT_RANKING: frozenset(),

@@ -38,7 +38,7 @@ ROUTES: dict[str, str] = {
     TASK_EMAIL: permissions.AGENT_EMAIL,
     TASK_PROBE: permissions.AGENT_PROBE,
     TASK_INTERVIEWER: permissions.AGENT_INTERVIEWER,
-    TASK_JOB_SETUP: permissions.AGENT_JOB_SETUP,
+    TASK_JOB_SETUP: permissions.AGENT_SKILLS,
     TASK_SCORING: permissions.AGENT_SCORING,
 }
 

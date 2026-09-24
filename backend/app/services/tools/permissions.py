@@ -34,7 +34,11 @@ AGENT_PPI_REPORT = "ppi_report"    # services/functional_assessment + ppi
 AGENT_EMAIL = "email"              # services/lifecycle_email
 AGENT_PROBE = "probe"              # services/gap_analysis
 AGENT_INTERVIEWER = "interviewer"  # services/interviewer + ppi_interview
-AGENT_JOB_SETUP = "job_setup"      # services/ppi.generate_framework, swot_analysis
+# Job setup is TWO surfaces, one per agent (Vivekium release). A single
+# `job_setup` surface ran both Bodha and Sutra and therefore held the union of
+# their reach; least privilege is one runtime id per agent.
+AGENT_SWOT = "swot"                # services/swot_analysis (Bodha)
+AGENT_SKILLS = "skills"            # services/hiring/sutra + services/skills (Sutra)
 # Miti, the Tatva Scoring Agent. Split out on 2026-08-23 and NOT merely renamed:
 # scoring previously ran inside the report agent's grant, which meant the scorer
 # held `extract_jd`. The specification's security boundary says Miti "cannot
@@ -49,7 +53,8 @@ AGENTS: tuple[str, ...] = (
     AGENT_EMAIL,
     AGENT_PROBE,
     AGENT_INTERVIEWER,
-    AGENT_JOB_SETUP,
+    AGENT_SWOT,
+    AGENT_SKILLS,
     AGENT_SCORING,
 )
 
@@ -88,7 +93,12 @@ AGENT_TOOLS: dict[str, frozenset[str]] = {
             "validate_output",
         }
     ),
-    AGENT_JOB_SETUP: frozenset({"extract_jd", "retrieve_context", "validate_output"}),
+    # Bodha drafts the SWOT from the JD. Sutra drafts the skills from the JD
+    # and the SAVED SWOT, which it is handed directly rather than retrieving,
+    # so neither holds `retrieve_context`: the old shared grant carried it for
+    # a matrix compiler that no longer exists.
+    AGENT_SWOT: frozenset({"extract_jd", "validate_output"}),
+    AGENT_SKILLS: frozenset({"extract_jd", "validate_output"}),
     # NO `extract_jd`. Miti scores an answer against the LOCKED matrix and its
     # rubric; the JD is what Sutra used to BUILD that matrix, and a scorer that
     # can re-read it can quietly grade against the source rather than against
@@ -192,7 +202,7 @@ def agents_holding(tool: str) -> frozenset[str]:
 
 #: Bodha, the per-job SWOT intake agent.
 AGENT_BODHA = "bodha"
-#: Sutra, the seven-stage matrix compiler.
+#: Sutra, the skills drafter and assessment-context writer.
 AGENT_SUTRA = "sutra"
 #: Yukti, resume-stage pre-screen grading.
 AGENT_YUKTI = "yukti"

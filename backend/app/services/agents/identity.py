@@ -135,7 +135,9 @@ AGENTS: dict[str, Agent] = {
         name="Bodha",
         meaning="Understanding / insight",
         role="Hiring Manager Job SWOT Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        # Its OWN runtime surface: it shared `job_setup` with Sutra, whose
+        # union reach let the SWOT writer hold the skills capabilities.
+        runtime_id=permissions.AGENT_SWOT,
         trigger="Immediately after the recruiter saves the finalised job description.",
         portal=PORTAL_CUSTOMER,
         skills=("collect_swot", "summarize_role_context", "validate_swot_completeness"),
@@ -153,8 +155,8 @@ AGENTS: dict[str, Agent] = {
     SUTRA: Agent(
         name="Sutra",
         meaning="Thread / framework",
-        role="Tatva Matrix Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        role="Skills Agent",
+        runtime_id=permissions.AGENT_SKILLS,
         trigger=(
             "After Bodha completes the SWOT intake. Runs in parallel with Yukti."
         ),

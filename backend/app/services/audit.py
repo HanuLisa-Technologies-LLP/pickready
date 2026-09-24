@@ -212,7 +212,6 @@ AUDIT_ACTOR_ROLE_UNKNOWN = "unknown"
 #: strings.
 JOB_CREATED = "job_created"
 JOB_JD_EDITED = "job_jd_edited"
-JOB_SENT_TO_HIRING_MANAGER = "job_sent_to_hiring_manager"
 JOB_CRITERIA_EDITED = "job_criteria_edited"
 JOB_FINALIZED = "job_finalized"
 JOB_PUBLISHED = "job_published"
@@ -228,7 +227,6 @@ AUTHORIZATION_REFUSED = "authorization_refused"
 ACTIVITY_ACTIONS: tuple[str, ...] = (
     JOB_CREATED,
     JOB_JD_EDITED,
-    JOB_SENT_TO_HIRING_MANAGER,
     JOB_CRITERIA_EDITED,
     JOB_FINALIZED,
     JOB_PUBLISHED,
