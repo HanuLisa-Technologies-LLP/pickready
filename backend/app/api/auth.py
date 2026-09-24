@@ -24,6 +24,7 @@ from app.api.deps import (
     CurrentUser,
     clear_auth_cookies,
     get_current_any,
+    is_user_activity,
     set_auth_cookies,
 )
 from app.core.config import get_settings
@@ -48,7 +49,7 @@ from app.schemas.auth import (
     SessionOut,
     UserOut,
 )
-from app.services import auth_sessions, login_context
+from app.services import auth_sessions, candidate_identity, login_context
 from app.services import firebase_auth
 from app.services import rbac
 from app.services.rate_limit import rate_limit
@@ -96,25 +97,6 @@ def _filter_requested_portal(users: list[User], requested_portal: str | None) ->
 
 def _is_owner_email(email: str | None, owner_email: str) -> bool:
     return bool(email) and (email or "").strip().lower() == (owner_email or "").strip().lower()
-
-
-def _phone_aliases(phone: str | None) -> set[str]:
-    """Return safe equivalent forms for matching legacy local phone values.
-
-    Firebase supplies E.164 (``+919...``), while existing development rows
-    may contain a ten-digit Indian national number.  This is deliberately a
-    lookup aid only; a matched user is normalized to the Firebase E.164 value
-    after successful sign-in.
-    """
-    if not phone:
-        return set()
-    digits = "".join(char for char in phone if char.isdigit())
-    aliases = {phone.strip(), digits}
-    if len(digits) == 10:
-        aliases.update({f"91{digits}", f"+91{digits}"})
-    elif len(digits) == 12 and digits.startswith("91"):
-        aliases.update({digits[2:], f"+{digits}"})
-    return {value for value in aliases if value}
 
 
 async def _finalize_single(
@@ -184,14 +166,18 @@ async def _finalize_single(
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
         user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
-    if identity.provider == "phone" and identity.phone:
-        user.phone = identity.phone
-        user.phone_verified_at = user.phone_verified_at or datetime.now(timezone.utc)
     # Invited staff/candidates activate on first proven login, mirroring
     # `login_context.select_context` (proving identifier ownership is what
     # flips invited -> active).
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    # EVERY candidate sign-in makes sure the person has exactly one candidate
+    # record, through the one resolver. Idempotent: a linked record is returned
+    # untouched. It also repairs an account whose record was erased, and it is
+    # the only place an email match can link a sourced record, and only on an
+    # address Firebase has verified (services/candidate_identity).
+    if user.role == Role.candidate:
+        await candidate_identity.link_on_sign_in(session, user, identity)
     await record_auth_event(
         session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
         tenant_id=user.tenant_id,
@@ -238,11 +224,14 @@ async def firebase_session(
       duplicate candidate row);
     - **multiple matches** -> workspace chooser: contexts + context_token, NO
       cookies, finalized by /auth/select-context;
-    - **no match** -> create a candidate (email and/or phone), candidate cookies.
+    - **no match** -> create a candidate user, then resolve its candidate
+      record through `candidate_identity.link_on_sign_in` (a verified address
+      may claim the oldest unlinked sourced record; an unverified one never
+      does), candidate cookies.
 
-    Google and email/password sign-in are available to every role; phone-only
-    signup remains accepted by the legacy API for existing accounts.
-    Every failure is a clean 401/403/409/422 — never a 500.
+    Google and email/password sign-in are available to every role. Phone
+    sign-in is removed: the provider is refused and nothing matches on a phone
+    number. Every failure is a clean 401/403/409/422, never a 500.
     """
     settings = get_settings()
     # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
@@ -283,8 +272,6 @@ async def firebase_session(
     match_filters = [User.firebase_uid == identity.uid]
     if identity.email:
         match_filters.append(func.lower(User.email) == identity.email.strip().lower())
-    if aliases := _phone_aliases(identity.phone):
-        match_filters.append(User.phone.in_(aliases))
     matched = (await session.execute(
         select(User).where(or_(*match_filters)).order_by(User.created_at, User.id)
     )).scalars().all()
@@ -304,52 +291,34 @@ async def firebase_session(
             )
             raise HTTPException(status_code=403, detail=detail)
     else:
-        # First-ever sign-in for this identity -> a fresh candidate (rule 2:
-        # candidates may use Google / email / phone). Phone-only signup allowed.
+        # First-ever sign-in for this identity -> a fresh candidate user.
         if body.requested_portal not in (None, "candidate"):
             raise HTTPException(
                 status_code=403,
                 detail=f"No {body.requested_portal} workspace is linked to this account",
             )
         firebase_auth.assert_provider_allowed(identity, Role.candidate.value)
-        if not identity.email and not identity.phone:
+        if not identity.email:
             raise HTTPException(
                 status_code=422,
-                detail="An email address or phone number is required to create a candidate profile",
+                detail="An email address is required to create a candidate profile",
             )
         user = User(
-            role=Role.candidate, email=identity.email, phone=identity.phone,
+            role=Role.candidate, email=identity.email,
             full_name=identity.name, tenant_id=None, status=UserStatus.active,
             firebase_uid=identity.uid, auth_providers=[identity.provider],
         )
         session.add(user)
         await session.flush()
-        from app.models.candidate import Candidate
-        # NO CONSENT IS WRITTEN HERE, DELIBERATELY. Vivekium feature 6 asks
-        # for Stage A "at registration, before candidate profile creation
-        # completes", and this is a Firebase sign-in: the candidate has seen
-        # no consent wording and ticked nothing, so a row written here would
-        # record an agreement that never happened. Profile creation COMPLETES
-        # at PUT /portal/me/profile-form, which is where the items are shown,
-        # ticked individually and stamped, and which refuses to report a
-        # profile complete while either of them is outstanding.
-        session.add(Candidate(
-            tenant_id=None, user_id=user.id, email=user.email, phone=user.phone,
-            full_name=user.full_name,
-        ))
+        # The candidate RECORD is resolved in `_finalize_single`, through the
+        # one resolver, like every other candidate sign-in. NO CONSENT IS
+        # WRITTEN on this path: the candidate has seen no consent wording, and
+        # Stage A is stamped where it is shown (PUT /portal/me/profile-form).
         eligible = [user]
 
     # ── Provider gate on every resolved context ─────────────────────────────
     for user in eligible:
         firebase_auth.assert_provider_allowed(identity, user.role.value)
-
-    # Phone numbers are a single-person credential.  A reused phone number in
-    # imported data must never become a cross-person workspace chooser.
-    if identity.provider == "phone" and len(eligible) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="This phone number is linked to multiple accounts. Sign in with email and password.",
-        )
 
     if len(eligible) == 1:
         return await _finalize_single(session, response, eligible[0], identity)
@@ -360,7 +329,7 @@ async def firebase_session(
     # (after this proven verification) mints cookies for the picked user_id.
     contexts = await login_context.build_contexts(session, eligible)
     token = login_context.make_context_token(
-        identity.email or identity.phone, [c.user_id for c in contexts]
+        identity.email, [c.user_id for c in contexts]
     )
     await session.commit()
     return SessionOut(
@@ -458,11 +427,12 @@ async def available_workspaces(
     source = await session.get(User, current.user_id)
     if source is None or source.status == UserStatus.disabled:
         raise HTTPException(status_code=401, detail="Account unavailable")
-    identifier = source.email or source.phone
+    # Email only: a phone number is not an identity this product proves.
+    identifier = source.email
     if not identifier:
         raise HTTPException(
             status_code=409,
-            detail="This account has no verified identifier for workspace switching",
+            detail="This account has no email address for workspace switching",
         )
 
     eligible = login_context.eligible_login_users(
@@ -607,8 +577,12 @@ async def refresh(
         refresh_candidate, get_settings().jwt_secret,
         algorithms=[ALGORITHM], audience=payload["aud"],
     )["jti"]
+    # A refresh renews the idle deadline only when a person caused it. The
+    # common refresh is a poll's 401 being repaired, and renewing on that is
+    # how a forgotten tab used to stay signed in for ever (services/auth_sessions).
     refresh_token = await auth_sessions.rotate(
         payload["sid"], user.id, payload["jti"], new_jti, refresh_candidate,
+        touch=is_user_activity(request),
     )
     if refresh_token is None:
         return _dead_session("Session expired or revoked")

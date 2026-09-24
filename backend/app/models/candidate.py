@@ -137,8 +137,9 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
 
 
 class Profile(Base, UUIDPKMixin, CreatedAtMixin):
-    """The Profile (PRD glossary): resume + 40-aspect responses + employer
-    verification for one candidate. Embedding powers the semantic stage."""
+    """The Profile (PRD glossary): one resume snapshot for one candidate,
+    with the My Profile answers that were true when it was taken
+    (`aspects_json`). Embedding powers the semantic stage."""
     __tablename__ = "profiles"
     __table_args__ = (
         Index("ix_profiles_candidate", "candidate_id"),
@@ -201,19 +202,20 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
 # ── Type of procurement (2026-07-28) ─────────────────────────────────────────
 # Every candidate on a job arrived one of exactly three ways:
 #
-#   applied  : they found the role through Vivekium and applied themselves.
-#   sourced  : they arrived through a third-party link (LinkedIn, Naukri, a
-#              forwarded post) and applied through the public /apply page.
+#   applied  : they applied themselves, from the portal board OR through the
+#              public /apply page a third-party post linked to. Where they
+#              clicked is `application_source`, a separate column.
+#   sourced  : a recruiter put their resume on the job without them applying.
+#              The pipeline has a `sourced` STAGE for the same fact (Gate 5).
 #   databank : the recruitment team bulk-uploaded their resume.
 #
 # This is DISPLAY AND FILTER DATA ONLY. All three types go through identical
 # AI parsing, embedding, matching, ranking and assessment; nothing in this
 # codebase may branch on `source_type` to change how a candidate is processed.
 #
-# claude.md rule 7 ("databank candidates never re-enter the verification /
-# 40-aspect flow") is untouched by this: it is about the EMPLOYER VERIFICATION
-# flow, which keys off `source` (databank | fresh), and the 40 aspects are a
-# profile form now rather than an outreach step. Two different columns, two
+# claude.md rule 7 (databank candidates never re-enter the verification
+# flow) is untouched by this: it is about the EMPLOYER VERIFICATION flow,
+# which keys off `source` (databank | fresh). Two different columns, two
 # different questions.
 #
 # Defined here rather than in models/enums.py so the enum stays local to the
@@ -272,9 +274,11 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
     match_breakdown_json: Mapped[dict | None] = mapped_column(JSONB)
     tier: Mapped[Tier | None] = mapped_column(Enum(Tier, native_enum=False, length=25))
     # ── Hiring pipeline (migration 0018) ─────────────────────────────────────
-    # `application_source` records WHERE the candidate came from (their own
-    # dashboard vs an external job link); the older `source` above records HOW
-    # they reached the job (databank match vs fresh application). They answer
+    # `application_source` records WHERE an applicant clicked: `direct` (the
+    # portal board) or `external_link` (the public /apply page). `sourced` is
+    # still admitted by the CHECK for rows migration 0018 backfilled, and is
+    # never written any more. The older `source` above records HOW they
+    # reached the job (databank match vs fresh application). They answer
     # different questions, so both are kept.
     application_source: Mapped[str] = mapped_column(
         String(20), nullable=False, default="direct", server_default="direct"
@@ -316,18 +320,18 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
 
 @event.listens_for(JobCandidateLink, "before_insert")
 def _derive_source_type(mapper, connection, target: "JobCandidateLink") -> None:
-    """Fill `source_type` from `application_source` when nobody set it.
+    """Fill `source_type` when nobody set it: `databank` for a link minted from
+    the shared Databank pool, otherwise `applied`.
 
-    The candidate portal's apply handler already records `application_source =
-    'sourced'` when the applicant arrived through an externally shared job
-    link, and that flag is exactly the signal the "via external link" marker on
-    the job page is derived from. Reusing it here means a public-link
-    application is tagged `sourced` without every call site having to remember
-    a second field, and it is the same rule migration 0022 backfills history
-    with, so old and new rows agree.
+    IT NO LONGER READS `application_source`, and that was the defect. It used
+    to map `application_source == 'sourced'` (an applicant who arrived through
+    an externally shared link) onto `source_type = sourced`, so a person who
+    READ the job and APPLIED was labelled as a recruiter's upload who never
+    had, the exact confusion Gate 5 exists to prevent. Where somebody clicked
+    is provenance about an applicant; it never makes them a non-applicant.
 
     Only ever UPGRADES the default: an explicit `databank` or `sourced` from a
-    caller is left exactly as given.
+    caller (the recruiter upload paths) is left exactly as given.
     """
     if getattr(target, "source_type", None) not in (None, SOURCE_TYPE_APPLIED):
         return
@@ -335,8 +339,6 @@ def _derive_source_type(mapper, connection, target: "JobCandidateLink") -> None:
     # databank procurement, whatever else is on the row.
     if getattr(target, "source", None) == LinkSource.databank:
         target.source_type = SOURCE_TYPE_DATABANK
-    elif getattr(target, "application_source", None) == "sourced":
-        target.source_type = SOURCE_TYPE_SOURCED
     else:
         target.source_type = SOURCE_TYPE_APPLIED
 

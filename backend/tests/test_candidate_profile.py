@@ -1,6 +1,6 @@
 """My Profile — the unified candidate profile (client decision, 2026-07-27).
 
-The 40 validation aspects are answered ONCE on the candidate's own profile and
+The profile form is answered ONCE on the candidate's own profile and
 snapshotted onto every application, instead of being re-asked inside each job's
 assessment conversation. The candidate also gains a designated MAIN resume that
 can be replaced at any time without rewriting past applications.
@@ -225,7 +225,7 @@ async def test_profile_form_round_trips_and_drops_unknown_input() -> None:
 
 
 async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch) -> None:
-    """A candidate never retypes the 40 answers: applying copies them across."""
+    """A candidate never retypes the profile form: applying copies it across."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
     from app.services import consent_catalog
@@ -235,7 +235,6 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
         return _asset("https://res.cloudinary.com/x/raw/upload/snapshot.pdf")
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -254,7 +253,8 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
                         user=user, session=s,
                     )
                     out = await portal_mod.apply_to_job(
-                        fx.jobs[0], "{}", _upload(), False,
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
 
@@ -271,7 +271,8 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
         assert profile.aspects_json["current_city"] == "Bengaluru"
         assert profile.aspects_json["notice_period"] == "Maximum of 30 Days"
         assert profile.aspects_completed_at is not None
-        # The declaration carries the Databank consent now that aspect 40 is gone.
+        # The declaration carries the Databank consent. It is written when My
+        # Profile is saved, where its wording is shown; the apply never writes it.
         assert cand.consent_databank is True
         # A first upload also becomes the main resume, so My Profile is not
         # empty immediately after applying.
@@ -297,7 +298,6 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
         return _asset(next(urls))
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -309,7 +309,8 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
             async with s.begin():
                 async with superadmin_scope(s):
                     applied = await portal_mod.apply_to_job(
-                        fx.jobs[0], "{}", _upload(), False,
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
                     replaced = await portal_mod.replace_main_resume(
@@ -340,7 +341,8 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
             async with s.begin():
                 async with superadmin_scope(s):
                     again = await portal_mod.apply_to_job(
-                        fx.jobs[1], "{}", None, True,
+                        fx.jobs[1], resume=None, reuse_previous=True,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
                     reused = (await s.execute(

@@ -602,7 +602,7 @@ export interface RankedCandidate {
   has_report: boolean;
   report_ready_at?: string | null;
   /** Where this applicant came from (spec §1.1). */
-  application_source?: "direct" | "sourced" | null;
+  application_source?: "direct" | "sourced" | "external_link" | null;
   /** How this candidate was procured. Applied means they came through
    *  Vivekium themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
@@ -953,7 +953,8 @@ export interface PortalJob {
   id: string;
   title: string;
   department?: string;
-  level?: string;
+  // No `level`: the portal job payload stopped carrying it (the experience
+  // band and the grade answer that question; the column is history only).
   tenant_name?: string;
   company_name?: string;
   /**
@@ -961,6 +962,11 @@ export interface PortalJob {
    * page is hidden, so the portal never links to a URL that 404s.
    */
   company_slug?: string | null;
+  /** True when this candidate already holds an APPLICATION on the job. A
+   *  recruiter's sourced databank entry is not one. */
+  already_applied?: boolean;
+  /** The application's id when `already_applied`, for the Applied Jobs link. */
+  application_id?: string | null;
   /** Present on the single-job read; the list endpoint may omit it. */
   jd?: Record<string, unknown> | null;
   jd_json?: Record<string, unknown> | null;

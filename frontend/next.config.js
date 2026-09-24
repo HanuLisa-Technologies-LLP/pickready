@@ -155,7 +155,7 @@ const nextConfig = {
   // Before this the whole stack shipped exactly ONE security header, HSTS, and
   // nothing else: no framing protection, no MIME-sniffing protection, no
   // referrer policy, no CSP. Notably, this product serves tokenised URLs
-  // (/verify-employment/<token>, /portal/outreach/<token>, an assessment
+  // (/verify-employment/<token>, /keep-profile/<token>, an assessment
   // invite) and with no Referrer-Policy the full URL, token included, was sent
   // in the Referer header to every third party a page linked out to.
   //
@@ -208,7 +208,7 @@ const nextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           // `strict-origin-when-cross-origin` sends the full URL only to the
           // same origin. This is what stops a tokenised verification or
-          // outreach URL leaking in the Referer header to any third party the
+          // invitation URL leaking in the Referer header to any third party the
           // page links out to.
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           // Camera and microphone are NOT disabled: the proctored assessment

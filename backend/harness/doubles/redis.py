@@ -398,10 +398,16 @@ class InMemoryRedis:
 
     async def _eval_rotate(self, keys: list[str], args: list[str]) -> str | None:
         """`auth_sessions._ROTATE`: rotate the refresh token, or hand a racing
-        tab the winner's token while the grace window is still open."""
+        tab the winner's token while the grace window is still open.
+
+        The deadlines move only when ARGV[8] is `'1'` (the refresh came from
+        real user activity); any other value rotates and leaves them alone,
+        exactly as the Lua compares it.
+        """
         session_key, index_key = keys[0], keys[1]
-        user, old_jti, new_jti, new_token, until, now, idle = (
+        user, old_jti, new_jti, new_token, until, now, idle, touch = (
             args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+            args[7],
         )
         owner = await self.hget(session_key, "user")
         if owner is None or owner != user:
@@ -437,8 +443,9 @@ class InMemoryRedis:
             else:
                 return None
 
-        await self.expire(session_key, int(idle))
-        await self.expire(index_key, int(idle))
+        if touch == "1":
+            await self.expire(session_key, int(idle))
+            await self.expire(index_key, int(idle))
         return token
 
 

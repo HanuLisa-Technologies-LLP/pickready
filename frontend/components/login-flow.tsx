@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GoogleMark } from "@/components/google-mark";
+import { ForgotPassword } from "@/components/forgot-password";
 
 export function LoginFlow({
   title,
@@ -283,6 +284,8 @@ export function LoginFlow({
               )}
             </Button>
           </form>
+          {/* Firebase owns recovery: this sends Firebase's own reset email. */}
+          <ForgotPassword initialEmail={email} idPrefix="login" />
         </div>
       )}
 

@@ -11,6 +11,7 @@ import {
   resetRefreshBackoff,
 } from "@/lib/api";
 import { firebaseAuth } from "@/lib/firebase";
+import { installInteractionTracking, markInteraction } from "@/lib/user-activity";
 import type { Capability, Role, User } from "@/lib/types";
 
 /**
@@ -37,16 +38,27 @@ const NAVIGATION_REVALIDATE_MS = 60 * 1000;
 /**
  * Routes that render signed-out. A dead session on one of these is normal and
  * must never trigger a redirect (bouncing /login to /login is a reload loop).
- * Kept in step with PUBLIC_PREFIXES in middleware.ts.
+ *
+ * THE SAME LIST AS `PUBLIC_PREFIXES` IN `proxy.ts`, and
+ * `lib/public-routes.test.ts` compares the two. This one had fallen behind:
+ * the proxy admitted /keep-profile, /employers and the legal pages signed-out,
+ * and then this provider answered the 401 from /auth/me by sending the visitor
+ * to /login anyway. For /keep-profile that is the renewal link in a letter to
+ * somebody who has not signed in for six months, bounced to a password form.
  */
 const PUBLIC_PREFIXES = [
   "/login",
   "/register",
   "/docs",
+  "/about",
+  "/insights",
+  "/privacy",
+  "/terms",
+  "/employers",
   "/join",
   "/apply",
-  "/portal/outreach",
   "/verify-employment",
+  "/keep-profile",
   // Assessment invitation landing. It MUST render signed-out: its whole
   // job is to resolve the token and then send the candidate through
   // /login carrying itself as `next`. Gating it here would bounce them
@@ -169,6 +181,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Only actual interaction renews the idle deadline. A timer or a bare
   // visibility event would keep a forgotten tab signed in indefinitely.
+  //
+  // The server renews only for a request carrying the activity header, which
+  // `lib/api.ts` attaches within a few seconds of a recorded interaction. The
+  // tracking is installed ONCE here, in the capture phase, so the mark lands
+  // before any page handler fires its request. The revalidation below marks
+  // explicitly as well: it runs on an interaction by construction, and its
+  // /auth/me is what keeps a person who is reading or typing (and so sending
+  // no other request) signed in.
+  React.useEffect(() => installInteractionTracking(), []);
+
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     let lastValidation = Date.now();
@@ -177,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const now = Date.now();
       if (now - lastValidation < ACTIVITY_REVALIDATE_MS) return;
       lastValidation = now;
+      markInteraction(now);
       void refreshRef.current();
     };
     window.addEventListener("pointerdown", onActivity);

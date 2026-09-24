@@ -10,6 +10,7 @@
   bypass scope AND writes an audit_log row for the cross-tenant access
   (FR-11.3).
 """
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,8 @@ from app.models.enums import Role
 from app.services import auth_sessions, rbac
 from app.services.audit import audit
 
+logger = logging.getLogger(__name__)
+
 ACCESS_COOKIE = "pr_access"
 REFRESH_COOKIE = "pr_refresh"
 # The refresh cookie is scoped to the auth router so it is never sent to (and
@@ -53,6 +56,23 @@ REFRESH_COOKIE_PATH = "/api/v1/auth"
 # JavaScript access), and its value is a constant. Knowing it grants nothing.
 SESSION_HINT_COOKIE = "pr_session"
 SESSION_HINT_VALUE = "1"
+
+# ── Real user activity ───────────────────────────────────────────────────────
+# The ONE signal that renews the thirty-minute idle deadline. The browser sends
+# `X-User-Activity: 1` only within a few seconds of a real pointer, key or touch
+# event (`frontend/lib/user-activity.ts`), so a request fired by a timer, a
+# poll or a refresh that repairs a poll's 401 carries no header and renews
+# nothing. See `services/auth_sessions` for why "every request renews" was the
+# bug. The value is a constant, not a claim about identity: forging it only
+# keeps the forger's OWN session alive, which a real click would also do.
+ACTIVITY_HEADER = "X-User-Activity"
+ACTIVITY_HEADER_VALUE = "1"
+
+
+def is_user_activity(request) -> bool:
+    """Whether this request says a person just interacted with the page."""
+    return request.headers.get(ACTIVITY_HEADER) == ACTIVITY_HEADER_VALUE
+
 
 # Outreach links stay valid this long (candidate must respond within it).
 # ASSUMPTION: 14 days — PRD sets no explicit outreach-link TTL.
@@ -182,12 +202,58 @@ async def _authenticated_user(
     user = _payload_to_user(payload)
     sid = payload.get("sid")
     if sid:
-        if not await auth_sessions.validate(sid, user.user_id):
+        if not await auth_sessions.validate(
+            sid, user.user_id, touch=is_user_activity(request)
+        ):
             raise _unauthorized("Session expired or revoked")
     elif request.cookies.get(ACCESS_COOKIE) == token:
         # Existing cookie JWTs without a server record cannot be revoked.
         # Explicit Authorization bearer tokens remain for service clients.
         raise _unauthorized("Session expired or revoked")
+    return user
+
+
+async def authenticate_socket_token(
+    token: str | None, audience: str
+) -> CurrentUser | None:
+    """The principal behind a WebSocket's access token, or None.
+
+    The REST dependencies above raise; a socket handler closes with a policy
+    code instead, so this answers None for every refusal. It applies the SAME
+    session rule as `_authenticated_user`, which the conversation socket used
+    to skip: it decoded the JWT and never asked the session store, so a signed
+    out or revoked session kept streaming until the fifteen-minute token ran
+    out. A socket token MUST carry a `sid`: only browsers open sockets, and a
+    browser token without one is the unrevocable legacy cookie the REST path
+    already refuses.
+
+    `touch=False`, always. An open socket is the most passive thing a tab can
+    do, and letting it renew would be the polling bug by another door.
+    """
+    if not token:
+        return None
+    try:
+        payload = decode_token(token, audience=audience)
+    except pyjwt.PyJWTError:
+        return None
+    if payload.get("type") != "access" or not payload.get("sid"):
+        return None
+    try:
+        user = _payload_to_user(payload)
+    except (KeyError, ValueError):
+        return None
+    try:
+        live = await auth_sessions.validate(payload["sid"], user.user_id, touch=False)
+    except HTTPException as exc:
+        # The session store could not answer (503). A socket REFUSES rather
+        # than falling open, the posture every REST route takes; logged so an
+        # outage is not read as a wave of signed-out users.
+        logger.warning(
+            "socket_session_check_unavailable status=%s", exc.status_code
+        )
+        return None
+    if not live:
+        return None
     return user
 
 

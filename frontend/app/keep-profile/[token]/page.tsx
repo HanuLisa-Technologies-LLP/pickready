@@ -21,6 +21,7 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiPost, ApiError } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/validation-errors";
 
 interface RenewedPayload {
   renewed: boolean;
@@ -47,9 +48,11 @@ export default function KeepProfilePage() {
       // The server's own sentence, verbatim. A 404 here deliberately does not
       // distinguish an expired link from one that never existed, so the page
       // must not invent a distinction either.
+      // `apiErrorMessage` reads the server's `detail`; `ApiError.message` is
+      // the transport's "API error 404", which is what this page used to show.
       setError(
         err instanceof ApiError
-          ? err.message
+          ? apiErrorMessage(err)
           : "This link could not be opened right now. Please try again."
       );
     } finally {

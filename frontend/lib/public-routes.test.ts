@@ -173,3 +173,27 @@ describe("llms.txt", () => {
     }
   });
 });
+
+/**
+ * The client half of the same allowlist.
+ *
+ * `lib/auth-context.tsx` redirects to /login when /auth/me answers 401 on any
+ * path it does not recognise as public. So a route the proxy admits signed-out
+ * and the provider does not is still a redirect to a sign-in form, one render
+ * later. /keep-profile, the renewal link in a letter to somebody who has not
+ * signed in for months, was exactly that.
+ */
+describe("the auth provider and the proxy agree about what is public", () => {
+  function providerPrefixes(): string[] {
+    const source = readFileSync(resolve(here, "auth-context.tsx"), "utf8");
+    const start = source.indexOf("const PUBLIC_PREFIXES");
+    const block = source.slice(start, source.indexOf("];", start));
+    return [...block.matchAll(/"(\/[^"]*)"/g)].map((m) => m[1]);
+  }
+
+  it("holds exactly the same prefixes", () => {
+    const provider = providerPrefixes();
+    expect(provider.length).toBeGreaterThan(3);
+    expect([...provider].sort()).toEqual([...publicPrefixes()].sort());
+  });
+});

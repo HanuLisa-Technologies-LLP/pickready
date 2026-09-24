@@ -514,7 +514,6 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     # every handler filters by the exact token row: see `get_public_db`.
     "/api/v1/companies/invites/{token}": "an invite token names one pending invitation.",
     "/api/v2/companies/invites/{token}": "the same handler under the v2 prefix.",
-    "/api/v1/portal/outreach/{token}": "an outreach token names one candidate link.",
     "/api/v1/portal/consent/renew": (
         "the one-click link in the six-month consent renewal letter (feature "
         "8). The token is the authorization: single use, because renewal "

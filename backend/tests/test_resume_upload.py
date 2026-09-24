@@ -187,7 +187,6 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -221,17 +220,15 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
                            audience=AUDIENCE_CANDIDATE)
 
         # ── Apply to two DIFFERENT jobs; each must mint a new Profile ──
-        import json as _json
-
-        aspects = _json.dumps({str(n): f"a{n}" for n in range(5, 41)})
         profile_ids: list[uuid.UUID] = []
         for jid in jobs[1:]:
             async with factory() as s:
                 async with s.begin():
                     async with superadmin_scope(s):
-                        # New signature: (job_id, aspects, resume, reuse_previous, user, session)
+                        # Keyword-only after job_id (api/portal.apply_to_job).
                         out = await portal_mod.apply_to_job(
-                            jid, aspects, _upload(), False,
+                            jid, resume=_upload(), reuse_previous=False,
+                            application_source="direct",
                             user=user, session=s, validation=_VALIDATION,
                         )
                         link = (await s.execute(

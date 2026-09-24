@@ -18,6 +18,8 @@
 // silent (claude.md, 2026-09-09); a chat that quietly stopped updating would be
 // indistinguishable from a chat nobody had written in.
 
+import * as React from "react";
+
 import { API_BASE, apiGet, apiPost, apiUpload, tryRefresh } from "./api";
 
 export interface Attachment {
@@ -58,10 +60,110 @@ export const openCandidateConversation = (candidateId: string) =>
 export const listMessages = (conversationId: string, limit = 50) =>
   apiGet<Message[]>(`/conversations/${conversationId}/messages?limit=${limit}`);
 
-export const listMessagesBefore = (conversationId: string, before: string) =>
+/**
+ * The page before `oldest`. The server pages on the pair (created_at, id), so
+ * two messages sharing a timestamp are neither skipped nor repeated; sending
+ * the timestamp alone would drop whichever of them sat on the page boundary.
+ */
+export const listMessagesBefore = (
+  conversationId: string,
+  before: string,
+  beforeId?: string,
+) =>
   apiGet<Message[]>(
-    `/conversations/${conversationId}/messages?before=${encodeURIComponent(before)}`,
+    `/conversations/${conversationId}/messages?${pageQuery(before, beforeId)}`,
   );
+
+/** How many messages one history request returns (`DEFAULT_PAGE` server-side).
+ *  A page SHORTER than this is the start of the thread. */
+export const MESSAGE_PAGE_SIZE = 50;
+
+function pageQuery(before?: string, beforeId?: string): string {
+  const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) });
+  if (before) params.set("before", before);
+  if (before && beforeId) params.set("before_id", beforeId);
+  return params.toString();
+}
+
+// ── The candidate's side ─────────────────────────────────────────────────────
+//
+// A second set of routes under /conversations/me, never the recruiter's with a
+// different cookie: a candidate has no tenant, and the server resolves the
+// thread by the candidate id from their own session.
+
+/** One thread as the candidate sees it. `unread` counts the company's messages
+ *  the candidate has not opened yet; it goes down when they read the thread. */
+export interface CandidateThread {
+  id: string;
+  subject: string;
+  status: string;
+  company_name: string | null;
+  last_message_at: string | null;
+  unread: number;
+}
+
+export const listMyThreads = () =>
+  apiGet<CandidateThread[]>("/conversations/me");
+
+export const listMyMessages = (
+  conversationId: string,
+  oldest?: { created_at: string; id: string },
+) =>
+  apiGet<Message[]>(
+    `/conversations/me/${conversationId}/messages?${pageQuery(
+      oldest?.created_at,
+      oldest?.id,
+    )}`,
+  );
+
+export const sendMyReply = (
+  conversationId: string,
+  body: string,
+  clientToken: string,
+) =>
+  apiPost<Message>(`/conversations/me/${conversationId}/messages`, {
+    body,
+    client_token: clientToken,
+  });
+
+export const markMyThreadRead = (conversationId: string) =>
+  apiPost<{ ok: boolean }>(`/conversations/me/${conversationId}/read`);
+
+export const myUnreadCount = () =>
+  apiGet<{ unread_count: number }>("/conversations/me/unread");
+
+/**
+ * Tell the navigation badge that the candidate just read something.
+ *
+ * The badge lives in the portal layout and the thread in the page beneath it;
+ * a window event is the whole coupling between them, so neither imports the
+ * other and a page with no badge on screen costs nothing.
+ */
+export const UNREAD_CHANGED_EVENT = "vivekium:messages-unread-changed";
+
+export function announceUnreadChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(UNREAD_CHANGED_EVENT));
+}
+
+/**
+ * Two slices of one thread, as one ordered list with no repeats.
+ *
+ * Used when a page of older messages is prepended and when a refetch of the
+ * newest page lands on top of history already loaded. Ordered exactly as the
+ * server pages, (created_at, id), so a merge can never reorder what a later
+ * "load earlier" will fetch.
+ */
+export function mergeMessages(current: Message[], incoming: Message[]): Message[] {
+  const byId = new Map<string, Message>();
+  for (const message of current) byId.set(message.id, message);
+  // The incoming copy wins: a delivery status can move after the first read.
+  for (const message of incoming) byId.set(message.id, message);
+  const order = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  return [...byId.values()].sort(
+    (a, b) => order(a.created_at, b.created_at) || order(a.id, b.id),
+  );
+}
 
 export const sendMessage = (
   conversationId: string,
@@ -103,6 +205,42 @@ export function newClientToken(): string {
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `c-${random}`.slice(0, 64);
+}
+
+/**
+ * The idempotency token for ONE composed message.
+ *
+ * WHY IT IS NOT MINTED PER ATTEMPT. The server collapses a repeated token into
+ * the message it already stored, which is the whole defence against a retry
+ * after a lost response becoming a second message. A fresh token per click
+ * defeated it: the retry arrived as a new message with identical words.
+ *
+ * So the token belongs to the DRAFT. It survives any number of retries of the
+ * same words, and it rotates in exactly two cases: the send was confirmed (the
+ * next draft is a new message), or the words changed (the server answers 409
+ * when one token arrives with different words, because silently returning the
+ * earlier message would drop the edit).
+ */
+export class ComposerToken {
+  private token: string | null = null;
+
+  /** The token for the draft as it stands; minted on first use. */
+  current(): string {
+    if (this.token === null) this.token = newClientToken();
+    return this.token;
+  }
+
+  /** The draft is a different message now. */
+  rotate(): void {
+    this.token = null;
+  }
+}
+
+/** A `ComposerToken` that lives as long as the component holding it. */
+export function useComposerToken(): ComposerToken {
+  const ref = React.useRef<ComposerToken | null>(null);
+  if (ref.current === null) ref.current = new ComposerToken();
+  return ref.current;
 }
 
 /** Bytes, spelled for a person. Never a raw byte count on screen. */

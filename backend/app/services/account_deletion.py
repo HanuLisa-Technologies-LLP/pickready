@@ -28,6 +28,11 @@ What lives here is the part a screen must not be allowed to author for itself:
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 #: What the candidate must type, exactly, before the route will act. ASCII and
 #: uppercase so there is nothing to get wrong about locale, accent or case
 #: folding: the comparison is `==` against this string and nothing else.
@@ -98,3 +103,51 @@ def phrase_matches(typed: str | None) -> bool:
     accept "delete" from an autocorrect that had no intent behind it.
     """
     return typed is not None and typed.strip() == CONFIRMATION_PHRASE
+
+
+# ── The sign-in identity (2026-09-24) ────────────────────────────────────────
+#
+# Deleting the profile deletes the Firebase sign-in identity too, inline and
+# before the commit (`api/portal.delete_my_profile` says why). These are the
+# two sentences that path can answer with, and the one question it asks first.
+
+#: The 503 when Firebase could not confirm the identity is gone. The whole
+#: transaction rolls back when this is raised, so "nothing was deleted" is
+#: literally true, and saying so is what makes "try again" safe advice.
+IDENTITY_DELETION_FAILED_MESSAGE = (
+    "We could not remove your sign-in. Nothing was deleted, please try again."
+)
+
+#: What the response says when the sign-in was deliberately KEPT because the
+#: same address is also a staff sign-in on the platform. The candidate profile
+#: is erased either way; only the door is left, because it is not only theirs.
+SHARED_IDENTITY_NOTE = (
+    "Your candidate profile has been deleted. Your sign-in was kept because "
+    "the same email address is also used to sign in to an employer account on "
+    "this platform."
+)
+
+
+async def sign_in_identity_shared(
+    session: "AsyncSession", *, firebase_uid: str, email: str | None
+) -> bool:
+    """Whether another `users` row still signs in through this identity.
+
+    Asked AFTER `cascade_erasure` has deleted the candidate's own users row, in
+    the same transaction, so any row that remains is another account: one
+    bound to the same Firebase uid, or one whose address matches, which is how
+    an unbound staff invitation is resolved at its first sign-in. Either one
+    means the Firebase identity is a door into a staff workspace, and deleting
+    it would lock that account out.
+    """
+    from sqlalchemy import func, or_, select
+
+    from app.models.user import User
+
+    conditions = [User.firebase_uid == firebase_uid]
+    if email and email.strip():
+        conditions.append(func.lower(User.email) == email.strip().lower())
+    remaining = (
+        await session.execute(select(User.id).where(or_(*conditions)).limit(1))
+    ).first()
+    return remaining is not None

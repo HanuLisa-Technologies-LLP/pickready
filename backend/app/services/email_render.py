@@ -35,14 +35,6 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{ttl_minutes}} minutes.\n\n"
         "If you did not request this code, you can ignore this email.",
     ),
-    "outreach": (
-        "Information request regarding a role at {{company_name}}",
-        "Dear {{candidate_name}},\n\n"
-        "We are considering you for a role at {{company_name}}. Please complete "
-        "your candidate page (personal details, updated resume, and "
-        "questionnaire) using this link:\n\n{{outreach_link}}\n\n"
-        "Regards,\n{{company_name}} People Team",
-    ),
     # AI/manual outreach is composed and approved in the UI before it reaches
     # the worker. Keep a built-in pass-through so delivery remains available
     # even before a tenant-specific template row has been created.
@@ -155,8 +147,11 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # invariant is enforced by tests/test_email_delivery.py, which walks every
     # literal name passed to pickready.send_email in backend/app.
     #
-    # api/verification.py sends this exact name; the "outreach" entry above
-    # kept the older name and was never reached.
+    # RETIRING with the questionnaire outreach form (2026-09-24). Its one sender
+    # is `api/verification.send_outreach`, which WP6-C deletes; this entry
+    # goes in the same merge, because `test_email_delivery` requires every
+    # name a sender still dispatches to have a default. The older "outreach"
+    # entry, which nothing ever sent, is already gone.
     "candidate_outreach": (
         "Information request regarding the {{job_title}} role at {{company_name}}",
         "Dear {{candidate_name}},\n\n"

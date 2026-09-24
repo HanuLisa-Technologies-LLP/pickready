@@ -2,7 +2,7 @@
 
 NOTHING ASSERTED THIS BEFORE. The stamp feeds the clock that erases dormant
 profiles, and the only thing that wrote it was a private helper inside
-`api/portal`, reached only through `_candidate_for_user`. There was no test
+`api/portal`, reached only through the portal's own resolver. There was no test
 that it was written at all, on any path, so the failure mode was silent in both
 directions: a stamp that stopped being written would have erased active people,
 and a stamp written too eagerly would have made the inactivity rule
@@ -61,18 +61,78 @@ def test_the_debounce_holds_for_a_day_and_no_longer() -> None:
     assert stale.last_engagement_at == NOW
 
 
-def test_the_portal_chokepoint_still_records_it() -> None:
+@pytest.mark.asyncio
+async def test_the_candidate_chokepoint_still_records_it() -> None:
     """The behaviour the move must not have changed.
 
-    `api/portal._record_engagement` is what every authenticated candidate
-    route resolves through, and it now delegates. If it ever stops calling the
-    service, every signed-in candidate silently stops counting as active.
+    Every authenticated candidate route resolves its record through
+    `candidate_identity.require_candidate`, and that is where the stamp lives
+    now (it replaced the portal's private resolver, 2026-09-24). If it ever
+    stops stamping, every signed-in candidate silently stops counting as
+    active and the dormancy sweep erases people who are using the product.
+    Read back from a SECOND session, so an uncommitted stamp cannot pass.
     """
-    from app.api import portal
+    from app.services import candidate_identity
 
-    row = _Row()
-    portal._record_engagement(row)  # type: ignore[arg-type]
-    assert row.last_engagement_at is not None
+    engine, factory = await _factory_or_skip()
+    user_id = uuid.uuid4()
+    candidate_id = uuid.uuid4()
+    try:
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        text(
+                            "INSERT INTO users (id, email, role, status, "
+                            "full_name) VALUES (:u, :e, 'candidate', 'active', "
+                            "'Chokepoint Person')"
+                        ),
+                        {"u": str(user_id), "e": f"{user_id}@engage.test"},
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO candidates (id, full_name, email, "
+                            "user_id, consent_databank) VALUES (:c, "
+                            "'Chokepoint Person', :e, :u, false)"
+                        ),
+                        {"c": str(candidate_id), "e": f"{user_id}@engage.test",
+                         "u": str(user_id)},
+                    )
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    resolved = await candidate_identity.require_candidate(
+                        session, user_id
+                    )
+                    assert resolved.id == candidate_id
+
+        async with factory() as session:
+            async with superadmin_scope(session):
+                stamped = (
+                    await session.execute(
+                        text(
+                            "SELECT last_engagement_at FROM candidates "
+                            "WHERE id = :c"
+                        ),
+                        {"c": str(candidate_id)},
+                    )
+                ).scalar_one()
+        assert stamped is not None, (
+            "resolving a signed-in candidate no longer records engagement"
+        )
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        text("DELETE FROM candidates WHERE id = :c"),
+                        {"c": str(candidate_id)},
+                    )
+                    await session.execute(
+                        text("DELETE FROM users WHERE id = :u"),
+                        {"u": str(user_id)},
+                    )
+        await engine.dispose()
 
 
 async def _factory_or_skip():
