@@ -53,11 +53,6 @@ BACKEND_APP = pathlib.Path(_app_package.__file__).resolve().parent
 #: Keys whose data has no tenant, with the reason. Every entry is a deliberate
 #: platform-wide or public surface, not an oversight.
 GLOBAL_BY_DESIGN: dict[str, str] = {
-    "api/billing.py": (
-        "the subscription plan catalogue is the platform's own price list; it "
-        "is identical for every customer and is read by the unauthenticated "
-        "checkout config"
-    ),
     "api/jobs.py": (
         "the public application page at /apply/{job_id}. It is served with no "
         "authentication by design, so there is no tenant to scope it to and "
@@ -212,7 +207,6 @@ def test_the_ledgers_do_not_grow() -> None:
     swapping one entry for another is as visible as adding one.
     """
     assert set(GLOBAL_BY_DESIGN) == {
-        "api/billing.py",
         "api/jobs.py",
         "services/erasure.py",
     }

@@ -878,7 +878,8 @@ class Settings(BaseSettings):
     voyage_rerank_2_5: str = ""
 
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
-    # in the browser and reads it from GET /billing/config); the Key Secret and
+    # in the browser and receives it on the subscribe and purchase responses);
+    # the Key Secret and
     # the webhook secret are server-side only and never reach a response body,
     # a log line, or the frontend bundle.
     razorpay_key_id: str = ""

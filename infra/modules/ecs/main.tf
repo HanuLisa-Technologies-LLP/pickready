@@ -172,8 +172,8 @@ resource "aws_iam_role_policy" "execution" {
 # ONLY THE SERVICES THAT ACTUALLY MOUNT A SECRET GET AN ATTACHMENT.
 #
 # `frontend` declares `secrets = {}` on purpose: the Razorpay key id it needs is
-# public and is fetched at runtime from `GET /billing/config`, which is why it
-# was never a `NEXT_PUBLIC_` build variable. Attaching a Secrets Manager policy
+# public and arrives at runtime on the API's own subscribe and purchase
+# responses, which is why it was never a `NEXT_PUBLIC_` build variable. Attaching a Secrets Manager policy
 # to it anyway would be a grant nothing uses, which is the same shape as the
 # GCP-phase finding this module exists to design out.
 #

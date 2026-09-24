@@ -9,12 +9,10 @@ a float, which is the exact failure mode the sub-unit system exists to prevent.
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
-    "BillingConfigOut",
     "CreditLotOut",
     "BillingOverviewOut",
     "CheckoutVerifyIn",
@@ -50,21 +48,6 @@ class PlanOut(BaseModel):
     #: without one would open Checkout and immediately fail, so the UI disables
     #: it instead of pretending.
     checkout_ready: bool
-
-
-class BillingConfigOut(BaseModel):
-    """What the browser needs to open Razorpay Checkout.
-
-    The Key ID is public by design — Razorpay's own client library takes it in
-    the page. It is served from here rather than inlined as a NEXT_PUBLIC_ build
-    variable so there is exactly one source of truth and the frontend container
-    never needs the .env at all.
-    """
-
-    razorpay_key_id: str | None
-    configured: bool
-    currency: Literal["INR"] = "INR"
-    plans: list[PlanOut]
 
 
 class SubscribeIn(BaseModel):
