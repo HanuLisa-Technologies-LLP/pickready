@@ -53,7 +53,6 @@ from app.api.deps import (
 )
 from app.core.db import superadmin_scope, tenant_scope
 from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_OWNER, AUDIENCE_ORG
-from app.api.assessments import FRAMEWORK_PREPARING
 from app.main import app
 from app.models.enums import Role
 from app.services import application_validation
@@ -414,6 +413,15 @@ def _read_another_tenants_job(app_client: Application, ctx: ScenarioContext) -> 
         f"{V1}/jobs/{foreign}/candidates?page=1",
     )
     ctx.stage("cross_tenant_read_attempted")
+
+
+#: The sentence the deleted framework route answered when it believed the
+#: generator never landed. The route and its constant went with the Tatva matrix
+#: editor (Vivekium release); the harness package rewrites these steps onto the
+#: Skills step, and until then the steps below exercise routes that answer 404.
+FRAMEWORK_PREPARING = (
+    "We are still preparing the evaluation criteria for this role."
+)
 
 
 def _read_framework(app_client: Application, ctx: ScenarioContext) -> None:
