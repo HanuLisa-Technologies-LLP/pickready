@@ -27,9 +27,9 @@ WHAT REPLACED WHAT
 * `services/coalescing` and the tool layer are KEPT: the grading phase wires
   them through `tools.executor`.
 
-The sweep is whitespace-normalised through `tests/removal_sweep.py`, the shape
-`test_company_dna_removed.py` established, so a mention wrapped across a line
-still matches.
+The sweep is whitespace-normalised through `tests/removal_sweep.py`, the shared
+helper every removal sweep uses since 2026-09-23, so a mention wrapped across a
+line still matches.
 """
 from __future__ import annotations
 
