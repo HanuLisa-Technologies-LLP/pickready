@@ -48,8 +48,9 @@ from the locked contract) of the ASSESSED skills in the bucket.
 - Behavioural is ONE judgement across every substantive answer about the skill
   against `items.BEHAVIOURAL_STANDARD`.
 - `behavioral_assessment` lost its grading caller; it keeps question writing.
-- The prompt is `assessment_answer_scoring` version 2: it now carries
-  `fragments.CANDIDATE_TEXT_IS_DATA`.
+- The prompt is `assessment_answer_scoring` version 3: version 2 added
+  `fragments.CANDIDATE_TEXT_IS_DATA`, version 3 tells the judge what the
+  related-passages field is (see below).
 
 ### THREE STATUSES, AND THE LAST TWO ARE NEVER CONFLATED
 
@@ -89,7 +90,7 @@ from the locked contract) of the ASSESSED skills in the bucket.
 scoring.** `miti.live.load_contract` calls
 `assessment_contract.load_contract_for_conversation`, logs
 `assessment_contract.log_digest("miti", ...)` (the same line the conversation
-logs as `stage=vaada`), and runs `pipeline.contract_gate`: locked with a
+logs as `stage=vaada`), and runs `hiring.gates.contract_gate`: locked with a
 `locked_at`, non-empty, at least one Must-have and one Behavioural skill. A
 digest mismatch (`ContractIntegrityError`) or a started conversation with no
 binding (`ContractNotBound`) surfaces as `ScorecardUnavailable` BEFORE the item
@@ -136,3 +137,144 @@ module in the package that names the router (`_item_invoke` for the item
 stage, `_invoke` for the evaluators), inside functions, which
 `test_miti_pipeline.test_no_miti_module_reaches_a_model_except_through_the_injected_invoke`
 keeps true.
+
+### G1 IS STATED ONCE, IN `hiring/gates.py`
+
+`contract_gate` lives beside G2 to G4 and `run_gate(G1)` dispatches to it. The
+Miti package defines no gate of its own, asserted by AST
+(`test_miti_live_contracts.test_g1_for_grading_is_the_gates_modules_contract_gate`).
+`scorecard_gate`, the frozen-MATRIX form of G1, is marked RETIRING in the same
+module: grading no longer asks it and its one remaining caller is
+`hiring.scorecard.require_frozen_matrix`, reached by question generation until
+the assessment phase moves that onto the contract. PLAN-p1 section 7 deletes
+both together with the scorecard read half.
+
+### ONE PREDICATE FOR "FAILED MUST-HAVE"
+
+`grades.must_have_failed(skill_grades)` is the definition (PLAN-p5 3.2.5):
+graded or unanswered AND Not Matching. The aggregate's flag and
+`MitiResult.must_have_failed` both call it; the report column
+`functional_skills_reports.must_have_failed` (Phase 2's migration) must be
+written from it, and the ranking blend reads that column plus
+`caps.must_have_ceiling()`, never a second number.
+
+### RELATED PASSAGES REACH THE JUDGE THROUGH AN INJECTED READER, NEVER A SCORE
+
+`items.evaluate_skills(..., passages=)` takes a `PassageReader`, the exact
+signature of `evidence_retrieval.transcript_passages_for_skill` (wip/p5-e).
+Asked once per Must-have or Behavioural skill (`items.RETRIEVED_BUCKETS`),
+lazily, only when there is something substantive to judge, with the skill's
+OWN answer message ids excluded, so the judge is never shown the answer it is
+grading dressed up as corroboration.
+
+- **The passages ride in their own payload field**
+  (`items.RELATED_KEY = "other_answers_bearing_on_this_skill"`), never merged
+  into `answer`. `assessment_answer_scoring` is version 3 and tells the judge
+  the field is context and must not raise a score by itself.
+- **Every skill records `retrieval`**: `used`, `degraded` (with the class
+  name) or `not_requested` (no reader supplied, or a Nice-to-have). None is an
+  explicit caller choice, never "retrieval found nothing".
+- **A degraded read never moves or fails a grade**, pinned by comparing the
+  degraded run with a run that had no reader. A WIRING refusal from the reader
+  (a tool the agent does not hold) propagates, because a caller that never
+  retrieves is a defect.
+- `miti/items.py` imports neither `services.rag` nor `evidence_retrieval`
+  (AST test), so `test_retrieval_scoring_isolation` holds by construction.
+- **NOT WIRED ON THE LIVE PATH YET.** `evidence_retrieval` is not on this
+  branch; WP5-D passes it (see the interface below).
+
+### PROVENANCE COMES FROM WHAT RETURNED, AND A WITHHELD OVERALL HAS NO NUMBER
+
+- `MitiResult.model_calls()` returns `(task type, prompt)` for every model
+  call that produced a usable value, from `items.MODEL_PROMPT_FOR_METHOD`
+  (objective and unanswered items made no call; a failed judgement produced
+  nothing) plus the five evaluators when at least one returned a usable band.
+  The report's `model_id` / `prompt_version` / generation provenance must be
+  built from this, never from a list of prompts a run might have used.
+- `Aggregate.stated_score` is `delivered_score`, or None when
+  `overall_status == "not_assessed"`. `delivered_score` is still computed and
+  recorded (it is the working), but writing it as the overall beside a "Not
+  assessed" word would state a judgement nobody made.
+- `_divergent_skills` no longer skips a band it cannot read: `parse_result`
+  admits only known bands, so an unknown one is a caller defect and raises.
+
+### THE INTERFACE WP5-D (ORCHESTRATION, PERSISTENCE) AND WP5-F (API) CALL
+
+`miti.live.evaluate_application(session, *, job, link, conversation_id,
+questions, answers, locators, structured, subject_names=(),
+allow_incomplete=False, invoke=None, item_invoke=None, passages=None) ->
+MitiResult`
+
+- `job`: needs `.id`, `.tenant_id`, `.title`. `link`: `.id`, `.candidate_id`.
+- `questions`: this link's `candidate_questions` rows
+  (`ppi_interview.load_for_link`), each carrying `competency_id`, `prompt`,
+  `rubric_json`, `question_type`, `weight`, `payload_json`, `resume_anchor`.
+- `answers`: `{str(question.id): [answer text, ...]}`; `locators`:
+  `assessment_pipeline.evidence.answer_records(session, link.id)`;
+  `structured`: `{str(question.id): AssessmentAnswer}`.
+- `passages`: pass `evidence_retrieval.transcript_passages_for_skill` as-is.
+- RAISES `live.ScorecardUnavailable` when G1 cannot be met (no binding on a
+  started conversation, stored digest disagrees with the snapshot, unlocked,
+  empty, missing Must-have or Behavioural). Nothing has been called or
+  written at that point. Not transient: do not retry it as an outage.
+- `allow_incomplete=False` (default): if any skill is `not_assessed` the run
+  stops after the item stage, `result.outcome is None`, and no evaluator is
+  paid for. `True` runs everything and the aggregate carries
+  `overall_status="not_assessed"` when a Must-have is among them. Use True only
+  for the FINAL attempt (PLAN-p5 P5-D4, `miti_not_assessed_attempts`).
+- It writes, in the caller's transaction: ledger rows through
+  `record_answer_evidence` (savepointed, never raising), and
+  `assessment_answers.ai_evaluation_json` for evidence and coding answers the
+  evaluation graded. The caller commits.
+
+`MitiResult`:
+
+| Member | Meaning |
+|---|---|
+| `contract`, `contract_version`, `contract_digest` | the locked contract graded against; persist version and digest on the report and the evaluation |
+| `skills: tuple[SkillGrade, ...]` | one per contract skill, contract order |
+| `complete`, `not_assessed_skills` | no skill `not_assessed`; the names otherwise |
+| `must_have_failed` | THE predicate; write it to `functional_skills_reports.must_have_failed` |
+| `outcome` / `aggregate` | None when the run stopped after the item stage |
+| `outcome.gate_results`, `outcome.deliverable` | G1 to G4; G4 already read the latest `review_dispositions` row for the link |
+| `review_reasons` | aggregate reasons plus unreadable-evidence note |
+| `model_calls()` | provenance, see above |
+| `unresolved_evidence`, `evidence_count`, `competency_sources` | as before |
+
+`SkillGrade` (`miti/grades.py`, frozen): `skill_id`, `name`, `bucket`,
+`priority`, `status` in `graded | unanswered | not_assessed`, `score`
+(INTERNAL int, None exactly when not assessed), `grade` (word, None exactly
+when not assessed), `partially_assessed`, `items` (`ItemEvaluation`:
+`question_id`, `status`, `score`, `weight`, `method`, `failure` as a class
+name), `used_answers` (in-process only, for the remark writer), `passages`
+(`PassageRef`s for Siddhi's `KIND_PASSAGE` nodes; locators via `.locator`),
+`retrieval`, `retrieval_reason`. `as_dict()` is the INTERNAL working
+projection (scores, passage LOCATORS, no passage text) for
+`evaluations.competency_scores`; it is never a client payload.
+
+`Aggregate` fields the writer reads: `category_grades`, `overall_grade` ("" when
+withheld), `overall_status` (`graded | not_assessed`), `stated_score` (write
+THIS as `overall_score`), `must_have_failed`, `must_have_cap_applied`,
+`applied_caps`, `insufficient_skills`, `insufficient_dimensions`,
+`confidence`, `needs_human_review`, `review_reasons`, `as_dict()`,
+`client_projection()` (words only).
+
+`report_dimensions` rows: one per `SkillGrade`, `score = grade.score` (NULL
+when not assessed, which needs PLAN-p5 3.10's migration), `assessment_status =
+grade.status`, `required_level` NULL. `evaluations.scoring_mode` is CHECKed to
+`full | degraded | stub`: a complete Miti run is `full`; a final-attempt
+incomplete run is `degraded`.
+
+### STILL OPEN, FOR WP5-D, AND WHY IT MATTERS
+
+- **Do not deploy WP5-B without WP5-D.** Until the attempts counter exists,
+  `ppi_scoring_node` raises `SkillsNotAssessed` on every incomplete run and the
+  hourly `release_held_assessments` re-dispatches it with no bound. A skill
+  with NO question issued (`no_question_issued`) is a permanent state, so that
+  application would re-run, and re-pay the item evaluations for its other
+  skills, every hour. Pilot holds zero conversations (CONTRACT v3), so nothing
+  is exposed today.
+- The coding branch still reads the code (`assessment_formats.evaluation`,
+  not executed). PLAN-p5's 70 / 30 hidden-tests and quality split needs Phase
+  4's `code_execution.evidence_for_answer`, which is not on this base; coding
+  ships disabled (CONTRACT v2 P4), so no coding question is served until it is.
