@@ -70,12 +70,6 @@ PENDING: dict[str, str] = {
     "backend/app/scripts/validate_stack.py": "orchestrator hunk: comment",
     "backend/app/scripts/seed_mock_data.py": "orchestrator hunk: comment",
     "backend/app/scripts/seed_demo_applications.py": "orchestrator hunk: comment",
-    "frontend/app/(candidate)/portal/outreach/[token]/page.tsx": "WP6-E: delete the page",
-    "frontend/app/apply/[job_uuid]/page.tsx": "WP6-E: the public page uses ApplyForm",
-    "frontend/components/aspects-form.tsx": "WP6-E: delete",
-    "frontend/lib/aspects.test.ts": "WP6-E: delete with lib/aspects.ts",
-    "frontend/lib/auth-context.tsx": "WP6-E: drop the public-route entry",
-    "frontend/proxy.ts": "WP6-E: drop the public-route entry",
 }
 
 #: Routes that must not be served. The second waits on WP6-C.

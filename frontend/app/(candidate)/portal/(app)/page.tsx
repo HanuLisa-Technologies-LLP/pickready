@@ -9,27 +9,24 @@
 //   * a search box, which deliberately bypasses relevance so a candidate can
 //     always find a role they know the name of.
 //
-// Applying is now one continuous flow: read the JD and the company, choose the
-// main resume or upload a new one, submit, and go straight into the
-// assessment. The application and its resume are saved BEFORE the questions
-// start, so closing the tab mid-assessment loses nothing; Applied Jobs offers
-// "Continue" for anything unfinished.
+// Applying is one form, shared with the public /apply page
+// (`components/apply-form.tsx`): read the JD and the company, choose the main
+// resume or upload a new one, answer the six validation fields, submit. It
+// does NOT lead into an assessment: the hiring team invites candidates to the
+// assessment one by one, and the application is followed on Applied Jobs.
+//
+// A role the candidate already applied to says so ON THE CARD and links to the
+// application, so nobody opens a form that could only answer "you have
+// already applied".
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Briefcase, MapPin, Search, Upload, X } from "lucide-react";
+import { Briefcase, CheckCircle2, MapPin, Search, Upload, X } from "lucide-react";
 
-import { ApiError, apiGet, apiUploadWithProgress } from "@/lib/api";
+import { apiGet } from "@/lib/api";
 import type { PortalJob } from "@/lib/types";
-import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
-import {
-  ApplicationValidationForm,
-  missingValidationFields,
-  type ValidationFieldSpec,
-  type ValidationValues,
-} from "@/components/application-validation-form";
+import { ApplyForm, applicationHref } from "@/components/apply-form";
 import {
   CompanySummary,
   JobDescriptionSummary,
@@ -39,59 +36,27 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import {
-  ResumeChoice,
-  type ResumeMode,
-  type StoredResume,
-} from "@/components/resume-file-input";
 import { EmptyState, LoadingCards } from "@/components/page-primitives";
 import { Card, CardContent } from "@/components/ui/card";
 import { Stagger, StaggerItem } from "@/components/motion";
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 
-interface ApplyContext {
-  job_id: string;
-  already_applied: boolean;
-  applied_at?: string | null;
-  resume: StoredResume;
-  profile_complete: boolean;
-  profile_missing: string[];
-  /** The six mandatory fields (spec §7), defined server-side. */
-  validation_fields?: ValidationFieldSpec[];
-}
-
-interface ApplyResult {
-  link_id: string;
-  job_id: string;
-}
-
 const SEARCH_DEBOUNCE_MS = 300;
 
 export default function PortalJobsPage() {
-  const { toast } = useToast();
-  const router = useRouter();
   const [jobs, setJobs] = React.useState<PortalJob[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [search, setSearch] = React.useState("");
   const [activeSearch, setActiveSearch] = React.useState("");
 
   const [applyJob, setApplyJob] = React.useState<PortalJob | null>(null);
-  const [resumeMode, setResumeMode] = React.useState<ResumeMode>("upload");
-  const [resume, setResume] = React.useState<File | null>(null);
-  const [context, setContext] = React.useState<ApplyContext | null>(null);
-  const [contextLoading, setContextLoading] = React.useState(true);
-  const [applying, setApplying] = React.useState(false);
-  const [validation, setValidation] = React.useState<ValidationValues>({});
-  const [uploadProgress, setUploadProgress] = React.useState(0);
-  const [resumeError, setResumeError] = React.useState<string | null>(null);
   // The list endpoint may omit the JD, so the dialog fetches the full job on
-  // open, a candidate must see what they are applying to before uploading.
+  // open: a candidate must see what they are applying to before uploading.
   const [applyJobFull, setApplyJobFull] = React.useState<PortalJob | null>(null);
   const [jdLoading, setJdLoading] = React.useState(false);
 
@@ -123,108 +88,39 @@ export default function PortalJobsPage() {
     };
   }, [activeSearch]);
 
-  const resetDialog = () => {
+  const closeDialog = () => {
     setApplyJob(null);
     setApplyJobFull(null);
-    setResume(null);
-    setResumeError(null);
-    setUploadProgress(0);
-    setValidation({});
   };
 
   const openApply = (job: PortalJob) => {
-    setResume(null);
-    setResumeError(null);
     setApplyJob(job);
     setApplyJobFull(job);
-    setContextLoading(true);
     setJdLoading(true);
-
-    // Apply context first: it decides whether "use my main resume" is even
-    // offerable and whether the profile form is complete.
-    apiGet<ApplyContext>(`/portal/jobs/${job.id}/apply-context`)
-      .then((res) => {
-        setContext(res);
-        setResumeMode(res.resume.has_resume ? "reuse" : "upload");
-      })
-      .catch(() => setContext(null))
-      .finally(() => setContextLoading(false));
-
-    // Then the full job, so About/Culture and the JD are complete even when the
-    // list response was trimmed.
     apiGet<PortalJob>(`/portal/jobs/${job.id}`)
       .then((full) => setApplyJobFull({ ...job, ...full }))
       .catch(() => {
-        /* Keep the list row; a partial JD must never block applying. */
+        // The list row is kept and the form below loads on its own, so a
+        // trimmed JD never blocks applying.
       })
       .finally(() => setJdLoading(false));
   };
 
-  const apply = async () => {
-    if (!applyJob) return;
-    if (resumeMode === "upload" && !resume) {
-      setResumeError("Attach a PDF or DOCX resume (up to 10 MB).");
-      return;
-    }
-    if (resumeMode === "reuse" && !context?.resume.has_resume) {
-      setResumeError(
-        "There is no main resume on your profile yet. Upload one instead."
-      );
-      return;
-    }
-    // Checked before the upload starts: a 422 after a 10 MB resume has already
-    // been sent is a bad way to learn you missed a dropdown.
-    const missing = missingValidationFields(context?.validation_fields ?? [], validation);
-    if (missing.length > 0) {
-      setResumeError(`Please complete every required field: ${missing.join(", ")}`);
-      return;
-    }
-    setApplying(true);
-    setUploadProgress(0);
-    setResumeError(null);
-    try {
-      const fd = new FormData();
-      if (resumeMode === "reuse") {
-        fd.append("reuse_previous", "true");
-      } else if (resume) {
-        fd.append("resume", resume);
-      }
-      fd.append("validation", JSON.stringify(validation));
-      const result = await apiUploadWithProgress<ApplyResult>(
-        `/portal/jobs/${applyJob.id}/apply`,
-        fd,
-        setUploadProgress
-      );
-      toast({
-        title: "Application submitted",
-        description: `${applyJob.title}. Next, answer the assessment questions.`,
-      });
-      resetDialog();
-      // Straight into the assessment: JD -> resume -> questions is one flow.
-      router.push(`/portal/assessments/${result.link_id}`);
-    } catch (e) {
-      const message =
-        e instanceof ApiError && e.status === 409
-          ? "You've already applied to this job."
-          : e instanceof Error
-            ? e.message
-            : "Application failed. Please retry.";
-      setResumeError(message);
-      toast({
-        title: "Application failed",
-        description: message,
-        variant: "destructive",
-      });
-    } finally {
-      setApplying(false);
-    }
-  };
+  // The card flips to "applied" the moment the server confirms, so the board
+  // never offers a second application for the same role.
+  const markApplied = (jobId: string, applicationId: string) =>
+    setJobs((current) =>
+      current.map((job) =>
+        job.id === jobId
+          ? { ...job, already_applied: true, application_id: applicationId }
+          : job
+      )
+    );
 
   const dialogJob = applyJobFull ?? applyJob;
   const subtitle = [
     dialogJob?.company_name ?? dialogJob?.tenant_name,
     dialogJob?.department,
-    dialogJob?.level,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -307,9 +203,7 @@ export default function PortalJobsPage() {
                         {(() => {
                           const employer =
                             job.company_name ?? job.tenant_name ?? null;
-                          const rest = [job.department, job.level]
-                            .filter(Boolean)
-                            .join(" · ");
+                          const rest = job.department ?? "";
                           return (
                             <>
                               {employer && job.company_slug ? (
@@ -334,9 +228,26 @@ export default function PortalJobsPage() {
                       </span>
                     </p>
                   </div>
-                  <Button className="mt-auto w-full" onClick={() => openApply(job)}>
-                    <Upload className="h-4 w-4" aria-hidden="true" /> Apply
-                  </Button>
+                  {job.already_applied ? (
+                    <div className="mt-auto space-y-2">
+                      <p className="flex items-center gap-1.5 text-sm font-medium">
+                        <CheckCircle2
+                          className="h-4 w-4 text-brand-600"
+                          aria-hidden="true"
+                        />
+                        You have applied
+                      </p>
+                      <Button asChild variant="outline" className="w-full">
+                        <Link href={applicationHref(job.application_id)}>
+                          View application
+                        </Link>
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button className="mt-auto w-full" onClick={() => openApply(job)}>
+                      <Upload className="h-4 w-4" aria-hidden="true" /> Apply
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             </StaggerItem>
@@ -347,7 +258,7 @@ export default function PortalJobsPage() {
       <Dialog
         open={applyJob !== null}
         onOpenChange={(open) => {
-          if (!open) resetDialog();
+          if (!open) closeDialog();
         }}
       >
         <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
@@ -368,57 +279,17 @@ export default function PortalJobsPage() {
 
           <Separator />
 
-          {context && !context.profile_complete ? (
-            <div className="rounded-xl border border-border bg-brand-100/50 p-4 text-sm">
-              <p className="font-semibold">Your profile is not complete yet.</p>
-              <p className="mt-1">
-                Employers see your profile answers alongside this application.
-                You can still apply now, then{" "}
-                <Link
-                  className="font-semibold text-brand-600 underline underline-offset-4"
-                  href="/portal/profile"
-                >
-                  complete My Profile
-                </Link>
-                .
-              </p>
-            </div>
+          {applyJob ? (
+            <ApplyForm
+              key={applyJob.id}
+              jobId={applyJob.id}
+              jobTitle={applyJob.title}
+              companyName={applyJob.company_name ?? applyJob.tenant_name}
+              source="direct"
+              applicationId={applyJob.application_id}
+              onSubmitted={(result) => markApplied(applyJob.id, result.link_id)}
+            />
           ) : null}
-
-          <ResumeChoice
-            id="apply-resume"
-            mode={resumeMode}
-            onModeChange={setResumeMode}
-            stored={context?.resume ?? null}
-            storedLoading={contextLoading}
-            file={resume}
-            progress={uploadProgress}
-            error={resumeError}
-            disabled={applying}
-            onFileChange={(file, error) => {
-              setResume(file);
-              setResumeError(error);
-              setUploadProgress(0);
-            }}
-            onRetry={() => void apply()}
-          />
-
-          <ApplicationValidationForm
-            fields={context?.validation_fields ?? []}
-            values={validation}
-            onChange={setValidation}
-            disabled={applying}
-          />
-
-          <DialogFooter>
-            <Button disabled={applying} onClick={() => void apply()}>
-              {applying
-                ? uploadProgress > 0 && uploadProgress < 100
-                  ? `Uploading ${uploadProgress}%`
-                  : "Submitting"
-                : "Submit and start assessment"}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

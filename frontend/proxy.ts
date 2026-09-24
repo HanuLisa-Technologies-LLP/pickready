@@ -50,7 +50,6 @@ const PUBLIC_PREFIXES = [
   // (FR-3.5); the page itself gates submission on a verified candidate
   // session, so letting it render signed-out grants nothing.
   "/apply",
-  "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
   // The one-click consent renewal link (feature 8). It MUST render
   // signed-out: the reader is by definition somebody who has not signed in
