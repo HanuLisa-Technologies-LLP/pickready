@@ -1,17 +1,25 @@
 // My Profile, the candidate's single, unified profile (client decision,
-// 2026-07-27). It replaces the old "Settings" page and now holds everything a
+// 2026-07-27). It replaced the old "Settings" page and holds everything a
 // candidate maintains about themselves in one place:
 //
-//   * account details (name, phone) and, for password accounts, the password;
+//   * account details and, for password accounts, the password;
 //   * the MAIN resume, uploadable and re-uploadable at any time;
-//   * the advanced form, the 40 validation answers, given once here instead of
-//     being re-asked inside every job's assessment;
+//   * their employment history and its background verification, and the
+//     academic and address documents a fresher provides instead;
+//   * the profile form, answered once here instead of per application;
+//   * their consents: keeping the profile, retention choices, and the full
+//     record of what they agreed to and when;
 //   * the appearance toggle (the only place it lives, claude.md rule 10).
 //
 // Role is deliberately not shown: a candidate has exactly one.
+//
+// Order is by how often a card is used, and the destructive card is last.
 
 import { SettingsPage } from "@/components/settings-page";
 import { BackgroundVerificationCard } from "@/components/background-verification-card";
+import { BgvDocumentsCard } from "@/components/bgv-documents-card";
+import { ConsentHistoryCard } from "@/components/consent-history-card";
+import { ConsentRenewalCard } from "@/components/consent-renewal-card";
 import { EmploymentHistoryCard } from "@/components/employment-history-card";
 import { CandidateProfileForm } from "@/components/candidate-profile-form";
 import { DataRetentionCard } from "@/components/data-retention-card";
@@ -29,11 +37,14 @@ export default function CandidateProfilePage() {
       showRole={false}
     >
       <MainResumeCard />
-      <DataRetentionCard />
       <EmploymentHistoryCard />
       <BackgroundVerificationCard />
+      <BgvDocumentsCard />
       <ProjectsSection />
       <CandidateProfileForm />
+      <ConsentRenewalCard />
+      <DataRetentionCard />
+      <ConsentHistoryCard />
       {/* LAST, and that is the whole placement argument: a destructive
           control above the things it destroys invites a mis-click from
           somebody who came here to edit their resume. */}
