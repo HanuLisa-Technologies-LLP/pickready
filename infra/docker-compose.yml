@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"  # host 6380 — 6379 is commonly taken; in-network stays redis:6379
+      - "6380:6379"  # host 6380: 6379 is commonly taken; in-network stays redis:6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -168,7 +168,7 @@ services:
       # deliberately not part of the ../frontend bind mount. Next's dev server
       # writes chunks here constantly; over a Windows bind mount through WSL2
       # those writes can land partially or out of order, and the dev server then
-      # serves HTML referencing chunk URLs whose files are missing — the
+      # serves HTML referencing chunk URLs whose files are missing, the
       # "GET /_next/static/chunks/main-app.js 404" storm that made the app look
       # broken until both containers were restarted.
       - frontend_next_dev:/app/.next-dev
