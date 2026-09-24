@@ -130,8 +130,15 @@ def test_the_models_and_helpers_are_gone() -> None:
         (capabilities, "REVOKE_AGENT_LEARNINGS"),
     ):
         assert not hasattr(module, name), f"{module.__name__}.{name}"
-    for name in ("TechnicalQuestion", "LLMProviderKey", "OTPChallenge"):
+    for name in (
+        "TechnicalQuestion", "LLMProviderKey", "OTPChallenge", "AgentLearning",
+    ):
         assert name not in models.__all__
+    # The agent-memory mapping went with the unreachable package that used it
+    # (WP-B5 deletes the package); the table stays as history.
+    from app.models import agent
+
+    assert not hasattr(agent, "AgentLearning")
     assert "revoke_agent_learnings" not in capabilities.ALL_CAPABILITIES
     for grants in capabilities.DEFAULT_PERMISSION_MATRIX.values():
         assert "revoke_agent_learnings" not in grants

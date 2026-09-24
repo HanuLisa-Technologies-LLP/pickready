@@ -43,7 +43,6 @@ from app.models.agent import (
     STATUS_PARTIAL,
     STATUS_SUCCESS,
     AgentExecutionTrace,
-    AgentLearning,
     AgentToolApprovalRule,
 )
 from app.models.agent_action import AgentAction
@@ -232,7 +231,6 @@ __all__ = [
     "ReviewDisposition",
     "JobScorecardBinding",
     "JobSkillSnapshot",
-    "AgentLearning",
     "AgentToolApprovalRule",
     "ContextChunk",
     "EvidenceClaim",
