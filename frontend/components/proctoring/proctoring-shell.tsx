@@ -16,35 +16,45 @@
 //
 // WHAT THE CHILDREN SEE. A `ProctoringBridge`, and nothing else. The player
 // reads the warning count for its own display, asks for field hooks per
-// question, collects the timings when it submits, reads the paused
-// milliseconds, and tells the shell when the conversation ended. It never
-// touches a detector and no detector knows the player exists.
+// question, collects the timings when it submits, reads whether the
+// assessment is held still (`paused`), and tells the shell when the
+// conversation ended. It never touches a detector and no detector knows the
+// player exists.
 //
-// THE SERVER DECIDES. Every warning and every termination on these screens
-// arrived on a response. This component counts nothing and concludes nothing.
+// THE SERVER DECIDES. Every warning, every pause and every termination on
+// these screens arrived on a response. This component counts nothing and
+// concludes nothing: the pause screen renders the server's deadline and the
+// server's count, and a warning's hold on the question timer is the server's
+// to measure (the acknowledgement tells it when the hold ended).
+//
+// THE RULES COME FROM THE SERVER (Phase 3, 2026-09-24). The consent screen
+// used to carry seven hard-coded statements; it now renders the server's
+// `candidate_rules`, and the shell will not offer the agreement until they
+// have loaded.
 
 import * as React from "react";
 import Link from "next/link";
 
 import { MonitoringIndicator } from "@/components/proctoring/monitoring-indicator";
+import { PauseOverlay } from "@/components/proctoring/pause-overlay";
 import { ProctoringProvider } from "@/components/proctoring/proctoring-context";
 import { ConsentScreen } from "@/components/proctoring/consent-screen";
 import { SystemCheckScreen } from "@/components/proctoring/system-check-screen";
-import { WarningModal, usePausedTime } from "@/components/proctoring/warning-modal";
+import { WarningModal } from "@/components/proctoring/warning-modal";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AnswerBehaviour, ProctoringBridge, ProctoringFieldHooks } from "@/lib/assessment/contracts";
-import { apiGet } from "@/lib/api";
 import {
   createSession,
+  fetchClientConfig,
   startSessionMedia,
+  type ClientConfigOut,
   type SessionMediaStartOut,
   type SessionOut,
   type TerminationOut,
   type WarningOut,
 } from "@/lib/proctoring/api";
-import { parseClientConfig, type ProctoringClientConfig } from "@/lib/proctoring/config";
-import { SessionRuntime } from "@/lib/proctoring/session";
+import { NO_PAUSE, pauseScreenOpen, SessionRuntime, type PauseView } from "@/lib/proctoring/session";
 import {
   releaseOutcome,
   runSystemCheck,
@@ -59,11 +69,6 @@ export const ENDED_TITLE = "Your assessment has ended";
 export const ANSWERS_SAVED = "The answers you gave up to that point were saved.";
 
 type Phase = "consenting" | "checking" | "active" | "ended";
-
-interface ConfigResponse {
-  config: unknown;
-  max_warnings: number;
-}
 
 /** The hooks handed to a field before the session exists. They record
  *  nothing, because there is no session for them to record against, and they
@@ -85,7 +90,9 @@ export function ProctoringShell({
   children: React.ReactNode;
 }) {
   const [phase, setPhase] = React.useState<Phase>("consenting");
-  const [config, setConfig] = React.useState<ProctoringClientConfig | null>(null);
+  const [loaded, setLoaded] = React.useState<ClientConfigOut | null>(null);
+  const [configError, setConfigError] = React.useState<string | null>(null);
+  const [configAttempt, setConfigAttempt] = React.useState(0);
   const [rows, setRows] = React.useState<CheckRow[] | null>(null);
   const [checking, setChecking] = React.useState(false);
   const [checkError, setCheckError] = React.useState<string | null>(null);
@@ -94,13 +101,15 @@ export function ProctoringShell({
   const [warningsUsed, setWarningsUsed] = React.useState(0);
   const [warning, setWarning] = React.useState<WarningOut | null>(null);
   const [endedMessage, setEndedMessage] = React.useState<string | null>(null);
+  const [pause, setPause] = React.useState<PauseView>(NO_PAUSE);
+  const [retrying, setRetrying] = React.useState(false);
 
+  const config = loaded?.config ?? null;
   const runtime = React.useRef<SessionRuntime | null>(null);
   /** One check at a time. A ref rather than the `checking` state because the
    *  guard has to hold within a render, before the state has been applied. */
   const running = React.useRef(false);
   const outcome = React.useRef<SystemCheckOutcome | null>(null);
-  const paused = usePausedTime();
 
   const finish = React.useCallback((message: string) => {
     runtime.current?.stop();
@@ -109,23 +118,27 @@ export function ProctoringShell({
     setPhase("ended");
   }, []);
 
-  // The thresholds, before anything else. They are the server's numbers and
-  // the client holds none of its own, so the check cannot run without them.
+  // The thresholds and the rules, before anything else. They are the
+  // server's numbers and the server's sentences and the client holds none of
+  // its own, so neither the agreement nor the check can happen without them.
   React.useEffect(() => {
     let cancelled = false;
-    apiGet<ConfigResponse>("/api/v2/proctoring/config")
+    setConfigError(null);
+    fetchClientConfig()
       .then((response) => {
-        if (!cancelled) setConfig(parseClientConfig(response.config));
+        if (!cancelled) setLoaded(response);
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setCheckError(error instanceof Error ? error.message : "The monitoring settings could not be loaded.");
+          setConfigError(
+            error instanceof Error ? error.message : "The monitoring settings could not be loaded."
+          );
         }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [configAttempt]);
 
   // Whatever happens, the camera light goes out. A tab closed mid-assessment
   // must not leave a stream running behind it.
@@ -196,10 +209,9 @@ export function ProctoringShell({
       });
       // The stored record of this session (owner ruling, 2026-09-22). Opened
       // AFTER the monitoring session, because the proctoring gate is what
-      // authorizes it, and refused with a 409 for a video interview, which
-      // already records itself. A failure to open one NEVER blocks the
-      // assessment: the candidate answers, and the hiring team's dashboard
-      // says honestly that no recording arrived.
+      // authorizes it. A failure to open one NEVER blocks the assessment: the
+      // candidate answers, and the hiring team's dashboard says honestly that
+      // no recording arrived.
       let mediaRecording: SessionMediaStartOut | null = null;
       try {
         mediaRecording = await startSessionMedia(linkId);
@@ -216,10 +228,10 @@ export function ProctoringShell({
           onWarning: (issued, used) => {
             setWarningsUsed(used);
             setWarning(issued);
-            paused.start();
           },
           onTermination: (termination: TerminationOut) => finish(termination.message),
           onSessionEnded: (message) => finish(message),
+          onPauseChange: setPause,
         },
         mediaRecording
       );
@@ -241,26 +253,55 @@ export function ProctoringShell({
           : "The monitoring session could not be started. Please try again."
       );
     }
-  }, [finish, linkId, paused]);
+  }, [finish, linkId]);
 
   const acknowledge = React.useCallback(() => {
-    paused.stop();
     setWarning(null);
+    // The server holds the question timer until it hears this.
+    void runtime.current?.acknowledgeWarning();
     void runtime.current?.requestFullscreen();
-  }, [paused]);
+  }, []);
 
-  const bridge = React.useMemo<ProctoringBridge>(
-    () => ({
+  const retryDevices = React.useCallback(async () => {
+    const active = runtime.current;
+    if (!active) return;
+    setRetrying(true);
+    try {
+      await active.retryDevices();
+    } finally {
+      setRetrying(false);
+    }
+    // Reopening a device may have needed a browser prompt, which can take the
+    // page out of fullscreen; this click is the gesture that restores it.
+    void active.requestFullscreen();
+  }, []);
+
+  const graceExpired = React.useCallback(() => {
+    runtime.current?.checkNow();
+  }, []);
+
+  const pauseOpen = pauseScreenOpen(pause);
+
+  const bridge = React.useMemo<ProctoringBridge>(() => {
+    const value = {
       status: phase,
       sessionId: session?.session_id ?? null,
       warningsUsed,
       maxWarnings: session?.max_warnings ?? config?.max_warnings ?? 0,
       endedMessage,
+      // Held still: a warning on screen or the device pause. The player
+      // freezes its countdown and refuses input while this is true, and
+      // re-reads the server's clock when it turns false.
+      paused: warning !== null || pauseOpen,
       fieldHooksFor: (questionKey: string) => runtime.current?.fieldHooksFor(questionKey) ?? NO_HOOKS,
       collectAnswerBehaviour: (questionKey: string): AnswerBehaviour | null =>
         runtime.current?.collectAnswerBehaviour(questionKey) ?? null,
-      consumePausedMs: () => paused.consume(),
-      onConversationEnded: (status) => {
+      // The client measures no paused time any more: the server holds the
+      // turn clock itself (warning acknowledgement, device pause). Zero is
+      // the true answer to the question this member asks, and the member
+      // leaves with the player's `paused_ms` in the Phase 3 contract.
+      consumePausedMs: () => 0,
+      onConversationEnded: (status: "completed" | "terminated") => {
         // Flush what is queued before the detectors are torn down, so the
         // last few events reach the report rather than dying with the page.
         const active = runtime.current;
@@ -273,12 +314,22 @@ export function ProctoringShell({
           finish("This assessment was ended early. " + ANSWERS_SAVED);
         }
       },
-    }),
-    [config, endedMessage, finish, paused, phase, session, warningsUsed]
-  );
+    };
+    // Built as a value rather than returned as a literal, so the bridge can
+    // carry `paused` for the player that reads it while the contract it is
+    // checked against here still declares the member it replaces.
+    return value;
+  }, [config, endedMessage, finish, pauseOpen, phase, session, warning, warningsUsed]);
 
   if (phase === "consenting") {
-    return <ConsentScreen onAgree={agree} />;
+    return (
+      <ConsentScreen
+        rules={loaded?.candidate_rules ?? null}
+        error={configError}
+        onAgree={agree}
+        onRetry={() => setConfigAttempt((attempt) => attempt + 1)}
+      />
+    );
   }
 
   if (phase === "checking") {
@@ -322,8 +373,19 @@ export function ProctoringShell({
   return (
     <ProctoringProvider value={bridge}>
       {children}
-      <MonitoringIndicator warningsUsed={warningsUsed} maxWarnings={session.max_warnings} />
+      <MonitoringIndicator
+        warningsUsed={warningsUsed}
+        maxWarnings={session.max_warnings}
+        paused={pauseOpen}
+      />
       <WarningModal message={warning?.message ?? null} onAcknowledge={acknowledge} />
+      <PauseOverlay
+        view={pause}
+        open={pauseOpen}
+        retrying={retrying}
+        onRetry={() => void retryDevices()}
+        onExpired={graceExpired}
+      />
     </ProctoringProvider>
   );
 }

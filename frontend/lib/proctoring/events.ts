@@ -7,9 +7,10 @@
  * that from a screen rather than from a request that fails a minute later.
  *
  * The response decides everything. A `warning` on the response is shown; a
- * `termination` ends the session. The client never counts warnings and never
- * decides a consequence, which is what "the server is authoritative" has to
- * mean in the client.
+ * `termination` ends the session; a `pause` is the server's statement about
+ * the device pause and is handed on as it came. The client never counts
+ * warnings or pauses and never decides a consequence, which is what "the
+ * server is authoritative" has to mean in the client.
  *
  * FAILURES ARE RETRIED, NOT DROPPED, with one exception. A transport failure,
  * a 5xx, a 503 from an unreachable Redis and a 429 all put the batch back and
@@ -21,7 +22,15 @@
 import type { ApiError } from "@/lib/api";
 
 import { type ClientEventType, isImmediate } from "./catalog";
-import { type EventIn, type IngestOut, type TerminationOut, type WarningOut, isClientFault, isSessionEnded } from "./api";
+import {
+  type EventIn,
+  type IngestOut,
+  type PauseState,
+  type TerminationOut,
+  type WarningOut,
+  isClientFault,
+  isSessionEnded,
+} from "./api";
 
 /**
  * Transport pacing, not a behavioural threshold: how long a Path B or C event
@@ -49,6 +58,8 @@ export interface EventQueueOptions {
   onTermination: (termination: TerminationOut) => void;
   /** The server answered 409: the session is over. Plain-language message. */
   onSessionEnded: (message: string) => void;
+  /** The pause state a response carried, when it carried one. */
+  onPause?: (pause: PauseState) => void;
   flushIntervalMs?: number;
   now?: () => number;
 }
@@ -105,6 +116,7 @@ export class EventQueue {
     try {
       const result = await this.options.post(batch);
       this.backoffMs = 0;
+      if (result.pause) this.options.onPause?.(result.pause);
       if (result.warning) {
         this.options.onWarning(result.warning, result.warnings_used);
       }

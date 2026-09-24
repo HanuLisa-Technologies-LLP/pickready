@@ -18,17 +18,22 @@
  * SESSION_QUALITY_DEGRADED, because a slow laptop is context for the report
  * and never a reason to stop a candidate (spec 3.6).
  *
- * A DEAD STREAM. The track ending is either the candidate revoking the
- * permission (CAMERA_PERMISSION_LOST, at once) or the device failing (retry
- * every heartbeat interval; CAMERA_STREAM_INTERRUPTED with the duration if it
- * comes back within `camera_recovery_seconds`, CAMERA_STREAM_FAILED with the
- * duration at that threshold). The permission API says which, where the
- * browser offers it; where it does not, a re-acquire refused with
- * NotAllowedError is the same answer.
+ * A DEAD STREAM (Phase 3, 2026-09-24: a loss PAUSES, it no longer ends). The
+ * track ending is either the candidate revoking the permission or the device
+ * failing. The permission API says which, where the browser offers it; where
+ * it does not, a re-acquire refused with NotAllowedError is the same answer.
+ * Either way the monitor tells `onLost`, keeps itself alive and can be brought
+ * back: a failed stream is retried on its own every `DEVICE_RETRY_MS`, and a
+ * revoked permission waits for the candidate, either for the browser to say
+ * the permission is granted again or for them to press "Try again" on the
+ * pause screen (`reacquire`). Retrying a revoked permission on a timer would
+ * put a browser prompt in front of somebody every second. Which event each of
+ * those becomes, and when, is `device-watch.ts`'s business, not this file's.
  */
 import type { ProctoringClientConfig } from "./config";
 import { seconds } from "./config";
 import { DetectionRules, type FrameDetections } from "./detections";
+import { DEVICE_RETRY_MS, type LossKind } from "./device-watch";
 import type { EventDraft } from "./events";
 import type { InferenceClient } from "./worker-client";
 
@@ -39,7 +44,6 @@ type CameraConfig = Pick<
   | "confirming_window_seconds"
   | "sampling_fps_degraded"
   | "identity_check_interval_seconds"
-  | "camera_recovery_seconds"
   | "heartbeat_interval_seconds"
 >;
 
@@ -55,6 +59,11 @@ export interface CameraOptions {
   /** Whether the identity comparison runs on this session. Off during the
    *  system check, where the baseline is taken instead. */
   identityChecks: boolean;
+  /** The camera stopped being usable. Called once per outage, and again only
+   *  if a stream failure turns out to be a revoked permission. */
+  onLost: (kind: LossKind) => void;
+  /** A fresh stream is attached after an outage. */
+  onRecovered: (stream: MediaStream) => void;
   navigator?: Navigator;
   document?: Document;
   now?: () => number;
@@ -89,8 +98,10 @@ export class CameraMonitor {
   private readonly windowFrames: number;
   private frames = 0;
   private startedAt: number;
-  private failureSince: number | null = null;
-  private failureReported = false;
+  /** Why the camera is down, or null while it is live. */
+  private lostKind: LossKind | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private reacquiring: Promise<boolean> | null = null;
   private readonly nav: Navigator;
   private readonly now: () => number;
   private permissionStatus: PermissionStatus | null = null;
@@ -129,6 +140,30 @@ export class CameraMonitor {
     };
   }
 
+  /** The stream being sampled, or null while the camera is down. */
+  currentStream(): MediaStream | null {
+    return this.lostKind === null ? this.stream : null;
+  }
+
+  /**
+   * Try to open the camera again now. The pause screen's "Try again" calls
+   * this, so it runs inside the candidate's click and a browser that needs a
+   * gesture to prompt for the permission gets one. Resolves true when a live
+   * stream is attached. Concurrent calls share one attempt, because two
+   * `getUserMedia` calls racing would attach one stream and leak the other's
+   * camera light.
+   */
+  reacquire(): Promise<boolean> {
+    if (this.stopped) return Promise.resolve(false);
+    if (this.lostKind === null) return Promise.resolve(true);
+    if (this.reacquiring === null) {
+      this.reacquiring = this.attemptRecovery().finally(() => {
+        this.reacquiring = null;
+      });
+    }
+    return this.reacquiring;
+  }
+
   /** One frame for the identity worker, outside the sampling loop. Used by
    *  the system check to take the baseline. */
   async snapshot(): Promise<ImageBitmap> {
@@ -147,6 +182,7 @@ export class CameraMonitor {
     this.stopped = true;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
+    this.clearRetry();
     if (this.permissionStatus) this.permissionStatus.onchange = null;
     const stream = this.stream;
     const track = stream?.getVideoTracks()[0];
@@ -174,7 +210,15 @@ export class CameraMonitor {
       .then((status) => {
         this.permissionStatus = status;
         status.onchange = () => {
-          if (status.state === "denied") this.permissionLost();
+          // "prompt" counts as lost too: the candidate reset the permission,
+          // and the stream it guarded is gone either way. "granted" again is
+          // the browser handing the choice back, so the camera is reopened
+          // without waiting for a click.
+          if (status.state === "granted") {
+            if (this.lostKind === "permission") void this.reacquire();
+          } else {
+            this.lose("permission");
+          }
         };
       })
       .catch(() => {
@@ -183,55 +227,86 @@ export class CameraMonitor {
       });
   }
 
-  private permissionLost(): void {
+  private onTrackEnded(): void {
     if (this.stopped) return;
-    this.options.onEvent({ event_type: "CAMERA_PERMISSION_LOST", metadata: {} });
-    this.stop();
+    this.lose(this.permissionStatus?.state === "denied" ? "permission" : "stream");
   }
 
-  private async onTrackEnded(): Promise<void> {
+  /**
+   * Stop sampling a dead stream and say so. The monitor stays alive: the
+   * sampling loop keeps ticking and skips while there is no live track, so a
+   * recovered stream is picked up with no restart.
+   */
+  private lose(kind: LossKind): void {
     if (this.stopped) return;
-    if (this.permissionStatus?.state === "denied") {
-      this.permissionLost();
-      return;
+    if (this.lostKind === kind || this.lostKind === "permission") return;
+    const first = this.lostKind === null;
+    this.lostKind = kind;
+    if (first) {
+      const dead = this.stream;
+      this.stream = null;
+      this.video.srcObject = null;
+      const track = dead?.getVideoTracks()[0];
+      if (track) track.onended = null;
+      dead?.getTracks().forEach((each) => each.stop());
     }
-    this.failureSince = this.now();
-    this.failureReported = false;
-    await this.recover();
+    this.options.onLost(kind);
+    if (kind === "stream") {
+      this.scheduleRetry();
+    } else {
+      this.clearRetry();
+    }
   }
 
-  private async recover(): Promise<void> {
-    const failedAt = this.failureSince;
-    if (this.stopped || failedAt === null) return;
+  private scheduleRetry(): void {
+    this.clearRetry();
+    if (this.stopped || this.lostKind !== "stream") return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.reacquire().then((live) => {
+        if (!live) this.scheduleRetry();
+      });
+    }, DEVICE_RETRY_MS);
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
+  private async attemptRecovery(): Promise<boolean> {
+    let stream: MediaStream;
     try {
-      const stream = await openCamera(this.nav);
-      this.stream?.getTracks().forEach((track) => track.stop());
-      this.stream = stream;
-      await this.attach(stream);
-      this.options.onEvent({
-        event_type: "CAMERA_STREAM_INTERRUPTED",
-        duration_ms: Math.round(this.now() - failedAt),
-        metadata: {},
-      });
-      this.failureSince = null;
-      return;
+      stream = await openCamera(this.nav);
     } catch (error) {
-      if (isPermissionDenied(error)) {
-        this.permissionLost();
-        return;
-      }
+      if (isPermissionDenied(error)) this.lose("permission");
+      // Any other refusal (no device, the device busy) leaves the outage as it
+      // is: a stream failure keeps retrying and a revoked permission keeps
+      // waiting for the candidate.
+      return false;
     }
-    const down = this.now() - failedAt;
-    if (!this.failureReported && down >= seconds(this.options.config.camera_recovery_seconds)) {
-      this.failureReported = true;
-      this.options.onEvent({
-        event_type: "CAMERA_STREAM_FAILED",
-        duration_ms: Math.round(down),
-        metadata: {},
-      });
-      return;
+    if (this.stopped) {
+      stream.getTracks().forEach((track) => track.stop());
+      return false;
     }
-    setTimeout(() => void this.recover(), seconds(this.options.config.heartbeat_interval_seconds));
+    try {
+      await this.attach(stream);
+    } catch (error) {
+      // A stream that opened and would not play is not a recovered camera.
+      // The outage stands and the next attempt asks again.
+      stream.getTracks().forEach((track) => track.stop());
+      this.video.srcObject = null;
+      console.warn(
+        "proctoring camera could not be resumed: " +
+          (error instanceof Error ? error.message : "unknown")
+      );
+      return false;
+    }
+    this.stream = stream;
+    this.lostKind = null;
+    this.clearRetry();
+    this.options.onRecovered(stream);
+    return true;
   }
 
   private currentIntervalMs(): number {
