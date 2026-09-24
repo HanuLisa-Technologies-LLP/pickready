@@ -64,7 +64,7 @@ migration = _load_migration()
 #: 0119 tightened `ck_jobs_lifecycle_state` to six states. This file seeds the
 #: two RETIRED approval states on purpose, because 0118's remap exists to move
 #: them, so the seeded-world test admits them for its own duration only.
-NEXT_MIGRATION_PATH = MIGRATION_PATH.with_name("0119_skills_setup.py")
+NEXT_MIGRATION_PATH = MIGRATION_PATH.with_name("0119_job_approval_chain_removed.py")
 
 
 def _load_next_migration():

@@ -1,6 +1,6 @@
 """The approval chain's database half: six lifecycle states, one capability gone.
 
-Revision ID: 0119_skills_setup
+Revision ID: 0119_job_approval_chain_removed
 Revises: 0118_skills_contract
 
 The Vivekium release deleted the job approval chain (`send-to-hiring-manager`,
@@ -37,7 +37,7 @@ import logging
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0119_skills_setup"
+revision = "0119_job_approval_chain_removed"
 down_revision = "0118_skills_contract"
 branch_labels = None
 depends_on = None
