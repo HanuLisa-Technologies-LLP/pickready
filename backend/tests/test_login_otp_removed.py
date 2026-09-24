@@ -45,8 +45,6 @@ WAVE_B = re.compile(r"OTPChallenge|OTPChannel|otp_challenges|send_sms|sms_servic
 
 WAVE_B_PENDING = frozenset(
     {
-        ".env.example",
-        "backend/app/core/config.py",
         "backend/app/main.py",
         "backend/app/models/__init__.py",
         "backend/app/models/enums.py",
@@ -56,14 +54,7 @@ WAVE_B_PENDING = frozenset(
         "backend/app/workers/tasks.py",
         "backend/tests/fixtures/legacy_reset/schema_snapshot.json",
         "backend/tests/fixtures/reembed/schema_snapshot.json",
-        "backend/tests/test_deploy_secret_hygiene.py",
         "backend/tests/test_email_delivery.py",
-        "infra/.checkov.yml",
-        "infra/docker-compose.yml",
-        "infra/environments/pilot/main.tf",
-        "infra/environments/production/main.tf",
-        "infra/environments/staging/main.tf",
-        "infra/modules/secrets/variables.tf",
     }
 )
 

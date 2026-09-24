@@ -595,14 +595,10 @@ def test_preflight_reports_missing_keys(monkeypatch):
     monkeypatch.setenv("SMTP_HOST", "")
     monkeypatch.setenv("SMTP_USER", "")
     monkeypatch.setenv("SMTP_PASSWORD", "")
-    monkeypatch.setenv("MSG91_API_KEY", "")
-    monkeypatch.setenv("MSG91_SENDER_ID", "")
     config.get_settings.cache_clear()
     missing = config.preflight_delivery_config()
-    assert "SMTP_HOST" in missing
-    assert "SMTP_USER" in missing
-    assert "SMTP_PASSWORD" in missing
-    assert "MSG91_API_KEY" in missing
+    # SMTP is the whole credential set now: the SMS keys left with the sender.
+    assert missing == ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"]
     config.get_settings.cache_clear()
 
 
@@ -614,8 +610,6 @@ def test_preflight_ok_when_keys_present(monkeypatch):
     monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
     monkeypatch.setenv("SMTP_PASSWORD", "secret")
     monkeypatch.setenv("SMTP_FROM_EMAIL", "sender@gmail.com")
-    monkeypatch.setenv("MSG91_API_KEY", "mk_x")
-    monkeypatch.setenv("MSG91_SENDER_ID", "PCKRDY")
     config.get_settings.cache_clear()
     assert config.preflight_delivery_config() == []
     config.get_settings.cache_clear()

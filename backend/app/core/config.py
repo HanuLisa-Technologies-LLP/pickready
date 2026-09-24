@@ -266,10 +266,11 @@ class Settings(BaseSettings):
     cookie_samesite: str = "strict"
     cookie_domain: str = ""
 
-    # OTP
-    otp_ttl_minutes: int = 5
-    otp_max_attempts: int = 5
-    otp_cooldown_minutes: int = 15
+    # The three login-code settings (ttl, attempts, cooldown) were REMOVED with
+    # the code-login flow on 2026-09-24, not left behind as dead settings. A
+    # setting nothing reads is one an operator will eventually tune expecting
+    # an effect. Firebase owns identity; `.env.example` parity is pinned by
+    # `tests/test_env_example_parity.py`.
 
     # ── LLM and embeddings ──────────────────────────────────────────────────
     #
@@ -310,21 +311,14 @@ class Settings(BaseSettings):
     # log line and no empty result to notice.
     voyage_context_4: str = ""
 
-    # RETAINED AS KEY MATERIAL, AND NOTHING IN THIS TREE DECRYPTS WITH IT.
-    #
-    # The previous comment here said "this is what decrypts them", which was
-    # false: a tree-wide search finds no reader of this setting outside the
-    # deploy secret-hygiene test that asserts which services may hold it. The
-    # single-vendor consolidation deleted the router that used it along with
-    # the three retired providers.
-    #
-    # It is kept rather than deleted because `llm_provider_keys` still holds
-    # encrypted rows, and the key that opens them is not recoverable once the
-    # secret is dropped. What a rollback would need is this VALUE plus a
-    # decryptor somebody writes; what it must not need is a value nobody
-    # thought to keep. Stating that plainly is the difference between a
-    # deliberate retention and a grant that looks live and is not.
-    llm_key_encryption_secret: str = ""
+    # `llm_key_encryption_secret` WAS DELETED ON 2026-09-24. Nothing in the tree
+    # read it: the router that decrypted `llm_provider_keys` went with the
+    # multi-vendor roster, and a setting kept "as key material" is a setting
+    # that reads as live. The KEY MATERIAL is not here and never was: it is the
+    # `LLM_KEY_ENCRYPTION_SECRET` container in Secrets Manager, which
+    # `infra/modules/secrets` still creates and grants to no service, so the
+    # decision about that table and its key stays reversible until the owner
+    # takes it.
 
     # Embedding output width. Pinned to 1024 because `profiles.embedding`,
     # `jobs.embedding` and `context_chunks.embedding` are vector(1024) columns
@@ -347,9 +341,6 @@ class Settings(BaseSettings):
     smtp_from_name: str = "Vivekium"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
-
-    msg91_api_key: str = ""
-    msg91_sender_id: str = "PCKRDY"
 
     # ── Where a reply comes back to ──────────────────────────────────────────
     #
@@ -901,8 +892,8 @@ class Settings(BaseSettings):
 
         ONE SECRET KEYS EVERYTHING, which is what makes this worth a boot
         refusal rather than a warning. `jwt_secret` signs the portal session
-        cookies, the OTP hashes, the outreach links, the assessment invite
-        tokens and the signed resume URLs. A known value lets anyone mint
+        cookies, the outreach links, the assessment invite tokens and the
+        signed resume URLs. A known value lets anyone mint
         `{"aud": "pickready:owner", "role": "super_admin"}` and reach
         `get_superadmin_db`, which is the RLS bypass scope. That is total
         platform compromise from a default string.
@@ -938,7 +929,7 @@ class Settings(BaseSettings):
         if not value or value == PLACEHOLDER_SECRET or value == DEV_JWT_SECRET:
             raise ValueError(
                 "JWT_SECRET is not configured in production. It signs the "
-                "session cookies, the OTP hashes and every signed link, so a "
+                "session cookies and every signed link, so a "
                 "default or empty value is a full platform compromise. Set it "
                 "in Secrets Manager and redeploy."
             )
@@ -966,8 +957,7 @@ class Settings(BaseSettings):
     # Gmail's authenticated mailbox is always the From address.
 
     # Outbound-delivery retry cap. Email retries transient failures after a
-    # fixed 60-second delay; SMS retains exponential backoff. Permanent
-    # failures never retry.
+    # fixed 60-second delay. Permanent failures never retry.
     delivery_max_retries: int = 3  # initial attempt + up to 3 retries
 
     @model_validator(mode="after")
@@ -1149,28 +1139,26 @@ class Settings(BaseSettings):
     def missing_delivery_keys(self) -> list[str]:
         """Names of unset outbound-delivery credentials (for startup preflight).
 
-        Gmail SMTP (host/user/password) is the email credential set; MSG91
-        remains the SMS credential set.
+        Gmail SMTP (host/user/password) is the one credential set. The SMS
+        credentials left with the SMS sender on 2026-09-24.
         """
         checks = {
             "SMTP_HOST": self.smtp_host,
             "SMTP_USER": self.smtp_user,
             "SMTP_PASSWORD": self.smtp_password,
-            "MSG91_API_KEY": self.msg91_api_key,
-            "MSG91_SENDER_ID": self.msg91_sender_id,
         }
         return [name for name, value in checks.items() if not value]
 
 
 def preflight_delivery_config() -> list[str]:
-    """Log a loud WARNING for any missing email/SMS credential at startup.
+    """Log a loud WARNING for any missing email credential at startup.
 
-    ASSUMPTION: a missing key must NOT hard-crash the container in development
-     -  local dev without SMTP/MSG91 keys has to remain possible (the sprint
-    brief only requires that a missing key not fail *silently*). In production
-    the same warning is emitted; enforcement/alerting on it is an ops concern,
-    not a process-exit here. Returns the list of missing key names so callers
-    (or tests) can assert on it.
+    ASSUMPTION: a missing key must NOT hard-crash the container in development:
+    local dev without SMTP keys has to remain possible (the sprint brief only
+    requires that a missing key not fail *silently*). In production the same
+    warning is emitted; enforcement/alerting on it is an ops concern, not a
+    process-exit here. Returns the list of missing key names so callers (or
+    tests) can assert on it.
     """
     import logging
 
@@ -1178,14 +1166,14 @@ def preflight_delivery_config() -> list[str]:
     missing = settings.missing_delivery_keys()
     if missing:
         logging.getLogger(__name__).warning(
-            "delivery.preflight MISSING outbound credentials: %s  -  emails/SMS "
+            "delivery.preflight MISSING outbound credentials: %s  -  emails "
             "using these will fail. Set them in the environment. env=%s",
             ", ".join(missing),
             settings.environment,
         )
     else:
         logging.getLogger(__name__).info(
-            "delivery.preflight ok  -  SMTP + MSG91 credentials present"
+            "delivery.preflight ok  -  SMTP credentials present"
         )
     return missing
 
