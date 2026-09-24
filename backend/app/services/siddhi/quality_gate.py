@@ -160,6 +160,11 @@ def evaluate(
     and the answer refs are read from the stored trail, which is the record of
     what was rendered, so the gate checks exactly what a reader will get.
 
+    `miti_grades` is `miti_grades_from(<Miti's skill grades>)`, never built
+    from the rows Siddhi rendered: two sources or the comparison has no teeth.
+    `miti_overall_grade` is Miti's overall word, or None when Miti decided no
+    overall (the document must then state Not assessed, or nothing).
+
     A crash inside it returns a FAILING verdict (`gate_unavailable`, high), so
     the report is written flagged for review rather than passed unchecked.
     """
@@ -177,6 +182,15 @@ def evaluate(
             if entry[1] == synthesis.OVERALL_LABEL
         ]
         gap_stated = stated_grades(report_trail, sections=("gap_analysis",))
+        stated_overall = overall_stated[0][2] if overall_stated else None
+        # Miti deciding NO overall (a Must-have it could not assess) is stated
+        # in the document as the words Not assessed, or not at all; both agree
+        # with it. Any grade word stated against a None disagrees.
+        expected_overall = miti_overall_grade or (
+            synthesis.NOT_ASSESSED_WORD
+            if stated_overall == synthesis.NOT_ASSESSED_WORD
+            else None
+        )
         payload = {
             "ai_score": [
                 _rendered(row)
@@ -207,8 +221,8 @@ def evaluate(
             "grades": {name: grade for _, name, grade in stated},
             # WHAT MITI DECIDED, from the caller's copy of Miti's result.
             "miti_grades": dict(miti_grades),
-            "overall_grade": overall_stated[0][2] if overall_stated else None,
-            "miti_overall_grade": miti_overall_grade,
+            "overall_grade": stated_overall,
+            "miti_overall_grade": expected_overall,
             "claims": [
                 {
                     "id": row.get("name"),

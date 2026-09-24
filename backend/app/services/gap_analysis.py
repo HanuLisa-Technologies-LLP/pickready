@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +60,7 @@ from app.services import (
 from app.services.rating import (
     GRADE_MODERATELY,
     GRADE_NOT,
+    GRADES,
     MODERATE_OR_BELOW,
     grade_for_percent,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "gap_items",
     "must_have_cap_applies",
     "probe_count_for",
+    "row_grade",
 ]
 
 #: How an entry's probes were written, stored on the entry as `probes_source`.
@@ -133,16 +135,42 @@ def probe_count_for(category: str, grade: str | None) -> int:
     return probe_counts().get((category, str(grade)), DEFAULT_PROBE_COUNT)
 
 
+#: The `report_dimensions.assessment_status` value for a skill whose
+#: evaluation could not be completed (PLAN-p5 P5-D3). Such a row has no grade.
+STATUS_NOT_ASSESSED = "not_assessed"
+
+
+def row_grade(row: Mapping[str, Any]) -> str | None:
+    """The grade WORD a rated row carries, as the grading authority decided it.
+
+    Miti is the sole grading authority, so a row that carries its grade word is
+    read, never re-derived: re-deriving it from the score here would be a second
+    arithmetic that has to agree with Miti's, and the gap section would state
+    "Name: Grade" differently from the rated section the day they disagreed
+    (the quality gate's `grade_restated_differently`). A row with no word
+    (every row written by the scoring path before the grading phase) falls
+    back to the one scale, `rating.grade_for_percent`. A skill whose evaluation
+    could not be completed has NO grade, whatever its score field says: it is
+    neither a gap nor a failed Must-have, because "not assessed" is not "poor".
+    """
+    if row.get("assessment_status") == STATUS_NOT_ASSESSED:
+        return None
+    stated = row.get("grade")
+    if stated in GRADES:
+        return str(stated)
+    return grade_for_percent(row.get("score"))
+
+
 def must_have_cap_applies(dimensions: list[dict[str, Any]]) -> bool:
     """Whether any Must-have item graded Not Matching (spec §5.5).
 
     The single condition behind the hard cap, in one place, so the arithmetic in
     synthesis and the sentence in the report cannot disagree about whether it
-    fired.
+    fired. Reads `row_grade`, so a Not assessed Must-have does not fire it.
     """
     return any(
         row.get("category") == ppi.CATEGORY_MUST_HAVE
-        and grade_for_percent(row.get("score")) == GRADE_NOT
+        and row_grade(row) == GRADE_NOT
         for row in dimensions
     )
 
@@ -157,15 +185,14 @@ def gap_items(dimensions: list[dict[str, Any]], category: str) -> list[dict[str,
     rows = [
         row
         for row in dimensions
-        if row.get("category") == category
-        and grade_for_percent(row.get("score")) in GAP_GRADES
+        if row.get("category") == category and row_grade(row) in GAP_GRADES
     ]
     order = {GRADE_NOT: 0, GRADE_MODERATELY: 1}
     return sorted(
         rows,
         key=lambda row: (
-            order.get(str(grade_for_percent(row.get("score"))), 2),
-            row.get("score", 0),
+            order.get(str(row_grade(row)), 2),
+            row.get("score") if row.get("score") is not None else 0,
             row.get("ordinal", 0),
         ),
     )
@@ -511,7 +538,7 @@ async def build_gap_groups(
         ordered_gaps.extend((category, item) for item in items)
         entries: list[dict[str, Any]] = []
         for item in items:
-            grade = str(grade_for_percent(item.get("score")))
+            grade = str(row_grade(item))
             evidence = evidence_by_item.get(str(item.get("name")), [])
             probes, probes_source, empty_state_key = await _write_probes(
                 session,
@@ -574,6 +601,7 @@ async def build_gap_analysis(
     extra_nodes: Sequence[Any] = (),
     passages: dict[str, list[dict[str, Any]]] | None = None,
     provenance: ProvenanceSink | None = None,
+    passage_source: siddhi_support.PassageSource | None = None,
 ) -> dict[str, Any]:
     """The section, COMPOSED through Siddhi, as the report row stores it.
 
@@ -607,6 +635,7 @@ async def build_gap_analysis(
         extra_nodes=tuple(extra_nodes),
         passages=passages,
         embed=siddhi_support.semantic_embedder(),
+        passage_source=passage_source,
     )
     # SIDDHI'S OWN NAMESPACE ON THE IMMUTABLE ROW. The citation trail (with
     # durable locators and support verdicts), the dashboard's Vivekium Note and

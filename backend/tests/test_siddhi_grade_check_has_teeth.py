@@ -145,3 +145,66 @@ def test_the_grades_are_read_from_the_rendered_statements() -> None:
     assert ("behavioural", "Judgement under pressure", "Highly Matching") in stated
     # An evidence-confidence line is a different statement and is not a grade.
     assert all("confidence" not in grade for _, _, grade in stated)
+
+
+def test_an_overall_miti_did_not_decide_may_be_stated_only_as_not_assessed() -> None:
+    """Miti decides no overall when a Must-have could not be assessed. The
+    document may then say Not assessed, or say nothing; a grade word stated
+    against a None is a grade scoring never recorded."""
+    not_assessed = _composed(overall_grade=synthesis.NOT_ASSESSED_WORD)
+    verdict = _verdict(AGREEING, miti_overall=None, composed=not_assessed)
+    assert "overall_grade_disagrees_with_scoring" not in _issues(verdict)
+
+    silent = asyncio.run(
+        siddhi_report.compose_prism(
+            dimensions=_rows(), evidence_by_item=_exchanges(), embed=None
+        )
+    )
+    verdict = _verdict(AGREEING, miti_overall=None, composed=silent)
+    assert "overall_grade_disagrees_with_scoring" not in _issues(verdict)
+
+    invented = _composed(overall_grade="Matching")
+    verdict = _verdict(AGREEING, miti_overall=None, composed=invented)
+    assert "overall_grade_disagrees_with_scoring" in _issues(verdict)
+    assert not verdict.passed
+
+
+def test_an_overall_miti_decided_that_the_document_omits_fails() -> None:
+    silent = asyncio.run(
+        siddhi_report.compose_prism(
+            dimensions=_rows(), evidence_by_item=_exchanges(), embed=None
+        )
+    )
+    verdict = _verdict(AGREEING, miti_overall="Matching", composed=silent)
+    assert "overall_grade_disagrees_with_scoring" in _issues(verdict)
+
+
+def test_the_gap_section_states_mitis_grade_word_not_one_rederived_from_the_score() -> None:
+    """One grading authority. A row carrying Miti's word is read, never
+    re-derived: a score of 70 re-derives to Moderately Matching, and a gap
+    section that said so beside a rated section stating Miti's Not Matching
+    would restate one skill two ways."""
+    from app.services import gap_analysis
+
+    row = {"category": "must_have", "name": "Kafka", "score": 70, "grade": "Not Matching"}
+    assert gap_analysis.row_grade(row) == "Not Matching"
+    assert gap_analysis.must_have_cap_applies([row]) is True
+    assert gap_analysis.gap_items([row], "must_have") == [row]
+    # A row with no word (the pre-release scoring path) reads the one scale.
+    assert gap_analysis.row_grade({"score": 70}) == "Moderately Matching"
+
+
+def test_a_not_assessed_skill_is_neither_a_gap_nor_a_failed_must_have() -> None:
+    """Not assessed is not poor: it caps nothing and is probed as nothing."""
+    from app.services import gap_analysis
+
+    row = {
+        "category": "must_have",
+        "name": "Kafka",
+        "score": 25,
+        "grade": "Not Matching",
+        "assessment_status": "not_assessed",
+    }
+    assert gap_analysis.row_grade(row) is None
+    assert gap_analysis.must_have_cap_applies([row]) is False
+    assert gap_analysis.gap_items([row], "must_have") == []

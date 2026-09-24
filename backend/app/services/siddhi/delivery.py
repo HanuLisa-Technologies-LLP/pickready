@@ -125,6 +125,14 @@ async def gate_delivery(session: Any, report: Any) -> DeliveryClearance:
     Reads the disposition from the database rather than accepting one from the
     caller. A gate whose input its own caller supplies is a gate the caller can
     satisfy, and G4's entire purpose is to be unsatisfiable by the pipeline.
+
+    THE DECISION MUST POSTDATE THE REPORT. A disposition is recorded against
+    the application's EVALUATION, and an evaluation can exist before the report
+    does (a run held because a skill could not be assessed writes one and no
+    report). A person who decided on that earlier state has not read this
+    report, so a disposition created before `synthesized_at` does not clear it.
+    A report with no `synthesized_at` has no such boundary and any recorded
+    decision counts, which is the pre-release behaviour.
     """
     from app.models.hiring import ReviewDisposition
     from app.services.hiring import gates
@@ -135,15 +143,19 @@ async def gate_delivery(session: Any, report: Any) -> DeliveryClearance:
     decided_by: Any = None
 
     if needs_review:
+        link_id = getattr(report, "job_candidate_link_id", None)
+        if link_id is None:
+            # `link_id == None` would compile to IS NULL and match every
+            # disposition whose application was purged, from any candidate:
+            # a report with no application is a defect, never a lookup.
+            raise ValueError("a PRISM report without an application cannot be gated")
+        query = select(ReviewDisposition).where(ReviewDisposition.link_id == link_id)
+        written_at = getattr(report, "synthesized_at", None)
+        if written_at is not None:
+            query = query.where(ReviewDisposition.created_at >= written_at)
         row = (
             await session.execute(
-                select(ReviewDisposition)
-                .where(
-                    ReviewDisposition.link_id
-                    == getattr(report, "job_candidate_link_id", None)
-                )
-                .order_by(ReviewDisposition.created_at.desc())
-                .limit(1)
+                query.order_by(ReviewDisposition.created_at.desc()).limit(1)
             )
         ).scalars().first()
         if row is not None:
