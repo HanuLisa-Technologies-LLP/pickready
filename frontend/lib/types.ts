@@ -1020,7 +1020,10 @@ export type CreditEventType =
   | "incomplete_assessment"
   | "no_show"
   | "old_profile_review"
-  | "adjustment";
+  | "adjustment"
+  // A credit lot reaching its expiry with sub-units left (2026-09-22, new
+  // grants only). The ledger has written it since then; the type had not.
+  | "expiry";
 
 export interface PricingPlan {
   id: string;
