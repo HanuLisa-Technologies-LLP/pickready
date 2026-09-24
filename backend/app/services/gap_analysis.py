@@ -98,6 +98,10 @@ PROBES_EMPTY_STATE = "empty_state"
 
 #: The registry name of the probe prompt, recorded with a model call.
 PROBE_PROMPT = "report_gap_probes"
+#: The task type the probes are written on. ONE constant for the call and for
+#: the provenance record, so `model_id` names the model that actually wrote
+#: them: two literals would let the call move tier while the record did not.
+PROBE_TASK_TYPE = "report_synthesis"
 
 #: A gap is an item graded Moderately Matching or Not Matching. The rule is the
 #: same for all three aspects (spec §9.6, "Probe count Dynamically"); what
@@ -352,7 +356,7 @@ async def _write_probes(
         if reflection:
             messages.append({"role": "user", "content": reflection})
         raw = await llm_router.chat_completion(
-            "report_synthesis", messages, response_format_json=True, session=session
+            PROBE_TASK_TYPE, messages, response_format_json=True, session=session
         )
         probes = [
             _clean_probe(value)
@@ -449,7 +453,7 @@ async def _write_probes(
             provenance.template(f"probes:{item.get('name')}")
         return fallback, PROBES_TEMPLATE, None
     if provenance is not None:
-        provenance.model_call("report_synthesis", PROBE_PROMPT)
+        provenance.model_call(PROBE_TASK_TYPE, PROBE_PROMPT)
     return result.value, PROBES_MODEL, None
 
 

@@ -15,8 +15,11 @@ verdict, and every way it must not:
   * lookups are sequential (one scoring session) and bounded per report.
 
 The passage source is a stub throughout, shaped like `evidence_retrieval`'s
-`Passages` / `PassageRef`, which lives on another branch; the signature the
-production seam binds is pinned separately below.
+`Passages` / `PassageRef`, which lives on another branch. The signature the
+production seam binds is pinned against the real function by
+`test_siddhi_support_wiring.py`, which lands with the wiring once both
+branches are merged (it would only be a skip before then, and a skip is not a
+check).
 """
 from __future__ import annotations
 
@@ -318,27 +321,6 @@ async def test_a_policy_refusal_from_the_tool_layer_propagates() -> None:
     )
     with pytest.raises(ToolPolicyError):
         await support.assess(KUBERNETES_STATEMENT, [ANSWER], embed=None, passage_source=source)
-
-
-def test_the_seam_matches_the_retrieval_entry_points_signature() -> None:
-    """`evidence_retrieval` is the one retrieval entry for Siddhi (CONTRACT v2)
-    and lands from another branch. When it is present, the keyword-only
-    parameters the seam binds must exist on it, so the wiring hunk cannot drift
-    from the function it names. Absent, the test says so rather than passing."""
-    import importlib
-    import inspect
-
-    try:
-        retrieval = importlib.import_module("app.services.evidence_retrieval")
-    except ModuleNotFoundError:
-        pytest.skip(
-            "evidence_retrieval lands with WP5-E; the wiring hunk is in the "
-            "WP5-C report and this test binds once both are merged"
-        )
-    parameters = inspect.signature(retrieval.support_passages_for_statement).parameters
-    assert list(parameters)[0] == "session"
-    for name in ("tenant_id", "link_id", "statement"):
-        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ── Through the composer and the read model ──────────────────────────────────

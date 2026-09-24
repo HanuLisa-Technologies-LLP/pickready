@@ -188,8 +188,10 @@ async def test_model_probes_are_marked_model_and_record_the_prompt(monkeypatch) 
         "one deploy where that signal was misleading and what you did next after."
     )
     seen: list[str] = []
+    called: list[str] = []
 
     async def _chat(task_type, messages, **kwargs):
+        called.append(task_type)
         seen.append(messages[1]["content"])
         return json.dumps({"probes": [grounded]})
 
@@ -201,7 +203,10 @@ async def test_model_probes_are_marked_model_and_record_the_prompt(monkeypatch) 
     entry = section["groups"][1]["items"][0]
     assert entry["probes"] == [grounded]
     assert entry["probes_source"] == gap_analysis.PROBES_MODEL
-    assert recorder.models == [("report_synthesis", gap_analysis.PROBE_PROMPT)]
+    # The provenance names the task type the call ACTUALLY used, so `model_id`
+    # resolves to the model that wrote the probes and to nothing else.
+    assert called == ["report_synthesis"]
+    assert recorder.models == [(called[0], gap_analysis.PROBE_PROMPT)]
     # The row ids the exchange carries for the trail never reach the prompt.
     assert "8a0d8f8e" not in seen[0]
     assert "3f1c3c9e" not in seen[0]
