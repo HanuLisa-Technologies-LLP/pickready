@@ -80,6 +80,7 @@ from app.services import job_assessment_retention
 from app.services import job_candidates
 from app.services import job_posting
 from app.services import locks
+from app.services import candidate_identity
 from app.services import candidate_updates
 from app.services import hiring_pipeline
 from app.services import rbac
@@ -1653,9 +1654,7 @@ async def _store_one_databank_resume(
             error=_detail_message(exc),
         )
 
-    candidate = (
-        await session.execute(select(Candidate).where(Candidate.email == email))
-    ).scalars().first()
+    candidate = await candidate_identity.find_canonical_by_email(session, email)
     if candidate is None:
         candidate = Candidate(
             tenant_id=user.tenant_id,
@@ -1764,7 +1763,7 @@ async def upload_databank_candidates(
 
     (claude.md rule 7 still holds and is untouched: it exempts databank
     profiles from the EMPLOYER VERIFICATION flow, which keys off `source`, and
-    the 40 aspects are a profile form now rather than an outreach step.)
+    the questionnaire it once named no longer exists.)
 
     Gated on the existing UPLOAD_RESUMES capability, which all three flat staff
     roles already hold. No new capability is invented for this.
@@ -1987,18 +1986,16 @@ async def _queue_databank_invitation(
     company_name: str,
     application_link: str,
 ) -> uuid.UUID:
-    """Draft one invitation, record it, and dispatch the send.
+    """Draft one invitation and queue it through the one outbox writer.
 
-    Mirrors `api/pipeline._queue_transition_email` deliberately: same drafting
-    service, same `email_log` row, same task. The difference is that this one
-    is NOT keyed to a status change, because no status changes.
+    `email_outbox.queue_candidate_email` records the `email_log` row, threads
+    it into the tenant's conversation with the candidate (a person sent it),
+    resolves the tenant's default sender and dispatches the send AFTER the
+    commit, so a rolled-back request sends nothing. It is NOT keyed to a
+    status change, because no status changes.
     """
-    from app.models.email_log import (  # noqa: PLC0415
-        EMAIL_TYPE_DATABANK_INVITATION,
-        STATUS_QUEUED,
-        EmailLog,
-    )
-    from app.services import lifecycle_email  # noqa: PLC0415
+    from app.models.email_log import EMAIL_TYPE_DATABANK_INVITATION  # noqa: PLC0415
+    from app.services import email_outbox, lifecycle_email  # noqa: PLC0415
 
     draft = await lifecycle_email.draft(
         EMAIL_TYPE_DATABANK_INVITATION,
@@ -2010,23 +2007,27 @@ async def _queue_databank_invitation(
         },
         session=session,
     )
-    log = EmailLog(
+    log = await email_outbox.queue_candidate_email(
+        session,
         tenant_id=job.tenant_id,
         email_type=EMAIL_TYPE_DATABANK_INVITATION,
         recipient_email=candidate.email,
         candidate_id=candidate.id,
         job_id=job.id,
-        job_candidate_link_id=link.id,
+        link_id=link.id,
         subject=draft["subject"],
         body=draft["body"],
-        status=STATUS_QUEUED,
-        edited_by_human=False,
         generated_by_ai=draft["generated_by_ai"],
+        edited_by_human=False,
         sent_by=user.user_id,
+        candidate_name=candidate.full_name,
     )
-    session.add(log)
-    await session.flush()
-    dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
+    if log is None:
+        # No dedupe key is passed, so the insert cannot be skipped as a
+        # duplicate; None here means the outbox contract changed underneath.
+        raise RuntimeError(
+            f"the databank invitation for link {link.id} was not queued"
+        )
     # The Updates feed. This is the ONE kind that exists for a candidate with
     # no application, which is exactly the person most likely to miss the
     # email: they have never heard of us, so our address has no history in

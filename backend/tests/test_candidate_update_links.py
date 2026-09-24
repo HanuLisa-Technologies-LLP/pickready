@@ -80,7 +80,9 @@ def route_exists(path: str, root: pathlib.Path | None = None) -> bool:
 
 
 def _filled(link_path: str) -> str:
-    return link_path.format(link_id=uuid.uuid4(), job_id=uuid.uuid4())
+    return link_path.format(
+        link_id=uuid.uuid4(), job_id=uuid.uuid4(), conversation_id=uuid.uuid4()
+    )
 
 
 @pytest.mark.parametrize("kind", candidate_updates.KINDS)

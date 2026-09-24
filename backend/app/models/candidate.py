@@ -4,7 +4,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text,
-    UniqueConstraint, event,
+    UniqueConstraint, event, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -22,6 +22,16 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
     __table_args__ = (
         Index("ix_candidates_email", "email"),
         Index("ix_candidates_tenant_created", "tenant_id", "created_at"),
+        # Migration 0120: the case-insensitive lookup the one resolver
+        # (`services/candidate_identity`) reads through, and ONE record per
+        # signed-in user, enforced by the database rather than by the code.
+        Index("ix_candidates_email_lower", text("lower(email)")),
+        Index(
+            "uq_candidates_user_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+        ),
     )
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

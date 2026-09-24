@@ -436,7 +436,6 @@ async def test_a_link_owned_by_a_signed_in_record_is_never_taken(
 LEGACY_RESOLVERS: dict[str, str] = {
     "app/api/assessment_conversation.py": "Phase 3: one-line swap to resolve_candidate_id",
     "app/api/proctoring.py": "Phase 3: one-line swap to resolve_candidate_id",
-    "app/api/jobs.py": "Phase 1: databank upload dedupe via find_canonical_by_email",
 }
 
 _SQL_RESOLVER_FRAGMENTS = ("c.user_id = :uid", "c.email = u.email")

@@ -63,6 +63,7 @@ __all__ = [
     "NOT_PROCEEDING",
     "INVITED_TO_APPLY",
     "JOB_CLOSED",
+    "MESSAGE_RECEIVED",
 ]
 
 
@@ -84,6 +85,10 @@ NOT_PROCEEDING = "not_proceeding"
 INVITED_TO_APPLY = "invited_to_apply"
 #: The client filled the role and closed the posting.
 JOB_CLOSED = "job_closed"
+#: A recruiter wrote to the candidate in a portal thread (Phase 6 WP6-C). The
+#: recruiter's words are never copied here: the entry says a message arrived
+#: and links to the thread, where the message itself is.
+MESSAGE_RECEIVED = "message_received"
 
 
 @dataclass(frozen=True)
@@ -96,7 +101,8 @@ class UpdateTemplate:
     title: str
     body: str
     #: Where in the portal this leads. `{link_id}` is substituted when the
-    #: update belongs to one application.
+    #: update belongs to one application, `{job_id}` for a job and
+    #: `{conversation_id}` for a message thread.
     link_path: str | None = None
 
 
@@ -225,6 +231,12 @@ TEMPLATES: dict[str, UpdateTemplate] = {
         ),
         link_path="/portal/applications?application={link_id}",
     ),
+    MESSAGE_RECEIVED: UpdateTemplate(
+        kind=MESSAGE_RECEIVED,
+        title="New message",
+        body="{company} sent you a message. Open Messages to read it and reply.",
+        link_path="/portal/messages?conversation={conversation_id}",
+    ),
 }
 
 KINDS: tuple[str, ...] = tuple(TEMPLATES)
@@ -297,6 +309,7 @@ async def record(
     tenant_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
     link_id: uuid.UUID | None = None,
+    conversation_id: uuid.UUID | None = None,
     emailed: bool = False,
 ) -> CandidateUpdate:
     """Write one feed row. Returns it, unflushed by design.
@@ -318,14 +331,18 @@ async def record(
         "company": company_name or "the hiring team",
         "link_id": str(link_id) if link_id else "",
         "job_id": str(job_id) if job_id else "",
+        "conversation_id": str(conversation_id) if conversation_id else "",
     }
     path = template.link_path
     if path is not None:
         needs_link = "{link_id}" in path and link_id is None
         needs_job = "{job_id}" in path and job_id is None
+        needs_thread = "{conversation_id}" in path and conversation_id is None
         # A link that leads to a page built from a missing identifier is worse
         # than no link: it renders as an affordance and then 404s.
-        path = None if (needs_link or needs_job) else _fill(path, values)
+        path = (
+            None if (needs_link or needs_job or needs_thread) else _fill(path, values)
+        )
 
     row = CandidateUpdate(
         candidate_id=candidate_id,

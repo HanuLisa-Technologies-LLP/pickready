@@ -163,8 +163,8 @@ class _InviteSession:
 
     def add(self, row) -> None:
         self.added.append(row)
-        # `_queue_databank_invitation` reads `log.id` back after the flush, so
-        # the fake has to behave like a flush that assigned one.
+        # The Updates feed row is added here; the fake behaves like a flush
+        # that assigned it an id.
         if getattr(row, "id", None) is None:
             row.id = uuid.uuid4()
 
@@ -240,11 +240,20 @@ async def _invite(monkeypatch, job, pairs, link_ids=None):
             "email_type": email_type,
         }
 
-    from app.services import lifecycle_email
+    from app.services import email_outbox, lifecycle_email
+
+    async def _fake_queue(session, **kwargs):
+        # The one outbox writer records the row, threads it and dispatches the
+        # send after commit; its own tests (test_email_outbox) prove that over
+        # a real table. Here what matters is that the route hands it the
+        # invitation, and hands it nothing else.
+        calls.setdefault("queued", []).append(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
 
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api, "_get_visible_job", _fake_visible)
     monkeypatch.setattr(lifecycle_email, "draft", _fake_draft)
+    monkeypatch.setattr(email_outbox, "queue_candidate_email", _fake_queue)
     monkeypatch.setattr(
         jobs_api, "dispatch",
         lambda *a, **k: calls.setdefault("tasks", []).append(a),
@@ -278,7 +287,15 @@ async def test_inviting_a_sourced_candidate_queues_one_email(monkeypatch) -> Non
     # their own.
     _type, context = calls["drafts"][0]
     assert context["application_link"].endswith(f"/apply/{job.id}")
-    assert calls["tasks"], "the send is a Celery task, never inline SMTP"
+    # One email, through the one outbox writer (which dispatches the send
+    # after commit), and never a bare dispatch from the route.
+    [queued] = calls["queued"]
+    assert queued["email_type"] == "databank_invitation"
+    assert queued["recipient_email"] == "asha@example.com"
+    assert queued["link_id"] == link.id and queued["job_id"] == job.id
+    assert queued["candidate_name"] == "Asha Rao"
+    assert queued["sent_by"] is not None and queued["edited_by_human"] is False
+    assert "tasks" not in calls
 
 
 @pytest.mark.asyncio
