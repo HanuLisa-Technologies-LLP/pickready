@@ -227,10 +227,16 @@ async def test_a_ledger_failure_never_fails_scoring(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_ledger_read_failure_never_fails_scoring(monkeypatch) -> None:
-    """The other direction. Reading the ledger back to look for contradictions
-    is the last thing the scoring pass does, and it must not be able to undo
-    everything before it."""
+async def test_a_ledger_read_failure_raises_rather_than_passing_as_no_contradiction(
+    monkeypatch,
+) -> None:
+    """REVERSED IN WP5-B. The contradiction read-back used to swallow any
+    exception and answer "no contradiction", a silent PASS on the one signal
+    that sends a disagreeing record to a person, and it swallowed a TypeError
+    as readily as an outage. Miti has already read this ledger twice in the
+    same transaction by the time it runs, so a failure here is a defect: it
+    raises, the scoring task fails and is retried, and no report is written
+    that claims its evidence agreed with itself."""
     _Recorder().install(monkeypatch)
 
     async def _explode(session, **kwargs):
@@ -240,10 +246,9 @@ async def test_a_ledger_read_failure_never_fails_scoring(monkeypatch) -> None:
     state, competency, question, _message_id = _fixture()
 
     grade = await _grade(state, competency, question)
-    review, _findings = await fa._uncertainty_from_evidence(state)
-
-    assert grade.score == 80
-    assert review is False
+    assert grade.score == 80, "the item grade itself never read the ledger back"
+    with pytest.raises(RuntimeError, match="the ledger is unreadable"):
+        await fa._uncertainty_from_evidence(state)
 
 
 @pytest.mark.asyncio

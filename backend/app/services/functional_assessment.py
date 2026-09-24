@@ -107,7 +107,6 @@ __all__ = [
     "band_index_for",
     "build_gap_analysis",
     "build_radar_charts",
-    "infer_grade",
     "infer_grade_fallback",
     "must_have_cap_applies",
     "portable_evidence_nodes",
@@ -320,34 +319,6 @@ def infer_grade_fallback(job: Job) -> str:
     return "non_managerial"
 
 
-async def infer_grade(job: Job, session: AsyncSession) -> str:
-    """LEGACY FALLBACK ONLY. Grade is a required field on the Create Job form and
-    is stored on jobs.assessment_grade; this path exists for pre-0014 rows that
-    somehow still carry no grade."""
-    if job.assessment_grade in GRADE_NAMES:
-        return job.assessment_grade
-    try:
-        raw = await llm_router.chat_completion(
-            "extraction",
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify this job into exactly one value: non_managerial, "
-                        "managerial, leadership, cxo. Return JSON {\"grade\":\"...\"}."
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"title": job.title, "level": job.level, "jd": job.jd_json})},
-            ],
-            response_format_json=True,
-            session=session,
-        )
-        grade = json.loads(raw).get("grade")
-        return grade if grade in GRADE_NAMES else infer_grade_fallback(job)
-    except Exception:
-        return infer_grade_fallback(job)
-
-
 # ── The technical half no longer exists as a half ─────────────────────────
 # There was a standalone technical track here: its own question bank, its own
 # scorer, its own report category with no place in the rendered report. Draft v4
@@ -422,10 +393,17 @@ async def _uncertainty_from_evidence(
     produced it and hand the report to a person. `needs_human_review` already
     exists on the report row for exactly this, so nothing new is invented.
 
-    AN EMPTY LEDGER IS NOT A CONTRADICTION. If the ledger is unavailable, or
-    nothing was recorded, this returns False -- otherwise a ledger outage would
-    flag every report in the product for human review, which is a louder failure
-    than the one it was guarding against.
+    AN EMPTY LEDGER IS NOT A CONTRADICTION: nothing recorded returns False.
+
+    AN UNREADABLE LEDGER RAISES (WP5-B). This used to swallow ANY exception and
+    answer "no contradiction", which is a silent pass on the one signal that
+    routes a disagreeing record to a person, and it caught programming errors
+    as readily as outages. It is also unreachable as an outage: Miti read this
+    same ledger twice in this transaction a moment earlier (the evidence the
+    evaluators saw and the contradiction report they were triangulated
+    against), so a failure here is a defect, and a failed SQL statement has
+    already aborted the transaction the report would be written in. The
+    scoring task fails and is retried, like every other unreadable input.
     """
     from app.services.evidence import contradictions, ledger
 
@@ -434,16 +412,9 @@ async def _uncertainty_from_evidence(
     job = state.get("job")
     if session is None or link is None or job is None:
         return False, []
-    try:
-        claims = await ledger.load_claims(
-            session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "functional_assessment.evidence_not_readable link_id=%s",
-            link.id, exc_info=True,
-        )
-        return False, []
+    claims = await ledger.load_claims(
+        session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+    )
     if not claims:
         return False, []
 
@@ -981,6 +952,24 @@ class AssessmentState(TypedDict, total=False):
     report_id: str
 
 
+def _matching_score(raw: Any) -> int | None:
+    """A matching parameter's recorded 0-10 score on the 0-100 scale, or None.
+
+    None when nothing usable was recorded (absent, a boolean, not a number, not
+    finite). Never a default: a parameter with no reading is not a parameter
+    that read five.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return max(0, min(100, int(value * 10)))
+
+
 async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
     """The AI Score: the four matching parameters, 25-30 word remarks (§10.5).
 
@@ -1000,21 +989,31 @@ async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
     result = []
     for ordinal, (key, name, description) in enumerate(categories, 1):
         item = breakdown.get(key) or {}
-        score = int(float(item.get("score", 5)) * 10)
+        # NO SCORE IS INVENTED (WP5-B). A parameter the matching run recorded
+        # no score for used to read as 5 of 10, a Not Matching row written
+        # from nothing. It is omitted and logged instead: a missing row says
+        # the snapshot has no reading for it, which is what happened.
+        score = _matching_score(item.get("score"))
+        if score is None:
+            logger.warning(
+                "functional_assessment.ai_score_parameter_unscored link_id=%s key=%s",
+                state["link"].id, key,
+            )
+            continue
         evidence = str(item.get("comment") or "resume and application evidence")
         result.append(
             {
                 "category": CATEGORY_MATCHING,
                 "name": name,
                 "description": description,
-                "score": max(0, min(100, score)),
+                "score": score,
                 "required_level": None,
                 "remark": await bounded_remark(
                     state["session"],
                     name,
                     evidence,
                     *MATCHING_REMARK_WORDS,
-                    rating=grade_for_percent(max(0, min(100, score))),
+                    rating=grade_for_percent(score),
                 ),
                 "ordinal": ordinal,
             }
@@ -1714,7 +1713,17 @@ async def synthesis_node(state: AssessmentState) -> dict:
             "Miti produced no aggregate for link "
             f"{state['link'].id}: {'; '.join(evaluation.outcome.blocking_reasons)}"
         )
-    overall_score = int(round(aggregate.delivered_score))
+    # `stated_score`, never `delivered_score`: the working is recorded on the
+    # evaluation row either way, but a withheld overall ("not assessed") has
+    # no number to state. Until WP5-D writes a final "Not assessed" report the
+    # scoring node refuses any incomplete run, so a None here is a defect and
+    # it raises rather than writing a grade nobody made.
+    if aggregate.stated_score is None:
+        raise SkillsNotAssessed(
+            f"the overall for link {state['link'].id} is withheld "
+            f"({aggregate.overall_status}); no report is written"
+        )
+    overall_score = int(round(aggregate.stated_score))
     cap_applied = aggregate.must_have_cap_applied
     if cap_applied:
         logger.info(

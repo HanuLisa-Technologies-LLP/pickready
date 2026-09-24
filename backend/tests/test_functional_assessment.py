@@ -740,3 +740,62 @@ def test_behavioural_is_never_rubric_scored() -> None:
     """It is graded by judgement because there is no single correct answer to
     weigh it against (spec 8)."""
     assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES
+
+
+# ── The AI Score invents no score (WP5-B) ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (7, 70),
+        (7.9, 79),
+        ("8", 80),
+        (0, 0),
+        (12, 100),
+        (None, None),
+        (True, None),
+        ("not a number", None),
+        (float("nan"), None),
+        (float("inf"), None),
+    ],
+)
+def test_a_matching_score_is_read_never_defaulted(raw, expected) -> None:
+    assert fa._matching_score(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_matching_parameter_is_omitted_rather_than_read_as_five(
+    monkeypatch, caplog
+) -> None:
+    """A parameter the matching run recorded no score for used to read as five
+    of ten, a Not Matching row written from nothing. It is omitted and logged:
+    the snapshot has no reading for it, which is what happened."""
+    from app.services import matching_categories
+
+    async def _categories(session, job_id):
+        return [
+            ("skills_match", "Skills", "d"),
+            ("experience_relevance", "Experience", "d"),
+        ]
+
+    async def _remark(session, name, evidence, minimum, maximum, *, rating=None):
+        return f"remark for {name}"
+
+    monkeypatch.setattr(matching_categories, "resolved_categories", _categories)
+    monkeypatch.setattr(fa, "bounded_remark", _remark)
+    link = SimpleNamespace(
+        id=uuid.uuid4(),
+        match_breakdown_json={"skills_match": {"score": 8, "comment": "Python, SQL"}},
+    )
+    state = {"session": None, "job": SimpleNamespace(id=uuid.uuid4()), "link": link}
+
+    caplog.set_level("WARNING", logger=fa.__name__)
+    rows = await fa._matching_dimensions(state)
+
+    assert [(row["name"], row["score"]) for row in rows] == [("Skills", 80)]
+    assert any(
+        "ai_score_parameter_unscored" in record.getMessage()
+        and "experience_relevance" in record.getMessage()
+        for record in caplog.records
+    )
