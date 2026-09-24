@@ -144,6 +144,10 @@ from app.models.job_scorecard_binding import JobScorecardBinding
 # The immutable skills contract locked at a job's first assessment start
 # (migration 0118). Read by `services/assessment_contract`.
 from app.models.job_skill_snapshot import JobSkillSnapshot
+# A coding question's answer key, its Run history and its final submission
+# (migration 0124). The key is read and written only by
+# `services/coding_assessment/keys`.
+from app.models.coding import CodingQuestionKey, CodingRun, CodingSubmission
 from app.models.user import OTPChallenge, User
 
 __all__ = [
@@ -243,6 +247,9 @@ __all__ = [
     "ReviewDisposition",
     "JobScorecardBinding",
     "JobSkillSnapshot",
+    "CodingQuestionKey",
+    "CodingRun",
+    "CodingSubmission",
     "AgentLearning",
     "AgentToolApprovalRule",
     "ContextChunk",
