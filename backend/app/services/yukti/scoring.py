@@ -23,7 +23,8 @@ THE ARITHMETIC (all of it, and all of it here)
 WHAT IS STORED, AND WHAT IS NEVER STORED
 ----------------------------------------
 `YuktiOutcome.columns` is the one mapping onto the link's Yukti columns
-(migration phase2_yukti, Phase 2 WP-B): the pre score, the status, the failure
+(migration phase2_yukti, Phase 2 WP-B) and `apply_outcome` is the one writer
+of them, called by `score_links` for every link it read: the pre score, the status, the failure
 reason, the evidence tags, the provenance, the time and the profile that was
 read. It NEVER writes `match_score`, `match_rationale`, `match_breakdown_json`,
 `tier` or `prescreen_grade`: those are history, readable and frozen.
@@ -40,8 +41,10 @@ A FAILURE NEVER OVERWRITES A GOOD RESULT
 ----------------------------------------
 A model outage or twice-malformed output says nothing about the candidate. When
 the link already holds a `scored` result for the SAME resume and the SAME
-contract, `keep_prior` says so and the caller keeps it, recording only that
-the latest attempt failed. Otherwise the link reads `not_assessed`, which the
+contract, `keep_prior` says so and `apply_outcome` keeps it, recording only
+that the latest attempt failed. A `legacy` row is NOT kept this way: its score
+came from the retired matcher, not from a reading of this resume against these
+skills, so it is no prior result of this method to protect. Otherwise the link reads `not_assessed`, which the
 ranked table shows in words ("Not assessed"), never as a silently unscored row.
 """
 from __future__ import annotations
@@ -49,7 +52,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
@@ -70,8 +73,10 @@ __all__ = [
     "failed_outcome",
     "keep_prior",
     "merge_failed_attempt",
+    "apply_outcome",
     "outcome_from_judgement",
     "pre_score",
+    "prior_of",
     "score_links",
 ]
 
@@ -366,15 +371,56 @@ def merge_failed_attempt(
     return merged
 
 
+def prior_of(link: Any) -> PriorResult | None:
+    """What `link` already holds, read from its own Yukti columns, or None
+    when it has never been read (`pending`, or no status at all)."""
+    status = getattr(link, "yukti_status", None)
+    if status is None or status == config.STATUS_PENDING:
+        return None
+    provenance = getattr(link, "yukti_provenance_json", None)
+    digest = provenance.get("contract_digest") if isinstance(provenance, Mapping) else None
+    return PriorResult(status, getattr(link, "yukti_profile_id", None), digest)
+
+
+def apply_outcome(link: Any, outcome: YuktiOutcome, *, now: datetime) -> bool:
+    """Write `outcome` onto the link's Yukti columns. The ONE writer of them.
+
+    Returns False when the link's prior result was KEPT (`keep_prior`): only
+    its provenance changes, stamped with the attempt that failed, and its
+    score, status, tags, time and profile stay exactly as they were. Returns
+    True when the outcome replaced whatever was there.
+
+    It assigns attributes and nothing else: the caller's transaction flushes
+    and commits them, which is also what releases the transaction-scoped
+    `YUKTI_LINK` lock `score_links` took for this link.
+    """
+    if outcome.link_id != getattr(link, "id", None):
+        raise ValueError(
+            f"outcome for link {outcome.link_id} cannot be written onto link "
+            f"{getattr(link, 'id', None)}"
+        )
+    prior = prior_of(link)
+    if keep_prior(prior, outcome):
+        link.yukti_provenance_json = merge_failed_attempt(
+            getattr(link, "yukti_provenance_json", None), outcome
+        )
+        return False
+    for column, value in outcome.columns(scored_at=now).items():
+        setattr(link, column, value)
+    return True
+
+
 # ── The run over many links ──────────────────────────────────────────────────
 
 
 @dataclass
 class ScoreSummary:
-    """What one `score_links` call produced, for the caller to persist."""
+    """What one `score_links` call read, wrote and skipped."""
 
     outcomes: dict[uuid.UUID, YuktiOutcome] = field(default_factory=dict)
     skipped_locked: list[uuid.UUID] = field(default_factory=list)
+    #: Links whose earlier result survived a transient failure (`keep_prior`).
+    kept_prior: list[uuid.UUID] = field(default_factory=list)
 
     @property
     def degraded(self) -> bool:
@@ -391,15 +437,18 @@ async def score_links(
     *,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> ScoreSummary:
-    """Judge every (link, profile) pair and return one outcome per link.
+    """Judge every (link, profile) pair, write each outcome onto its link, and
+    return one outcome per link read.
 
-    WRITES NOTHING. The caller (the matching run, the per-profile rescore)
-    persists `outcome.columns(...)` in the SAME transaction, because the
-    per-link advisory lock taken here is transaction scoped: it is held until
-    that transaction commits, which is exactly the window in which a second
-    scorer of the same link must stand aside (`locks.YUKTI_LINK`). A link whose
-    lock is held is skipped and listed, never waited on: the holder is doing
-    this link's work already.
+    Every outcome is written onto its link through `apply_outcome` (the one
+    writer of the Yukti columns) and nothing is committed here: the caller
+    (the matching run, the per-profile rescore) commits in the SAME
+    transaction, because the per-link advisory lock taken here is transaction
+    scoped. It is held until that transaction ends, which is exactly the
+    window in which a second scorer of the same link must stand aside
+    (`locks.YUKTI_LINK`). A link whose lock is held is skipped and listed,
+    never waited on and never written: the holder is doing this link's work
+    already. A caller that rolls back writes nothing at all.
 
     The profile paired with a link MUST be the one the link was made with;
     `inputs.candidate_input` refuses anything else.
@@ -409,6 +458,7 @@ async def score_links(
     from app.services.yukti import judge  # noqa: PLC0415
 
     summary = ScoreSummary()
+    now = datetime.now(timezone.utc)
     model_id = llm_providers.model_for(config.TASK_TYPE)
     prompt_version = registry.version(config.PROMPT_NAME)
     ctx = await inputs.job_context(db, job)
@@ -469,11 +519,17 @@ async def score_links(
         if on_progress is not None:
             on_progress(done, total)
 
+    for link_id, outcome in summary.outcomes.items():
+        if not apply_outcome(unique[link_id][0], outcome, now=now):
+            summary.kept_prior.append(link_id)
+
     logger.info(
-        "yukti.score_links job_id=%s scored=%d not_assessed=%d skipped_locked=%d degraded=%s",
+        "yukti.score_links job_id=%s scored=%d not_assessed=%d kept_prior=%d "
+        "skipped_locked=%d degraded=%s",
         getattr(job, "id", None),
         summary.count(config.STATUS_SCORED),
         summary.count(config.STATUS_NOT_ASSESSED),
+        len(summary.kept_prior),
         len(summary.skipped_locked),
         summary.degraded,
     )

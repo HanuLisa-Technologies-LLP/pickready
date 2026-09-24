@@ -343,3 +343,89 @@ def test_columns_is_the_one_mapping_and_touches_no_history_column() -> None:
     assert columns["yukti_scored_at"] is now
     assert isinstance(columns["evidence_tags_json"], list)
     assert isinstance(columns["yukti_provenance_json"], dict)
+
+
+# ── The one writer of the Yukti columns ──────────────────────────────────────
+
+
+def _link(link_id, **columns):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=link_id, **columns)
+
+
+def test_apply_outcome_writes_every_yukti_column_and_nothing_else() -> None:
+    outcome = _outcome(_judgement({MH1: "strong"}))
+    link = _link(outcome.link_id, match_score=81.0, tier="matching")
+    now = datetime.now(timezone.utc)
+    assert scoring.apply_outcome(link, outcome, now=now) is True
+    assert link.yukti_status == config.STATUS_SCORED
+    assert link.yukti_pre_score == outcome.pre_score
+    assert link.yukti_profile_id == outcome.profile_id
+    assert link.yukti_scored_at is now
+    assert link.evidence_tags_json and link.yukti_provenance_json["contract_digest"]
+    assert link.match_score == 81.0 and link.tier == "matching", "history columns are never written"
+
+
+def test_apply_outcome_keeps_a_scored_result_through_a_transient_failure() -> None:
+    ctx = _ctx()
+    profile = uuid.uuid4()
+    link_id = uuid.uuid4()
+    earlier = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    link = _link(
+        link_id,
+        yukti_status=config.STATUS_SCORED,
+        yukti_pre_score=77.5,
+        yukti_failure_reason=None,
+        evidence_tags_json=[{"kind": "skill"}],
+        yukti_provenance_json={"contract_digest": ctx.contract_digest},
+        yukti_scored_at=earlier,
+        yukti_profile_id=profile,
+    )
+    failure = scoring.failed_outcome(
+        ctx, link_id, profile, config.FAILURE_MODEL_UNAVAILABLE, model_id="m", prompt_version="v"
+    )
+    assert scoring.apply_outcome(link, failure, now=datetime.now(timezone.utc)) is False
+    assert link.yukti_status == config.STATUS_SCORED
+    assert link.yukti_pre_score == 77.5
+    assert link.yukti_scored_at is earlier
+    assert link.evidence_tags_json == [{"kind": "skill"}]
+    assert link.yukti_provenance_json == {
+        "contract_digest": ctx.contract_digest,
+        "last_attempt_failed": config.FAILURE_MODEL_UNAVAILABLE,
+    }
+
+
+def test_apply_outcome_replaces_a_result_the_failure_made_stale() -> None:
+    ctx = _ctx()
+    link_id = uuid.uuid4()
+    link = _link(
+        link_id,
+        yukti_status=config.STATUS_SCORED,
+        yukti_pre_score=77.5,
+        yukti_provenance_json={"contract_digest": "e" * 64},
+        yukti_profile_id=uuid.uuid4(),
+    )
+    failure = scoring.failed_outcome(
+        ctx, link_id, link.yukti_profile_id, config.FAILURE_MODEL_UNAVAILABLE,
+        model_id="m", prompt_version="v",
+    )
+    assert scoring.apply_outcome(link, failure, now=datetime.now(timezone.utc)) is True
+    assert link.yukti_status == config.STATUS_NOT_ASSESSED
+    assert link.yukti_pre_score is None
+    assert link.yukti_failure_reason == config.FAILURE_MODEL_UNAVAILABLE
+
+
+def test_prior_of_a_link_never_read_is_none() -> None:
+    assert scoring.prior_of(_link(uuid.uuid4())) is None
+    assert scoring.prior_of(_link(uuid.uuid4(), yukti_status=config.STATUS_PENDING)) is None
+    prior = scoring.prior_of(
+        _link(uuid.uuid4(), yukti_status="scored", yukti_profile_id=None, yukti_provenance_json=None)
+    )
+    assert prior == scoring.PriorResult("scored", None, None)
+
+
+def test_apply_outcome_refuses_another_links_outcome() -> None:
+    outcome = _outcome(_judgement({MH1: "strong"}))
+    with pytest.raises(ValueError):
+        scoring.apply_outcome(_link(uuid.uuid4()), outcome, now=datetime.now(timezone.utc))
