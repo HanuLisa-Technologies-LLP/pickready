@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
-from app.models.enums import OTPChannel, Role, UserStatus
+from app.models.enums import Role, UserStatus
 
 
 class User(Base, UUIDPKMixin, CreatedAtMixin):
@@ -71,20 +71,3 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
 
-
-class OTPChallenge(Base, UUIDPKMixin, CreatedAtMixin):
-    """Only the code hash is stored (HMAC, see core.security). Attempt counters
-    also mirrored in Redis for atomic increments under concurrency (ESD §5)."""
-    __tablename__ = "otp_challenges"
-
-    user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
-    )
-    identifier: Mapped[str] = mapped_column(String(320), nullable=False)  # email or phone
-    channel: Mapped[OTPChannel] = mapped_column(
-        Enum(OTPChannel, native_enum=False, length=10), nullable=False
-    )
-    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

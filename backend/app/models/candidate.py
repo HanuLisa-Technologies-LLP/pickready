@@ -149,12 +149,17 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
     )
     source_tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    # Every binary lives in the private GCS bucket. These fields remain on the
+    # Every binary lives in the private S3 bucket. These fields remain on the
     # profile so one application is an immutable snapshot of its resume.
     resume_url: Mapped[str | None] = mapped_column(String(1000))
     resume_public_id: Mapped[str | None] = mapped_column(String(512), index=True)
+    # `resume_storage.STORAGE_PROVIDER`, restated because a model must not
+    # import a service; `tests/test_legacy_scrap_removed.py` compares the two.
+    # It was "gcs" in Python and "cloudinary" as the SERVER default, so a writer
+    # that forgot the column labelled an S3 object with a provider it never
+    # touched. Migration 0128 moves the server default to "s3" as well.
     resume_storage_provider: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="gcs"
+        String(20), nullable=False, default="s3", server_default="s3"
     )
     resume_legacy_public_id: Mapped[str | None] = mapped_column(String(512))
     resume_original_filename: Mapped[str | None] = mapped_column(String(255))

@@ -104,7 +104,6 @@ def test_the_preserve_default_covers_the_tables_d2_never_named() -> None:
         if rule.bucket == reset.PURGE and not rule.named_by_d2
     ]
     assert {rule.table for rule in inferred_purges} == {
-        "technical_questions",
         "job_matching_categories",
         "context_chunks",
         "job_scorecard_bindings",

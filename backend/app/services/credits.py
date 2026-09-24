@@ -72,7 +72,6 @@ __all__ = [
     "consume",
     "credits_from_subunits",
     "grant",
-    "has_credit_headroom",
     "has_positive_balance",
     "is_demo_tenant",
     "LOW_BALANCE_FRACTION",
@@ -244,26 +243,6 @@ async def write_entry(
     return entry
 
 
-async def _sync_deficit(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """Recompute `tenants.credit_deficit` from the ledger. Returns the flag.
-
-    Written with raw SQL against `tenants` because that table is global (no RLS
-    policy keyed to app.tenant_id), so it is reachable from the tenant-scoped
-    session that just wrote the ledger entry as well as from the webhook's
-    bypass scope.
-    """
-    balance = await balance_subunits(session, tenant_id)
-    # A demonstration tenant is never in deficit, whatever the ledger sums to.
-    # The flag drives the dunning email and the portal's deficit banner, so
-    # letting it go true here would have a demo company chased for payment.
-    in_deficit = balance < 0 and not await is_demo_tenant(session, tenant_id)
-    await session.execute(
-        text("UPDATE tenants SET credit_deficit = :flag WHERE id = :tid"),
-        {"flag": in_deficit, "tid": str(tenant_id)},
-    )
-    return in_deficit
-
-
 async def grant(
     session: AsyncSession,
     *,
@@ -307,7 +286,6 @@ async def grant(
         ledger_entry_id=entry.id,
         subunits=subunits,
     )
-    await _sync_deficit(session, tenant_id)
     # Master Directive Part 5 Rule 5: every purchase resets BOTH warning
     # flags, so Warning 1 fires again when the new combined balance drops back
     # to 20 and Warning 2 again at 10.
@@ -335,9 +313,9 @@ async def consume(
 
     The deduction is NEVER refused (spec §3.3). A completed assessment cannot be
     un-completed, so blocking the charge would simply lose the revenue while the
-    customer keeps the work. The balance is allowed to go negative and the
-    tenant is flagged; what gets blocked is the NEXT invitation
-    (`has_credit_headroom`), which is a thing a human can still choose not to do.
+    customer keeps the work. The balance is allowed to go negative; what gets
+    blocked is the NEXT start (`has_positive_balance`, `can_start_assessment`),
+    which is a thing a human can still choose not to do.
 
     `role_classification` is the Job record's STEM flag (Master Directive
     Part 5 Rule 9): STEM bills 90 sub-units for a completed report and 30 for
@@ -348,8 +326,8 @@ async def consume(
     cost = consumption_subunits(event_type, role_classification)
     if cost is None:
         raise ValueError(f"{event_type} is not a billable consumption event")
-    # Materialise any expiry BEFORE the charge, so the deficit flag and the
-    # warning tiers this deduction triggers are computed against a balance that
+    # Materialise any expiry BEFORE the charge, so the warning tiers this
+    # deduction triggers are computed against a balance that
     # does not still contain credits the customer can no longer spend.
     await credit_lots.expire_due(session, tenant_id)
     entry = await write_entry(
@@ -382,7 +360,6 @@ async def consume(
             "credits.charge_exceeded_lots tenant=%s event=%s cost=%s drawn=%s",
             tenant_id, event_type, cost, drawn,
         )
-    await _sync_deficit(session, tenant_id)
     await _sync_warning_flags(session, tenant_id)
     return True
 
@@ -392,8 +369,7 @@ async def is_demo_tenant(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
 
     Read straight from `tenants`, which is a global table with no RLS policy, so
     this answers correctly from a tenant-scoped session and from a webhook's
-    bypass scope alike -- the same reason `_sync_deficit` writes there with raw
-    SQL.
+    bypass scope alike.
 
     Exemption covers refusals and alarms ONLY. Usage is still written to the
     ledger, because the requirement is that the billing UI and the billing logic
@@ -449,33 +425,16 @@ async def can_start_assessment(
     )
 
 
-async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """May this customer send NEW assessment invitations?
-
-    False once the balance is negative. It stays false until a grant (the next
-    billing cycle, or an upgrade) brings it back to zero or above — the ledger
-    itself is the recovery condition, so nothing has to remember to clear a flag.
-
-    A demonstration tenant is always true. Checked FIRST, before the balance is
-    summed: a demo company that has run assessments has a negative ledger like
-    any other, and asking the balance first would gate the one set of accounts
-    that must never be gated.
-    """
-    if await is_demo_tenant(session, tenant_id):
-        return True
-    await credit_lots.expire_due(session, tenant_id)
-    return await balance_subunits(session, tenant_id) >= 0
-
-
 # ── Zero-balance gating (spec §11) ───────────────────────────────────────────
-# `has_credit_headroom` above answers "may this customer send NEW invitations?"
-# and goes false at a NEGATIVE balance, because a completed assessment is
-# charged even into the negative: the work is already done and refusing the
-# charge would only lose the revenue.
+# A completed assessment is charged even into the negative: the work is already
+# done and refusing the charge would only lose the revenue. There used to be a
+# second, NEGATIVE-balance gate here (`has_credit_headroom`, "may this customer
+# send new invitations?"); it lost its last caller to the zero-balance gate
+# below and was deleted with the stored deficit flag it paired with (Vivekium
+# release, migration 0128).
 #
-# Draft v4 adds a stricter, separate question with a different threshold. Two
-# actions are blocked the instant the pool reads ZERO, before the balance can go
-# negative at all:
+# Draft v4's question has a different threshold. Two actions are blocked the
+# instant the pool reads ZERO, before the balance can go negative at all:
 #
 #   * creating a job;
 #   * advancing any candidate into the assessment stage, across every job,
@@ -615,10 +574,9 @@ async def has_positive_balance(session: AsyncSession, tenant_id: uuid.UUID) -> b
     nothing left to spend, and letting one more assessment start would be a
     credit spent from an empty pool.
 
-    A demonstration tenant is always true, checked FIRST, for the same reason as
-    `has_credit_headroom`: a demo company that has run assessments has a
-    negative ledger like any other, and asking the balance first would gate the
-    one set of accounts that must never be gated.
+    A demonstration tenant is always true, checked FIRST: a demo company that
+    has run assessments has a negative ledger like any other, and asking the
+    balance first would gate the one set of accounts that must never be gated.
     """
     if await is_demo_tenant(session, tenant_id):
         return True

@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import (
     AssessmentConversation,
-    CandidateTechnicalQuestion,
     JobCompetency,
     ReportSkillEvidence,
 )
@@ -104,18 +103,12 @@ def build_evidence_payload(
 def extract_payloads(
     *,
     transcript: Iterable[dict[str, Any]],
-    technical_questions: Iterable[CandidateTechnicalQuestion],
     competencies: Iterable[JobCompetency],
 ) -> list[dict[str, Any]]:
-    technical = {
-        str(row.id): ("technical", row.skill, row.prompt)
-        for row in technical_questions
-    }
-    ppi = {
+    lookup = {
         str(row.id): (row.category, row.name, row.description or row.name)
         for row in competencies
     }
-    lookup = {**technical, **ppi}
     grouped: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {"keys": [], "questions": [], "answers": [], "recorded_gaps": []}
     )
@@ -167,15 +160,10 @@ async def persist_skill_evidence(
     *,
     conversation: AssessmentConversation,
     transcript: list[dict[str, Any]],
-    technical_questions: list[CandidateTechnicalQuestion],
     competencies: list[JobCompetency],
 ) -> list[dict[str, Any]]:
     """Replace one conversation's derived rows atomically and return payloads."""
-    payloads = extract_payloads(
-        transcript=transcript,
-        technical_questions=technical_questions,
-        competencies=competencies,
-    )
+    payloads = extract_payloads(transcript=transcript, competencies=competencies)
     await session.execute(
         delete(ReportSkillEvidence).where(
             ReportSkillEvidence.conversation_id == conversation.id

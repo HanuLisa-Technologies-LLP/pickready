@@ -263,8 +263,9 @@ async def select_candidates_for_assessment(
     # Draft v4 moved this line from "negative" to "zero or below". At exactly
     # zero the pool is exhausted: there is nothing left to spend, and letting
     # one more candidate into the conversation would be a credit drawn from an
-    # empty account. `has_credit_headroom` keeps the negative threshold, because
-    # it answers a different question about work already performed.
+    # empty account. The negative-balance gate that sat beside it answered a
+    # question about work already performed, had no caller left, and was
+    # deleted (Vivekium release).
     #
     # This applies platform-wide, across every job, existing or new, and
     # regardless of how many un-assessed applicants are already sitting in the

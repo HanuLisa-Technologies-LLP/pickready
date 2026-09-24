@@ -2,8 +2,8 @@
 
 WHAT THIS FILE REPLACED, AND WHAT IT KEPT
 ------------------------------------------
-The previous version locked down a real production outage: all nine
-`llm_provider_keys` rows sat at `healthy = false` indefinitely, so
+The previous version locked down a real production outage: all nine rows of
+the retired multi-vendor key table sat at `healthy = false` indefinitely, so
 `chat_completion` skipped every key, raised on every call, and matching silently
 degraded to the placeholder "AI scoring unavailable" comment forever. The fix
 was half-open recovery.

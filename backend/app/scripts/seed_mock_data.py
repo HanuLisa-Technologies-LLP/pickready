@@ -1947,8 +1947,7 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
                    SET assessment_status = 'ready_for_candidates',
                        framework_generated_at = COALESCE(framework_generated_at, now()),
                        framework_approved_at = COALESCE(framework_approved_at, now()),
-                       questions_generated_at = COALESCE(questions_generated_at, now()),
-                       questions_approved_at = COALESCE(questions_approved_at, now())
+                       questions_generated_at = COALESCE(questions_generated_at, now())
                  WHERE archived_at IS NULL
                 """
             )

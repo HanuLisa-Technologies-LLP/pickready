@@ -6,12 +6,10 @@ from app.models.assessment import (
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
-    CandidateTechnicalQuestion,
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
     ReportSkillEvidence,
-    TechnicalQuestion,
 )
 from app.models.bd import (
     CHANNELS,
@@ -96,9 +94,6 @@ from app.models.enums import (
     ApprovalDecision,
     JobStatus,
     LinkSource,
-    LLMProvider,
-    LLMRoleHint,
-    OTPChannel,
     PipelineStatus,
     Role,
     Tier,
@@ -131,7 +126,7 @@ from app.models.cost import (
     AssessmentCostRecord,
 )
 from app.models.telemetry import TelemetryEvent
-from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
+from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.hiring import (
     CalibrationRecord,
     Evaluation,
@@ -144,7 +139,7 @@ from app.models.job_scorecard_binding import JobScorecardBinding
 # The immutable skills contract locked at a job's first assessment start
 # (migration 0118). Read by `services/assessment_contract`.
 from app.models.job_skill_snapshot import JobSkillSnapshot
-from app.models.user import OTPChallenge, User
+from app.models.user import User
 
 __all__ = [
     "DrishtiProfile",
@@ -171,7 +166,6 @@ __all__ = [
     "SupportThread",
     "CandidateQuestion",
     "CandidateTeamReview",
-    "CandidateTechnicalQuestion",
     "CONSUMPTION_SUBUNITS",
     "CreditLedgerEntry",
     "CreditLot",
@@ -219,11 +213,6 @@ __all__ = [
     "JobCompetency",
     "JobStatus",
     "LinkSource",
-    "LLMProvider",
-    "LLMProviderKey",
-    "LLMRoleHint",
-    "OTPChallenge",
-    "OTPChannel",
     "PipelineStatus",
     "PipelineStatusEntry",
     "PROGRESS_FLAGS",
@@ -262,7 +251,6 @@ __all__ = [
     "COST_BASIS_VALUES",
     "TelemetryEvent",
     "Tenant",
-    "TechnicalQuestion",
     "Tier",
     "User",
     "UserStatus",

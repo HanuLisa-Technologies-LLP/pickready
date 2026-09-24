@@ -1095,7 +1095,6 @@ def run_functional_assessment(link_id: str):
     from app.models.assessment import (
         AssessmentConversation,
         AssessmentMessage,
-        CandidateTechnicalQuestion,
         JobCompetency,
     )
     from app.models.candidate import JobCandidateLink
@@ -1154,16 +1153,6 @@ def run_functional_assessment(link_id: str):
                     }
                     for message in messages
                 ]
-                technical_questions = (
-                    await session.execute(
-                        select(CandidateTechnicalQuestion)
-                        .where(
-                            CandidateTechnicalQuestion.job_candidate_link_id
-                            == link.id
-                        )
-                        .order_by(CandidateTechnicalQuestion.ordinal)
-                    )
-                ).scalars().all()
                 competencies = (
                     await session.execute(
                         select(JobCompetency)
@@ -1178,7 +1167,6 @@ def run_functional_assessment(link_id: str):
                     session,
                     conversation=conversation,
                     transcript=transcript,
-                    technical_questions=list(technical_questions),
                     competencies=list(competencies),
                 )
             await run_assessment(session, job, link, transcript)

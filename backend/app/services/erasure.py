@@ -334,17 +334,18 @@ async def job_closure_erasure(
             {"job_id": str(job_id)},
         )
     ).rowcount
-    questions = 0
-    for table in ("candidate_questions", "candidate_technical_questions"):
-        questions += (
-            await session.execute(
-                text(
-                    f"DELETE FROM {table} "
-                    f"WHERE job_candidate_link_id IN ({links_sql}) RETURNING id"
-                ),
-                {"job_id": str(job_id)},
-            )
-        ).rowcount
+    # One questions table. The retired per-candidate technical track had a
+    # second until migration 0128 dropped it (empty everywhere it ran), and a
+    # DELETE naming a dropped table would fail every closure purge.
+    questions = (
+        await session.execute(
+            text(
+                "DELETE FROM candidate_questions "
+                f"WHERE job_candidate_link_id IN ({links_sql}) RETURNING id"
+            ),
+            {"job_id": str(job_id)},
+        )
+    ).rowcount
 
     receipt = JobClosureReceipt(
         job_id=job_id,

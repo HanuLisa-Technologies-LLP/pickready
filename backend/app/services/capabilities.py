@@ -174,17 +174,10 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
 # capability constant is only half a change (claude.md).
 VIEW_INTELLIGENCE_DASHBOARDS = "view_intelligence_dashboards"
 
-#: RPN-AI-UP-001 W3.6. Revoking every agent learning traceable to one source:
-#: a poisoned document, a prompt version that taught the wrong lesson, a parser
-#: that misread a whole batch. Granted to the client Super Admin (Role.client)
-#: and to nobody else by default, because revoking memory changes how every
-#: future generation behaves for the whole tenant. That is closer to
-#: EDIT_ROLE_PERMISSIONS than to recruitment work, and it is not something a
-#: recruiter should be able to do while working one job. Learnings are scoped
-#: per tenant (services/memory/provenance.py), so the only rows this can ever
-#: reach are the tenant's own. Seeded by migration 0089, because a capability
-#: constant is only half a change (claude.md).
-REVOKE_AGENT_LEARNINGS = "revoke_agent_learnings"
+# RPN-AI-UP-001 W3.6's learning-revocation capability is DELETED (Vivekium
+# release) with the experience memory it guarded, which no route or worker
+# could reach. Migration 0128 deletes its `role_permissions` rows: a
+# capability and its seeding are one change, and so is its removal.
 
 # Business Development Portal (the fourth portal, /bd). Three grants, one per
 # area of the console, so a BD lead can be given the customer database and the
@@ -236,8 +229,6 @@ ALL_CAPABILITIES = [
     # Talent Intelligence dashboards (2026-09-05 spec). Appended, same rule
     # as above: response field order must not shuffle.
     VIEW_INTELLIGENCE_DASHBOARDS,
-    # RPN-AI-UP-001 W3.6, appended for the same reason.
-    REVOKE_AGENT_LEARNINGS,
     # In-product support (2026-09-10). APPENDED, same rule again: the response
     # field order must not shuffle. Only the customer-side one is listed here.
     # HANDLE_SUPPORT_THREADS is a PLATFORM capability and this list is what
@@ -318,14 +309,8 @@ DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     Role.recruiter: dict(_CUSTOMER_FULL_ACCESS),
     # Bottom of the hierarchy: there is no subordinate role to manage.
     Role.hiring_manager: {**_CUSTOMER_FULL_ACCESS, MANAGE_STAFF: False},
-    # Company Admin: the same functional access, on the account they own, plus
-    # the one capability that is theirs alone. Revoking agent learnings is not
-    # part of _CUSTOMER_FULL_ACCESS deliberately: the other three staff roles
-    # are functionally identical to this one by product decision, and this is
-    # the second place (after MANAGE_COMPLIANCE_DOCUMENTS and MANAGE_BILLING)
-    # where the flat model does not flatten, because the act is about the
-    # tenant's own configuration rather than about running its hiring.
-    Role.client: {**_CUSTOMER_FULL_ACCESS, REVOKE_AGENT_LEARNINGS: True},
+    # Company Admin: the same functional access, on the account they own.
+    Role.client: dict(_CUSTOMER_FULL_ACCESS),
     # Business Development. Deliberately NOT given any recruitment capability:
     # a BD rep sells the platform, they do not run a customer's hiring. The set
     # here must match migration 0023's seeded rows exactly, or the engine (which

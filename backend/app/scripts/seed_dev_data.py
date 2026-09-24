@@ -7,7 +7,6 @@ Seeds:
 - demo tenant "Acme Corp" with client, 2 hiring managers, 1 HR, 1 recruiter
   (all client-org members  -  staff emails live on the tenant's domain)
 - company profile + approval_levels_config (recommended level inactive)
-- llm_provider_keys rows encrypted from settings (empties skipped)
 - default email templates for the demo tenant
 - 3 demo candidates with profiles (2 consenting to the Databank) + embeddings
 - 1 draft job + 1 ratified job
@@ -190,25 +189,6 @@ async def _seed_permission_template(session: AsyncSession) -> None:
         print(f"  ~ {updated} global role_permission rows reconciled to matrix")
 
 
-async def _seed_llm_keys(session: AsyncSession) -> None:
-    """No-op since the single-vendor consolidation (spec-doc5 Part B).
-
-    This used to seed nine `llm_provider_keys` rows from the Groq / Gemini /
-    OpenRouter env slots so a fresh dev database could route. The router no
-    longer reads that table -- the model keys and `VOYAGE_CONTEXT_4` come
-    straight from the environment -- so seeding it would write rows nothing
-    consults and give a reader the false impression that credentials live in
-    the database.
-
-    The FUNCTION is kept rather than deleted, and the call site with it, because
-    `seed_dev_data` is a long ordered script that people read as a checklist of
-    what a working environment contains. A silently missing step reads as an
-    oversight; a step that says why it does nothing reads as a decision.
-    """
-    print("  - llm_provider_keys  -  not seeded (single vendor, keys come from env)")
-
-
-
 async def _seed_email_templates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
     for name, (subject, body) in DEFAULT_TEMPLATES.items():
         exists = (
@@ -338,7 +318,6 @@ async def seed() -> None:
                 session, "manjuchro@gmail.com", Role.super_admin, None,
                 "Manju (Platform Admin)", phone="9652802233",
             )
-            await _seed_llm_keys(session)
 
             print("Seeding demo tenant...")
             tenant = (

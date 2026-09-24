@@ -269,7 +269,6 @@ async def test_five_fixture_assessments_are_created_in_real_postgres_and_cleaned
                         session,
                         conversation=conversation,
                         transcript=transcript,
-                        technical_questions=[],
                         competencies=[competency],
                     )
 
