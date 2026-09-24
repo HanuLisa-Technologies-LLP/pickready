@@ -20,7 +20,7 @@ from app.api.deps import CurrentUser, get_tenant_db, require_capability
 from app.services import assessment_invitations, capabilities as caps
 from app.services import email_outbox
 from app.services import hiring_pipeline as pipeline
-from app.services import telemetry_events
+from app.services import rbac, telemetry_events
 from app.services.audit import audit
 
 router = APIRouter()
@@ -180,17 +180,53 @@ async def change_status(
     act on the message without reading the spec.
     """
     row = await _link_or_404(session, user, link_id)
-    try:
-        result = await pipeline.apply_transition(
-            session,
-            link_id=link_id,
-            tenant_id=uuid.UUID(str(user.tenant_id)),
-            target=body.status,
-            actor_user_id=user.user_id,
-            remarks=body.remarks,
-        )
-    except pipeline.InvalidTransition as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if pipeline.normalize(body.status) == pipeline.ASSESSMENT_INVITED:
+        # "Move to: Assessment invitation sent" IS an invitation, so it goes
+        # through the one invitation path. Applied directly it wrote the stage
+        # with no `assessment_conversations` row (which IS the invitation):
+        # the candidate was mailed a link the start route refused, no credit
+        # was asked about, and `select-candidates` could never invite them
+        # afterwards because they were no longer at `applied` (PLAN-p3 WP1).
+        # The invitation email is always sent, by a worker after the commit,
+        # because it carries the candidate's only way in; `send_email` cannot
+        # withhold it, and `email_queued` says so. Inviting takes the
+        # invitation's own capability as well as this route's: a person who
+        # may decide on a profile but not invite must not invite by this door.
+        if not await rbac.has_capability(
+            session, user.tenant_id, user.role, caps.SEND_OUTREACH, user.user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing capability: {caps.SEND_OUTREACH}",
+            )
+        try:
+            invited = await assessment_invitations.invite_batch(
+                session,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                job_id=uuid.UUID(str(row["job_id"])),
+                link_ids=[link_id],
+                actor_user_id=user.user_id,
+                remarks=body.remarks,
+            )
+        except assessment_invitations.InvitationRefused as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if not invited.transitions:
+            raise HTTPException(status_code=409, detail=invited.skipped[0]["reason"])
+        result = invited.transitions[0]
+        queued = True
+    else:
+        try:
+            result = await pipeline.apply_transition(
+                session,
+                link_id=link_id,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                target=body.status,
+                actor_user_id=user.user_id,
+                remarks=body.remarks,
+            )
+        except pipeline.InvalidTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        queued = False
 
     # Master Directive Part 2 section 5.1: EV_HM_DECISION, one row per explicit
     # pipeline decision. Feeds SLA_PR / PRL (services/metrics.py).
@@ -206,11 +242,15 @@ async def change_status(
         payload={"from_status": result.previous, "to_status": result.status},
     )
 
-    queued = False
-    if body.send_email and result.email_type:
+    if (
+        body.send_email
+        and result.email_type
+        and result.status != pipeline.ASSESSMENT_INVITED
+    ):
         # Drafted here, in the request: a single stage change is one draft,
         # and the recruiter is told whether it was queued. The send itself is
-        # dispatched after this request commits (`email_outbox`).
+        # dispatched after this request commits (`email_outbox`). The
+        # invitation is the exception above: a worker drafts it.
         queued = (
             await email_outbox.queue_transition_email(
                 session,

@@ -367,3 +367,92 @@ async def test_two_recruiters_inviting_the_same_applicant_invite_them_once(
     ]
     assert await _conversations(world) == 1
     assert dispatch_mod.recorded_names().count(INVITE) == 1
+
+
+# ── "Move to: Assessment invitation sent" is an invitation ──────────────────
+
+
+def _move(http: TestClient, link, status: str) -> object:
+    return http.post(
+        f"/api/v1/pipeline/applications/{link}/change-status",
+        json={"status": status, "send_email": False},
+    )
+
+
+async def test_the_hand_move_to_invited_goes_through_the_invitation(
+    seeded, no_drafting_in_the_request
+) -> None:
+    """Applied directly, the hand move wrote the stage with NO conversation
+    row, which is the invitation: the candidate was mailed a link the start
+    route refused, no credit was asked about, and `select-candidates` could
+    never invite them afterwards because they had left `applied`. It is the
+    one invitation path now: the row, the credit question, the email by a
+    worker after the commit, and a second move is refused, not doubled.
+
+    Mutation-checked: routing the move back to `apply_transition` fails the
+    conversation-row assertion (0 rows) and the dispatch assertion."""
+    world = await seeded(applicants=1, grant_subunits=STEM_REPORT)
+    link = world.links[0]
+    with _client(world) as http:
+        moved = _move(http, link, "assessment_invited")
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["status"] == "assessment_invited"
+        # Always sent: the invitation carries the candidate's only way in.
+        assert moved.json()["email_queued"] is True
+        again = _move(http, link, "assessment_invited")
+
+    assert again.status_code == 409
+    assert again.json()["detail"] == "Already at stage 'Assessment invitation sent'"
+    rows = await comms_world.rows(
+        comms_world.factory(),
+        "SELECT invitation_sent_at, invited_by FROM assessment_conversations "
+        "WHERE job_candidate_link_id = :l",
+        {"l": str(link)},
+    )
+    assert len(rows) == 1 and rows[0]["invitation_sent_at"] is not None
+    assert rows[0]["invited_by"] == world.recruiter
+    assert await invite_world.scalar(
+        "SELECT count(*) FROM pipeline_status WHERE job_candidate_link_id = :l",
+        {"l": str(link)},
+    ) == 1
+    assert dispatch_mod.recorded_names().count(INVITE) == 1
+    assert dispatch_mod.recorded_names().count(QUESTIONS) == 1
+
+
+async def test_the_hand_move_to_invited_asks_the_credit_question(
+    seeded, no_drafting_in_the_request
+) -> None:
+    world = await seeded(applicants=1, grant_subunits=0)
+    link = world.links[0]
+    with _client(world) as http:
+        refused = _move(http, link, "assessment_invited")
+    assert refused.status_code == 402, refused.text
+    assert "Nobody was invited" in refused.json()["detail"]
+    assert await _statuses(world) == ["applied"]
+    assert await _conversations(world) == 0
+    assert dispatch_mod.recorded_names() == []
+
+
+async def test_the_hand_move_to_invited_needs_the_invitation_capability(
+    seeded, no_drafting_in_the_request
+) -> None:
+    """`change-status` asks for `decide_profile`; inviting asks for
+    `send_outreach`. A person holding only the first must not invite by the
+    second door."""
+    world = await seeded(applicants=1, grant_subunits=STEM_REPORT)
+    link = world.links[0]
+    async with comms_world.factory()() as session:
+        async with session.begin():
+            await comms_world.bypass(session)
+            await session.execute(
+                sa.text(
+                    "UPDATE users SET permissions_json = "
+                    "CAST(:p AS jsonb) WHERE id = :id"
+                ),
+                {"p": '{"send_outreach": false}', "id": str(world.recruiter)},
+            )
+    with _client(world) as http:
+        refused = _move(http, link, "assessment_invited")
+    assert refused.status_code == 403, refused.text
+    assert await _statuses(world) == ["applied"]
+    assert await _conversations(world) == 0

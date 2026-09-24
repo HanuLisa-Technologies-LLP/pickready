@@ -9,7 +9,10 @@ lets a candidate open the assessment (`api/assessment_conversation`), what the
 matrix lock counts as an issued contract, and what the credit reconciliation
 settles. Applying creates none (Phase 6 removed the apply-time row, and
 `tests/test_apply_creates_no_assessment.py` pins that nothing outside this
-module writes one). Only a recruiter's invitation does, here.
+module writes one). Only a recruiter's invitation does, here, reached from
+two routes: `select-candidates` (the batch) and the hand move to
+`assessment_invited` on `change-status`, which used to write the stage with
+no row at all and is an invitation of one now.
 
 THREE PASSES, AND NOTHING IS WRITTEN UNTIL THE LAST
 ---------------------------------------------------
@@ -103,6 +106,9 @@ class InviteResult:
     #: silently dropped: a recruiter who ticked twenty boxes needs to know
     #: which three did not go out and why.
     skipped: tuple[dict, ...] = field(default_factory=tuple)
+    #: The stage change written for each invited application, in `invited`
+    #: order. The single-application route answers with it.
+    transitions: tuple[pipeline.TransitionResult, ...] = field(default_factory=tuple)
 
 
 def _shortfall_detail(
@@ -127,9 +133,13 @@ async def invite_batch(
     job_id: uuid.UUID,
     link_ids: list[uuid.UUID],
     actor_user_id: uuid.UUID,
+    remarks: str | None = None,
     now: datetime | None = None,
 ) -> InviteResult:
     """Invite the ticked applicants of one job. See the module docstring.
+
+    `remarks` is the recruiter's internal note, recorded on each history row
+    (the "Move to" route passes it; the batch route has none).
 
     Raises `InvitationRefused` (404 job, 409 not ready or closed, 402 short of
     credits) BEFORE the first write, so a refusal leaves every application
@@ -227,6 +237,7 @@ async def invite_batch(
 
     # ── Pass 3: write, and dispatch after the commit ────────────────────────
     grade = job["assessment_grade"] or "non_managerial"
+    transitions: list[pipeline.TransitionResult] = []
     for link_id in eligible:
         # ON CONFLICT covers a legacy row written at APPLY time before Phase 6
         # removed that (none in pilot, CONTRACT v3): it becomes an invitation
@@ -271,8 +282,10 @@ async def invite_batch(
             tenant_id=tenant_id,
             target=pipeline.ASSESSMENT_INVITED,
             actor_user_id=actor_user_id,
+            remarks=remarks,
             now=now,
         )
+        transitions.append(result)
         if result.email_type != EMAIL_TYPE_ASSESSMENT_INVITATION:
             # The stage's email is data in `hiring_pipeline.TRANSITION_EMAIL`.
             # If it ever changes, this batch must not quietly stop telling
@@ -299,7 +312,11 @@ async def invite_batch(
         target_id=job_id,
         metadata={"invited": len(eligible), "skipped": len(skipped)},
     )
-    return InviteResult(invited=tuple(eligible), skipped=tuple(skipped))
+    return InviteResult(
+        invited=tuple(eligible),
+        skipped=tuple(skipped),
+        transitions=tuple(transitions),
+    )
 
 
 async def send_invitation_email(
