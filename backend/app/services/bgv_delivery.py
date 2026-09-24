@@ -174,6 +174,47 @@ async def effective_hr_email(
     return str(declared) if declared else None
 
 
+# ── Which employers the candidate must correct ──────────────────────────────
+#
+# ONE PREDICATE, TWO READERS. `api/bgv.correct_hr_email` accepts a correction
+# only for a verification matching it, and `employments_needing_correction`
+# tells the candidate's screen where to offer the control. Written once so the
+# screen can never offer a correction the route then refuses as "nothing to
+# correct", nor hide one the route would accept.
+#
+# A correction clears it without a column of its own: the resend calls
+# `mark_sent`, which moves `delivery_status` off BOUNCED, so "bounced and no
+# later correction" is exactly "still bounced". A corrected address that
+# bounces in its turn is bounced again, and the flag comes back, which is right.
+# An employer who already answered is never asked to be re-addressed.
+
+#: SQL over `bgv_verifications v`, binding `:bounced` to DELIVERY_BOUNCED.
+AWAITING_CORRECTION_SQL = "v.delivery_status = :bounced AND v.responded_at IS NULL"
+
+
+async def employments_needing_correction(
+    session: AsyncSession, candidate_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """The candidate's employment ids with an undeliverable, unanswered request.
+
+    Ids only. The verifications behind them belong to whichever tenants opened
+    them, and the candidate's screen needs to know WHERE to offer a correction,
+    never WHO was asking: no tenant id or name leaves this function.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT DISTINCT v.candidate_employment_id "
+                "FROM bgv_verifications v "
+                "JOIN candidate_employments e ON e.id = v.candidate_employment_id "
+                f"WHERE e.candidate_id = :cid AND {AWAITING_CORRECTION_SQL}"
+            ),
+            {"cid": str(candidate_id), "bounced": DELIVERY_BOUNCED},
+        )
+    ).scalars()
+    return {uuid.UUID(str(row)) for row in rows}
+
+
 # ── The outbound record ──────────────────────────────────────────────────────
 
 

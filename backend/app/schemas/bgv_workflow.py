@@ -68,6 +68,24 @@ class EmploymentOut(BaseModel):
     hr_email: str | None = None
 
 
+class OwnEmploymentOut(EmploymentOut):
+    """One employer on the CANDIDATE's own history, and nowhere else.
+
+    `correction_needed` is True while a request to this employer bounced and
+    was never answered (`bgv_delivery.employments_needing_correction`, the same
+    predicate `PUT /bgv/me/employers/{id}/hr-email` accepts a correction on),
+    so the screen offers the correction exactly where the route would take it.
+
+    A subclass rather than a field on `EmploymentOut`: that shape is also the
+    recruiter's, and a flag that is always False on their side would read as a
+    statement that nothing bounced. It is required, never defaulted, so a
+    candidate response that forgot to compute it fails validation instead of
+    saying "nothing to fix".
+    """
+
+    correction_needed: bool
+
+
 class EmploymentHistoryIn(BaseModel):
     """The candidate's whole declaration, submitted in one act.
 
@@ -107,7 +125,7 @@ class EmploymentHistoryOut(BaseModel):
     background: str | None
     finalized: bool
     finalized_at: datetime | None
-    employments: list[EmploymentOut]
+    employments: list[OwnEmploymentOut]
     #: What the candidate is told BEFORE they submit. Served from the server so
     #: the warning and the rule it describes cannot drift apart.
     submission_warning: str

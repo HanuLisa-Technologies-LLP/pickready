@@ -37,10 +37,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.api import email_senders as email_senders_api
-from app.api.deps import CurrentUser, get_candidate_db, get_current_user, get_public_db
+from app.api.deps import (
+    CurrentUser,
+    get_candidate_db,
+    get_current_candidate,
+    get_public_db,
+)
 from app.core.config import get_settings
 from app.core.db import superadmin_scope
-from app.core.security import AUDIENCE_ORG
+from app.core.security import AUDIENCE_CANDIDATE
 from app.main import app
 from app.models.enums import Role
 from app.workers import dispatch as dispatch_module
@@ -137,13 +142,16 @@ def world() -> Iterator[World]:
                         )
                         await session.execute(
                             sa.text(
-                                "INSERT INTO candidates (id, full_name, email, "
-                                " consent_databank, employment_background, "
+                                "INSERT INTO candidates (id, user_id, full_name, "
+                                " email, consent_databank, employment_background, "
                                 " created_at) "
-                                "VALUES (:id, 'Karthik Kumar', :email, false, "
-                                " 'experienced', now())"
+                                "VALUES (:id, :uid, 'Karthik Kumar', :email, "
+                                " false, 'experienced', now())"
                             ),
-                            {"id": str(candidate), "email": email},
+                            # LINKED by user_id, the state a verified first
+                            # sign-in leaves and the only thing a request
+                            # resolves a candidate by.
+                            {"id": str(candidate), "uid": str(user), "email": email},
                         )
                     for employment, candidate in (
                         (w.first_employment, w.first),
@@ -267,9 +275,12 @@ def client(world: World, monkeypatch) -> Iterator[TestClient]:
                 async with superadmin_scope(session):
                     yield session
 
-    async def _current_user() -> CurrentUser:
+    async def _current_candidate() -> CurrentUser:
         principal = caller["principal"]
         assert principal is not None
+        # A candidate-audience principal, the only kind a candidate's cookie
+        # produces; `test_bgv_real_candidate_token.py` proves the real one.
+        assert principal.audience == AUDIENCE_CANDIDATE
         return principal
 
     async def _signature_ok(_payload) -> bool:
@@ -287,7 +298,7 @@ def client(world: World, monkeypatch) -> Iterator[TestClient]:
     previous = dict(app.dependency_overrides)
     app.dependency_overrides[get_public_db] = _public_db
     app.dependency_overrides[get_candidate_db] = _candidate_db
-    app.dependency_overrides[get_current_user] = _current_user
+    app.dependency_overrides[get_current_candidate] = _current_candidate
     try:
         with TestClient(app) as http:
             http.caller = caller  # type: ignore[attr-defined]
@@ -302,7 +313,7 @@ def _as_candidate(client: TestClient, world: World, user_id: uuid.UUID) -> None:
         user_id=user_id,
         tenant_id=None,
         role=Role.candidate,
-        audience=AUDIENCE_ORG,
+        audience=AUDIENCE_CANDIDATE,
     )
 
 
@@ -425,11 +436,24 @@ def test_correcting_a_bounced_address_resends_with_a_fresh_token(
     dispatch_module.clear_recorded()
 
     _as_candidate(client, world, world.second_user)
+    # The screen is told WHERE to offer the correction, from the same predicate
+    # the route accepts it on.
+    history = client.get(f"{BGV}/me")
+    assert history.status_code == 200, history.text
+    assert [
+        (e["id"], e["correction_needed"]) for e in history.json()["employments"]
+    ] == [(str(world.second_employment), True)]
+
     response = client.put(
         f"{BGV}/me/employers/{world.second_employment}/hr-email",
         json={"hr_email": "verification@sharedhr.example"},
     )
     assert response.status_code == 200, response.text
+    # And once corrected the flag clears, in the response and on a fresh read.
+    assert [e["correction_needed"] for e in response.json()["employments"]] == [False]
+    assert [
+        e["correction_needed"] for e in client.get(f"{BGV}/me").json()["employments"]
+    ] == [False]
 
     after = _run(_verification(world.second_verification))
     assert after["delivery_status"] == "sent"
@@ -508,6 +532,10 @@ def test_the_employment_row_is_not_rewritten_by_a_correction(
 def test_a_correction_without_a_bounce_is_refused(world: World, client: TestClient):
     """Otherwise this route is an employment editor with a narrower name."""
     _as_candidate(client, world, world.second_user)
+    # Nothing bounced, so the screen offers no correction either.
+    assert [
+        e["correction_needed"] for e in client.get(f"{BGV}/me").json()["employments"]
+    ] == [False]
     response = client.put(
         f"{BGV}/me/employers/{world.second_employment}/hr-email",
         json={"hr_email": "verification@sharedhr.example"},
