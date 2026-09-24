@@ -16,6 +16,14 @@
 // client-side "did I send this" flag would get this wrong the moment a second
 // recruiter had the same thread open.
 //
+// WHY A RETRY CARRIES THE SAME CLIENT TOKEN
+// The server collapses duplicate sends on `client_token`, so the token belongs
+// to the DRAFT, not to the click (`lib/composer-token.ts`). A failed send keeps
+// it, a confirmed send or an edit to the text rotates it. Minting one per
+// attempt, as this panel did until the vivekium release, turned a send whose
+// response was lost into two messages the moment the recruiter pressed Send
+// again.
+//
 // WHY AN EMPLOYER THREAD IS READ ONLY HERE
 // Writing to one is a verification act with its own capability and its own
 // status transition, and the server refuses it from this surface. The compose
@@ -34,12 +42,12 @@ import {
   listMessages,
   listMessagesBefore,
   markConversationRead,
-  newClientToken,
   openConversationStream,
   readableSize,
   sendMessage,
   uploadAttachment,
 } from "@/lib/conversations";
+import { useComposerToken } from "@/lib/composer-token";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,6 +115,7 @@ export function ConversationPanel({
   const [hasMore, setHasMore] = React.useState(false);
   const endRef = React.useRef<HTMLDivElement | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
+  const composerToken = useComposerToken();
 
   const sync = React.useCallback(async () => {
     try {
@@ -163,8 +172,10 @@ export function ConversationPanel({
     if (!body) return;
     setBusy(true);
     try {
-      const sent = await sendMessage(conversationId, body, newClientToken());
+      const sent = await sendMessage(conversationId, body, composerToken.current());
       setMessages((current) => merge(current, [sent]));
+      // Confirmed: the next thing typed is a new message.
+      composerToken.rotate();
       setDraft("");
     } catch (error) {
       toast({ title: apiErrorMessage(error), variant: "destructive" });
@@ -291,7 +302,12 @@ export function ConversationPanel({
             disabled={busy}
             placeholder="Write a message"
             aria-label="Message"
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              // Different words are a different message, even if the
+              // previous attempt secretly reached the server.
+              composerToken.rotate();
+              setDraft(event.target.value);
+            }}
             onKeyDown={(event) => {
               // Enter sends, Shift with Enter writes a new line. The ordinary
               // chat contract; a Send button alone makes every reply a mouse
