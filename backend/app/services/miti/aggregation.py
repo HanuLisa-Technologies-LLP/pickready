@@ -732,10 +732,10 @@ def _divergent_skills(
             miti_word = graded.get(name)
             if miti_word is None or name in divergent:
                 continue
-            try:
-                evaluator_word = rating.grade_for_percent(band_for(band)) or rating.GRADE_NOT
-            except ValueError:
-                continue
+            # `parse_result` admits only known bands into `per_competency`, so
+            # an unknown one here is a caller defect and `band_for` RAISES
+            # rather than the check quietly skipping the skill it could not read.
+            evaluator_word = rating.grade_for_percent(band_for(band)) or rating.GRADE_NOT
             if abs(order.index(evaluator_word) - order.index(miti_word)) >= DIVERGENCE_STEPS:
                 divergent.append(name)
     return sorted(divergent)
