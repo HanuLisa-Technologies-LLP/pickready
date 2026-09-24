@@ -502,6 +502,47 @@ async def test_the_scoring_node_refuses_without_a_conversation() -> None:
         await fa.ppi_scoring_node(_state(conversation=False))
 
 
+@pytest.mark.asyncio
+async def test_synthesis_refuses_a_withheld_overall_before_paying_for_any_remark(
+    monkeypatch,
+) -> None:
+    """The report states `stated_score` and nothing else. A withheld overall
+    (a Must-have Miti could not assess) has NO number to state; writing the
+    working `delivered_score` beside it would state a judgement nobody made.
+    Until WP5-D writes a final "Not assessed" report this is a refusal, and it
+    comes before the AI Score section or a single remark is paid for."""
+    from app.services.miti import aggregation, pipeline
+
+    paid: list[str] = []
+
+    async def _remark(*args, **kwargs):
+        paid.append("remark")
+        return "remark"
+
+    async def _matching(state):
+        paid.append("ai_score")
+        return []
+
+    monkeypatch.setattr(fa, "bounded_remark", _remark)
+    monkeypatch.setattr(fa, "_matching_dimensions", _matching)
+
+    withheld = aggregation.Aggregate()
+    withheld.delivered_score = 88.0
+    withheld.overall_status = aggregation.OVERALL_NOT_ASSESSED
+    assert withheld.stated_score is None
+    result = miti_live.MitiResult(
+        contract=mf.contract(),
+        skills=(mf.skill("Kafka", score=None), mf.skill("Ownership", "behavioural", 80)),
+        outcome=pipeline.EvaluationOutcome(aggregate=withheld),
+    )
+    state = _state()
+    state.update({"miti": result, "ppi": [], "validation": {}, "grade": "managerial"})
+
+    with pytest.raises(fa.SkillsNotAssessed):
+        await fa.synthesis_node(state)
+    assert paid == [], "nothing is paid for before the refusal"
+
+
 def test_the_skill_grade_statuses_tie_a_score_to_an_assessment() -> None:
     with pytest.raises(ValueError):
         grades.SkillGrade(skill_id=uuid.uuid4(), name="x", bucket="must_have", priority=1,

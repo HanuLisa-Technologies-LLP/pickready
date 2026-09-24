@@ -302,6 +302,30 @@ async def test_a_model_outage_on_real_rows_writes_no_score_and_pays_for_no_evalu
             q=questions["Python"],
         )
         assert persisted[0][0] is None, "a degraded evaluation stores nothing"
+
+        # EVIDENCE IS WHAT WAS READ, A GRADE IS WHAT WAS CONCLUDED FROM IT. The
+        # outage cost the conclusions, not the trail: every substantive answer
+        # the judge was about to read is filed and COMMITTED, and the
+        # gibberish still is not.
+        filed = await _second_read(
+            factory,
+            "SELECT m.content FROM evidence_items e JOIN assessment_messages m "
+            "ON m.id = e.source_id WHERE e.link_id = :l",
+            l=w.links[0],
+        )
+        assert {row[0] for row in filed} == {
+            _ANSWERS["SQL"], _ANSWERS["Python"], _ANSWERS["Ownership"],
+        }
+        # And nothing Miti wrote anywhere carries a score for the outage: no
+        # evaluation row, no report row exists for this application.
+        for table, column in (
+            ("evaluations", "link_id"),
+            ("functional_skills_reports", "job_candidate_link_id"),
+        ):
+            rows = await _second_read(
+                factory, f"SELECT count(*) FROM {table} WHERE {column} = :l", l=w.links[0],
+            )
+            assert rows[0][0] == 0, table
     finally:
         await _drop(factory, w)
         await engine.dispose()

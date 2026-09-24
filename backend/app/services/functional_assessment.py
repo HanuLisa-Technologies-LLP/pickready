@@ -1687,15 +1687,6 @@ async def synthesis_node(state: AssessmentState) -> dict:
     from app.services.siddhi import synthesis as siddhi_synthesis
 
     session = state["session"]
-    matching = await _matching_dimensions(state)
-    ppi_rows = state.get("ppi") or []
-    dimensions = _dedupe_dimensions(matching + ppi_rows)
-
-    # The Overall grade is the PPI Assessment's, not the AI Score's: §9.3 puts
-    # it at the head of the PPI section, below the AI Score, and the two are
-    # deliberately never merged.
-    assessed = [row for row in dimensions if row["category"] != CATEGORY_MATCHING]
-
     # ── MITI'S RESULT, COMPUTED IN THE SCORING NODE ──────────────────────────
     #
     # Miti already ran, in `ppi_scoring_node`: G1 against the locked contract,
@@ -1724,6 +1715,16 @@ async def synthesis_node(state: AssessmentState) -> dict:
             f"({aggregate.overall_status}); no report is written"
         )
     overall_score = int(round(aggregate.stated_score))
+
+    matching = await _matching_dimensions(state)
+    ppi_rows = state.get("ppi") or []
+    dimensions = _dedupe_dimensions(matching + ppi_rows)
+
+    # The Overall grade is the PPI Assessment's, not the AI Score's: §9.3 puts
+    # it at the head of the PPI section, below the AI Score, and the two are
+    # deliberately never merged.
+    assessed = [row for row in dimensions if row["category"] != CATEGORY_MATCHING]
+
     cap_applied = aggregate.must_have_cap_applied
     if cap_applied:
         logger.info(
