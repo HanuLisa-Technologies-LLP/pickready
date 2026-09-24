@@ -44,9 +44,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from app.services.miti import dimensions, items, pipeline, tiering
+from app.services.hiring import gates
+from app.services.miti import dimensions, grades, items, pipeline, tiering
 from app.services.miti.dimensions import EvidenceView
-from app.services.miti.grades import ANSWER_NOT_ASSESSED, SkillGrade
+from app.services.miti.grades import ANSWER_GRADED, ANSWER_NOT_ASSESSED, SkillGrade
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,11 @@ __all__ = [
 #: temperature 0.0, and `config/llm_providers.py` is the closed mapping that
 #: says so. Named here so no caller can route a grading call somewhere else.
 EVALUATION_TASK = "dimension_evaluation"
+
+#: How the five evaluators' prompt is named in provenance. It is not a registry
+#: prompt: `dimensions.render_prompt` builds it inline from the frozen
+#: `EvaluatorInput`, so the image version is its version.
+EVALUATOR_PROMPT = "miti.dimensions.render_prompt"
 
 
 class ScorecardUnavailable(RuntimeError):
@@ -119,15 +125,11 @@ class MitiResult:
     def must_have_failed(self) -> bool:
         """A Must-have skill graded Not Matching, answered or not (O5-1).
 
-        The ONE predicate, computed from the skill grades so it holds even when
-        the evaluators did not run. A `not_assessed` Must-have is not failed.
+        `grades.must_have_failed`, the ONE predicate, computed from the skill
+        grades so it holds even when the evaluators did not run. A
+        `not_assessed` Must-have is not failed.
         """
-        from app.services import rating
-
-        return any(
-            grade.bucket == "must_have" and grade.grade == rating.GRADE_NOT
-            for grade in self.skills
-        )
+        return grades.must_have_failed(self.skills)
 
     @property
     def contract_version(self) -> int:
@@ -136,6 +138,29 @@ class MitiResult:
     @property
     def contract_digest(self) -> str:
         return str(self.contract.digest)
+
+    def model_calls(self) -> tuple[tuple[str, str], ...]:
+        """(task type, prompt) for every model call that RETURNED A USABLE VALUE.
+
+        The report's generation provenance is built from this, never from a
+        list of the prompts a run might have used: a report whose every item
+        was objective or unanswered carries no model at all, and an item whose
+        judgement failed is not a call that produced anything. The five
+        evaluators appear only when at least one of them returned a usable band
+        (their prompt is inline in `dimensions.render_prompt` and versioned by
+        the image, so it is named by its task).
+        """
+        calls: set[tuple[str, str]] = set()
+        for grade in self.skills:
+            for item in grade.items:
+                prompt = items.MODEL_PROMPT_FOR_METHOD.get(item.method)
+                if prompt is not None and item.status == ANSWER_GRADED:
+                    calls.add((items.EVALUATION_TASK, prompt))
+        if self.outcome is not None and any(
+            not result.insufficient_evidence for result in self.outcome.results
+        ):
+            calls.add((EVALUATION_TASK, EVALUATOR_PROMPT))
+        return tuple(sorted(calls))
 
     @property
     def review_reasons(self) -> list[str]:
@@ -178,7 +203,7 @@ async def load_contract(session: Any, conversation_id: uuid.UUID) -> Any:
             f"to be the contract being graded: {exc}"
         ) from exc
     assessment_contract.log_digest(assessment_contract.STAGE_MITI, conversation_id, contract)
-    gate = pipeline.contract_gate(contract)
+    gate = gates.contract_gate(contract)
     if not gate.passed:
         raise ScorecardUnavailable("; ".join(gate.reasons))
     return contract
@@ -338,6 +363,7 @@ async def evaluate_application(
     allow_incomplete: bool = False,
     invoke: Any = None,
     item_invoke: Any = None,
+    passages: items.PassageReader | None = None,
 ) -> MitiResult:
     """Grade one application. RAISES `ScorecardUnavailable` when G1 cannot be met.
 
@@ -345,6 +371,11 @@ async def evaluate_application(
     the rubric written with it), `answers` the transcript grouped by question
     key, `locators` where each answer lives, and `structured` the
     `assessment_answers` rows keyed by question id.
+
+    `passages` is the Evidence RAG reader the item stage shows a Must-have or
+    Behavioural judgement related passages through
+    (`evidence_retrieval.transcript_passages_for_skill`, injected so Miti never
+    imports retrieval). None is recorded on every skill as `not_requested`.
 
     `allow_incomplete=False` (the default) stops after the item stage when any
     skill is not assessed, returning `outcome=None`: the evaluators would be
@@ -369,6 +400,7 @@ async def evaluate_application(
         locators=locators,
         structured=structured,
         invoke=item_invoke or _item_invoke,
+        passages=passages,
     )
     result = MitiResult(contract=contract, skills=skill_grades)
     if not result.complete and not allow_incomplete:

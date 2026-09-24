@@ -39,6 +39,19 @@ carries no score, and a person is told. `unanswered` is kept strictly apart: it
 is a fact about the candidate (asked, gave nothing gradeable), and an
 unanswered Must-have is a FAILED Must-have (owner ruling O5-1).
 
+RELATED PASSAGES ARE CONTEXT, NEVER A SECOND SCORE
+---------------------------------------------------
+For a Must-have or Behavioural skill the judge may be shown passages from the
+candidate's OTHER answers that bear on the skill (the Evidence RAG,
+`evidence_retrieval.transcript_passages_for_skill`, through the typed tool
+layer), fenced as DATA beside the answer being graded. The reader is INJECTED
+(`passages=`), exactly like the model: this module never imports retrieval, so
+`tests/test_retrieval_scoring_isolation.py` holds by construction, and a
+passage carries text and a locator and no relevance number. Whether the reader
+was supplied, used or degraded is recorded on every skill
+(`SkillGrade.retrieval`), and a degraded read never fails or moves a grade: the
+answer itself is still what is graded against its rubric.
+
 THE MODEL IS INJECTED
 ---------------------
 `evaluate_skills` REQUIRES `invoke`. `miti/live.py` is the one module in the
@@ -53,10 +66,15 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from app.services import agent_loop, answer_quality, rating
-from app.services.assessment_contract import BUCKET_BEHAVIOURAL, ContractSkill
+from app.services.assessment_contract import (
+    BUCKET_BEHAVIOURAL,
+    BUCKET_MUST_HAVE,
+    BUCKET_NICE_TO_HAVE,
+    ContractSkill,
+)
 from app.services.assessment_formats import types as question_types
 from app.services.miti.grades import (
     ANSWER_GRADED,
@@ -69,6 +87,9 @@ from app.services.miti.grades import (
     METHOD_OBJECTIVE,
     METHOD_RUBRIC,
     METHOD_UNANSWERED,
+    RETRIEVAL_DEGRADED,
+    RETRIEVAL_NOT_REQUESTED,
+    RETRIEVAL_USED,
     ItemEvaluation,
     SkillGrade,
 )
@@ -81,6 +102,9 @@ __all__ = [
     "FAILURE_EVALUATION_DEGRADED",
     "FAILURE_NO_QUESTION",
     "ItemContext",
+    "MODEL_PROMPT_FOR_METHOD",
+    "PassageReader",
+    "RETRIEVED_BUCKETS",
     "SCORING_PROMPT",
     "UNANSWERED_SCORE",
     "evaluate_skill",
@@ -102,6 +126,10 @@ EVALUATION_TASK = "answer_evaluation"
 #: The registry prompt the rubric and behavioural judgements render.
 SCORING_PROMPT = "assessment_answer_scoring"
 
+#: The user-payload key the related passages ride under. Named once: the
+#: scoring prompt tells the judge what this key holds, so the two must agree.
+RELATED_KEY = "other_answers_bearing_on_this_skill"
+
 #: `failure` words for the two non-exception reasons an item is not assessed.
 FAILURE_EVALUATION_DEGRADED = "evaluation_degraded"
 FAILURE_NO_QUESTION = "no_question_issued"
@@ -122,9 +150,58 @@ BEHAVIOURAL_STANDARD: dict[str, str] = {
 
 #: A skill whose answers are graded against the rubric written for each
 #: question. Behavioural is judged against the standard above instead.
-_RUBRIC_SCORED_BUCKETS = frozenset({"must_have", "nice_to_have"})
+_RUBRIC_SCORED_BUCKETS = frozenset({BUCKET_MUST_HAVE, BUCKET_NICE_TO_HAVE})
+
+#: The buckets whose judgement is shown related passages from the candidate's
+#: other answers (PLAN-p5 3.6): a Must-have caps the whole report and a
+#: Behavioural competency is demonstrated across a conversation, so both are
+#: worth the read. A Nice-to-have is not: the extra call buys the least there.
+RETRIEVED_BUCKETS = frozenset({BUCKET_MUST_HAVE, BUCKET_BEHAVIOURAL})
+
+#: The registry prompt each MODEL-BACKED method renders, for the report's
+#: generation provenance. A method absent from this map made no model call
+#: (objective and unanswered items are settled deterministically).
+MODEL_PROMPT_FOR_METHOD: dict[str, str] = {
+    METHOD_RUBRIC: SCORING_PROMPT,
+    METHOD_GENERAL_STANDARD: SCORING_PROMPT,
+    METHOD_BEHAVIOURAL_STANDARD: SCORING_PROMPT,
+    METHOD_EVIDENCE: "assessment_answer_evaluation_evidence",
+    METHOD_CODING: "assessment_answer_evaluation_coding",
+}
 
 Invoke = Callable[..., Awaitable[str]]
+
+
+class _Passages(Protocol):
+    """What a passage read returns (`evidence_retrieval.Passages`)."""
+
+    pieces: tuple[Any, ...]
+    text: str
+    degraded: bool
+    reason: str | None
+
+
+class PassageReader(Protocol):
+    """The injected retrieval call, `evidence_retrieval.transcript_passages_for_skill`.
+
+    Keyword-only after the session, the same signature as that function, so
+    the orchestrator passes it unchanged. It returns passages from THIS
+    application's assessment transcript with `exclude_message_ids` (the skill's
+    own answers) left out, and it DEGRADES rather than raising on a retrieval
+    failure. A wiring refusal (a tool the agent does not hold) raises and is
+    not caught here: a caller that never retrieves is a defect, not a
+    degradation.
+    """
+
+    def __call__(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        link_id: uuid.UUID,
+        skill: ContractSkill,
+        exclude_message_ids: tuple[uuid.UUID, ...] = (),
+    ) -> Awaitable[_Passages]: ...
 
 
 @dataclass(frozen=True)
@@ -184,6 +261,7 @@ async def _rubric_score(
     rubric: Mapping[str, Any],
     answer: str,
     invoke: Invoke,
+    related: str = "",
 ) -> tuple[int | None, str | None]:
     """One judgement against `rubric`. Returns (score, failure).
 
@@ -191,6 +269,11 @@ async def _rubric_score(
     `fallback=None`, so a response that is not a usable score is fed back as
     an instruction and, after the background attempts, becomes `None` with the
     failure recorded. There is no default score on any path.
+
+    `related` is the retrieved block of the candidate's OTHER answers bearing
+    on the skill. It rides in the user payload under its own key, never merged
+    into the answer, so the judge can tell the answer being graded from the
+    context it was shown; when nothing was retrieved the key is absent.
     """
     from app.prompts import fragments, registry
 
@@ -199,9 +282,12 @@ async def _rubric_score(
         rubric_bands=_rubric_text(rubric),
         candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
     )
+    payload: dict[str, str] = {"question": framing, "answer": answer}
+    if related.strip():
+        payload[RELATED_KEY] = related
     base = [
         {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps({"question": framing, "answer": answer})},
+        {"role": "user", "content": json.dumps(payload)},
     ]
 
     async def execute(reflection: str) -> int | None:
@@ -332,10 +418,71 @@ async def _record_evidence(
     )
 
 
+@dataclass(frozen=True)
+class _Retrieval:
+    """What the passage read produced for one skill. In-process only."""
+
+    status: str = RETRIEVAL_NOT_REQUESTED
+    reason: str | None = None
+    pieces: tuple[Any, ...] = ()
+    text: str = ""
+
+
+_NOT_REQUESTED = _Retrieval()
+
+
+async def _read_passages(
+    session: Any,
+    *,
+    context: ItemContext,
+    skill: ContractSkill,
+    questions: Sequence[Any],
+    locators: Mapping[str, Sequence[Any]],
+    passages: PassageReader | None,
+) -> _Retrieval:
+    """Ask the injected reader for related passages, once per skill.
+
+    Asked only for a bucket in `RETRIEVED_BUCKETS` and only when a reader was
+    supplied; otherwise the skill records `not_requested`. The skill's OWN
+    answers are excluded by message id, so the judge is never shown the answer
+    it is grading a second time dressed up as corroboration.
+    """
+    if passages is None or skill.bucket not in RETRIEVED_BUCKETS:
+        return _NOT_REQUESTED
+    own: list[uuid.UUID] = []
+    for question in questions:
+        for record in locators.get(str(question.id), ()):
+            message_id = getattr(record, "message_id", None)
+            if message_id is not None and message_id not in own:
+                own.append(message_id)
+    read = await passages(
+        session,
+        tenant_id=context.tenant_id,
+        link_id=context.link_id,
+        skill=skill,
+        exclude_message_ids=tuple(own),
+    )
+    if read.degraded:
+        # Recorded, never silent, never fatal. The reader has already logged
+        # `evidence_retrieval.degraded`; this names the skill it cost.
+        logger.warning(
+            "miti.passages_degraded link_id=%s skill_id=%s reason=%s",
+            context.link_id, skill.id, read.reason,
+        )
+        return _Retrieval(
+            status=RETRIEVAL_DEGRADED,
+            reason=read.reason,
+            pieces=tuple(read.pieces),
+            text=read.text if read.pieces else "",
+        )
+    return _Retrieval(status=RETRIEVAL_USED, pieces=tuple(read.pieces), text=read.text)
+
+
 def _grade_skill(
     skill: ContractSkill,
     items: Sequence[ItemEvaluation],
     used: Sequence[str],
+    retrieval: _Retrieval = _NOT_REQUESTED,
 ) -> SkillGrade:
     """Fold a skill's items into ONE grade. Never invents a score.
 
@@ -357,6 +504,9 @@ def _grade_skill(
             grade=None,
             items=tuple(items),
             used_answers=tuple(used),
+            passages=retrieval.pieces,
+            retrieval=retrieval.status,
+            retrieval_reason=retrieval.reason,
         )
     if not graded:
         return SkillGrade(
@@ -369,6 +519,9 @@ def _grade_skill(
             grade=rating.grade_for_percent(UNANSWERED_SCORE) or rating.GRADE_NOT,
             items=tuple(items),
             used_answers=(),
+            passages=retrieval.pieces,
+            retrieval=retrieval.status,
+            retrieval_reason=retrieval.reason,
         )
     score = _weighted_mean(items)
     return SkillGrade(
@@ -382,6 +535,9 @@ def _grade_skill(
         partially_assessed=bool(failed),
         items=tuple(items),
         used_answers=tuple(used),
+        passages=retrieval.pieces,
+        retrieval=retrieval.status,
+        retrieval_reason=retrieval.reason,
     )
 
 
@@ -398,12 +554,18 @@ async def _rubric_scored(
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
     invoke: Invoke,
+    passages: PassageReader | None = None,
 ) -> SkillGrade:
-    """Must-have and Nice-to-have: each answer against ITS OWN question's rubric."""
+    """Must-have and Nice-to-have: each answer against ITS OWN question's rubric.
+
+    Related passages are read ONCE, lazily, before the first rubric judgement,
+    so a skill with nothing substantive to judge costs no retrieval.
+    """
     from app.services.assessment_formats import rendering as format_rendering
 
     items: list[ItemEvaluation] = []
     used: list[str] = []
+    retrieval: _Retrieval | None = None
     for question in questions:
         key = str(question.id)
         answer = " ".join(answers.get(key, []))
@@ -477,15 +639,29 @@ async def _rubric_scored(
 
                 rubric = DEFAULT_RUBRIC
                 method = METHOD_GENERAL_STANDARD
+            if retrieval is None:
+                retrieval = await _read_passages(
+                    session,
+                    context=context,
+                    skill=skill,
+                    questions=questions,
+                    locators=locators,
+                    passages=passages,
+                )
             score, failure = await _rubric_score(
-                session, framing=question.prompt, rubric=rubric, answer=answer, invoke=invoke
+                session,
+                framing=question.prompt,
+                rubric=rubric,
+                answer=answer,
+                invoke=invoke,
+                related=retrieval.text,
             )
         if score is None:
             _log_not_assessed(context, skill, question.id, failure or FAILURE_EVALUATION_DEGRADED)
             items.append(ItemEvaluation(question.id, ANSWER_NOT_ASSESSED, None, weight, method, failure))
         else:
             items.append(ItemEvaluation(question.id, ANSWER_GRADED, score, weight, method))
-    return _grade_skill(skill, items, used)
+    return _grade_skill(skill, items, used, retrieval or _NOT_REQUESTED)
 
 
 async def _behavioural(
@@ -497,6 +673,7 @@ async def _behavioural(
     answers: Mapping[str, Sequence[str]],
     locators: Mapping[str, Sequence[Any]],
     invoke: Invoke,
+    passages: PassageReader | None = None,
 ) -> SkillGrade:
     """Behavioural: ONE judgement across everything said about the skill.
 
@@ -520,6 +697,14 @@ async def _behavioural(
             [ItemEvaluation(None, ANSWER_UNANSWERED, UNANSWERED_SCORE, 1.0, METHOD_UNANSWERED)],
             (),
         )
+    retrieval = await _read_passages(
+        session,
+        context=context,
+        skill=skill,
+        questions=questions,
+        locators=locators,
+        passages=passages,
+    )
     framing = (
         f"Behavioural skill '{skill.name}'. "
         f"The candidate answered {len(collected)} question(s) probing it."
@@ -530,13 +715,14 @@ async def _behavioural(
         rubric=BEHAVIOURAL_STANDARD,
         answer="\n".join(f"- {item}" for item in collected),
         invoke=invoke,
+        related=retrieval.text,
     )
     if score is None:
         _log_not_assessed(context, skill, None, failure or FAILURE_EVALUATION_DEGRADED)
         item = ItemEvaluation(None, ANSWER_NOT_ASSESSED, None, 1.0, METHOD_BEHAVIOURAL_STANDARD, failure)
     else:
         item = ItemEvaluation(None, ANSWER_GRADED, score, 1.0, METHOD_BEHAVIOURAL_STANDARD)
-    return _grade_skill(skill, [item], collected)
+    return _grade_skill(skill, [item], collected, retrieval)
 
 
 # ── The entry points ─────────────────────────────────────────────────────────
@@ -552,6 +738,7 @@ async def evaluate_skill(
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
     invoke: Invoke,
+    passages: PassageReader | None = None,
 ) -> SkillGrade:
     """Grade ONE contract skill from the questions the candidate was asked on it.
 
@@ -577,6 +764,7 @@ async def evaluate_skill(
             answers=answers,
             locators=locators,
             invoke=invoke,
+            passages=passages,
         )
     if skill.bucket not in _RUBRIC_SCORED_BUCKETS:
         raise ValueError(f"unknown skill bucket {skill.bucket!r}")
@@ -589,6 +777,7 @@ async def evaluate_skill(
         locators=locators,
         structured=structured,
         invoke=invoke,
+        passages=passages,
     )
 
 
@@ -602,8 +791,13 @@ async def evaluate_skills(
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
     invoke: Invoke,
+    passages: PassageReader | None = None,
 ) -> tuple[SkillGrade, ...]:
     """Every skill in the contract, in contract order. Sequential on purpose.
+
+    `passages` is the injected Evidence RAG reader (`PassageReader`). None is
+    an explicit choice by the caller, recorded as `not_requested` on every
+    skill; it is never read as "retrieval found nothing".
 
     One `AsyncSession` is not safe to share across concurrent tasks, and every
     skill writes ledger rows through it. The model calls are the cost; running
@@ -628,6 +822,7 @@ async def evaluate_skills(
                 locators=locators,
                 structured=structured,
                 invoke=invoke,
+                passages=passages,
             )
         )
     return tuple(grades)

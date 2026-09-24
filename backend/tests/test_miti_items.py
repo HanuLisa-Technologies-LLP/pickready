@@ -512,6 +512,251 @@ def test_the_skill_grade_statuses_tie_a_score_to_an_assessment() -> None:
 
 
 def test_json_scoring_prompt_is_versioned() -> None:
+    """Version 3 names the related-passages key the item stage sends, so the
+    judge is told what the extra field is (context, never the graded answer)."""
     from app.prompts import registry
 
-    assert registry.version(items.SCORING_PROMPT).startswith("2+")
+    assert registry.version(items.SCORING_PROMPT).startswith("3+")
+    assert items.RELATED_KEY in registry.load(items.SCORING_PROMPT).text
+
+
+# ── 7. related passages: context through an injected reader, never a score ───
+
+
+@dataclasses.dataclass(frozen=True)
+class _Piece:
+    chunk_id: uuid.UUID
+    content: str
+
+    @property
+    def locator(self) -> str:
+        return f"context_chunks:{self.chunk_id}"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Read:
+    pieces: tuple = ()
+    text: str = ""
+    degraded: bool = False
+    reason: str | None = None
+
+
+class _Reader:
+    """The injected Evidence RAG reader. Records what it was asked."""
+
+    def __init__(self, read: _Read) -> None:
+        self.read = read
+        self.calls: list[dict] = []
+
+    async def __call__(self, session, *, tenant_id, link_id, skill, exclude_message_ids=()):
+        self.calls.append(
+            {"tenant_id": tenant_id, "link_id": link_id, "skill": skill.name,
+             "exclude": tuple(exclude_message_ids)}
+        )
+        return self.read
+
+
+def _locator(message_id: uuid.UUID, key: str) -> SimpleNamespace:
+    return SimpleNamespace(message_id=message_id, question_key=key, turn=3, text=_ANSWER)
+
+
+def _payload(judge: _Judge, call: int = 0) -> dict:
+    import json
+
+    return json.loads(judge.calls[call][1][1]["content"])
+
+
+@pytest.mark.asyncio
+async def test_a_must_have_judgement_is_shown_related_passages_as_their_own_field() -> None:
+    skill = _skill()
+    question = _question(skill)
+    own = uuid.uuid4()
+    piece = _Piece(uuid.uuid4(), "Earlier I said I profiled the GIL contention.")
+    reader = _Reader(_Read(pieces=(piece,), text="[1] Earlier I said I profiled the GIL contention."))
+    judge = _Judge()
+    context = _context()
+    grade = await items.evaluate_skill(
+        None, context=context, skill=skill, questions=[question],
+        answers={str(question.id): [_ANSWER]},
+        locators={str(question.id): [_locator(own, str(question.id))]},
+        structured={}, invoke=judge, passages=reader,
+    )
+    payload = _payload(judge)
+    assert payload["answer"] == _ANSWER, "the graded answer is never merged with context"
+    assert payload[items.RELATED_KEY].startswith("[1] Earlier I said")
+    # The skill's OWN answer is excluded, so it is not shown twice as corroboration.
+    assert reader.calls == [
+        {"tenant_id": context.tenant_id, "link_id": context.link_id,
+         "skill": "Python", "exclude": (own,)}
+    ]
+    assert grade.retrieval == grades.RETRIEVAL_USED
+    assert grade.passages == (piece,)
+    assert grade.as_dict()["passage_locators"] == [piece.locator]
+    # The score is the judge's; nothing numeric came from retrieval.
+    assert grade.score == 82
+
+
+@pytest.mark.asyncio
+async def test_the_passages_are_read_once_per_skill_not_once_per_question() -> None:
+    skill = _skill()
+    first, second = _question(skill), _question(skill)
+    reader = _Reader(_Read(pieces=(_Piece(uuid.uuid4(), "x"),), text="x"))
+    judge = _Judge()
+    await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[first, second],
+        answers={str(first.id): [_ANSWER], str(second.id): [_ANSWER]},
+        locators={}, structured={}, invoke=judge, passages=reader,
+    )
+    assert len(reader.calls) == 1
+    assert len(judge.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_skill_with_nothing_to_judge_costs_no_retrieval() -> None:
+    skill = _skill()
+    question = _question(skill)
+    reader = _Reader(_Read(pieces=(_Piece(uuid.uuid4(), "x"),), text="x"))
+    grade = await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[question],
+        answers={}, locators={}, structured={}, invoke=_Judge(), passages=reader,
+    )
+    assert grade.status == grades.ANSWER_UNANSWERED
+    assert reader.calls == []
+    assert grade.retrieval == grades.RETRIEVAL_NOT_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_a_nice_to_have_is_not_retrieved_for() -> None:
+    skill = _skill("Terraform", "nice_to_have")
+    question = _question(skill)
+    reader = _Reader(_Read(pieces=(_Piece(uuid.uuid4(), "x"),), text="x"))
+    judge = _Judge()
+    grade = await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[question],
+        answers={str(question.id): [_ANSWER]}, locators={}, structured={},
+        invoke=judge, passages=reader,
+    )
+    assert reader.calls == []
+    assert items.RELATED_KEY not in _payload(judge)
+    assert grade.retrieval == grades.RETRIEVAL_NOT_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_a_behavioural_judgement_reads_passages_before_the_model_call() -> None:
+    skill = _skill("Ownership", "behavioural")
+    question = _question(skill, rubric=None)
+    reader = _Reader(_Read(pieces=(_Piece(uuid.uuid4(), "y"),), text="[1] y"))
+    judge = _Judge()
+    grade = await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[question],
+        answers={str(question.id): [_ANSWER]}, locators={}, structured={},
+        invoke=judge, passages=reader,
+    )
+    assert len(reader.calls) == 1
+    assert _payload(judge)[items.RELATED_KEY] == "[1] y"
+    assert grade.retrieval == grades.RETRIEVAL_USED
+
+
+@pytest.mark.asyncio
+async def test_a_degraded_read_is_recorded_and_never_moves_or_fails_the_grade(caplog) -> None:
+    skill = _skill()
+    question = _question(skill)
+    answers = {str(question.id): [_ANSWER]}
+    caplog.set_level(logging.WARNING, logger=items.__name__)
+    degraded = await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[question], answers=answers,
+        locators={}, structured={}, invoke=_Judge(),
+        passages=_Reader(_Read(degraded=True, reason="ToolTimeout")),
+    )
+    without = await items.evaluate_skill(
+        None, context=_context(), skill=skill, questions=[question], answers=answers,
+        locators={}, structured={}, invoke=_Judge(),
+    )
+    assert degraded.retrieval == grades.RETRIEVAL_DEGRADED
+    assert degraded.retrieval_reason == "ToolTimeout"
+    assert (degraded.status, degraded.score, degraded.grade) == (
+        without.status, without.score, without.grade,
+    )
+    assert any(
+        record.getMessage().startswith("miti.passages_degraded") for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_wiring_refusal_from_the_reader_is_not_swallowed() -> None:
+    """A tool the agent does not hold is a defect; the reader raises it and the
+    item stage lets it through rather than recording a degradation."""
+
+    class _Refused(RuntimeError):
+        pass
+
+    async def _refusing(session, **kwargs):
+        raise _Refused("agent does not hold retrieve_context")
+
+    skill = _skill()
+    question = _question(skill)
+    with pytest.raises(_Refused):
+        await items.evaluate_skill(
+            None, context=_context(), skill=skill, questions=[question],
+            answers={str(question.id): [_ANSWER]}, locators={}, structured={},
+            invoke=_Judge(), passages=_refusing,
+        )
+
+
+def test_the_item_stage_imports_no_retrieval() -> None:
+    """The reader is injected: `services.rag` and `evidence_retrieval` are never
+    imported by the grading stage, at module scope or inside a function."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(items.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+    assert not any("services.rag" in name for name in imported), imported
+    assert not any("evidence_retrieval" in name for name in imported), imported
+
+
+# ── 8. provenance: only calls that returned a usable value ───────────────────
+
+
+def _graded_with(*item_list: grades.ItemEvaluation) -> grades.SkillGrade:
+    scored = [item for item in item_list if item.score is not None]
+    score = scored[0].score if scored else None
+    return grades.SkillGrade(
+        skill_id=uuid.uuid4(), name="Python", bucket="must_have", priority=1,
+        status="graded" if score is not None else "not_assessed", score=score,
+        grade=None if score is None else rating.grade_for_percent(score),
+        items=tuple(item_list),
+    )
+
+
+def test_model_calls_name_only_the_judgements_that_succeeded() -> None:
+    objective = grades.ItemEvaluation(uuid.uuid4(), "graded", 100, 1.0, grades.METHOD_OBJECTIVE)
+    failed = grades.ItemEvaluation(
+        uuid.uuid4(), "not_assessed", None, 1.0, grades.METHOD_RUBRIC, "TimeoutError"
+    )
+    judged = grades.ItemEvaluation(uuid.uuid4(), "graded", 80, 1.0, grades.METHOD_RUBRIC)
+
+    deterministic = miti_live.MitiResult(contract=mf.contract(), skills=(_graded_with(objective),))
+    assert deterministic.model_calls() == ()
+    outage = miti_live.MitiResult(contract=mf.contract(), skills=(_graded_with(failed),))
+    assert outage.model_calls() == (), "a judgement that failed produced nothing"
+    judged_run = miti_live.MitiResult(
+        contract=mf.contract(), skills=(_graded_with(objective, judged),)
+    )
+    assert judged_run.model_calls() == ((items.EVALUATION_TASK, items.SCORING_PROMPT),)
+
+
+def test_every_model_backed_method_names_a_real_prompt() -> None:
+    from app.prompts import registry
+
+    for method, prompt in items.MODEL_PROMPT_FOR_METHOD.items():
+        assert method in grades.METHODS
+        assert registry.version(prompt), prompt
+    assert grades.METHOD_OBJECTIVE not in items.MODEL_PROMPT_FOR_METHOD
+    assert grades.METHOD_UNANSWERED not in items.MODEL_PROMPT_FOR_METHOD

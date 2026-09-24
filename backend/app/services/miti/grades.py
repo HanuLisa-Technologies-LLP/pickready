@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 __all__ = [
     "ANSWER_GRADED",
@@ -40,8 +40,13 @@ __all__ = [
     "METHOD_OBJECTIVE",
     "METHOD_RUBRIC",
     "METHOD_UNANSWERED",
+    "RETRIEVAL_DEGRADED",
+    "RETRIEVAL_NOT_REQUESTED",
+    "RETRIEVAL_STATUSES",
+    "RETRIEVAL_USED",
     "ItemEvaluation",
     "SkillGrade",
+    "must_have_failed",
 ]
 
 ANSWER_GRADED = "graded"
@@ -67,6 +72,23 @@ METHODS: tuple[str, ...] = (
     METHOD_GENERAL_STANDARD,
     METHOD_BEHAVIOURAL_STANDARD,
     METHOD_UNANSWERED,
+)
+
+
+#: Whether the judgement of a skill read retrieved transcript passages from the
+#: candidate's OTHER answers (the Evidence RAG, through the typed tool layer).
+#: Recorded on every skill so "did the judge see related context" is a fact on
+#: the record rather than an inference. `not_requested` is explicit: the
+#: caller supplied no reader, or the bucket is one retrieval is not asked for
+#: (Nice-to-have). `degraded` means the reader was asked and came back without
+#: a whole answer; the grade still stands on the answers themselves.
+RETRIEVAL_NOT_REQUESTED = "not_requested"
+RETRIEVAL_USED = "used"
+RETRIEVAL_DEGRADED = "degraded"
+RETRIEVAL_STATUSES: tuple[str, ...] = (
+    RETRIEVAL_NOT_REQUESTED,
+    RETRIEVAL_USED,
+    RETRIEVAL_DEGRADED,
 )
 
 
@@ -136,10 +158,20 @@ class SkillGrade:
     partially_assessed: bool = False
     items: tuple[ItemEvaluation, ...] = ()
     used_answers: tuple[str, ...] = field(default=(), repr=False)
+    #: The retrieved passages (`evidence_retrieval.PassageRef`: chunk id,
+    #: source, verbatim content, NO score) the judgement was shown, so Siddhi
+    #: can cite them with `context_chunks:<id>` locators. In-process only.
+    passages: tuple[Any, ...] = field(default=(), repr=False)
+    #: One of `RETRIEVAL_STATUSES`, and the reason when degraded (an exception
+    #: CLASS name or a fixed reason word, never a message).
+    retrieval: str = RETRIEVAL_NOT_REQUESTED
+    retrieval_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in ANSWER_STATUSES:
             raise ValueError(f"unknown skill status {self.status!r}")
+        if self.retrieval not in RETRIEVAL_STATUSES:
+            raise ValueError(f"unknown retrieval status {self.retrieval!r}")
         if (self.status == ANSWER_NOT_ASSESSED) != (self.score is None):
             raise ValueError(
                 "a skill has a score exactly when it was assessed: "
@@ -164,4 +196,35 @@ class SkillGrade:
             "grade": self.grade,
             "partially_assessed": self.partially_assessed,
             "items": [item.as_dict() for item in self.items],
+            "retrieval": self.retrieval,
+            "retrieval_reason": self.retrieval_reason,
+            # Locators only. The passage TEXT is a candidate's words and is
+            # resolved at read time, never copied into a working record.
+            "passage_locators": [
+                str(getattr(piece, "locator", "")) for piece in self.passages
+            ],
         }
+
+
+def must_have_failed(skill_grades: "Sequence[SkillGrade]") -> bool:
+    """THE definition of a failed Must-have, stated once (PLAN-p5 3.2.5).
+
+    A Must-have skill counts as FAILED iff it was graded or left unanswered AND
+    its word is Not Matching. That includes a Must-have the candidate was asked
+    about and did not answer (owner ruling O5-1). A Must-have Miti could NOT
+    assess is not failed: an outage is not a finding about a candidate, and it
+    withholds the overall instead (`aggregation.OVERALL_NOT_ASSESSED`).
+
+    Every reader of the rule calls this: the aggregation's flag, the result's
+    property and, through the stored report column, the ranking blend. Two
+    spellings of one predicate is how two readers come to disagree.
+    """
+    from app.services import rating
+    from app.services.assessment_contract import BUCKET_MUST_HAVE
+
+    return any(
+        grade.bucket == BUCKET_MUST_HAVE
+        and grade.status != ANSWER_NOT_ASSESSED
+        and grade.grade == rating.GRADE_NOT
+        for grade in skill_grades
+    )

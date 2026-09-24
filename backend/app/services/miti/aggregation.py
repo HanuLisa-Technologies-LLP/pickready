@@ -66,7 +66,7 @@ from typing import Any, Mapping, Sequence
 from app.services import rating
 from app.services.miti import caps
 from app.services.miti.dimensions import DIM_AUTHENTICITY, DimensionResult, band_for
-from app.services.miti.grades import ANSWER_NOT_ASSESSED, SkillGrade
+from app.services.miti.grades import ANSWER_NOT_ASSESSED, SkillGrade, must_have_failed
 
 __all__ = [
     # Re-exported deliberately: `pipeline` reads the authenticity dimension
@@ -569,6 +569,22 @@ class Aggregate:
     needs_human_review: bool = False
     review_reasons: list[str] = field(default_factory=list)
 
+    @property
+    def stated_score(self) -> float | None:
+        """The overall score a report may WRITE, or None when it may not.
+
+        INTERNAL, like every score here. `delivered_score` is always computed
+        (it is part of the recorded working), but when `overall_status` is
+        `not_assessed` it is arithmetic over the buckets that happened to be
+        assessed, with an essential skill missing, and writing it as the
+        overall would state a judgement nobody made. The persistence stage
+        writes THIS, so a withheld overall is NULL in the database rather than
+        a plausible number beside a "Not assessed" word.
+        """
+        if self.overall_status == OVERALL_NOT_ASSESSED:
+            return None
+        return self.delivered_score
+
     def as_dict(self) -> dict[str, Any]:
         """INTERNAL projection. Carries scores, so it must never reach a client.
 
@@ -890,7 +906,7 @@ def aggregate(
         for grade in skill_grades
         if grade.bucket == CATEGORY_MUST_HAVE and grade.grade is not None
     }
-    out.must_have_failed = any(word == rating.GRADE_NOT for word in grades.values())
+    out.must_have_failed = must_have_failed(skill_grades)
     evidence = dict(must_have_evidence or {})
     must_have_names = sorted(
         set(evidence)

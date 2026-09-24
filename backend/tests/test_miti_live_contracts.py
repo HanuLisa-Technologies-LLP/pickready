@@ -28,21 +28,21 @@ from tests import miti_fixtures as mf
 
 
 def test_a_locked_contract_with_both_required_buckets_passes_g1() -> None:
-    result = pipeline.contract_gate(mf.contract())
+    result = gates.contract_gate(mf.contract())
     assert result.gate == gates.G1
     assert result.passed
     assert result.blocking
 
 
 def test_no_contract_at_all_is_refused() -> None:
-    result = pipeline.contract_gate(None)
+    result = gates.contract_gate(None)
     assert not result.passed and result.blocking
 
 
 def test_an_unlocked_contract_is_refused() -> None:
     """The live rows may change after the candidate answered. Grading against
     them is grading against criteria nobody froze."""
-    result = pipeline.contract_gate(mf.contract(locked=False))
+    result = gates.contract_gate(mf.contract(locked=False))
     assert not result.passed
     assert any("not locked" in reason for reason in result.reasons)
 
@@ -53,18 +53,18 @@ def test_a_locked_contract_that_states_no_lock_time_is_refused() -> None:
     import dataclasses
 
     contract = dataclasses.replace(mf.contract(), locked_at=None)
-    assert not pipeline.contract_gate(contract).passed
+    assert not gates.contract_gate(contract).passed
 
 
 def test_an_empty_contract_is_refused_and_says_the_gate_read_the_contract() -> None:
-    result = pipeline.contract_gate(mf.contract(()))
+    result = gates.contract_gate(mf.contract(()))
     assert not result.passed
     assert any("no skills" in reason for reason in result.reasons)
 
 
 def test_a_contract_with_no_must_have_or_no_behavioural_is_refused_by_name() -> None:
-    no_must = pipeline.contract_gate(mf.contract((("Ownership", "behavioural"),)))
-    no_behaviour = pipeline.contract_gate(mf.contract((("Kafka", "must_have"),)))
+    no_must = gates.contract_gate(mf.contract((("Ownership", "behavioural"),)))
+    no_behaviour = gates.contract_gate(mf.contract((("Kafka", "must_have"),)))
     assert any("Must-have" in reason for reason in no_must.reasons)
     assert any("Behavioural" in reason for reason in no_behaviour.reasons)
 
@@ -162,3 +162,67 @@ def test_the_aggregate_agrees_with_the_result_about_a_failed_must_have() -> None
     aggregate = aggregation.aggregate([], skill_grades=skills)
     assert aggregate.must_have_failed is _result(skills=skills).must_have_failed is True
     assert aggregate.overall_grade in (rating.GRADE_MODERATELY, rating.GRADE_NOT)
+
+
+# ── G1 is stated once, in the gates module ───────────────────────────────────
+
+
+def test_g1_for_grading_is_the_gates_modules_contract_gate() -> None:
+    """One implementation per concept. The contract form of G1 lives beside
+    G2 to G4 in `hiring/gates.py`; `run_gate(G1)` dispatches to it; and the
+    Miti package defines no gate of its own that could drift from it."""
+    import ast
+    from pathlib import Path
+
+    assert gates.run_gate(gates.G1, contract=mf.contract()).passed
+    assert not gates.run_gate(gates.G1, contract=mf.contract(locked=False)).passed
+    assert not hasattr(pipeline, "contract_gate")
+    miti_root = Path(pipeline.__file__).parent
+    for module in sorted(miti_root.glob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        defined = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert not {name for name in defined if name.endswith("_gate")}, module.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "GateResult":
+                raise AssertionError(f"{module.name} builds a GateResult of its own")
+
+
+# ── The bucket routing agrees with the contract's buckets ────────────────────
+
+
+def test_every_contract_bucket_is_routed_to_exactly_one_evaluator() -> None:
+    from app.services import assessment_contract
+    from app.services.miti import dimensions
+
+    assert set(dimensions.BUCKET_DIMENSION) == set(assessment_contract.BUCKETS)
+    for bucket in assessment_contract.BUCKETS:
+        assert dimensions.dimension_for_bucket(bucket) in dimensions.DIMENSIONS
+        assert dimensions.dimension_for_bucket(bucket) not in dimensions.CROSS_CUTTING
+
+
+# ── A withheld overall has no score to write ─────────────────────────────────
+
+
+def test_a_withheld_overall_states_no_score() -> None:
+    """`delivered_score` is the recorded working; `stated_score` is what a
+    report may write, and it is None exactly when the overall is withheld."""
+    graded = aggregation.aggregate([], skill_grades=mf.strong_skills())
+    assert graded.overall_status == aggregation.OVERALL_GRADED
+    assert graded.stated_score == graded.delivered_score
+
+    withheld = aggregation.aggregate(
+        [],
+        skill_grades=(
+            mf.skill("Kafka", "must_have", None),
+            mf.skill("Go", "nice_to_have", 95),
+            mf.skill("Ownership", "behavioural", 95),
+        ),
+    )
+    assert withheld.overall_status == aggregation.OVERALL_NOT_ASSESSED
+    assert withheld.overall_grade == ""
+    assert withheld.delivered_score > 0, "the working is still recorded"
+    assert withheld.stated_score is None

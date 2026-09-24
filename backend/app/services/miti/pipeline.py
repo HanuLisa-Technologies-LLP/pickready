@@ -80,55 +80,10 @@ __all__ = [
     "EvaluationInputs",
     "EvaluationOutcome",
     "build_evaluator_inputs",
-    "contract_gate",
     "evaluate",
     "must_have_evidence",
     "skills_for_dimension",
 ]
-
-
-def contract_gate(contract: "AssessmentContract | None") -> gates.GateResult:
-    """GATE G1, asked of the LOCKED ASSESSMENT CONTRACT. Blocking.
-
-    Replaces the frozen-matrix question (`hiring.scorecard.require_frozen_
-    matrix`), which Miti no longer imports. The contract a candidate was
-    assessed against is the snapshot their conversation is bound to, and it
-    must be:
-
-      * LOCKED: a snapshot row exists. An unlocked contract is the live rows,
-        which may change after the candidate answered; grading against it is
-        grading against criteria nobody froze. When scoring runs a
-        conversation exists by definition, so an unlocked contract here is a
-        defect upstream, and it refuses rather than reading around it;
-      * non-empty, with at least one Must-have and one Behavioural skill, the
-        same floor the Skills step enforces at save.
-
-    Pure: the contract is a frozen value, so the verdict is reproducible from
-    the evaluation record alone.
-    """
-    from app.services.assessment_contract import BUCKET_BEHAVIOURAL, BUCKET_MUST_HAVE
-
-    reasons: list[str] = []
-    if contract is None:
-        reasons.append("No assessment contract was loaded, so nothing can be graded.")
-        return gates.GateResult(gates.G1, False, blocking=True, reasons=tuple(reasons))
-    if not contract.locked or contract.locked_at is None:
-        reasons.append(
-            "The assessment contract is not locked. A candidate is graded only "
-            "against the skills snapshot their assessment started under."
-        )
-    buckets = {skill.bucket for skill in contract.skills}
-    if not contract.skills:
-        reasons.append(
-            "The assessment contract has no skills. A stamp is not evidence that "
-            "work happened; the gate reads the contract."
-        )
-    else:
-        if BUCKET_MUST_HAVE not in buckets:
-            reasons.append("The assessment contract has no Must-have skill.")
-        if BUCKET_BEHAVIOURAL not in buckets:
-            reasons.append("The assessment contract has no Behavioural skill.")
-    return gates.GateResult(gates.G1, not reasons, blocking=True, reasons=tuple(reasons))
 
 
 def skills_for_dimension(dimension: str, skill_buckets: Mapping[str, str]) -> tuple[str, ...]:
@@ -412,7 +367,7 @@ async def evaluate(
     outcome = EvaluationOutcome()
 
     # ── G1: nothing runs against a contract that is not locked ──────────────
-    g1 = contract_gate(inputs.contract)
+    g1 = gates.contract_gate(inputs.contract)
     outcome.gate_results.append(g1)
     if not g1.passed:
         # BLOCKING, and it returns here rather than continuing. Evaluating
