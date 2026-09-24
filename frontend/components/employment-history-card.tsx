@@ -20,11 +20,28 @@
 // read-only record. A disabled form invites somebody to hunt for the way to
 // re-enable it; a record says the decision is behind them. The server refuses
 // the write regardless, and so does a database trigger.
+//
+// ONE THING STAYS CORRECTABLE, AND ONLY WHERE THE SERVER SAYS SO
+// When a verification request to an employer's HR address could not be
+// delivered, the server marks that employer `correction_needed` and accepts a
+// new address for it (`PUT /bgv/me/employers/{id}/hr-email`), which resends
+// every bounced request with a fresh link. The control appears on exactly
+// those rows and nowhere else: the flag is computed by the same condition the
+// route accepts a correction on, so the screen never offers a correction the
+// server would refuse. The claim itself (employer, title, dates) never
+// becomes editable; a correction is recorded beside it.
 
 import * as React from "react";
-import { Lock, Plus, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
+import {
+  Lock,
+  MailWarning,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 
-import { apiGet, apiPost, apiPut } from "@/lib/api";
+import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +54,7 @@ import {
 import { FormField } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
+import { InlineError } from "@/components/page-primitives";
 
 type Background = "fresher" | "experienced";
 
@@ -48,6 +66,22 @@ interface EmploymentRow {
   ended_on: string;
   hr_name: string;
   hr_email: string;
+  /** Server-computed on a stored row: a request to this HR address bounced
+   *  and has not been answered, so a corrected address is accepted. */
+  correction_needed?: boolean;
+}
+
+/** The fields the declaration route takes. `id` and `correction_needed` are
+ *  server-owned facts about a stored row, not part of what is declared. */
+function declared(row: EmploymentRow) {
+  return {
+    employer_name: row.employer_name,
+    designation: row.designation,
+    started_on: row.started_on,
+    ended_on: row.ended_on,
+    hr_name: row.hr_name,
+    hr_email: row.hr_email,
+  };
 }
 
 interface HistoryOut {
@@ -91,6 +125,7 @@ export function EmploymentHistoryCard() {
   const { toast } = useToast();
   const [history, setHistory] = React.useState<HistoryOut | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [hidden, setHidden] = React.useState(false);
   const [background, setBackground] = React.useState<Background | null>(null);
   const [rows, setRows] = React.useState<EmploymentRow[]>([]);
   const [confirming, setConfirming] = React.useState(false);
@@ -104,9 +139,15 @@ export function EmploymentHistoryCard() {
       setRows(result.employments.length ? result.employments : []);
       setLoadError(null);
     } catch (error) {
-      // A candidate with no candidate record yet is a normal state, not a
-      // failure worth shouting about: they appear after an employer's first
-      // outreach. The card simply does not render.
+      // A 404 is a normal state, not a failure: a signed-in person with no
+      // candidate record yet has no history to declare, and the card does not
+      // render. Anything else is a failure and is said as one, because a card
+      // that vanished on a 500 would read as "nothing to do here".
+      if (error instanceof ApiError && error.status === 404) {
+        setLoadError(null);
+        setHidden(true);
+        return;
+      }
       setLoadError(apiErrorMessage(error));
     }
   }, []);
@@ -115,7 +156,24 @@ export function EmploymentHistoryCard() {
     void load();
   }, [load]);
 
-  if (loadError && !history) return null;
+  if (hidden) return null;
+  if (loadError && !history) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Employment history</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <InlineError>
+            Your employment history could not be loaded. {loadError}
+          </InlineError>
+          <Button size="sm" variant="outline" onClick={() => void load()}>
+            Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
   if (!history) {
     return (
       <Card>
@@ -155,16 +213,25 @@ export function EmploymentHistoryCard() {
           ) : (
             <ul className="space-y-3">
               {history.employments.map((row) => (
-                <li key={row.id} className="rounded-md border p-3">
-                  <p className="text-sm font-medium">
-                    {row.designation} at {row.employer_name}
-                  </p>
-                  <p className="text-xs">
-                    {row.started_on} to {row.ended_on}
-                  </p>
-                  <p className="text-xs">
-                    HR contact: {row.hr_name} ({row.hr_email})
-                  </p>
+                <li key={row.id} className="space-y-2 rounded-md border p-3">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {row.designation} at {row.employer_name}
+                    </p>
+                    <p className="text-xs">
+                      {row.started_on} to {row.ended_on}
+                    </p>
+                    <p className="text-xs">
+                      HR contact: {row.hr_name} ({row.hr_email})
+                    </p>
+                  </div>
+                  {row.correction_needed && row.id ? (
+                    <HrEmailCorrection
+                      employmentId={row.id}
+                      employerName={row.employer_name}
+                      onCorrected={(updated) => setHistory(updated)}
+                    />
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -198,7 +265,7 @@ export function EmploymentHistoryCard() {
     try {
       const result = await apiPut<HistoryOut>("/bgv/me", {
         background,
-        employments: background === "fresher" ? [] : rows,
+        employments: background === "fresher" ? [] : rows.map(declared),
         finalize,
       });
       setHistory(result);
@@ -490,11 +557,9 @@ function AppendEmployerSection({
       setOpen(false);
       setRow(emptyRow());
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "The employer could not be added right now."
-      );
+      // The server's own sentence (the cap, a personal mailbox, a date the
+      // history already covers), never the transport's "API error 409".
+      setError(apiErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -589,5 +654,85 @@ function AppendEmployerSection({
         </Button>
       </div>
     </div>
+  );
+}
+
+// Correct the HR address after a bounce.
+//
+// ONE FIELD. The route takes an address and nothing else, so this form offers
+// nothing else. Its refusals (the address already tried, a personal mailbox)
+// are the server's sentences, shown verbatim.
+
+function HrEmailCorrection({
+  employmentId,
+  employerName,
+  onCorrected,
+}: {
+  employmentId: string;
+  employerName: string;
+  onCorrected: (updated: HistoryOut) => void;
+}) {
+  const { toast } = useToast();
+  const [address, setAddress] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const fieldId = `hr-correction-${employmentId}`;
+  const valid = EMAIL_RE.test(address.trim());
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!valid) {
+      setError("Enter the corrected HR email address.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiPut<HistoryOut>(
+        `/bgv/me/employers/${employmentId}/hr-email`,
+        { hr_email: address.trim() },
+      );
+      onCorrected(updated);
+      toast({
+        title: "HR address updated",
+        description: `The verification request to ${employerName} has been sent again to the new address.`,
+      });
+    } catch (failure) {
+      setError(apiErrorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+      onSubmit={submit}
+      noValidate
+    >
+      <p className="flex items-start gap-2 text-sm font-medium">
+        <MailWarning className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        We could not deliver the verification request to this HR address.
+      </p>
+      <p className="text-xs">
+        Check the address with {employerName} and enter the corrected one. We
+        will send the request again automatically. Your employment details stay
+        exactly as you submitted them.
+      </p>
+      <FormField label="Corrected HR email" htmlFor={fieldId} required>
+        <Input
+          id={fieldId}
+          type="email"
+          autoComplete="off"
+          value={address}
+          disabled={busy}
+          onChange={(event) => setAddress(event.target.value)}
+        />
+      </FormField>
+      {error ? <InlineError>{error}</InlineError> : null}
+      <Button type="submit" size="sm" disabled={busy || !valid}>
+        {busy ? "Sending" : "Update address and resend"}
+      </Button>
+    </form>
   );
 }
