@@ -199,14 +199,6 @@ def test_the_gradient_climbs_and_then_exhausts() -> None:
     assert evidence_graph.next_specificity_level(levels[-1].level) is None
 
 
-def test_the_session_extension_is_the_gradient_and_not_a_typed_number() -> None:
-    """The Runbook states no conversation length anywhere. The ceiling is
-    DERIVED from the one thing it does bound."""
-    assert evidence_graph.extension_ceiling() == len(
-        evidence_graph.specificity_levels()
-    )
-
-
 def test_no_probe_opens_at_the_bottom_rung() -> None:
     """"What did you do?" is answerable by anyone, which 38.3 says in as many
     words, and the resume already answered it."""

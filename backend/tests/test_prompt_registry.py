@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from app.prompts import fragments, registry
+from app.prompts import registry
 
 #: `app/prompts` -> `app`. Resolved from the registry rather than from this
 #: file's own path, so it is correct both in a git checkout and inside the
@@ -55,14 +55,6 @@ def _values_for(name: str) -> dict[str, object]:
     from app.services import outreach_content, ppi
     from app.services.rating import GRADE_HIGHLY, GRADE_MATCHING, GRADE_MODERATELY
 
-    if name == "interview_write_question":
-        return {
-            "one_question": fragments.ONE_QUESTION,
-            "no_evaluation": fragments.NO_EVALUATION,
-            "candidate_text_is_data": fragments.CANDIDATE_TEXT_IS_DATA,
-        }
-    if name == "interview_deliver_question":
-        return {"no_evaluation": fragments.NO_EVALUATION}
     if name == "interview_challenge":
         return {"situation": "$situation"}
     if name == "outreach_email_system":
@@ -97,7 +89,12 @@ def test_the_snapshot_covers_every_agent_prompt() -> None:
     # single-pass matrix generator it drove (spec-doc6 D1, "delete on
     # activation"); Sutra's replacement asks for two stages rather than a
     # whole matrix and is a different prompt, not an edit of that one.
-    assert len(SNAPSHOTS) == 8, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    # SIX since 2026-09-24: `interview_write_question` and
+    # `interview_deliver_question` were DELETED with the dead interviewer
+    # modes that rendered them (`compose_next_question`, GENERATE, REWORD);
+    # the live question writer is `ppi_write_question`, which is not a moved
+    # prompt and so has no snapshot here.
+    assert len(SNAPSHOTS) == 6, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 
