@@ -12,8 +12,10 @@ the record.
 
 WHAT READS IT
 -------------
-ONE READER IS LIVE. `scorecard.freeze` writes the row and
-`scorecard._latest_binding` reads it back: the freeze in force is the highest
+NOTHING WRITES IT ANY MORE (Vivekium release): the matrix freeze that wrote
+it is deleted, and a job's assessment contract is the snapshot in
+`job_skill_snapshots`. `scorecard._latest_binding` still reads the rows that
+exist: the freeze in force is the highest
 `freeze_sequence`, and the next `scorecard_version` is derived from it. That
 is why the version lives here rather than being counted from row-creation
 batches, because compilation reuses rows and a human edit preserves row
@@ -34,9 +36,10 @@ answer onto the evaluation rather than joining for it. Nothing on the live
 scoring path invokes it, so the property it describes is NOT in force: every
 downstream consumer reads the current `job_competencies` rows.
 
-WHAT HOLDS THE LINE INSTEAD is `POST /jobs/{id}/framework/reopen`, which
-refuses once any candidate on the job has been invited to an assessment or has
-had questions written against the matrix. That is a blanket prohibition
+WHAT HELD THE LINE INSTEAD was the matrix reopen route (deleted in the
+Vivekium release), which refused once any candidate on the job had been invited
+to an assessment or had questions written against the matrix. The skills lock
+at the first start (`assessment_contract.lock_contract`) replaces it. That is a blanket prohibition
 standing in for a resolver. A reader who believes the resolver is load bearing
 will relax that guard and silently move a candidate's contract, which is the
 whole reason this is written down rather than left to be discovered.

@@ -8,8 +8,7 @@
     evidence_graph       what evidences what, per department
     gates                G1-G4
 
-`swot_quality` and `transformation` (the SWOT probes and Sutra's seven stages)
-were DELETED in the Vivekium release with the Tatva matrix they served.
+The SWOT probes module and Sutra's seven-stage transformation were DELETED in the Vivekium release with the Tatva matrix they served.
 `layers`, `department_models` and `situations` remain because Miti still reads
 them; nothing on the job-setup path does.
 

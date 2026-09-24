@@ -677,7 +677,7 @@ def test_every_template_name_the_app_sends_has_a_default() -> None:
 # -- Delivery is never starved by AI work (regression, 2026-08-01) -----------
 #
 # Production incident: every task shared one `celery` queue against a
-# `--concurrency=2` worker. Two `generate_technical_questions` runs wedged both
+# `--concurrency=2` worker. Two technical-question generation runs wedged both
 # slots in an unterminating loop, and a staff invitation enqueued at 14:07 UTC
 # was not delivered until 14:13, when a slot briefly freed at the soft-time-limit
 # boundary. The API had already answered 201 with `email_dispatch: "queued"`, so

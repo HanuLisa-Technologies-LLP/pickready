@@ -18,7 +18,7 @@ assumption would have passed happily throughout.
 The eight sites this covers, and the section each was checked against:
 
     situations.py:37          §18.4   six situation types' weight consequences
-    swot_quality.py:69        §18.3 and §18.5, DELETED in the Vivekium release
+    the SWOT probes module    §18.3 and §18.5, DELETED in the Vivekium release
                               with the SWOT intake and the matrix they served;
                               the Job SWOT is a team-owned document now
     layers.py:47              §3.5    precedence and conflict resolution

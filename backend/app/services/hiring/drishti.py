@@ -25,7 +25,7 @@ THE TWO PROPERTIES THE 2026-09-09 REMOVAL DEMANDED, held here:
 * Drishti is OPTIONAL CONTEXT TEXT and nothing else (Vivekium release,
   owner ruling). It moved weights through `layers.resolve` under
   `LAYER_COMPANY` until the Tatva matrix compiler was deleted; that weighting
-  (`emphasis_map`) is DELETED with it. No weight, no multiplier and no skill
+  is DELETED with it. No weight, no multiplier and no skill
   comes from Drishti anywhere on the live path.
 
 THE STRUCTURED AI CONVERSATION lives in `hiring/drishti_conversation` and
@@ -174,8 +174,7 @@ def compile_profile(
 
     The raw non-negotiables text is NOT stored any more (Vivekium release). It
     was kept only so the matrix compiler could word-look it up against resolved
-    competency names and lean a weight (`emphasis_map`), and that weighting is
-    deleted. Client free text nothing reads is client free text nobody needs
+    competency names and lean a weight, and that weighting is deleted. Client free text nothing reads is client free text nobody needs
     to hold. Artifacts compiled before the change still carry the key; nothing
     reads it.
     """

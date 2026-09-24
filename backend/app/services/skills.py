@@ -777,7 +777,7 @@ async def save(
     Synchronous in the request, and that is the recorded exception to rule 4:
     the context must land in the same transaction as the human's save, the
     call is bounded by the interactive tier (`assessment_context`), and the
-    refusal precedes any write. The same shape as the `scorecard.freeze` it
+    refusal precedes any write. The same shape as the matrix freeze it
     replaces.
     """
     if await assessment_contract.is_locked(db, job.id):

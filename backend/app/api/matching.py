@@ -77,8 +77,8 @@ async def run_matching(
 
 # ── The Matching Categories editor is DELETED (Vivekium release) ────────────
 #
-# `GET/POST/PUT/DELETE /jobs/{id}/categories` and `/categories/finalize` lived
-# here. Yukti scores a FIXED structure held in backend configuration (owner
+# The list, add, rename, remove and finalise routes for a job's categories
+# lived here. Yukti scores a FIXED structure held in backend configuration (owner
 # decision D2) and nobody edits categories, so there is nothing to list, add,
 # rename, remove or finalise. The generator and its prompt went with them.
 

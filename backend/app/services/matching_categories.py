@@ -1,8 +1,7 @@
 """The Matching Agent's per-job category list (spec §3.2). NO LONGER GENERATED.
 
-VIVEKIUM RELEASE: the generator (`generate_categories`), its prompt
-(`matching_categories_system`) and its task (`pickready.generate_matching_categories`)
-are DELETED with the Matching Categories editor (owner decision D2: Yukti scores
+VIVEKIUM RELEASE: the category generator, its prompt and its task are
+DELETED with the Matching Categories editor (owner decision D2: Yukti scores
 a FIXED structure held in backend configuration, and nobody edits categories).
 What remains here is read by the scorer until the Yukti phase replaces it:
 `list_categories`, `resolved_categories`, `load_keys`, the default and legacy

@@ -4,8 +4,7 @@ WHAT IS LEFT HERE, AND WHY IT IS ONLY THE READ HALF
 ---------------------------------------------------
 Until the Vivekium release this module BUILT the matrix (`compile_matrix`,
 Sutra's seven stages over the department menu, the situation layer and the
-SWOT), ENRICHED a reviewed one (`_enrich_reviewed_rows`) and FROZE it
-(`freeze`). All of that is DELETED (owner decision D1): Sutra drafts skills and
+SWOT), ENRICHED a reviewed one and FROZE it. All of that is DELETED (owner decision D1): Sutra drafts skills and
 writes a hidden assessment context (`services/hiring/sutra`, `services/skills`),
 and what every candidate is assessed against is the skills CONTRACT
 (`services/assessment_contract`), locked and snapshotted at the first start.

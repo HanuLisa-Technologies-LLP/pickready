@@ -17,8 +17,8 @@ Two model calls and nothing else:
 
 What it USED to be is gone from the live path and from the tree: the seven-stage
 transformation, the department-menu weighting, the layer multipliers, the
-situation layer and Drishti's weighting (`hiring/transformation.py`,
-`scorecard.compile_matrix`, `scorecard.freeze`, `drishti.emphasis_map`). A skill
+situation layer and Drishti's weighting (the transformation module, the
+matrix compiler, its freeze and the Drishti emphasis helper). A skill
 here is a bucket, a priority and an evidence line, which is exactly what the
 owner's specification keeps.
 

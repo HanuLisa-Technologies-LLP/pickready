@@ -67,8 +67,9 @@ ROOT_DIRS = ("api", "workers")
 #: the next reader needs to know whether the wiring was removed on purpose.
 LIVE: dict[str, str] = {
     "app.services.hiring": (
-        "api/jobs.py Gate 1 and the Tatva matrix; api/assessments.py; "
-        "api/dashboard.py; workers/tasks.py compile_tatva_matrix"
+        "api/jobs.py Gate 1; api/assessments.py; api/dashboard.py; "
+        "workers/tasks.py pickready.draft_job_skills -> services/skills -> "
+        "hiring.sutra"
     ),
     "app.services.miti": (
         "workers/tasks.py pickready.run_functional_assessment -> "
