@@ -427,7 +427,7 @@ async def test_the_trail_exists_with_nothing_rendered(session) -> None:
     produce nothing.
     """
     await _run_the_scenario(session)
-    # Eight: the send-to-hiring-manager row went with the approval chain.
+    # Eight: the Hiring Manager hand-off row went with the approval chain.
     assert len(session.rows) == 8
     assert all(isinstance(row, AuditLog) for row in session.rows)
 

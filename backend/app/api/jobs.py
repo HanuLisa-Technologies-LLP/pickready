@@ -3,9 +3,9 @@
 THE FLOW (Vivekium release): Create Job saves a DRAFT, always. The JD has one
 edit path (`PATCH /jobs/{id}/jd`). The job goes live only through
 `POST /jobs/{id}/publish`, which needs a JD, a saved SWOT and saved skills.
-The multi-level approval chain (`send-to-hiring-manager`, `submit`,
-`approve`, `approvals`) and the second JD writer (`PUT /jobs/{id}/jd`) are
-DELETED: none had a caller, and one left the canonical document stale.
+The multi-level approval chain (the hand-off to the Hiring Manager, submit,
+approve and the approvals list) and the second JD writer (`PUT /jobs/{id}/jd`)
+are DELETED: none had a caller, and one left the canonical document stale.
 """
 import logging
 import uuid

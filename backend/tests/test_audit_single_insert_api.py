@@ -12,7 +12,7 @@ response has left. That second shape caused the SWOT false-409 fixed on
 2026-09-20 (`test_swot_analysis_api.py` is the model for these tests).
 
 Three more sites carried the same pattern and were converted on the same day:
-the framework finalize route, the send-to-hiring-manager route (both DELETED
+the framework finalize route, the Hiring Manager hand-off route (both DELETED
 in the Vivekium release; publish and create now carry the pin), and the
 pipeline-halt audit record (whose own try/except turned the failure into a
 log line, so no halt was ever actually recorded). Each test here runs the
