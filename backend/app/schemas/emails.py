@@ -86,7 +86,9 @@ class EmailSendIn(BaseModel):
     #: Optional ACTIVE corporate sender to send under (Corporate Email System
     #: spec section 6). Validated at queue time in api/emails AND re-validated
     #: at send time in workers/tasks, so a revocation between the two still
-    #: takes effect (spec section 11). None keeps the platform default sender.
+    #: takes effect (spec section 11). None means the tenant's DEFAULT active
+    #: sender when one is set (Phase 6, `services/email_outbox`), else the
+    #: platform mailbox.
     sender_id: uuid.UUID | None = None
 
 
