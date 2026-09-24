@@ -38,7 +38,7 @@ HARD RULES:
 - Keep every stdin within the size you were given, and every expected output within the output limit you were given.
 - A starter program must compile and run as given. It prints nothing useful and it never contains the solution.
 - The statement never mentions scores, grades, marks, the hidden tests, how the answer is judged, or other candidates. Describe values as values, points or counts, never as a score.
-- No numbers from compensation, no personal data, no brand names that are not in the role summary. Never use an em dash.
+- No personal data and no brand names that are not in the role summary. Never use an em dash.
 - Write about the problem only. Never describe the information you were given, how complete it is, or how sure you are.
 
 Return JSON only, exactly this shape:
