@@ -428,10 +428,10 @@ async def can_start_assessment(
 # ── Zero-balance gating (spec §11) ───────────────────────────────────────────
 # A completed assessment is charged even into the negative: the work is already
 # done and refusing the charge would only lose the revenue. There used to be a
-# second, NEGATIVE-balance gate here (`has_credit_headroom`, "may this customer
-# send new invitations?"); it lost its last caller to the zero-balance gate
-# below and was deleted with the stored deficit flag it paired with (Vivekium
-# release, migration 0128).
+# second, NEGATIVE-balance gate here ("may this customer send new
+# invitations?"); it lost its last caller to the zero-balance gate below and
+# was deleted with the stored deficit flag it paired with (Vivekium release,
+# migration 0128).
 #
 # Draft v4's question has a different threshold. Two actions are blocked the
 # instant the pool reads ZERO, before the balance can go negative at all:
