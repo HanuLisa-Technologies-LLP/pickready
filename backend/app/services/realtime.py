@@ -48,7 +48,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import event
+from app.core.after_commit import on_commit
 
 logger = logging.getLogger(__name__)
 
@@ -327,11 +327,19 @@ def publish_after_commit(session: Any, payload: dict) -> None:
     A rolled-back transaction publishes NOTHING, which is the half that matters
     most: a notification for a message that was never stored would have every
     listening tab render one that does not exist.
+
+    ONE AFTER-COMMIT MECHANISM (PLAN-p3 WP1). This hangs off
+    `core/after_commit.on_commit`, the same hook `dispatch_after_commit` uses,
+    rather than a listener of its own. The listener it replaced was installed
+    `once=True` per call and was NOT removed by a rollback, so a publish
+    registered in a transaction that rolled back fired on the NEXT commit of
+    the same session, announcing a message that was never stored.
+    `on_commit` discards what is pending when the outermost transaction ends
+    without committing.
     """
     loop = asyncio.get_running_loop()
 
-    @event.listens_for(session.sync_session, "after_commit", once=True)
-    def _fire(_sync_session) -> None:  # noqa: ANN001 -- SQLAlchemy's signature
+    def _fire() -> None:
         # THIS RUNS INSIDE `commit()`, SO WHAT IT RAISES, THE CALLER RAISES.
         #
         # `hub.publish` already refuses to fail a send it could not announce.
@@ -359,6 +367,12 @@ def publish_after_commit(session: Any, payload: dict) -> None:
             return
         _PENDING_PUBLISHES.add(task)
         task.add_done_callback(_PENDING_PUBLISHES.discard)
+
+    on_commit(
+        session,
+        _fire,
+        label=f"realtime.publish conversation={payload.get('conversation_id')}",
+    )
 
 
 def message_event(

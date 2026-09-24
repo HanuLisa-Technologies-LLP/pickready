@@ -16,6 +16,7 @@ customer sees another customer's message.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import uuid
 
@@ -286,7 +287,7 @@ async def test_a_new_loop_does_not_inherit_the_previous_loop_s_rooms(
 
 
 async def test_a_closed_loop_cannot_fail_the_commit_that_stored_the_message(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """`publish_after_commit` schedules onto the loop that was running when it
     was called, and that handler runs INSIDE `commit()`.
@@ -296,32 +297,66 @@ async def test_a_closed_loop_cannot_fail_the_commit_that_stored_the_message(
     already durably stored, and the sender is told the send failed while every
     other participant can already read it. `hub.publish` was careful about
     exactly this and the two lines that scheduled it were not.
+
+    Since PLAN-p3 WP1 the callback runs through `core/after_commit.on_commit`,
+    which would LOG an exception rather than raise it, so "commit did not
+    raise" alone would pass with the guard deleted. The assertion is therefore
+    that the guard ran (`realtime.schedule_failed`) and the generic catch did
+    not (`after_commit.callback_failed`). A real `Session` with no bind
+    commits an empty transaction, which is enough to fire `after_commit`.
     """
+    from sqlalchemy.orm import Session
+
     dead = asyncio.new_event_loop()
     dead.close()
-
-    fired: list[str] = []
-
-    class _SyncSession:
-        """Enough of SQLAlchemy's session for the listener to attach to."""
-
-    class _Session:
-        sync_session = _SyncSession()
-
-    def _listens_for(target, name, once=False):  # noqa: ANN001, ARG001
-        def decorate(fn):
-            fired.append(name)
-            # Call it the way SQLAlchemy does: synchronously, inside commit.
-            fn(target)
-            return fn
-
-        return decorate
-
-    monkeypatch.setattr(realtime.event, "listens_for", _listens_for)
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: dead)
 
-    # The assertion is the absence of an exception. Before the guard this
-    # raised RuntimeError("Event loop is closed") straight through commit.
-    realtime.publish_after_commit(_Session(), {"tenant_id": "t", "message": {}})
+    session = Session()
+    realtime.publish_after_commit(
+        session, {"tenant_id": "t", "conversation_id": "c", "message": {}}
+    )
+    with caplog.at_level(logging.WARNING):
+        session.commit()
 
-    assert fired == ["after_commit"]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(m.startswith("realtime.schedule_failed") for m in messages), messages
+    assert not any(m.startswith("after_commit.callback_failed") for m in messages)
+
+
+async def test_a_rolled_back_publish_never_fires_on_a_later_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The listener this replaced was `once=True` per call and survived a
+    rollback, so a publish registered in a transaction that rolled back fired
+    on the NEXT commit of the same session: every listening tab rendered a
+    message that was never stored. On `on_commit` the pending publish is
+    discarded when the outermost transaction ends without committing.
+
+    Mutation-checked: restoring the old `event.listens_for(..., once=True)`
+    registration makes the second assertion fail with one publish.
+    """
+    from sqlalchemy.orm import Session
+
+    published: list[dict] = []
+
+    async def _record(payload: dict) -> None:
+        published.append(payload)
+
+    monkeypatch.setattr(realtime.hub, "publish", _record)
+
+    session = Session()
+    session.begin()
+    realtime.publish_after_commit(
+        session, {"tenant_id": "t", "conversation_id": "never-stored", "message": {}}
+    )
+    session.rollback()
+
+    session.begin()
+    realtime.publish_after_commit(
+        session, {"tenant_id": "t", "conversation_id": "stored", "message": {}}
+    )
+    session.commit()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert [p["conversation_id"] for p in published] == ["stored"]
