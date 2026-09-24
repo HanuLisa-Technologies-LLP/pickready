@@ -63,6 +63,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Sequence
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -207,6 +208,82 @@ async def _load_resume(session: AsyncSession, source_id: uuid.UUID) -> Document 
     )
 
 
+async def _assessment_exchanges(
+    session: AsyncSession, link_id: uuid.UUID
+) -> tuple[uuid.UUID | None, list[dict[str, str]], list[uuid.UUID]]:
+    """(tenant, exchanges, answer message ids) for one application's transcript.
+
+    ONE pairing walk, shared by the loader and by `exchange_ordinals`. The
+    exchange INDEX is the chunk ordinal (`chunking.chunk_exchanges` enumerates
+    before it skips an empty answer), so the only way to say "the chunk that
+    holds this answer" without a second, drifting copy of the walk is to ask
+    the walk that produced the ordinal.
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT l.tenant_id AS tenant_id,
+                       m.id        AS message_id,
+                       m.speaker   AS speaker,
+                       m.content   AS content
+                  FROM job_candidate_links l
+                  JOIN assessment_conversations c ON c.job_candidate_link_id = l.id
+                  JOIN assessment_messages m      ON m.conversation_id = c.id
+                 WHERE l.id = :id
+                 ORDER BY c.created_at, m.ordinal
+                """
+            ),
+            {"id": str(link_id)},
+        )
+    ).all()
+    if not rows:
+        return None, [], []
+
+    # Walk in order, never zip alternate rows: the last question of an
+    # abandoned assessment has no answer, and zipping would pair it with
+    # somebody else's. Same rule as `tools.implementations.pair_exchanges` and
+    # as the recruiter transcript route.
+    exchanges: list[dict[str, str]] = []
+    answer_ids: list[uuid.UUID] = []
+    pending_question: str | None = None
+    for row in rows:
+        if row.speaker == "agent":
+            pending_question = row.content
+            continue
+        if pending_question is None:
+            continue
+        exchanges.append({"question": pending_question, "answer": row.content})
+        answer_ids.append(row.message_id)
+        pending_question = None
+    return rows[0].tenant_id, exchanges, answer_ids
+
+
+async def exchange_ordinals(
+    session: AsyncSession,
+    *,
+    link_id: uuid.UUID,
+    answer_message_ids: Sequence[uuid.UUID],
+) -> frozenset[int]:
+    """The assessment chunk ordinals that hold these ANSWER messages.
+
+    Used by the `retrieve_context` tool to leave a skill's own answers out of
+    the passages retrieved to judge that skill: evidence that merely restates
+    the answer being graded is the answer graded twice. An id that is not an
+    answer on this link (a question, another link's message, an invented id)
+    maps to nothing rather than raising: exclusion can only ever remove, so an
+    unmatched id costs nothing and names nothing.
+    """
+    wanted = {str(message_id) for message_id in answer_message_ids}
+    if not wanted:
+        return frozenset()
+    _tenant, _exchanges, answer_ids = await _assessment_exchanges(session, link_id)
+    return frozenset(
+        index for index, message_id in enumerate(answer_ids)
+        if str(message_id) in wanted
+    )
+
+
 async def _load_assessment(
     session: AsyncSession, source_id: uuid.UUID
 ) -> Document | None:
@@ -217,46 +294,17 @@ async def _load_assessment(
     transcript exists from the first answer, it outlives any one conversation
     row, and every consumer of assessment evidence already holds a link id.
     """
-    rows = (
-        await session.execute(
-            text(
-                """
-                SELECT l.tenant_id AS tenant_id,
-                       m.speaker   AS speaker,
-                       m.content   AS content
-                  FROM job_candidate_links l
-                  JOIN assessment_conversations c ON c.job_candidate_link_id = l.id
-                  JOIN assessment_messages m      ON m.conversation_id = c.id
-                 WHERE l.id = :id
-                 ORDER BY c.created_at, m.ordinal
-                """
-            ),
-            {"id": str(source_id)},
-        )
-    ).all()
-    if not rows:
+    tenant_id, exchanges, _answer_ids = await _assessment_exchanges(
+        session, source_id
+    )
+    if tenant_id is None:
         return None
-
-    # Walk in order, never zip alternate rows: the last question of an
-    # abandoned assessment has no answer, and zipping would pair it with
-    # somebody else's. Same rule as `tools.implementations.pair_exchanges` and
-    # as the recruiter transcript route.
-    exchanges: list[dict[str, str]] = []
-    pending_question: str | None = None
-    for row in rows:
-        if row.speaker == "agent":
-            pending_question = row.content
-            continue
-        if pending_question is None:
-            continue
-        exchanges.append({"question": pending_question, "answer": row.content})
-        pending_question = None
 
     chunks = chunking.chunk_exchanges(exchanges)
     if not chunks:
         return None
     return Document(
-        tenant_id=rows[0].tenant_id,
+        tenant_id=tenant_id,
         source_type=chunking.SOURCE_ASSESSMENT,
         source_id=source_id,
         text="\n\n".join(chunk.content for chunk in chunks),

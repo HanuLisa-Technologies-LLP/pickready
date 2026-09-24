@@ -39,8 +39,11 @@ from app.models.assessment import (
     JobCompetency,
 )
 from app.services import rating
+from app.services.projects import context as project_context
 from app.services.rag import context as rag_context
 from app.services.rag import acquisition as rag_acquisition
+from app.services.rag import chunking as rag_chunking
+from app.services.rag import sources as rag_sources
 from app.services.tools import schemas
 from app.services.tools.errors import ToolExecutionError
 from app.services.tools.policy import RiskClass
@@ -63,6 +66,26 @@ _COMPENSATION_MARKERS = (
 def _is_compensation_key(key: str) -> bool:
     lowered = str(key).lower()
     return any(marker in lowered for marker in _COMPENSATION_MARKERS)
+
+
+def _strip_compensation(value: Any) -> Any:
+    """`value` with every compensation-shaped KEY removed, at any depth.
+
+    Recursive because the documents it guards are nested (a project's
+    `evidence_json` holds dicts inside lists inside dicts) and a strip that
+    looked at the top level only would pass a salary two levels down. Keys,
+    never values: the markers are substrings, and matching them against prose
+    would delete "payments platform" from a candidate's stack.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_compensation(item)
+            for key, item in value.items()
+            if not _is_compensation_key(key)
+        }
+    if isinstance(value, list):
+        return [_strip_compensation(item) for item in value]
+    return value
 
 
 def _labels(value: Any, *, limit: int = 40, width: int = 160) -> tuple[str, ...]:
@@ -434,6 +457,36 @@ register(
 #: assembly after it; two thirds of the ceiling is that room stated once.
 _ACQUISITION_DEADLINE_SECONDS = 4.0
 
+#: The request model's own ceiling on `top_k`, restated as the ceiling on the
+#: over-fetch an exclusion adds, so excluding answers can never ask retrieval
+#: for more than a caller could have asked for directly.
+_MAX_TOP_K = 20
+
+
+async def _excluded_exchanges(
+    payload: schemas.RetrievalRequest, session: AsyncSession
+) -> frozenset[tuple[str, int]]:
+    """(source id, chunk ordinal) for every answer the caller asked to leave out.
+
+    The ordinal comes from `rag.sources.exchange_ordinals`, which asks the same
+    pairing walk that CUT the transcript into chunks, so "the chunk holding this
+    answer" has one definition. Empty for any request that excludes nothing,
+    which is every request except a transcript read (the request model refuses
+    exclusions on any other source type).
+    """
+    if not payload.exclude_answer_message_ids:
+        return frozenset()
+    assert payload.source_type == rag_chunking.SOURCE_ASSESSMENT
+    excluded: set[tuple[str, int]] = set()
+    for link_id in payload.source_ids:
+        ordinals = await rag_sources.exchange_ordinals(
+            session,
+            link_id=link_id,
+            answer_message_ids=payload.exclude_answer_message_ids,
+        )
+        excluded.update((str(link_id), ordinal) for ordinal in ordinals)
+    return frozenset(excluded)
+
 
 async def _retrieve_context(
     payload: schemas.RetrievalRequest, *, session: AsyncSession | None
@@ -447,6 +500,7 @@ async def _retrieve_context(
     # 1: "sufficient for generation" stays the sufficiency gates' question;
     # this layer only refuses to give up on an EMPTY result without one wider
     # look. Scope (tenant, source type, source ids) is never broadened.
+    excluded = await _excluded_exchanges(payload, session)
     outcome = await rag_acquisition.acquire(
         session,
         payload.query,
@@ -454,11 +508,18 @@ async def _retrieve_context(
         source_type=payload.source_type,
         source_ids=list(payload.source_ids),
         section_types=list(payload.section_types) or None,
-        top_k=payload.top_k,
+        # Over-fetch by what will be removed, so an exclusion costs the caller
+        # the excluded pieces and not also the ones ranked just below them.
+        top_k=min(payload.top_k + len(excluded), _MAX_TOP_K),
         deadline_seconds=_ACQUISITION_DEADLINE_SECONDS,
     )
+    kept = [
+        chunk
+        for chunk in outcome.chunks
+        if (str(chunk.source_id), chunk.ordinal) not in excluded
+    ][: payload.top_k]
     assembled = rag_context.assemble(
-        outcome.chunks, query=payload.query, max_tokens=payload.max_tokens
+        kept, query=payload.query, max_tokens=payload.max_tokens
     )
     return schemas.RetrievedContext(
         query=payload.query,
@@ -496,6 +557,49 @@ register(
         # or a JD is edited, and a five-minute-old retrieval against a document
         # that changed is evidence for a claim about text that no longer exists.
         idempotent=False,
+    )
+)
+
+
+# ── extract_project_evidence ─────────────────────────────────────────────────
+#
+# PLAN-p5 WP5-E, decision P5-D10. Project evidence stays OUT of the chunk index
+# (`rag/sources.py` gives the reason: candidate-owned, tenant-free, and model
+# output one join away from being cited as verbatim evidence). It crosses the
+# tool boundary instead, so Vaada reads it through the same permission, stage,
+# timeout, validation and tenant-keyed cache as every other read, rather than
+# by importing `projects.context` and inheriting none of them.
+
+
+async def _extract_project_evidence(
+    payload: schemas.ProjectEvidenceRequest, *, session: AsyncSession | None
+) -> schemas.ProjectEvidence:
+    assert session is not None
+    text = await project_context.candidate_project_context(
+        session, payload.candidate_id, redact=_strip_compensation
+    )
+    return schemas.ProjectEvidence(candidate_id=payload.candidate_id, text=text)
+
+
+register(
+    ToolSpec(
+        name="extract_project_evidence",
+        handler=_extract_project_evidence,
+        input_model=schemas.ProjectEvidenceRequest,
+        output_model=schemas.ProjectEvidence,
+        description=(
+            "A candidate's DERIVED project evidence, compensation-stripped, as "
+            "a bounded block for question writing."
+        ),
+        risk=RiskClass.READ,
+        # A project's evidence changes when a pipeline run finishes, never
+        # during one question-writing pass. The key carries the tenant the
+        # call was made for (executor `_cache_key`), so one employer's cached
+        # read is never served to another even though the rows are
+        # candidate-owned.
+        idempotent=True,
+        cache_ttl_seconds=300,
+        timeout_seconds=3.0,
     )
 )
 

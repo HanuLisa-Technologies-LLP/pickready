@@ -87,6 +87,7 @@ AGENT_TOOLS: dict[str, frozenset[str]] = {
     AGENT_INTERVIEWER: frozenset(
         {
             "extract_jd",
+            "extract_project_evidence",
             "extract_resume",
             "extract_framework",
             "retrieve_context",

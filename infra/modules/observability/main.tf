@@ -221,6 +221,48 @@ resource "aws_cloudwatch_metric_alarm" "agent_failures" {
   tags          = var.tags
 }
 
+# ── The semantic index repair sweep (PLAN-p5 WP5-E) ──────────────────────────
+#
+# `pickready.repair_semantic_index` runs hourly on the task worker and writes
+# `rag.repair.degraded` when a pass could not embed: the chunks it selected are
+# left exactly as they were and the next pass retries them. One degraded pass is
+# a provider blip; the same line hour after hour is an index that has quietly
+# stopped being searchable by meaning, which no request fails over, because the
+# keyword half of retrieval keeps answering. So the alarm needs three
+# consecutive degraded hours, and it reads the repository's own log line for the
+# reason the agent filter above gives.
+
+resource "aws_cloudwatch_log_metric_filter" "rag_repair_degraded" {
+  name           = "${local.name}-rag-repair-degraded"
+  log_group_name = var.task_worker_log_group_name
+  pattern        = "\"rag.repair.degraded\""
+
+  metric_transformation {
+    name          = "SemanticRepairDegraded"
+    namespace     = "ReadyPick/${var.environment}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "rag_repair_degraded" {
+  alarm_name          = "${local.name}-rag-repair-degraded"
+  alarm_description   = "The semantic index repair sweep could not embed for three consecutive hours. Retrieval is keyword-only for every chunk it selected, and nothing else reports it because retrieval keeps answering."
+  namespace           = "ReadyPick/${var.environment}"
+  metric_name         = aws_cloudwatch_log_metric_filter.rag_repair_degraded.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [var.alarm_topic_arn]
+  ok_actions    = [var.alarm_topic_arn]
+  tags          = var.tags
+}
+
 # ── The four conditions that were on the dashboard and nowhere else ──────────
 #
 # ADDED 2026-09-17, BEFORE THE FIRST PRODUCTION APPLY.

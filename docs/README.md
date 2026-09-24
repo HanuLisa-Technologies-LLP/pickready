@@ -83,6 +83,7 @@ document.
 | [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
 | [ASSESSMENT_QUESTION_FORMATS.md](spec/ASSESSMENT_QUESTION_FORMATS.md) | The six question formats and the evidence-dominance rule |
 | [BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) | How background work is dispatched, routed, retried and scheduled after Celery |
+| [RETRIEVAL.md](spec/RETRIEVAL.md) | Candidate Retrieval (Yukti) and Evidence RAG (Vaada, Miti, Siddhi): two use cases, the shared primitives and their one owner each, the tool-layer boundary, index provenance and repair |
 | [HARNESS.md](spec/HARNESS.md) | RPN-HARNESS-001. The engineering harness: scenarios, fault injection at the real seams, run identity and replay, the layered evaluators, baselines and the tiers CI fails on. It is the contract `backend/harness/` conforms to, and it records the findings the harness itself produced |
 | [VIVEKIUM_SPRINT_FEATURES.md](spec/VIVEKIUM_SPRINT_FEATURES.md) | The eight-feature sprint brief, RECONCILED. Its section 3 is the conflict register: seven places where the brief and a standing hard rule cannot both be true. Read that before building anything from it |
 | [ARCHITECTURE.md](spec/ARCHITECTURE.md) | Normative architecture decisions. AD-1: the database is authoritative, and A2A artifacts are provenance and hand-off records only |

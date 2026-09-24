@@ -1048,6 +1048,13 @@ module "scheduler" {
       task            = "pickready.reconcile_context_index"
       rate_expression = "rate(60 minutes)"
     }
+    # PLAN-p5 WP5-E. The Terraform half of the entry in app/workers/schedule.py:
+    # re-embeds chunks whose vector is NULL, from a retired model or contract,
+    # or the wrong width. retrieval_repair_sweep_batch caps a pass; 0 pauses it.
+    "readypick-repair-semantic-index" = {
+      task            = "pickready.repair_semantic_index"
+      rate_expression = "rate(60 minutes)"
+    }
     # Registered since the credit work and scheduled by nothing until now: it
     # was dispatched only when a bundle was granted, so a report lost to a
     # failed dispatch or a killed container stayed lost, for a candidate who
@@ -1191,6 +1198,10 @@ module "observability" {
   # started it returned as soon as RunTask was accepted, so a metric filter over
   # the agent's own `ecs_task.failed` line is the only report of the failure.
   agent_log_group_name = module.ecs.log_group_names["agent"]
+
+  # PLAN-p5 WP5-E. The metric filter over `rag.repair.degraded`, the only
+  # report of a semantic index repair sweep that cannot embed.
+  task_worker_log_group_name = module.lambda.log_group_names["task-worker"]
 
   # ADDED 2026-09-17. Both were visible on the dashboard and watched by
   # nothing. See the module for what each alarm catches.

@@ -107,6 +107,19 @@ MODEL_LUNA = "gpt-5.6-luna"
 #: reason.
 EMBEDDING_MODEL = "voyage-4"
 
+#: OUR version of how an embedded text is built for `EMBEDDING_MODEL`: the
+#: width, the input type and the text template. The vendor does not version a
+#: model id, so without this a change to WHAT is embedded would be invisible
+#: while the model string stayed identical. Bump it whenever a text builder
+#: changes (`scripts/reembed.py`, `rag/contextual.embedding_input`), and every
+#: row built by the previous builder becomes stale by QUERY rather than by
+#: memory: `rag/repair.stale_chunks` selects on it.
+#:
+#: It lived in `scripts/reembed.py` alone until 2026-09-24, so the indexer that
+#: writes every new chunk could not stamp it and the repair sweep had nothing
+#: to compare against. One constant, beside the model it versions.
+EMBEDDING_CONTRACT_VERSION = "v1-1024-doc"
+
 #: Every model id this platform may call. The acceptance criterion is unchanged
 #: by the vendor swap: "grep the codebase for any other model string and confirm
 #: zero results". `tests/test_llm_task_routing.py` is that grep, executed.
