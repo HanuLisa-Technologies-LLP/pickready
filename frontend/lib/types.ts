@@ -1428,6 +1428,10 @@ export interface EmailSender {
   /** One plain sentence for the Super Admin. Deliberately carries no AWS
    *  vocabulary: not SES, not an identity, not DKIM. */
   sending_detail: string;
+  /** The tenant's ONE default sender: what every email that does not name a
+   *  sender goes out under, the automatic ones included. Only an active
+   *  sender can hold it, and leaving `active` clears it on the server. */
+  is_default: boolean;
 }
 
 export interface EmailSenderList {

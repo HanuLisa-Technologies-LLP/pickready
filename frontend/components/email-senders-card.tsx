@@ -3,19 +3,29 @@
 // Corporate email senders (Corporate Email System spec, 2026-09-05).
 //
 // The org Settings surface for registering business mailboxes as authorized
-// automated-email senders. The flow the dialogs drive is the spec's own:
-// add sender -> business email check (server-side blocklist, errors surfaced
-// verbatim) -> six-digit code sent to the mailbox -> POC enters the code ->
-// ownership verified -> the client Super Admin authorizes -> Active.
+// automated-email senders. The flow: add sender -> business email check
+// (server-side blocklist, errors surfaced verbatim) -> the client Super Admin
+// authorizes -> Active. The six-digit mailbox code this comment used to
+// describe was withdrawn on 2026-09-08 (see the note at the end of the file),
+// and the Add dialog kept promising it until the vivekium release.
 //
 // Status is always a WORD CHIP, never an icon alone and never a number. The
 // server says what the caller may do (can_manage / can_authorize), so this
 // renders only reachable controls instead of guessing at roles.
+//
+// THE DEFAULT SENDER (vivekium release, Phase 6)
+// `email_log.sender_id` was never written, so a company that registered and
+// approved a corporate mailbox still had every email leave from the platform
+// mailbox. The server now resolves a sender for EVERY candidate email: the one
+// a recruiter picked, else the tenant's default, else the platform mailbox.
+// This card is where the default is chosen. Only an ACTIVE sender can hold it,
+// and the server clears it when the sender stops being active, so a revoked
+// mailbox can never keep sending by default.
 
 import * as React from "react";
 import { Mail, Plus } from "lucide-react";
 
-import { ApiError, apiGet, apiPost } from "@/lib/api";
+import { ApiError, apiDelete, apiGet, apiPost } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import type {
   EmailSender,
@@ -65,6 +75,67 @@ const AWAITING_DECISION = [
   "verification_expired",
 ];
 
+// Every control on a sender row, as data: where it posts, and the two
+// sentences the person is told. Written out whole rather than built from a
+// verb, because "Could not " + "Approved".toLowerCase() is how this card used
+// to tell somebody it "could not approved this sender".
+type SenderAction =
+  | "approve"
+  | "reject"
+  | "disable"
+  | "enable"
+  | "revoke"
+  | "makeDefault"
+  | "clearDefault";
+
+const SENDER_ACTIONS: Record<
+  SenderAction,
+  { path: string; method: "post" | "delete"; done: string; failed: string }
+> = {
+  approve: {
+    path: "approve",
+    method: "post",
+    done: "Approved",
+    failed: "Could not approve this sender",
+  },
+  reject: {
+    path: "reject",
+    method: "post",
+    done: "Rejected",
+    failed: "Could not reject this sender",
+  },
+  disable: {
+    path: "disable",
+    method: "post",
+    done: "Paused",
+    failed: "Could not pause this sender",
+  },
+  enable: {
+    path: "enable",
+    method: "post",
+    done: "Enabled",
+    failed: "Could not enable this sender",
+  },
+  revoke: {
+    path: "revoke",
+    method: "post",
+    done: "Removed",
+    failed: "Could not remove this sender",
+  },
+  makeDefault: {
+    path: "default",
+    method: "post",
+    done: "Default sender set",
+    failed: "Could not make this the default sender",
+  },
+  clearDefault: {
+    path: "default",
+    method: "delete",
+    done: "Default sender cleared",
+    failed: "Could not stop using this as the default sender",
+  },
+};
+
 export function EmailSendersCard() {
   const { toast } = useToast();
   const [data, setData] = React.useState<EmailSenderList | null>(null);
@@ -96,15 +167,21 @@ export function EmailSendersCard() {
     void load();
   }, [load]);
 
-  const act = async (sender: EmailSender, action: string, label: string) => {
+  const act = async (sender: EmailSender, action: SenderAction) => {
+    const spec = SENDER_ACTIONS[action];
     setBusyId(sender.id);
     try {
-      await apiPost<EmailSender>(`/email-senders/${sender.id}/${action}`);
-      toast({ title: `${label}: ${sender.email}` });
+      const path = `/email-senders/${sender.id}/${spec.path}`;
+      if (spec.method === "delete") {
+        await apiDelete<EmailSender>(path);
+      } else {
+        await apiPost<EmailSender>(path);
+      }
+      toast({ title: `${spec.done}: ${sender.email}` });
       await load();
     } catch (error) {
       toast({
-        title: `Could not ${label.toLowerCase()} this sender`,
+        title: spec.failed,
         description: apiErrorMessage(error),
         variant: "destructive",
       });
@@ -122,7 +199,7 @@ export function EmailSendersCard() {
   return (
     <Section
       title="Email senders"
-      description="Business mailboxes your company has authorized to send automated recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it."
+      description="Business mailboxes your company has authorized to send recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it. Email that does not name a sender goes out from your default sender, or from the Vivekium mailbox when none is set."
       actions={
         <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" aria-hidden="true" /> Add sender
@@ -154,13 +231,40 @@ export function EmailSendersCard() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={chip.variant}>{chip.label}</Badge>
+                {sender.is_default ? (
+                  <Badge variant="outline">Default sender</Badge>
+                ) : null}
+                {canAuthorize &&
+                sender.status === "active" &&
+                !sender.is_default ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void act(sender, "makeDefault")}
+                  >
+                    Make default
+                  </Button>
+                ) : null}
+                {canAuthorize && sender.is_default ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void act(sender, "clearDefault")}
+                  >
+                    Stop using as default
+                  </Button>
+                ) : null}
                 {canAuthorize && AWAITING_DECISION.includes(sender.status) ? (
                   <>
                     <Button
                       type="button"
                       size="sm"
                       disabled={busy}
-                      onClick={() => void act(sender, "approve", "Approved")}
+                      onClick={() => void act(sender, "approve")}
                     >
                       Approve
                     </Button>
@@ -169,7 +273,7 @@ export function EmailSendersCard() {
                       variant="outline"
                       size="sm"
                       disabled={busy}
-                      onClick={() => void act(sender, "reject", "Rejected")}
+                      onClick={() => void act(sender, "reject")}
                     >
                       Reject
                     </Button>
@@ -181,7 +285,7 @@ export function EmailSendersCard() {
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => void act(sender, "disable", "Disabled")}
+                    onClick={() => void act(sender, "disable")}
                   >
                     Disable
                   </Button>
@@ -192,7 +296,7 @@ export function EmailSendersCard() {
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => void act(sender, "enable", "Enabled")}
+                    onClick={() => void act(sender, "enable")}
                   >
                     Enable
                   </Button>
@@ -205,7 +309,7 @@ export function EmailSendersCard() {
                       variant="destructive"
                       size="sm"
                       disabled={busy}
-                      onClick={() => void act(sender, "revoke", "Revoked")}
+                      onClick={() => void act(sender, "revoke")}
                     >
                       Confirm revoke
                     </Button>
@@ -294,8 +398,8 @@ function AddSenderDialog({
         <DialogHeader>
           <DialogTitle>Add a sender</DialogTitle>
           <DialogDescription>
-            A six-digit code will be sent to this address to prove your company
-            controls the mailbox. Personal email providers are not accepted.
+            Personal email providers are not accepted. The address stays
+            pending until your Super Admin approves it.
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={submit} noValidate>
@@ -331,7 +435,7 @@ function AddSenderDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? "Sending code" : "Add and send code"}
+              {saving ? "Adding" : "Add sender"}
             </Button>
           </DialogFooter>
         </form>
