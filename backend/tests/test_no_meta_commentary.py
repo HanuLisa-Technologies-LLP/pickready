@@ -73,6 +73,9 @@ _RENDER_VALUES: dict[str, dict[str, object]] = {
         "max_per_bucket": "5",
         "max_role_summary_words": "80",
     },
+    # The executed coding question (Phase 4). No placeholders: everything
+    # that varies arrives in the user message as JSON.
+    "coding_question_generation": {},
 }
 
 #: The gated prompts loaded by `app.prompts` (str.format) rather than by the

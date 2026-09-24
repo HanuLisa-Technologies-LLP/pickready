@@ -556,8 +556,10 @@ def test_the_request_carries_the_skill_the_bounds_and_the_titles_to_avoid() -> N
 
 
 def test_the_prompt_meets_the_gated_prompt_contract() -> None:
-    """The checks `tests/test_no_meta_commentary.py` runs over GATED_PROMPTS,
-    applied here until the orchestrator adds this prompt to that list."""
+    """The prompt is ON `GATED_PROMPTS`, so `tests/test_no_meta_commentary.py`
+    sweeps it with every other generation prompt. The same checks are repeated
+    here so a failure names this module's prompt directly."""
+    assert gen.PROMPT_NAME in gs.GATED_PROMPTS
     text = registry.render(gen.PROMPT_NAME)
     for marker in (gs.EXAMPLES_HEADING, "GOOD EXAMPLE", gs.BAD_EXAMPLE_OPEN, gs.BAD_EXAMPLE_CLOSE, "EDGE CASE"):
         assert marker in text, marker

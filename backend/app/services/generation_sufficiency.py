@@ -58,6 +58,7 @@ on a public page, neutral and precise in an internal report.
 | services/gap_analysis         | report_gap_probes.txt           | report_synthesis          | internal         | `gap_probe_state` |
 | services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `swot_analysis.is_saved` (a saved SWOT) |
 | services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
+| assessment_formats/coding_generation | coding_question_generation.txt | coding_question_generation | candidate-facing | `code_execution.is_enabled()` and a skill name and evidence line |
 | services/swot_analysis        | swot_analysis_system.txt        | swot_analysis             | internal         | `swot_input_state` |
 | services/outreach_content     | outreach_email_system.txt       | email_composition         | candidate-facing | `outreach_state` |
 | services/outreach_content     | email_generation.txt            | email_composition         | candidate-facing | `outreach_state` |
@@ -154,6 +155,10 @@ GATED_PROMPTS: tuple[str, ...] = (
     "sutra_skills_draft",
     "sutra_assessment_context",
     "email_generation",
+    # Phase 4 (Vivekium release): the executed coding question. Its statement
+    # is candidate-facing, and a model narrating how thin the role summary was
+    # would put that narration in front of every candidate on the job.
+    "coding_question_generation",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
 #: The few-shot block every gated prompt carries, and the fence around the one
