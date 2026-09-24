@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import LinkSource, PipelineStatus, Tier
 
@@ -51,32 +51,6 @@ class UploadResumeOut(BaseModel):
     parse_task: str = "queued"
     resume_public_id: str | None = None
     resume_url: str | None = None
-
-
-class DecisionIn(BaseModel):
-    """Hiring Manager decision (FR-8.2). Hold requires remarks — a missing
-    remark is a validation error (422)."""
-    status: Literal["rejected", "shortlisted", "hold"]
-    remarks: str | None = None
-
-    @model_validator(mode="after")
-    def _hold_requires_remarks(self) -> "DecisionIn":
-        if self.status == "hold" and not (self.remarks and self.remarks.strip()):
-            raise ValueError("remarks are mandatory when placing a profile on hold")
-        return self
-
-
-class StatusIn(BaseModel):
-    """Mandatory pipeline status update (FR-8.4)."""
-    status: Literal["rejected", "shortlisted", "offered", "joined"]
-    remarks: str | None = None
-
-
-class StatusOut(BaseModel):
-    link_id: uuid.UUID
-    status: PipelineStatus
-    remarks: str | None
-    at: datetime
 
 
 class InterviewIn(BaseModel):
