@@ -7,6 +7,7 @@
     support       does the cited text support the statement, not merely exist
     remarks       the 45-50 word prose beside every grade, and how it was written
     quality_gate  the composed report against the grades Miti decided
+    ai_score      Yukti's pre-assessment snapshot, checked and frozen
     trail         the citation trail's read model, served behind the transcript
     inputs        Siddhi's inputs from what the pipeline already read
     provenance    the two facts Siddhi records about how text was made
