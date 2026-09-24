@@ -745,9 +745,9 @@ async def respond(
     return await _view(ctx, answer_message_id=message.id)
 
 
-# REMOVED 2026-09-24: `PATCH /conversations/{id}/answers/{message_id}`
-# (`edit_latest_answer`). Past answers are viewable and never editable
-# (Appendix B section 3); `history` on every response is the read-only view.
+# REMOVED 2026-09-24: the route that rewrote the latest answer. Past answers
+# are viewable and never editable (Appendix B section 3); `history` on every
+# response is the read-only view.
 
 
 @router.put(

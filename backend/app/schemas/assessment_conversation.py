@@ -125,9 +125,9 @@ class ConversationMessageIn(BaseModel):
 
     `timed_out` says the countdown reached zero and the client submitted what
     it had; the SERVER still decides whether the answer arrived in time.
-    There is no `paused_ms`: every paused second is a row the server wrote,
-    and `extra="forbid"` makes an old client that sends one a 422 rather than
-    a number quietly ignored.
+    There is no client-reported pause: every paused second is a row the server
+    wrote, and `extra="forbid"` makes an old client that still sends one a 422
+    rather than a number quietly ignored.
     """
 
     model_config = ConfigDict(extra="forbid")

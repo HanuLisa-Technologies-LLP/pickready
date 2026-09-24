@@ -5,8 +5,8 @@ WHAT THIS REPLACED
 Until 2026-09-24 the whole engine lived inside one route handler,
 `api/assessments.respond`, some six hundred lines long, and the answer it took
 was whatever arrived next: a client retry after a lost response was filed as
-the answer to the NEXT question, the time a recruiter read was a `paused_ms` the
-client chose, a reload re-stamped the question clock, and an empty screen at the
+the answer to the NEXT question, the time a recruiter read was a pause duration
+the client chose, a reload re-stamped the question clock, and an empty screen at the
 deadline was simply a question nobody finished. Appendix B section 3 made all
 of that a rule, and the rule needs one engine the route AND the expiry path can
 share, so it lives here.

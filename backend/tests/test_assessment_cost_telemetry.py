@@ -285,9 +285,9 @@ def test_an_unknown_segment_is_refused_rather_than_dropped() -> None:
 def test_the_question_writer_payload_leads_with_its_stable_half() -> None:
     """The live question writer sends its stable half FIRST.
 
-    The deleted deliver graph (`interviewer._deliver_compose`, 2026-09-24) once
-    opened its body with the most volatile field it had, so the JD and the
-    resume behind it were re-read at full price on every turn. The live writer
+    The interviewer's deleted delivery graph (2026-09-24) once opened its body
+    with the most volatile field it had, so the JD and the resume behind it
+    were re-read at full price on every turn. The live writer
     is `ppi_interview.write_question`, and its payload builder keeps the job
     description and the resume, which do not change for a candidate's whole
     conversation, ahead of the per-turn fields. The SET is asserted separately:

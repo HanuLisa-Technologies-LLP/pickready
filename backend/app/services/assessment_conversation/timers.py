@@ -4,8 +4,8 @@ APPENDIX B SECTION 3 IS A TABLE OF DEADLINES, AND THE SERVER KEEPS THEM
 -----------------------------------------------------------------------
 Prose three minutes, multiple choice and fill-in-the-blank sixty seconds, a
 follow-up a hundred seconds, coding twenty minutes. Before 2026-09-24 the only
-clock was the browser's: `respond` subtracted a `paused_ms` the client sent, so
-the time a recruiter read was a number the client chose, and a reload re-stamped
+clock was the browser's: `respond` subtracted a pause duration the client sent,
+so the time a recruiter read was a number the client chose, and a reload re-stamped
 `prompt_shown_at` and handed the candidate a fresh question clock.
 
 Now the deadline is computed HERE from three things the server wrote itself:

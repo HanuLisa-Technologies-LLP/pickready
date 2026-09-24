@@ -329,7 +329,10 @@ async def test_a_second_attempt_that_fixes_the_repeat_is_persisted_with_its_rubr
     from app.services import ppi_interview
 
     asked = "How did you size the Kafka partitions when consumer lag grew?"
-    fixed = "What did the Kafka consumer lag look like before you rebalanced?"
+    # Two specific terms, so it shares only half of them with the question
+    # already asked (`interviewer.is_semantic_repeat` reads a single shared
+    # term as the same question).
+    fixed = "Which Grafana panel first showed the Kafka backlog, and what did you change?"
     answers = iter([asked, fixed])
 
     async def _invoke(*a, **k):

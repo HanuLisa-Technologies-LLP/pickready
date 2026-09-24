@@ -34,9 +34,9 @@ conversation reads:
 
 THE BASE QUESTION IS WRITTEN ELSEWHERE. `services/ppi_interview.write_question`
 writes each base question with its rubric in one call. The second graph that
-lived here (`_DELIVER_GRAPH`, `compose_next_question`, the GENERATE and REWORD
-modes, `_substance_preserved`) had no caller on the live path and was reached
-only by the offline eval; it was DELETED on 2026-09-24 with its two prompts
+lived here (the question DELIVERY graph, with its generate and reword modes
+and its substance check) had no caller on the live path and was reached only
+by the offline eval; it was DELETED on 2026-09-24 with its two prompts
 (`tests/test_dead_interviewer_modes_removed.py`). `challenge_prompt` and
 `interview_challenge.txt` are LIVE, through `challenge_non_answer`, and stay.
 
