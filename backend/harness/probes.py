@@ -124,6 +124,59 @@ async def _competency_active_names(
     )
 
 
+async def _competency_swot_origin(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """The SWOT sentence the ACTIVE skill named `arg` carries, or None.
+
+    Read per name because the rule it pins is per row: a revive KEEPS the
+    sentence (the same name coming back) and a rename CLEARS it (a different
+    criterion wearing the row's identity), the 2026-09-23 asymmetry.
+    """
+    if not arg:
+        raise ProbeError("job_competencies.swot_origin needs a skill name: `:<name>`")
+    return await reader.scalar(
+        "SELECT swot_origin FROM job_competencies "
+        "WHERE job_id = :j AND is_active AND name = :n",
+        {"j": str(world.id("job")), "n": arg},
+    )
+
+
+async def _competency_with_evidence_count(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Active skills carrying an evidence line. Only Save Skills writes one."""
+    return await reader.scalar(
+        "SELECT count(*) FROM job_competencies WHERE job_id = :j AND is_active "
+        "AND observable_evidence IS NOT NULL AND btrim(observable_evidence) <> ''",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _job_skills_draft_status(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    return await reader.scalar(
+        "SELECT skills_draft_status FROM jobs WHERE id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _job_assessment_context_writer(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Who wrote the job's hidden assessment context, as the row records it.
+
+    The writer's own name rather than a boolean, so a scenario can tell a
+    context Sutra wrote from the honest empty one a migration or a world
+    stamped. NULL means no context was written at all.
+    """
+    return await reader.scalar(
+        "SELECT assessment_context_json ->> 'generated_by' FROM jobs WHERE id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
 async def _links_for_job(reader: StateReader, world: World, arg: str | None) -> Any:
     return await reader.scalar(
         "SELECT count(*) FROM job_candidate_links WHERE job_id = :j",
@@ -265,15 +318,6 @@ async def _telemetry_for_link(
     )
 
 
-async def _scorecard_bindings(
-    reader: StateReader, world: World, arg: str | None
-) -> Any:
-    return await reader.scalar(
-        "SELECT count(*) FROM job_scorecard_bindings WHERE job_id = :j",
-        {"j": str(world.id("job"))},
-    )
-
-
 async def _conversations_for_link(
     reader: StateReader, world: World, arg: str | None
 ) -> Any:
@@ -387,6 +431,10 @@ _STATE: dict[str, StateProbe] = {
     "job_competencies.active_count": _competency_active_count,
     "job_competencies.total_count": _competency_total_count,
     "job_competencies.active_names": _competency_active_names,
+    "job_competencies.swot_origin": _competency_swot_origin,
+    "job_competencies.with_evidence_count": _competency_with_evidence_count,
+    "jobs.skills_draft_status": _job_skills_draft_status,
+    "jobs.assessment_context_writer": _job_assessment_context_writer,
     "job_candidate_links.count_for_job": _links_for_job,
     "job_candidate_links.status": _link_status,
     "job_candidate_links.status_for_candidate": _link_status_for_candidate,
@@ -401,7 +449,6 @@ _STATE: dict[str, StateProbe] = {
     "credit_ledger.event_types": _ledger_events,
     "profiles.count_for_candidate": _profiles_for_candidate,
     "telemetry_events.count_for_link": _telemetry_for_link,
-    "job_scorecard_bindings.count_for_job": _scorecard_bindings,
     "assessment_conversations.count_for_link": _conversations_for_link,
     "assessment_conversations.status": _conversation_status,
     "assessment_conversations.credit_event": _conversation_credit_event,

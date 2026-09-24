@@ -66,6 +66,7 @@ from harness.doubles.storage import FailingObjectStore
 from harness.doubles.vendor import (
     OPENAI_HOST,
     VOYAGE_HOST,
+    openai_answering,
     openai_responder,
     voyage_responder,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "clock_at",
     "dispatch_failure",
     "embedding_failure",
+    "model_answers",
     "model_failure",
     "object_store_failure",
     "redis_down",
@@ -435,6 +437,47 @@ def model_failure(kind: str) -> Iterator[FaultSpec]:
 
     with _applied(spec, install) as applied:
         yield applied
+
+
+@contextmanager
+def model_answers(
+    answer_for: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    *,
+    served: list[str] | None = None,
+) -> Iterator[None]:
+    """Let the model ANSWER, from the authored success envelope, for a block.
+
+    NOT A FAULT, AND DELIBERATELY NOT IN `_REGISTRY`. A scenario cannot name
+    it: a success is not a degradation, so a scenario declaring it under
+    `faults:` would be judged by `degradation_honesty` and fail for the right
+    reason while meaning the wrong thing. It is for a WORKLOAD STEP whose
+    subject needs a model to answer, and whose subject is not the model: Save
+    Skills cannot save without its context writer, and the scenario is about
+    the audit row the save leaves behind.
+
+    It lives HERE rather than in the step because this module owns the HTTP
+    seam: one shared patch of `httpx.AsyncClient`, pushed and popped with the
+    routes, and a second owner of that patch would capture this one's
+    replacement as "the prior state" and leave it behind on unwind.
+
+    Everything a model fault restores, this restores, in the same order: the
+    route goes in first and comes out last, the harness credential exists only
+    inside the block (so `a_model_credential_was_configured` still reads the
+    real, empty setting afterwards), and the breaker and first-use contract
+    memo are put back.
+    """
+    responder = openai_answering(answer_for, served=served)
+    restore_state = _snapshot_vendor_state()
+    undo_route = _install_route(
+        _HttpRoute(label="model:answers", host=OPENAI_HOST, responder=responder)
+    )
+    restore_keys = _supply_credentials(tuple(SETTINGS_ATTR_FOR_MODEL.values()))
+    try:
+        yield None
+    finally:
+        restore_keys()
+        undo_route()
+        restore_state()
 
 
 @contextmanager

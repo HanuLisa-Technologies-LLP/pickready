@@ -76,14 +76,12 @@ EXEMPT = (
     # under that name must still read as words rather than as an identifier.
     # The same reason the `dna` correlation kind survives.
     REPO / "frontend" / "components" / "customer-activity-section.tsx",
-    #
-    # PENDING HAND-OFFS, not permanent exemptions. The harness package
-    # (PLAN-p1 WP-E) rewrites this scenario onto the Skills step; the entry is
-    # then stale and `test_every_pending_hand_off_still_has_something_to_hand_off`
-    # fails until it is removed.
-    BACKEND / "harness" / "scenarios" / "regression_audit_row_survives_the_commit.yaml",
 )
 
+#: Pending hand-offs, each owned by a package that deletes or rewrites it.
+#: EMPTY: the last one, the harness audit-row scenario, was rewritten onto
+#: Save Skills (PLAN-p1 WP-E). Kept as a slice so a future hand-off is one
+#: entry appended above rather than a new mechanism.
 PENDING_HAND_OFFS = EXEMPT[4:]
 
 

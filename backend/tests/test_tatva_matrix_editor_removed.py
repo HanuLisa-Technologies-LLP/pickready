@@ -77,11 +77,6 @@ EXEMPT = (
     REPO / "frontend" / "components" / "job-setup-review.test.tsx",
     REPO / "frontend" / "components" / "matching-categories.tsx",
     REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "[id]" / "page.tsx",
-    # The harness package (PLAN-p1 WP-E) rewrites the matrix workload, the
-    # world builder and the emptied-matrix scenario onto the Skills step.
-    BACKEND / "harness" / "workload.py",
-    BACKEND / "harness" / "world.py",
-    BACKEND / "harness" / "scenarios" / "regression_emptied_matrix_is_not_ungenerated.yaml",
 )
 
 PENDING_HAND_OFFS = EXEMPT[3:]
