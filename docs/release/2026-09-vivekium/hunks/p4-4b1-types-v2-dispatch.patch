@@ -1,0 +1,142 @@
+diff --git a/backend/app/services/assessment_formats/types.py b/backend/app/services/assessment_formats/types.py
+index 68df6b4..7201969 100644
+--- a/backend/app/services/assessment_formats/types.py
++++ b/backend/app/services/assessment_formats/types.py
+@@ -26,6 +26,8 @@ from typing import Any
+ 
+ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+ 
++from app.services.coding_assessment import payload as coding_payload
++
+ __all__ = [
+     "EVIDENCE_BASED",
+     "MCQ_SINGLE",
+@@ -326,7 +328,15 @@ def is_structured(question_type: str) -> bool:
+ 
+ 
+ def parse_payload(question_type: str, payload: dict[str, Any] | None) -> BaseModel:
+-    """The typed payload, or a ValueError naming what is wrong with it."""
++    """The typed payload, or a ValueError naming what is wrong with it.
++
++    A coding payload dispatches on its version: `payload_version: 2` is the
++    EXECUTED shape (`coding_assessment.payload.CodingPayloadV2`, whose answer
++    key lives in `coding_question_keys`), anything else is the read-only v1
++    shape every coding row written before Phase 4 carries.
++    """
++    if question_type == CODING and coding_payload.is_v2(payload):
++        return coding_payload.parse(payload)
+     model = PAYLOAD_MODELS[question_type]
+     return model.model_validate(payload or {})
+ 
+@@ -353,8 +363,11 @@ def parse_answer(question_type: str, payload: dict[str, Any] | None, answer: dic
+         if len(parsed.values) != len(question_blank.blanks):  # type: ignore[attr-defined]
+             raise ValueError("one value per blank is required")
+     elif question_type == CODING:
+-        question_code = CodingPayload.model_validate(payload or {})
+-        permitted = {question_code.language, *question_code.language_options}
++        if coding_payload.is_v2(payload):
++            permitted = set(coding_payload.parse(payload).languages)
++        else:
++            question_code = CodingPayload.model_validate(payload or {})
++            permitted = {question_code.language, *question_code.language_options}
+         if parsed.language not in permitted:  # type: ignore[attr-defined]
+             raise ValueError("that language is not permitted for this question")
+     return parsed
+@@ -414,6 +427,11 @@ def candidate_view(question_id: Any, question_type: str, payload: dict[str, Any]
+             ],
+         }
+     if question_type == CODING:
++        if coding_payload.is_v2(payload):
++            # The executed shape carries its own allowlist. Its answer key is
++            # not in the payload at all (`coding_question_keys`), and the
++            # database refuses a coding payload that carries it.
++            return coding_payload.candidate_projection(payload)
+         code = CodingPayload.model_validate(payload or {})
+         return {
+             "language": code.language,
+diff --git a/backend/tests/test_coding_payload_dispatch.py b/backend/tests/test_coding_payload_dispatch.py
+new file mode 100644
+index 0000000..ea1b3d5
+--- /dev/null
++++ b/backend/tests/test_coding_payload_dispatch.py
+@@ -0,0 +1,80 @@
++"""The one format vocabulary reads BOTH coding shapes, and projects each safely.
++
++`assessment_formats.types` stays the only place a stored payload becomes what
++a candidate sees. A v2 (executed) coding payload dispatches to
++`coding_assessment.payload`; a v1 payload keeps today's projection, so every
++coding row written before Phase 4 stays readable exactly as it was.
++"""
++from __future__ import annotations
++
++import uuid
++
++import pytest
++
++from app.services.assessment_formats import types
++from app.services.code_execution import limits as execution_limits
++from app.services.coding_assessment import payload as coding_payload
++
++
++def _v2() -> dict:
++    return coding_payload.CodingPayloadV2(
++        payload_version=2,
++        title="Busiest failing endpoint",
++        io="stdin_stdout",
++        input_format="n, then n lines of path and status.",
++        output_format="One line: the path, or NONE.",
++        constraints="0 <= n <= 10000",
++        languages=["python", "java"],
++        starter_code={
++            "python": "import sys\nprint()\n",
++            "java": "public class Main { public static void main(String[] a) { System.out.println(); } }\n",
++        },
++        visible_tests=[{"id": "v1", "stdin": "1\n/a 500\n", "expected_stdout": "/a\n"}],
++        limits={
++            key: coding_payload.LanguageLimits.of(execution_limits.for_language(key))
++            for key in ("python", "java")
++        },
++    ).model_dump()
++
++
++V1 = {
++    "language": "python",
++    "starter_code": "def solve():\n    pass\n",
++    "constraints": "",
++    "expected_approach": "Count per path.",
++    "language_options": [],
++}
++
++
++def test_a_v2_payload_parses_as_the_executed_shape() -> None:
++    parsed = types.parse_payload(types.CODING, _v2())
++    assert isinstance(parsed, coding_payload.CodingPayloadV2)
++
++
++def test_a_v1_payload_still_parses_as_the_legacy_shape() -> None:
++    assert isinstance(types.parse_payload(types.CODING, V1), types.CodingPayload)
++
++
++def test_the_candidate_view_of_v2_is_exactly_the_named_fields() -> None:
++    view = types.candidate_view(uuid.uuid4(), types.CODING, _v2())
++    assert tuple(view) == coding_payload.CANDIDATE_FIELDS
++
++
++def test_the_candidate_view_of_v1_never_carries_the_approach() -> None:
++    view = types.candidate_view(uuid.uuid4(), types.CODING, V1)
++    assert "expected_approach" not in view
++    assert view["language"] == "python"
++
++
++def test_a_v2_answer_must_use_one_of_the_questions_languages() -> None:
++    payload = _v2()
++    parsed = types.parse_answer(types.CODING, payload, {"language": "java", "code": "x"})
++    assert parsed.language == "java"  # type: ignore[attr-defined]
++    with pytest.raises(ValueError, match="not permitted"):
++        types.parse_answer(types.CODING, payload, {"language": "cpp", "code": "x"})
++
++
++def test_a_v2_payload_carrying_a_hidden_test_is_refused_by_the_view() -> None:
++    payload = {**_v2(), "hidden_tests": [{"stdin": "1", "expected_stdout": "2"}]}
++    with pytest.raises(ValueError):
++        types.candidate_view(uuid.uuid4(), types.CODING, payload)
