@@ -157,9 +157,19 @@ def skill_mentioned(skill_name: str, index: ResumeIndex) -> bool:
 
     Looser than `skill_term_line` on purpose: it decides only whether a
     negative tag may be shown, and the safe direction for "this candidate has
-    no X" is to say it less often.
+    no X" is to say it less often. Two ways to be mentioned: the whole name
+    matches (`ontology.matches`), or any KNOWN technology term inside the name
+    (or an equivalent of it) appears in the resume. So a resume that says
+    Kafka never reads "Not evidenced: Kafka stream processing", while a
+    generic word such as "engineering" suppresses nothing.
     """
-    return ontology.matches(skill_name, index.text)
+    if ontology.matches(skill_name, index.text):
+        return True
+    named = ontology.mentions(skill_name)
+    if not named:
+        return False
+    present = ontology.mentions(index.text)
+    return any(ontology.equivalent(term) & present for term in named)
 
 
 def clean_tag(tag: Any) -> str | None:
