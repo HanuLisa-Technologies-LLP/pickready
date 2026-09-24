@@ -70,6 +70,7 @@ from app.models.conversation import (
 )
 from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording
+from app.models.voice import AssessmentPause, VoiceAnswer
 from app.models.project import CandidateProject
 from app.models.drishti import DrishtiProfile
 from app.models.candidate import (
@@ -273,4 +274,6 @@ __all__ = [
     "ConversationParticipant",
     "ConversationMessage",
     "ConversationAttachment",
+    "AssessmentPause",
+    "VoiceAnswer",
 ]

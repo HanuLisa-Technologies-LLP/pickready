@@ -400,13 +400,13 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     next_question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # ── Assessment mode (migration 0081, dual-mode spec section 2) ───────────
-    # Which input mechanism this session uses: 'conversational' (the existing
-    # typed conversation) or 'video_interview' (spoken answers, recorded,
-    # transcribed and structured into the SAME records the scorers read).
-    # The server default keeps every legacy row truthful: those sessions were
-    # conversational. Frozen once `started_at` is stamped -- switching input
-    # mechanisms mid-assessment would leave half the evidence in each channel.
+    # ── Assessment mode (migration 0081), READ-ONLY since 2026-09-24 ─────────
+    # There is ONE assessment mode (Appendix B section 1). The column stays so a
+    # row written while the video interview existed still says what it was;
+    # every new row takes the server default, `conversational`, and no route
+    # writes it (`tests/test_video_interview_mode_removed.py`). Migration 0123
+    # relabelled every UNSTARTED video row, which had written nothing in that
+    # mode.
     mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="conversational",
         server_default="conversational",
@@ -439,30 +439,24 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     )
 
     # ── Delivered wording of the next BASE question (migration 0039) ─────────
-    # `services/interviewer.compose_next_question` says the next scripted
-    # question the way an interviewer would say it here, conditioned on the
-    # transcript. It is generated when the PREVIOUS answer is submitted and
-    # answered on the NEXT request, so like `pending_prompt` it has to survive
-    # between the two.
+    # The text question writer (`ppi_interview.write_question`) writes the next
+    # base question for THIS candidate at THIS point and persists it onto the
+    # question row WITH its rubric. This column is that same text, held between
+    # the request that wrote it and the request that answers it, so the
+    # transcript records what the candidate ACTUALLY READ.
     #
-    # It exists so the transcript records what the candidate ACTUALLY READ. The
-    # agent message is written on the request that carries the answer, so
-    # without this column the composed question would be shown and the stored
-    # question logged, and every scorer would read a transcript that never
-    # happened.
-    #
-    # NULL means "no rewrite available, use the stored text", which is the
-    # product's previous behaviour and always a correct thing to ask. It never
-    # changes WHICH question is asked: `next_question_index` and the question
-    # key are untouched by delivery, and `_substance_preserved` refuses a
-    # rewrite that dropped a specific term.
+    # INVARIANT (2026-09-24): it is either NULL or EQUAL to the row's `prompt`.
+    # A rewrite rejected as a repeat is never persisted and never shown, so the
+    # stored prompt, the stored rubric and the displayed question cannot come
+    # apart (`tests/test_question_rubric_consistency.py`). NULL means the
+    # stored text is what is on screen.
     delivered_prompt: Mapped[str | None] = mapped_column(Text)
 
     # ── When the prompt on screen was delivered (migration 0076) ─────────────
-    # Stamped by `start` and by every `respond` that hands the candidate a new
-    # prompt. `assessment_answers.time_spent_seconds` is measured from it on
-    # the server, so the per-question timing the recruiter reads is not a
-    # figure the client reported.
+    # Stamped ONCE per turn, when the turn is opened (`services/
+    # assessment_conversation/turns.open_turn`), and never by a reload: the
+    # turn's deadline is measured from it on the server, so re-stamping on
+    # every open would hand a candidate a fresh clock for refreshing the page.
     prompt_shown_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── Invitation + progress tracking (migration 0018) ──────────────────────
@@ -520,6 +514,39 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
         ForeignKey("job_skill_snapshots.id", ondelete="SET NULL"),
     )
     contract_digest: Mapped[str | None] = mapped_column(String(64))
+
+    # ── The turn the server times (migration 0123) ──────────────────────────
+    # `turn_seq` is 0 until the first turn is opened and then counts every
+    # prompt the candidate is shown (a base question, a follow-up, a re-ask).
+    # An answer names the turn it answers; any other number is a stale or
+    # replayed request and is refused with nothing written, which is what
+    # makes a client retry after a lost response safe instead of misfiled.
+    turn_seq: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # The allocation SNAPSHOTTED when the turn opened. Read by the clock, so a
+    # settings change never moves the deadline of a question in progress.
+    turn_allocation_seconds: Mapped[int | None] = mapped_column(Integer)
+    # The candidate's unsent answer for `draft_turn_seq`, saved by the client
+    # every few seconds. The expiry path submits it when time runs out; it is
+    # never a second answer and never outlives its turn.
+    draft_answer_json: Mapped[dict | None] = mapped_column(JSONB)
+    draft_turn_seq: Mapped[int | None] = mapped_column(Integer)
+    draft_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── What the questions were written against (migration 0123) ────────────
+    # Stamped by the question generator from the contract it read. The start
+    # compares it with the contract it locks, and a mismatch (NULL included)
+    # regenerates the questions before the first answer.
+    questions_contract_digest: Mapped[str | None] = mapped_column(String(64))
+    questions_contract_version: Mapped[int | None] = mapped_column(Integer)
+    # The planned and served question mix and every recorded degradation.
+    composition_json: Mapped[dict | None] = mapped_column(JSONB)
+    # When a START last dispatched generation. Generation runs on its own
+    # Fargate task; this bounds a polling start to one dispatch per window.
+    questions_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     # ── Credit reconciliation (migration 0026) ───────────────────────────────
     # The daily reconciliation job charges an abandoned assessment once and only
