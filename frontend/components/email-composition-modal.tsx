@@ -11,19 +11,36 @@
 //
 // Nothing sends until the recruiter presses Send. Every message is recorded in
 // the email log with whether a human edited it.
+//
+// WHICH MAILBOX IT LEAVES FROM (vivekium release, Phase 6)
+// Nothing on this screen used to send `sender_id`, and the API dropped it when
+// it did arrive, so a company's approved corporate mailbox was never used. A
+// person who may see the senders list now picks one, starting from the
+// tenant's default. Everybody else posts no sender and the server resolves the
+// same rule it applies to automatic email: the default sender, else the
+// Vivekium mailbox. The picker never offers a "platform mailbox" choice while a
+// default exists, because omitting the sender means "the default" on the
+// server and a choice the request cannot express would be a promise the send
+// breaks.
 
 import * as React from "react";
 import { Loader2, Send, Sparkles, PenLine, AlertTriangle } from "lucide-react";
 
-import { apiPost } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
+import { apiErrorMessage } from "@/lib/validation-errors";
 import {
   EMAIL_TYPE_LABELS,
   EMAIL_TYPES,
   type EmailDraft,
   type EmailDraftsResponse,
+  type EmailSender,
+  type EmailSenderList,
   type EmailType,
   type RankedCandidate,
 } from "@/lib/types";
+import { InlineError } from "@/components/page-primitives";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +69,24 @@ import {
 const SELECTABLE_TYPES: EmailType[] = ["shortlist", "rejected", "hold"];
 
 type Mode = "ai" | "manual";
+
+/** The picker's value for "post no sender", offered only when the tenant has
+ *  no default, which is the one case where omitting the sender means the
+ *  Vivekium mailbox. Not a UUID, so it can never collide with a sender id. */
+const PLATFORM_MAILBOX = "platform-mailbox";
+
+interface SenderChoice {
+  /** Active senders, the only ones the API accepts. */
+  senders: EmailSender[];
+  /** A sender id, or PLATFORM_MAILBOX. */
+  selected: string;
+}
+
+function initialChoice(list: EmailSenderList): SenderChoice {
+  const senders = list.senders.filter((sender) => sender.status === "active");
+  const fallback = senders.find((sender) => sender.is_default);
+  return { senders, selected: fallback ? fallback.id : PLATFORM_MAILBOX };
+}
 
 interface Editable extends EmailDraft {
   /** The AI's original text, so an edit can be detected rather than assumed. */
@@ -87,6 +122,15 @@ export function EmailCompositionModal({
   onSent?: () => void;
 }) {
   const { toast } = useToast();
+  const { can } = usePermissions();
+  // Listing senders takes manage_email_senders. Somebody without it is not
+  // shown a picker they could only see refused; their email leaves from the
+  // default sender, which the server resolves.
+  const canChooseSender = can(CAP.manageEmailSenders);
+  const [senderChoice, setSenderChoice] = React.useState<SenderChoice | null>(
+    null
+  );
+  const [senderError, setSenderError] = React.useState<string | null>(null);
   const [mode, setMode] = React.useState<Mode>("ai");
   const [emailType, setEmailType] = React.useState<EmailType>("shortlist");
   const [drafting, setDrafting] = React.useState(false);
@@ -111,6 +155,25 @@ export function EmailCompositionModal({
     setIndex(0);
     setMode("ai");
   }, [open, candidates]);
+
+  React.useEffect(() => {
+    if (!open || !canChooseSender) return;
+    let cancelled = false;
+    setSenderChoice(null);
+    setSenderError(null);
+    apiGet<EmailSenderList>("/email-senders")
+      .then((list) => {
+        if (!cancelled) setSenderChoice(initialChoice(list));
+      })
+      .catch((error) => {
+        // Said out loud, never swallowed: the send still works and goes out
+        // from the default sender, and the recruiter is told so.
+        if (!cancelled) setSenderError(apiErrorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, canChooseSender]);
 
   const generate = async () => {
     setDrafting(true);
@@ -169,9 +232,15 @@ export function EmailCompositionModal({
     if (messages.length === 0) return;
     setSending(true);
     try {
+      const senderId =
+        senderChoice && senderChoice.selected !== PLATFORM_MAILBOX
+          ? senderChoice.selected
+          : undefined;
       const res = await apiPost<{ queued: number; skipped: unknown[] }>(
         "/emails/send",
-        { email_type: emailType, messages }
+        senderId
+          ? { email_type: emailType, messages, sender_id: senderId }
+          : { email_type: emailType, messages }
       );
       toast({
         title: `${res.queued} email${res.queued === 1 ? "" : "s"} queued`,
@@ -236,6 +305,50 @@ export function EmailCompositionModal({
               </SelectContent>
             </Select>
           </FormField>
+
+          {senderError ? (
+            <InlineError>
+              Your senders could not be loaded ({senderError}). This email will
+              go out from your default sender, or the Vivekium mailbox when
+              none is set.
+            </InlineError>
+          ) : senderChoice && senderChoice.senders.length > 0 ? (
+            <FormField label="Send from" htmlFor="email-sender">
+              <Select
+                value={senderChoice.selected}
+                onValueChange={(value) =>
+                  setSenderChoice({ ...senderChoice, selected: value })
+                }
+              >
+                <SelectTrigger id="email-sender">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {senderChoice.senders.some((s) => s.is_default) ? null : (
+                    <SelectItem value={PLATFORM_MAILBOX}>
+                      Vivekium mailbox
+                    </SelectItem>
+                  )}
+                  {senderChoice.senders.map((sender) => (
+                    <SelectItem
+                      key={sender.id}
+                      value={sender.id}
+                      disabled={!sender.can_send}
+                    >
+                      {sender.email}
+                      {sender.is_default ? " (default)" : ""}
+                      {sender.can_send ? "" : " (not ready to send)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          ) : !canChooseSender || senderChoice ? (
+            <p className="text-xs">
+              Sent from your company&apos;s default sender, or the Vivekium
+              mailbox when none is set.
+            </p>
+          ) : null}
 
           <div className="flex gap-2">
             <Button
