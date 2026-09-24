@@ -238,7 +238,7 @@ async def committed_audit(w: World, action: str) -> list[dict]:
             rows = (
                 await session.execute(
                     text(
-                        "SELECT action, actor_user_id, actor_role, agent_name, metadata, "
+                        "SELECT action, actor_user_id, actor_role, agent_name, metadata_json AS metadata, "
                         "new_state FROM audit_log WHERE job_id = :j AND action = :a"
                     ),
                     {"j": w.job, "a": action},
