@@ -388,15 +388,17 @@ async def test_gap_probes_skip_the_model_when_nothing_was_answered(
 
     monkeypatch.setattr(gap_analysis.llm_router, "chat_completion", _never)
 
-    probes, key = await gap_analysis._write_probes(
+    probes, source, key = await gap_analysis._write_probes(
         None,
         {"name": "Incident response", "remark": "r"},
         "must_have",
         "Not Matching",
         [],
         1,
+        None,
     )
     assert key == "gap_analysis.probes.no_recorded_answer"
+    assert source == gap_analysis.PROBES_EMPTY_STATE
     assert probes and all(probes)
     assert not gs.meta_commentary_defects(" ".join(probes))
 
@@ -421,15 +423,19 @@ async def test_a_probe_that_describes_the_evidence_is_rejected(
 
     monkeypatch.setattr(gap_analysis.llm_router, "chat_completion", _reply)
 
-    probes, key = await gap_analysis._write_probes(
+    probes, source, key = await gap_analysis._write_probes(
         None,
         {"name": "Incident response", "remark": "r"},
         "must_have",
         "Not Matching",
         [{"question": "Tell me about an incident.", "answer": "We failed over."}],
         1,
+        None,
     )
     assert key is None
+    # The refused body never ships, and what ships instead says it is the
+    # fallback rather than reading as a model's probe.
+    assert source == gap_analysis.PROBES_TEMPLATE
     assert not gs.meta_commentary_defects(" ".join(probes))
 
 

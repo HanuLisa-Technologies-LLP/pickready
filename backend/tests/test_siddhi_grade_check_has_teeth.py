@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from app.services.siddhi import quality_gate, synthesis
+from app.services.siddhi import quality_gate, synthesis, trail
 from app.services.siddhi import report as siddhi_report
 
 VALIDATION = {"notice_period": "30 days"}
@@ -62,9 +62,8 @@ def _composed(overall_grade: str = "Matching"):
 
 def _verdict(miti: dict[str, str], *, miti_overall: str | None = "Matching", composed=None):
     return quality_gate.evaluate(
-        composed=composed or _composed(),
+        gap_analysis_json={"groups": [], "siddhi": (composed or _composed()).siddhi_namespace()},
         dimensions=_rows(),
-        gap_groups=[],
         overall_summary="Owned the orders migration and called the rollback first.",
         validation=VALIDATION,
         validation_source=VALIDATION,
@@ -141,7 +140,7 @@ def test_a_not_assessed_skill_must_be_stated_as_not_assessed() -> None:
 
 def test_the_grades_are_read_from_the_rendered_statements() -> None:
     composed = _composed()
-    stated = quality_gate.stated_grades(composed)
+    stated = quality_gate.stated_grades(trail.read_trail({"siddhi": composed.siddhi_namespace()}))
     assert ("must_have", "Distributed Systems", "Matching") in stated
     assert ("behavioural", "Judgement under pressure", "Highly Matching") in stated
     # An evidence-confidence line is a different statement and is not a grade.

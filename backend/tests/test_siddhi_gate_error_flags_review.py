@@ -40,9 +40,8 @@ def _composed():
 
 def _evaluate():
     return quality_gate.evaluate(
-        composed=_composed(),
+        gap_analysis_json={"groups": [], "siddhi": _composed().siddhi_namespace()},
         dimensions=[{"category": "must_have", "name": "Distributed Systems", "grade": "Matching"}],
-        gap_groups=[],
         overall_summary="",
         validation={},
         validation_source={},
@@ -67,6 +66,22 @@ def test_a_gate_crash_yields_a_failing_verdict_that_flags_review(monkeypatch, ca
         "siddhi.quality_gate_unavailable" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_a_section_with_no_trail_is_unchecked_and_says_so() -> None:
+    """A gate handed nothing to read has checked nothing. It must not pass."""
+    verdict = quality_gate.evaluate(
+        gap_analysis_json={"groups": []},
+        dimensions=[],
+        overall_summary="",
+        validation={},
+        validation_source={},
+        evidence_by_item={},
+        miti_grades={},
+        miti_overall_grade=None,
+    )
+    assert not verdict.passed
+    assert [finding.issue for finding in verdict.findings] == ["gate_unavailable"]
 
 
 def test_a_working_gate_is_not_replaced_by_the_failure_verdict() -> None:

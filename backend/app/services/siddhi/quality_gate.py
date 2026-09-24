@@ -46,8 +46,8 @@ from typing import Any, Iterable, Mapping, Sequence
 from app.services import verification as verification_base
 from app.services.rating import GRADES
 from app.services.siddhi import citations, synthesis
-from app.services.siddhi.evidence import KIND_ANSWER, EvidenceIndex
-from app.services.siddhi.report import ComposedPrism
+from app.services.siddhi import trail as siddhi_trail
+from app.services.siddhi.evidence import KIND_ANSWER
 
 logger = logging.getLogger(__name__)
 
@@ -63,23 +63,27 @@ STATED_GRADE_WORDS: frozenset[str] = frozenset(GRADES) | {synthesis.NOT_ASSESSED
 
 
 def stated_grades(
-    composed: ComposedPrism, *, sections: Iterable[str] = synthesis.RATED_SECTIONS
+    report_trail: siddhi_trail.CitationTrail,
+    *,
+    sections: Iterable[str] = synthesis.RATED_SECTIONS,
 ) -> list[tuple[str, str, str]]:
     """(section, name, grade word) for every grade the document states.
 
-    Read from the RENDERED statements. A grade statement is "Name: Grade"; a
-    line whose tail is not a grade word ("Name: evidence confidence High") is
-    a different statement and is skipped. A name may itself contain ": ", so
-    the split is on the LAST one.
+    Read from the RENDERED statements as the report stores them (the trail
+    holds every rendered statement that needed a citation, grades included),
+    so the gate reads the same record a later auditor reads. A grade statement
+    is "Name: Grade"; a line whose tail is not a grade word ("Name: evidence
+    confidence High") is a different statement and is skipped. A name may
+    itself contain ": ", so the split is on the LAST one.
     """
     wanted = set(sections)
     found: list[tuple[str, str, str]] = []
-    for key, statement in composed.statements():
-        if key not in wanted or statement["kind"] != citations.KIND_GRADE:
+    for statement in report_trail.statements:
+        if statement.section not in wanted or statement.kind != citations.KIND_GRADE:
             continue
-        name, sep, grade = str(statement["text"]).rpartition(": ")
+        name, sep, grade = statement.text.rpartition(": ")
         if sep and grade in STATED_GRADE_WORDS:
-            found.append((key, name, grade))
+            found.append((statement.section, name, grade))
     return found
 
 
@@ -130,11 +134,18 @@ def _consistency_findings(
     return findings
 
 
+def _answer_refs(report_trail: siddhi_trail.CitationTrail, item: str) -> list[str]:
+    return [
+        node.ref
+        for node in (report_trail.nodes or {}).values()
+        if node.kind == KIND_ANSWER and node.item == item
+    ]
+
+
 def evaluate(
     *,
-    composed: ComposedPrism,
+    gap_analysis_json: Mapping[str, Any],
     dimensions: Sequence[Mapping[str, Any]],
-    gap_groups: Sequence[Mapping[str, Any]],
     overall_summary: str | None,
     validation: Mapping[str, Any],
     validation_source: Mapping[str, Any],
@@ -144,20 +155,28 @@ def evaluate(
 ) -> verification_base.Verdict:
     """The Siddhi gate's verdict on this report. Never raises.
 
+    `gap_analysis_json` is the section as the report row will store it, with
+    Siddhi's namespace (`{"groups": ..., "siddhi": {...}}`): the stated grades
+    and the answer refs are read from the stored trail, which is the record of
+    what was rendered, so the gate checks exactly what a reader will get.
+
     A crash inside it returns a FAILING verdict (`gate_unavailable`, high), so
     the report is written flagged for review rather than passed unchecked.
     """
     from app.services.agents import gates
 
     try:
-        stated = stated_grades(composed)
+        report_trail = siddhi_trail.read_trail(gap_analysis_json)
+        if not report_trail.available:
+            raise ValueError("the section carries no citation trail to check")
+        gap_groups = list(gap_analysis_json.get("groups") or [])
+        stated = stated_grades(report_trail)
         overall_stated = [
             entry
-            for entry in stated_grades(composed, sections=("overall",))
+            for entry in stated_grades(report_trail, sections=("overall",))
             if entry[1] == synthesis.OVERALL_LABEL
         ]
-        gap_stated = stated_grades(composed, sections=("gap_analysis",))
-        index: EvidenceIndex = composed.index
+        gap_stated = stated_grades(report_trail, sections=("gap_analysis",))
         payload = {
             "ai_score": [
                 _rendered(row)
@@ -194,9 +213,7 @@ def evaluate(
                 {
                     "id": row.get("name"),
                     "text": row.get("remark") or "",
-                    "evidence_refs": list(
-                        index.refs_for(str(row.get("name")), kind=KIND_ANSWER)
-                    ),
+                    "evidence_refs": _answer_refs(report_trail, str(row.get("name"))),
                 }
                 for row in dimensions
                 if row.get("name")
