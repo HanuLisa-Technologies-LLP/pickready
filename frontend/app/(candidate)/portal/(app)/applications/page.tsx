@@ -17,14 +17,28 @@
 //
 // Clicking the job title still opens the full JD (client decision,
 // 2026-07-27): a candidate reviewing what they applied to should not have to
-// go hunting for it.
+// go hunting for it. The dialog says "loading" while it loads: it used to open
+// with no job and render "This posting has closed" for the length of the
+// request, which told every candidate their role had closed for a moment.
+//
+// `?application=<id>` is where every Updates entry and every "View
+// application" link lands, so the card it names is scrolled to and marked.
+// A link to an application that is not in the list says so rather than
+// leaving the candidate to hunt for it.
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { CalendarClock, FileText, ListChecks, PencilLine } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  CalendarClock,
+  FileText,
+  ListChecks,
+  Loader2,
+  PencilLine,
+} from "lucide-react";
 
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/validation-errors";
 import {
   PIPELINE_LABELS,
   type PipelineStage,
@@ -39,6 +53,7 @@ import { Button } from "@/components/ui/button";
 import {
   EmptyState,
   ErrorState,
+  InlineError,
   LoadingRows,
 } from "@/components/page-primitives";
 import { Card, CardContent } from "@/components/ui/card";
@@ -147,21 +162,46 @@ function Timeline({ events }: { events: StatusEvent[] }) {
   );
 }
 
+/** The job dialog's four honest states. `loading` is its own state so the
+ *  closed-posting sentence can never stand in for a request in flight. */
+type JobDialogState =
+  | { title: string; kind: "loading" }
+  | { title: string; kind: "ready"; job: PortalJob }
+  | { title: string; kind: "closed" }
+  | { title: string; kind: "error"; message: string };
+
 function ApplicationCard({
   application,
+  highlighted,
   onEdit,
   onOpenJob,
 }: {
   application: ApplicationRow;
+  highlighted: boolean;
   onEdit: (a: ApplicationRow) => void;
   onOpenJob: (a: ApplicationRow) => void;
 }) {
   const router = useRouter();
+  const ref = React.useRef<HTMLDivElement | null>(null);
   const assessmentOpen =
     application.assessment_invited && !application.assessment_completed;
 
+  React.useEffect(() => {
+    if (!highlighted || !ref.current) return;
+    ref.current.scrollIntoView?.({ block: "center" });
+    ref.current.focus({ preventScroll: true });
+  }, [highlighted]);
+
   return (
-    <Card className="h-full shadow-card transition-shadow duration-150 hover:shadow-card-hover">
+    <Card
+      ref={ref}
+      id={`application-${application.link_id}`}
+      tabIndex={-1}
+      aria-current={highlighted ? "true" : undefined}
+      className={`h-full shadow-card transition-shadow duration-150 hover:shadow-card-hover focus-visible:outline-none ${
+        highlighted ? "ring-2 ring-brand-600 ring-offset-2" : ""
+      }`}
+    >
       <CardContent className="space-y-4 p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -243,14 +283,24 @@ function ApplicationCard({
 }
 
 export default function PortalApplicationsPage() {
+  // `useSearchParams` needs a Suspense boundary above it, or the whole page
+  // opts out of static rendering at build time.
+  return (
+    <React.Suspense
+      fallback={<LoadingRows rows={3} label="Loading your applications" />}
+    >
+      <ApplicationsView />
+    </React.Suspense>
+  );
+}
+
+function ApplicationsView() {
+  const focusId = useSearchParams().get("application");
   const [applications, setApplications] = React.useState<ApplicationRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [editing, setEditing] = React.useState<ApplicationRow | null>(null);
-  const [jobDialog, setJobDialog] = React.useState<{
-    title: string;
-    job: PortalJob | null;
-  } | null>(null);
+  const [jobDialog, setJobDialog] = React.useState<JobDialogState | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -274,16 +324,27 @@ export default function PortalApplicationsPage() {
   }, [load]);
 
   const openJob = async (application: ApplicationRow) => {
-    setJobDialog({ title: application.job_title, job: null });
+    const title = application.job_title;
+    setJobDialog({ title, kind: "loading" });
     try {
       const job = await apiGet<PortalJob>(`/portal/jobs/${application.job_id}`);
-      setJobDialog({ title: application.job_title, job });
-    } catch {
-      // A closed posting 404s by design (spec Rule 3/4). The dialog stays open
-      // with an explanation rather than silently doing nothing.
-      setJobDialog({ title: application.job_title, job: null });
+      setJobDialog({ title, kind: "ready", job });
+    } catch (failure) {
+      // A closed posting 404s by design (spec Rule 3/4), and ONLY that is
+      // reported as closed. Any other failure is said as what it is.
+      setJobDialog(
+        failure instanceof ApiError && failure.status === 404
+          ? { title, kind: "closed" }
+          : { title, kind: "error", message: apiErrorMessage(failure) }
+      );
     }
   };
+
+  const focusMissing =
+    !loading &&
+    !error &&
+    focusId !== null &&
+    !applications.some((application) => application.link_id === focusId);
 
   return (
     <div>
@@ -333,6 +394,12 @@ export default function PortalApplicationsPage() {
         />
       ) : (
         <div className="space-y-8">
+          {focusMissing ? (
+            <InlineError>
+              The application in your link is not in this list. It may have
+              been withdrawn, or the link may belong to a different account.
+            </InlineError>
+          ) : null}
           {GROUPS.map((group) => {
             const rows = applications.filter(group.match);
             if (rows.length === 0) return null;
@@ -347,6 +414,7 @@ export default function PortalApplicationsPage() {
                     <ApplicationCard
                       key={application.link_id}
                       application={application}
+                      highlighted={application.link_id === focusId}
                       onEdit={setEditing}
                       onOpenJob={openJob}
                     />
@@ -375,7 +443,15 @@ export default function PortalApplicationsPage() {
           <DialogHeader>
             <DialogTitle>{jobDialog?.title}</DialogTitle>
           </DialogHeader>
-          {jobDialog?.job ? (
+          {jobDialog?.kind === "loading" ? (
+            <p
+              role="status"
+              className="flex items-center justify-center gap-2 py-8 text-sm"
+            >
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Loading the job description
+            </p>
+          ) : jobDialog?.kind === "ready" ? (
             <div className="space-y-4">
               <JobDescriptionSummary jd={pickJd(jobDialog.job)} />
               {hasCompanyContent(jobDialog.job) ? (
@@ -385,12 +461,16 @@ export default function PortalApplicationsPage() {
                 </>
               ) : null}
             </div>
-          ) : (
+          ) : jobDialog?.kind === "closed" ? (
             <p className="py-8 text-center text-sm">
               This posting has closed, so its full description is no longer
               available.
             </p>
-          )}
+          ) : jobDialog?.kind === "error" ? (
+            <InlineError>
+              The job description could not be loaded. {jobDialog.message}
+            </InlineError>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>
