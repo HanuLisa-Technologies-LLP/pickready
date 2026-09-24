@@ -203,6 +203,9 @@ async def delete_raw_objects(session: AsyncSession, recording: VideoRecording) -
     from app.services import object_storage  # noqa: PLC0415
 
     remaining = False
+    #: The store's own error CLASS, never its message: a message can quote a
+    #: key, and this line is read wherever the logs are.
+    failure = "ObjectStillPresent"
     now = datetime.now(timezone.utc)
     for segment in await recordings.segments_for(session, recording.id):
         if segment.raw_deleted_at is not None:
@@ -214,7 +217,8 @@ async def delete_raw_objects(session: AsyncSession, recording: VideoRecording) -
             continue
         try:
             confirmed = await run_in_threadpool(storage.delete_verified, segment.s3_key)
-        except object_storage.ObjectStorageError:
+        except object_storage.ObjectStorageError as exc:
+            failure = type(exc).__name__
             confirmed = False
         if confirmed:
             segment.raw_deleted_at = now
@@ -225,14 +229,16 @@ async def delete_raw_objects(session: AsyncSession, recording: VideoRecording) -
             confirmed = await run_in_threadpool(
                 storage.delete_verified, recording.s3_raw_key
             )
-        except object_storage.ObjectStorageError:
+        except object_storage.ObjectStorageError as exc:
+            failure = type(exc).__name__
             confirmed = False
         remaining = remaining or not confirmed
     if remaining:
         recording.raw_delete_failures += 1
         logger.warning(
-            "video_processing.raw_delete_failed recording_id=%s failures=%d",
-            recording.id, recording.raw_delete_failures,
+            "video_processing.raw_delete_failed recording_id=%s failures=%d "
+            "failure=%s",
+            recording.id, recording.raw_delete_failures, failure,
         )
     else:
         recording.raw_deleted = True

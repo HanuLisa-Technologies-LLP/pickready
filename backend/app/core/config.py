@@ -769,9 +769,10 @@ class Settings(BaseSettings):
     #: tab never strands a recording.
     video_orphan_grace_minutes: int = 30
     #: Amazon Transcribe. DISABLED by default because it needs an AWS account
-    #: with the service enabled in the deployment region; when disabled a
-    #: recording lands in `transcription_failed` with a message saying speech
-    #: to text is not configured. HONEST AND RETRYABLE, never a fake
+    #: with the service enabled in the deployment region. Since 2026-09-24 it
+    #: transcribes SPOKEN ANSWERS only (PLAN-p3 WP3); the session recording is
+    #: never transcribed, and the video-interview mode whose recording was
+    #: transcribed is deleted. Disabled is reported honestly, never a fake
     #: transcript (no silent fallback).
     transcribe_enabled: bool = False
     transcribe_language_code: str = "en-IN"

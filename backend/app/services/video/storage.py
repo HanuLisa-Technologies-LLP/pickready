@@ -80,11 +80,23 @@ def _sse() -> dict[str, str]:
     return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_id}
 
 
+class UploadNotFound(object_storage.ObjectStorageError):
+    """The store holds no multipart upload under this id any more.
+
+    Either it was completed (the object exists) or aborted (nothing exists).
+    Raised as its own class because the caller can tell those two apart with
+    a HEAD and settle the row, where any other store error is a real failure
+    to retry.
+    """
+
+
 def _error(action: str, exc: Exception) -> object_storage.ObjectStorageError:
     code = ""
     response = getattr(exc, "response", None)
     if isinstance(response, dict):
         code = str(response.get("Error", {}).get("Code", ""))
+    if code == "NoSuchUpload":
+        return UploadNotFound(f"Object store {action} failed: {code}")
     return object_storage.ObjectStorageError(f"Object store {action} failed: {code}")
 
 
@@ -261,17 +273,36 @@ def get_bytes(key: str) -> bytes:
 
 
 def exists(key: str) -> bool:
-    return object_storage.exists(key)
+    """Whether an object is at `key`, by the strict HEAD below: a denied HEAD
+    raises rather than reading as absent."""
+    return head_size(key) is not None
+
+
+#: The answers S3 gives a HEAD on a key that is not there. Nothing else means
+#: absent: in particular a 403 is a missing GRANT, and reading it as "gone"
+#: would let a worker with no permission confirm a deletion it never made.
+_ABSENT_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 
 
 def head_size(key: str) -> int | None:
-    """The stored object's size, or None when it is not readable."""
+    """The stored object's size, or None when the store says it is ABSENT.
+
+    Stricter than `object_storage.exists` on purpose, and the difference is
+    the reason this function exists: that helper serves a content-addressed
+    PUT and reads a 403 as "not there for us", which is harmless before a
+    conditional write and wrong after a delete. Here any answer other than
+    not-found RAISES, so a denied or failed HEAD can never be mistaken for a
+    confirmed absence.
+    """
     from botocore.exceptions import ClientError  # noqa: PLC0415
 
     try:
         response: Any = object_storage.client().head_object(Bucket=_bucket(), Key=key)
-    except ClientError:
-        return None
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in _ABSENT_CODES:
+            return None
+        raise _error("HEAD", exc) from exc
     return int(response.get("ContentLength") or 0)
 
 
@@ -280,13 +311,22 @@ def delete_verified(key: str) -> bool:
 
     The project-intake deletion contract: "the delete call returned" is the
     same class of non-evidence as "the pipeline was green", so the answer is
-    the HEAD, not the delete. Returns True only when the object is verifiably
-    absent afterwards. The bucket keeps a noncurrent version for one day
-    under the lifecycle rule for these prefixes (`infra/modules/s3`), which
-    is what turns this delete into a purge.
+    the HEAD, not the delete. Returns True only when the store answers
+    not-found afterwards; a refused DELETE or a HEAD that is anything but
+    not-found RAISES `ObjectStorageError`, which every caller counts as a
+    failure to retry. `object_storage.delete` is not used because it swallows
+    every error (it exists to compensate a failed database write), and paired
+    with a HEAD that reads 403 as absent it would have confirmed the deletion
+    of an object a worker had no permission to touch.
+
+    The bucket keeps a noncurrent version for one day under the lifecycle
+    rule for these prefixes (`infra/modules/s3`), which is what turns this
+    delete into a purge.
     """
-    object_storage.delete(key)
+    from botocore.exceptions import ClientError  # noqa: PLC0415
+
     try:
-        return not object_storage.exists(key)
-    except object_storage.ObjectStorageError:
-        return False
+        object_storage.client().delete_object(Bucket=_bucket(), Key=key)
+    except ClientError as exc:
+        raise _error("DELETE", exc) from exc
+    return head_size(key) is None

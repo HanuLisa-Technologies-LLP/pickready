@@ -3,7 +3,7 @@
 The module keeps its 2026-09-05 name because migrations and stored rows cite
 it, but there is ONE assessment mode now (Vivekium release, 2026-09-24): the
 video-interview mode, its mode-selection screen, its answer transcription and
-the `assessment_canonical` adapter are DELETED. What survives is the half the
+the adapter that reshaped its answers into the typed ones are DELETED. What survives is the half the
 master prompt keeps: the proctored SESSION recording.
 
 Three tables, all per assessment SESSION:

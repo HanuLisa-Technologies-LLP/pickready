@@ -100,18 +100,44 @@ def reconcile_assessment_recordings():
        a recording still `uploaded` after the grace.
 
     Dispatches happen AFTER the commit that makes the rows they read durable.
+
+    ONE RECORDING AT A TIME, AND ONE FAILURE STAYS ONE FAILURE. Completing an
+    orphan calls the object store, and a store error for one recording rolls
+    back that recording's work, is logged at ERROR with its class, and the
+    pass moves on: the row is still `recording`, so the next hour tries it
+    again. Rows are re-read by id after every commit or rollback, because a
+    rollback expires every loaded row and an expired row read in an async
+    session is an implicit query the driver refuses.
     """
+    from sqlalchemy import select
+
+    from app.models.dual_mode import VideoRecording
     from app.services import assessment_media_retention as media_retention
-    from app.services import deletion_requests
+    from app.services import deletion_requests, object_storage
     from app.services.video import processing
     from app.services.video import recordings as video_recordings
     from app.workers.dispatch import dispatch
 
+    async def _row(session, recording_id):
+        return (
+            await session.execute(
+                select(VideoRecording)
+                .where(VideoRecording.id == recording_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
     async def _task():
         to_process: list[str] = []
+        retried = cleared = finalized = failed = 0
         async with _worker_session() as session:
-            retried = cleared = 0
-            for recording in await media_retention.raw_retry_recordings(session):
+            raw_ids = [
+                row.id for row in await media_retention.raw_retry_recordings(session)
+            ]
+            for recording_id in raw_ids:
+                recording = await _row(session, recording_id)
+                if recording is None:
+                    continue
                 retried += 1
                 if await processing.delete_raw_objects(session, recording):
                     cleared += 1
@@ -122,15 +148,30 @@ def reconcile_assessment_recordings():
                     )
                 await session.commit()
 
-            finalized = 0
-            for recording in await video_recordings.orphaned_recordings(session):
-                outcome = await video_recordings.finalize_recording(
-                    session, recording, from_store=True
-                )
-                await session.commit()
+            orphan_ids = [
+                row.id for row in await video_recordings.orphaned_recordings(session)
+            ]
+            for recording_id in orphan_ids:
+                recording = await _row(session, recording_id)
+                if recording is None:
+                    continue
+                try:
+                    outcome = await video_recordings.finalize_recording(
+                        session, recording, from_store=True
+                    )
+                    await session.commit()
+                except object_storage.ObjectStorageError as exc:
+                    await session.rollback()
+                    failed += 1
+                    logger.error(
+                        "assessment_media.orphan_finalize_failed recording_id=%s "
+                        "failure=%s",
+                        recording_id, type(exc).__name__,
+                    )
+                    continue
                 finalized += 1
                 if outcome.dispatch:
-                    to_process.append(str(recording.id))
+                    to_process.append(str(recording_id))
 
             for recording in await media_retention.stuck_uploaded_recordings(session):
                 to_process.append(str(recording.id))
@@ -139,8 +180,8 @@ def reconcile_assessment_recordings():
             dispatch("pickready.process_assessment_video", args=[recording_id])
         logger.info(
             "assessment_media.reconciled raw_retried=%d raw_cleared=%d "
-            "orphans_finalized=%d dispatched=%d",
-            retried, cleared, finalized, len(set(to_process)),
+            "orphans_finalized=%d orphans_failed=%d dispatched=%d",
+            retried, cleared, finalized, failed, len(set(to_process)),
         )
     _run(_task())
 

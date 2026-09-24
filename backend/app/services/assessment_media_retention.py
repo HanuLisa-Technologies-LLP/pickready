@@ -65,7 +65,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.dual_mode import SEGMENT_OPEN, VideoRecording, VideoRecordingSegment
+from app.models.dual_mode import (
+    SEGMENT_ABORTED,
+    SEGMENT_OPEN,
+    VideoRecording,
+    VideoRecordingSegment,
+)
 from app.services import object_storage
 from app.services.video import storage as video_storage
 
@@ -269,6 +274,12 @@ async def delete_media_for_recording(
         recording.raw_deleted = True
         for segment in segments:
             segment.raw_deleted_at = segment.raw_deleted_at or now
+            # The deletion aborted this segment's multipart upload, so the
+            # row must stop saying it is open: an `open` segment is one the
+            # repair sweep would try to complete from parts that are gone.
+            if segment.status == SEGMENT_OPEN:
+                segment.status = SEGMENT_ABORTED
+                segment.completed_at = now
     else:
         recording.media_delete_failures += 1
         logger.warning(

@@ -7,8 +7,8 @@ in the same release (PLAN-p3 WP5):
     upload, finalize and status routes are gone with the answer-transcription
     pipeline behind them; `tests/test_video_interview_mode_removed.py` keeps
     them gone. What remains is the recording every proctored assessment keeps.
-  * THE RECORDING ARRIVES IN SEGMENTS. `POST /video/upload` read the whole
-    session, up to a gigabyte, into the shared API task with one
+  * THE RECORDING ARRIVES IN SEGMENTS. The deleted whole-file upload route
+    read the session, up to a gigabyte, into the shared API task with one
     `await file.read()`. Now the browser opens a segment (one S3 multipart
     upload), streams parts of at most `video_part_max_bytes` into it, closes
     it, and opens a new one after every device recovery. No request holds more
@@ -318,8 +318,8 @@ async def finalize_recording(
         session, recording, ended_at=datetime.now(timezone.utc)
     )
     if outcome.dispatch:
-        # Lost after commit? `purge_assessment_media`'s stuck-upload pass
-        # re-dispatches a recording left in `uploaded`.
+        # Lost after commit? `pickready.reconcile_assessment_recordings`
+        # re-dispatches a recording left in `uploaded` past the grace.
         dispatch_after_commit(
             session, "pickready.process_assessment_video", args=[str(recording.id)]
         )

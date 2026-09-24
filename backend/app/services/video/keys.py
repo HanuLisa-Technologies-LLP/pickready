@@ -7,8 +7,11 @@ ONLY key builder, so the rule cannot be broken at a call site, and
 a generated key.
 
     assessment-raw/{conversation_id}/{recording_id}/seg-{ordinal:04d}.<ext>
-    assessment-raw/{conversation_id}/{recording_id}/raw.<ext>        (pre-0126)
     assessment-compressed/{conversation_id}/{recording_id}/assessment.mp4
+
+A row written before migration 0126 names its single raw object in
+`video_recordings.s3_raw_key` (`.../raw.<ext>`); that stored key is what the
+pipeline and every deletion path read, so no builder for it survives here.
 
 The two prefixes are also the unit of everything infrastructure decides about
 these objects: the application's IAM grant and the lifecycle rules in
@@ -34,17 +37,6 @@ def _extension(source_format: str | None) -> str:
     """
     subtype = (source_format or "").split(";")[0].split("/")[-1].strip().lower()
     return subtype if subtype in _SOURCE_EXTENSIONS else "webm"
-
-
-def raw_key(
-    conversation_id: uuid.UUID, recording_id: uuid.UUID, source_format: str | None
-) -> str:
-    """The single-object raw key recordings used before segmented upload.
-
-    Nothing writes it now; it is built only so a row written before migration
-    0126 can be read and its object deleted.
-    """
-    return f"{RAW_PREFIX}/{conversation_id}/{recording_id}/raw.{_extension(source_format)}"
 
 
 def segment_key(

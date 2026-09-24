@@ -228,6 +228,30 @@ async def open_segment(
 # ── Parts ────────────────────────────────────────────────────────────────────
 
 
+async def _locked(
+    session: AsyncSession, segment: VideoRecordingSegment
+) -> VideoRecordingSegment:
+    """Re-read `segment` under a row lock, fresh from the database.
+
+    Two requests for one segment (a retried part racing the original, a
+    complete arriving beside the last part) would otherwise each read
+    `parts_json`, add their own entry and write it back, and the second write
+    would silently drop the first part's ETag. That part would then be missing
+    from `CompleteMultipartUpload`, so S3 would join the segment without it
+    and the recording would lose those seconds with nothing reporting it.
+    `populate_existing` makes the lock's read the value every rule below
+    checks, not the copy loaded before the lock was taken.
+    """
+    return (
+        await session.execute(
+            select(VideoRecordingSegment)
+            .where(VideoRecordingSegment.id == segment.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
 async def _recording_bytes(session: AsyncSession, recording_id: uuid.UUID) -> int:
     total = (
         await session.execute(
@@ -253,18 +277,25 @@ async def record_part(
     Every size rule is checked BEFORE the bytes leave for S3:
 
       * empty is refused; above `video_part_max_bytes` is refused (413);
-      * below S3's 5 MiB floor is refused unless `final` marks it the last
-        part, because only the last part of a multipart upload may be small
-        and S3 would otherwise refuse the whole segment at completion, after
-        the session is over and the browser can no longer re-send anything;
-      * nothing may arrive after the declared final part;
+      * a part below S3's 5 MiB floor IS the segment's final part, whether or
+        not `final` says so, because only the last part of a multipart upload
+        may be small and S3 would otherwise refuse the whole segment at
+        completion, after the session is over and the browser can no longer
+        re-send anything. `final` exists to close a segment on a FULL part;
+      * nothing may arrive after the final part: a browser that has more to
+        send opens a new segment, which is what it does after a device
+        recovery anyway;
       * the recording's total across every segment stays under
         `video_max_upload_bytes`.
 
     Re-sending a part number REPLACES it (a retry after a lost response), and
-    the byte count is adjusted rather than double counted.
+    the byte count is adjusted rather than double counted. The segment row is
+    LOCKED for the whole of this (`_locked`), so concurrent parts of one
+    segment are recorded one after the other rather than overwriting each
+    other's ETags.
     """
     settings = get_settings()
+    segment = await _locked(session, segment)
     if recording.status != lifecycle.RECORDING or segment.status != SEGMENT_OPEN:
         raise RecordingRefused("This part of the recording is already closed.")
     if not 1 <= part_number <= storage.MAX_PART_NUMBER:
@@ -288,15 +319,12 @@ async def record_part(
         raise RecordingRefused(
             "This segment's final part has already been received."
         )
+    final = final or size < storage.MIN_PART_BYTES
     if final and any(int(number) > part_number for number in parts):
         raise RecordingRefused(
             "A later part of this segment already exists, so this one cannot "
-            "be the final part.",
-            status_code=422,
-        )
-    if size < storage.MIN_PART_BYTES and not final:
-        raise RecordingRefused(
-            "Only the final part of a segment may be smaller than 5 MiB.",
+            "be its final part. Only the last part of a segment may be "
+            "smaller than 5 MiB.",
             status_code=422,
         )
     previous = int((parts.get(str(part_number)) or {}).get("bytes") or 0)
@@ -344,45 +372,72 @@ async def complete_segment(
 
     `from_store` completes from the store's own list of parts (the sweep's
     path, see the module docstring); the browser's path uses the ETags the
-    row recorded as each part landed.
+    row recorded as each part landed. Locked like `record_part`, so a part
+    still being recorded is either in the completion or refused after it.
     """
+    segment = await _locked(session, segment)
     if segment.status != SEGMENT_OPEN:
         return segment
-    if from_store:
-        stored = await run_in_threadpool(
-            storage.list_parts,
-            key=segment.s3_key,
-            upload_id=segment.multipart_upload_id,
-        )
-        parts = [(part.part_number, part.etag) for part in stored]
-        segment.parts_json = {
-            str(part.part_number): {"etag": part.etag, "bytes": part.size}
-            for part in stored
-        }
-        segment.bytes = sum(part.size for part in stored)
-    else:
-        parts = _parts_from_row(segment)
-    now = datetime.now(timezone.utc)
-    if not parts:
+    try:
+        if from_store:
+            stored = await run_in_threadpool(
+                storage.list_parts,
+                key=segment.s3_key,
+                upload_id=segment.multipart_upload_id,
+            )
+            parts = [(part.part_number, part.etag) for part in stored]
+            segment.parts_json = {
+                str(part.part_number): {"etag": part.etag, "bytes": part.size}
+                for part in stored
+            }
+            segment.bytes = sum(part.size for part in stored)
+        else:
+            parts = _parts_from_row(segment)
+        if not parts:
+            await run_in_threadpool(
+                storage.abort_multipart,
+                key=segment.s3_key,
+                upload_id=segment.multipart_upload_id,
+            )
+            return await _settle(session, segment, SEGMENT_ABORTED)
         await run_in_threadpool(
-            storage.abort_multipart,
+            storage.complete_multipart,
             key=segment.s3_key,
             upload_id=segment.multipart_upload_id,
+            parts=parts,
         )
-        segment.status = SEGMENT_ABORTED
-        segment.completed_at = now
-        await session.flush()
-        return segment
-    await run_in_threadpool(
-        storage.complete_multipart,
-        key=segment.s3_key,
-        upload_id=segment.multipart_upload_id,
-        parts=parts,
-    )
-    segment.status = SEGMENT_COMPLETED
-    segment.completed_at = now
+    except storage.UploadNotFound:
+        return await _settle_from_store(session, segment)
+    return await _settle(session, segment, SEGMENT_COMPLETED)
+
+
+async def _settle(
+    session: AsyncSession, segment: VideoRecordingSegment, status: str
+) -> VideoRecordingSegment:
+    segment.status = status
+    segment.completed_at = datetime.now(timezone.utc)
     await session.flush()
     return segment
+
+
+async def _settle_from_store(
+    session: AsyncSession, segment: VideoRecordingSegment
+) -> VideoRecordingSegment:
+    """The store no longer holds this upload, so the OBJECT is the answer.
+
+    That happens when an earlier attempt completed (or aborted) the upload
+    and its database write did not land: a sweep whose transaction rolled
+    back after S3 had already joined one segment, or a complete whose
+    response was lost. Asking the upload again would fail the same way every
+    hour for ever, so the HEAD decides: an object at the key is a completed
+    segment of that size, and no object is an aborted one with nothing to
+    process.
+    """
+    size = await run_in_threadpool(storage.head_size, segment.s3_key)
+    if size is None:
+        return await _settle(session, segment, SEGMENT_ABORTED)
+    segment.bytes = size
+    return await _settle(session, segment, SEGMENT_COMPLETED)
 
 
 def purge_due_at(
@@ -449,17 +504,36 @@ async def finalize_recording(
     does nothing twice. At least one completed, non-empty segment makes it
     `uploaded`; none makes it `upload_failed`, honestly, because no byte of
     video arrived. Both stamp `ended_at` and the stored purge date.
+
+    `ended_at` is when the SESSION stopped being recorded, because D4's clock
+    runs from the session. The browser passes the moment it finalized; the
+    sweep passes nothing, and then the last part to arrive is the truthful
+    answer (the recording's own start when none did). The sweep's clock would
+    be the grace period late, and every orphaned recording would be kept
+    that much longer than the candidate was told.
     """
     if recording.status != lifecycle.RECORDING:
         return FinalizeOutcome(status=recording.status, dispatch=False)
     segments = await segments_for(session, recording.id)
-    for segment in segments:
-        await complete_segment(session, segment, from_store=from_store)
+    for index, segment in enumerate(segments):
+        segments[index] = await complete_segment(
+            session, segment, from_store=from_store
+        )
     completed = [
         segment for segment in segments
         if segment.status == SEGMENT_COMPLETED and segment.bytes > 0
     ]
-    recording.ended_at = recording.ended_at or ended_at or datetime.now(timezone.utc)
+    last_part = max(
+        (segment.last_part_at for segment in segments if segment.last_part_at),
+        default=None,
+    )
+    recording.ended_at = (
+        recording.ended_at
+        or ended_at
+        or last_part
+        or recording.started_at
+        or datetime.now(timezone.utc)
+    )
     recording.file_size_bytes = sum(segment.bytes for segment in completed)
     if completed:
         lifecycle.advance(recording, lifecycle.UPLOADED)
@@ -514,6 +588,10 @@ async def orphaned_recordings(
                 )
                 .where(
                     VideoRecording.status == lifecycle.RECORDING,
+                    # A recording whose media a closure or erasure already
+                    # purged has nothing left to complete: its uploads were
+                    # aborted by that deletion.
+                    VideoRecording.media_deleted_at.is_(None),
                     last_activity < moment - grace,
                     session_over | too_old,
                 )
