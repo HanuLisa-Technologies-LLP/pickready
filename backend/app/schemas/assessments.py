@@ -511,10 +511,10 @@ class TranscriptOut(BaseModel):
     offset: int
 
 
-# The invitation, consent and mode shapes moved to
-# `schemas/assessment_conversation.py` on 2026-09-24. `AssessmentModeIn` and
-# `ModeStateOut` are DELETED with the mode choice: there is one assessment
-# mode (Appendix B section 1).
+# The invitation and consent shapes moved to
+# `schemas/assessment_conversation.py` on 2026-09-24. The mode-choice shapes
+# are DELETED with the mode choice: there is one assessment mode (Appendix B
+# section 1).
 
 
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ───

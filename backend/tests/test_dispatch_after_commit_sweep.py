@@ -53,11 +53,11 @@ SCOPE = (
 LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/admin.py", "create_tenant"): (1, "P7 proposed"),
     ("api/admin.py", "invite_staff"): (1, "P6 proposed"),
-    # KEPT ONLY for its last caller; the conversation's own start returns
-    # `preparing` and dispatches after commit. `respond` (WP3), the two video
-    # routes (WP5), `enqueue_assessment` (WP4) and `complete_assessment` (WP5)
-    # were converted and left this list at the stage 2 integration.
-    ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3 WP5"),
+    # The Phase 3 entries all left this list at the stage 2 integration: the
+    # answer route (WP3), the recording routes and the processing completion
+    # (WP5) and the proctoring termination (WP4) dispatch after commit, and the
+    # conversation's readiness helper was deleted with the video interview
+    # start, its last caller.
     ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
     ("api/bgv.py", "append_employer_route"): (1, "P6 proposed"),
     ("api/bgv.py", "send"): (1, "P6 proposed"),

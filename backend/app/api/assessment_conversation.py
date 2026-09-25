@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -96,7 +96,7 @@ from app.services.rate_limit import rate_limit
 # The sanctioned media package: a spoken answer is stored and transcribed
 # there, and nothing here reads media back.
 from app.services.video import transcribe, voice
-from app.workers.dispatch import dispatch, dispatch_after_commit
+from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -344,34 +344,6 @@ def _question_out(row: CandidateQuestion) -> QuestionOut:
         question_type=row.question_type,
         payload=question_types.candidate_view(row.id, row.question_type, row.payload_json),
         time_allocation_seconds=row.time_allocation_seconds,
-    )
-
-
-async def _ensure_conversation_ready(
-    session: AsyncSession, job: Job, link: JobCandidateLink
-) -> None:
-    """The video interview start's readiness check, kept only for that route.
-
-    RETIRING WITH IT: `api/assessment_recording.start_video_interview` is the
-    last caller, and the video interview mode is deleted by the recording work
-    package (PLAN-p3 WP5). The conversation's own start no longer calls this:
-    it dispatched and then RAISED, so the transaction rolled back after the task
-    had already been sent. `start_conversation` returns `preparing` instead and
-    dispatches after the commit.
-    """
-    has_questions = (
-        await session.execute(
-            select(func.count())
-            .select_from(CandidateQuestion)
-            .where(CandidateQuestion.job_candidate_link_id == link.id)
-        )
-    ).scalar_one()
-    if has_questions:
-        return
-    dispatch("pickready.generate_candidate_questions", args=[str(link.id)])
-    raise HTTPException(
-        status_code=409,
-        detail="We are preparing your assessment. Please try again in a moment.",
     )
 
 

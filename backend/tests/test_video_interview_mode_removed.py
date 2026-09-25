@@ -59,21 +59,16 @@ PENDING = re.compile(
     r"|/video/(?:start|mark|upload|finalize|status)\b"
 )
 
-PENDING_IN_OTHER_PACKAGES = frozenset(
-    {
-        # PLAN-p3 WP3: the mode routes and the per-mode consent wording.
-        "backend/app/api/assessment_conversation.py",
-        "backend/app/schemas/assessments.py",
-        "backend/app/core/config.py",
-        "backend/app/services/assessment_consent.py",
-        # PLAN-p3 WP6a and WP6b: the mode screen, the video-interview
-        # component, their types and the whole-file upload client.
-        "frontend/app/(candidate)/portal/(app)/assessments/[link_id]/page.tsx",
-        "frontend/components/assessment/mode-selection.tsx",
-        "frontend/components/assessment/video-interview.tsx",
-        "frontend/lib/types.ts",
-        "frontend/lib/proctoring/api.ts",
-    }
+#: EMPTY since the stage 2 integration, which merged every package this list
+#: waited on (WP3, WP6a, WP6b). The ratchet reached zero: a pending name in
+#: any file now fails, like a GONE one.
+PENDING_IN_OTHER_PACKAGES: frozenset[str] = frozenset()
+
+#: The test that asserts the single consent text REPLACED the per-mode one has
+#: to name the deleted setting to assert its absence.
+PENDING_EXEMPT = (
+    THIS_FILE,
+    BACKEND / "tests" / "test_single_mode_consent.py",
 )
 
 
@@ -101,7 +96,7 @@ def test_nothing_names_what_was_removed() -> None:
 
 
 def test_the_pending_names_do_not_spread() -> None:
-    hits = sweep(PENDING, exempt=(THIS_FILE,))
+    hits = sweep(PENDING, exempt=PENDING_EXEMPT)
     spread = sorted(_files(hits) - PENDING_IN_OTHER_PACKAGES)
     assert not spread, (
         "A deleted video-interview name appeared outside the files its owning "
@@ -112,7 +107,7 @@ def test_the_pending_names_do_not_spread() -> None:
 def test_the_pending_list_only_shrinks() -> None:
     """An entry whose file no longer mentions the names is an exemption that
     outlived its reason. Delete the entry in the change that removed it."""
-    stale = sorted(PENDING_IN_OTHER_PACKAGES - _files(sweep(PENDING, exempt=(THIS_FILE,))))
+    stale = sorted(PENDING_IN_OTHER_PACKAGES - _files(sweep(PENDING, exempt=PENDING_EXEMPT)))
     assert not stale, stale
 
 
