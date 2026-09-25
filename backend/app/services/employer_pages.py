@@ -6,10 +6,9 @@ slug lives on `tenants.public_slug` (migration 0084 explains why `tenants`
 and not `companies`).
 
 This module owns the ONE slug rule, mirrored by migration 0084's SQL backfill
--- change them together. It is deliberately distinct from
-`services/matching_categories.slugify`, which produces underscore-joined
-SCORE KEYS with a different alphabet and bound; a URL path segment and a
-score-filing key are two concepts, not one.
+-- change them together. It is the only slug rule left: the retired
+Matching categories' underscore-joined score-key slug went with that feature
+(Vivekium release), and a URL path segment was never the same concept.
 """
 from __future__ import annotations
 

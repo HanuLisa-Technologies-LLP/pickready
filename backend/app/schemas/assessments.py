@@ -391,29 +391,10 @@ class AnswerBehaviourIn(BaseModel):
 # transcript, and until 2026-08-06 the only way to read one was a psql session.
 
 
-class ConversationMessageIn(BaseModel):
-    """One turn. Prose for a text question; a structure for the others.
-
-    `answer` stays the transcript line for the two text formats. For a
-    structured format the client sends `answer_payload` in the shape
-    `assessment_formats.types.ANSWER_MODELS` names and the SERVER renders the
-    transcript line from it; an `answer` string sent alongside is ignored so a
-    client can never disagree with its own structured submission.
-
-    `paused_ms` is how long a blocking proctoring warning held the screen
-    during this question, subtracted from the server-measured time spent and
-    bounded by it. `behaviour` is the answer field's keystroke and pointer
-    timings, evaluated server-side against the candidate's own baseline.
-    """
-
-    answer: str = Field(default="", max_length=10000)
-    answer_payload: dict[str, Any] | None = None
-    paused_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
-    behaviour: AnswerBehaviourIn | None = None
-
-
-class ConversationAnswerEditIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=10000)
+# The turn's request and response shapes (`ConversationMessageIn`,
+# `ConversationOut`) live in `schemas/assessment_conversation.py` with the
+# routes that speak them (2026-09-24). `ConversationAnswerEditIn` is DELETED:
+# past answers are viewable and never editable (Appendix B section 3).
 
 
 class QuestionOut(BaseModel):
@@ -440,36 +421,20 @@ class QuestionOut(BaseModel):
         return value
 
 
-class ConversationOut(BaseModel):
-    conversation_id: uuid.UUID
-    #: active | completed | terminated
-    status: str
-    #: Which input mechanism this session uses (dual-mode spec section 2):
-    #: 'conversational' or 'video_interview'. Defaulted so every constructor
-    #: that predates dual mode stays truthful about its own rows.
-    mode: str = "conversational"
-    prompt: str | None
-    progress_label: str
-    answered_questions: int
-    total_questions: int
-    is_reask: bool = False
-    answer_message_id: uuid.UUID | None = None
-    #: The format of the prompt on screen. None once the conversation is over
-    #: and on a follow-up or re-ask, which is always answered in prose.
-    question: QuestionOut | None = None
-    #: The proctoring termination notice, in plain language, when `status` is
-    #: terminated. Never a reason code.
-    termination_message: str | None = None
-
-
 class TranscriptAnswerDetailOut(BaseModel):
     """The recruiter's view of one structured answer (formats spec 7).
 
     Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
     `not_answered`, or None for a format that has none), never a score. The
     AI evaluation is its reasoning, never its number. `not_executed_note` is
-    present on every coding answer so a reader cannot mistake a read-only
-    judgement for a verified run.
+    present on every LEGACY coding answer so a reader cannot mistake a
+    read-only judgement for a verified run.
+
+    An EXECUTED coding answer (Phase 4) carries the four `coding_*` / review
+    fields instead, all prose: the outcome sentence with its counts spelled
+    out, the compiler's message when the code did not compile, and the
+    code-quality review's reasoning and verbatim citations. No hidden test,
+    no reference and no number crosses here.
     """
 
     #: The candidate view of the payload, so the recruiter sees the options
@@ -487,6 +452,10 @@ class TranscriptAnswerDetailOut(BaseModel):
     evaluation_reasoning: str | None = None
     evaluation_citations: list[str] = []
     not_executed_note: str | None = None
+    coding_outcome: str | None = None
+    compile_error: str | None = None
+    review_reasoning: str | None = None
+    review_citations: list[str] = []
     time_spent: str | None = None
 
 
@@ -552,158 +521,10 @@ class TranscriptOut(BaseModel):
     offset: int
 
 
-# ── The assessment invitation link (2026-08-11) ──────────────────────────────
-
-class InvitationResolveOut(BaseModel):
-    """What the invitation landing page needs to decide where to send someone.
-
-    ONE response shape covers the whole flow -- signed out, signed in as the
-    wrong person, expired, already submitted, ready -- because the page's job
-    is to branch, and a branch is far harder to get wrong when the states are
-    an enum in one payload than when they are spread across status codes.
-
-    `state` is the branch. Everything else is context for the copy.
-    """
-
-    #: One of:
-    #:   needs_auth        the link is good, nobody is signed in
-    #:   wrong_account     signed in, but not as the invited candidate
-    #:   ready             go to the assessment
-    #:   in_progress       partly answered, same destination, different copy
-    #:   completed         already submitted; the report is the destination
-    #:   not_invited       the recruiter has not invited this application
-    #:   expired           the signed link is past its lifetime
-    #:   window_closed     the 30 + 5 day posting window has ended
-    #:   invalid           not one of our links
-    state: str
-    #: Where to send the browser once the state allows it. Always a path on
-    #: this site, never an absolute URL: an open redirect in an emailed link is
-    #: exactly the thing a phisher would want from this endpoint.
-    redirect_to: str | None = None
-    #: Masked, e.g. `as***@example.com`. Only populated for `wrong_account`, so
-    #: the candidate can tell which of their addresses was invited.
-    invited_email_masked: str | None = None
-    #: The email currently signed in, unmasked -- the caller already knows it.
-    signed_in_email: str | None = None
-    job_title: str | None = None
-    company_name: str | None = None
-    #: Human-readable, already resolved server-side. The page renders this
-    #: rather than mapping the state to copy itself, so the email, the API and
-    #: the page cannot describe the same situation three different ways.
-    message: str
-    #: True when a prior report for this candidate is under the six-month
-    #: window, so the page can explain why they are answering questions again.
-    #: Never a reason to skip the assessment: under PPI the framework is
-    #: generated from each job's own JD, so nothing is portable between jobs.
-    recent_prior_report: bool = False
-
-
-# ── Dual-mode assessment (2026-09-05 spec sections 2-5, 16) ──────────────────
-
-
-class AssessmentModeIn(BaseModel):
-    """The candidate's mode choice, made before consent and before starting."""
-
-    mode: str
-
-    @field_validator("mode")
-    @classmethod
-    def _known_mode(cls, value: str) -> str:
-        from app.models.dual_mode import ASSESSMENT_MODES
-
-        if value not in ASSESSMENT_MODES:
-            raise ValueError(f"unknown assessment mode {value!r}")
-        return value
-
-
-class ConsentTermsOut(BaseModel):
-    """One mode's consent screen, exactly as configured (spec 3.2, 3.3).
-
-    The versions travel with the text so the client shows what the server will
-    stamp; the row written on acceptance re-reads the settings server-side and
-    never trusts these echoes back.
-    """
-
-    assessment_mode: str
-    text: str
-    consent_version: str
-    privacy_policy_version: str
-    terms_version: str
-    #: The Stage B per-item catalogue (vivekium feature 6), server-authored:
-    #: {key, stage, text, version} each. The screen renders these VERBATIM
-    #: beside the mode text and ticks them one at a time; acceptance stamps
-    #: each item individually server-side.
-    items: list[dict] = []
-
-
-class AssessmentConsentIn(BaseModel):
-    """The Stage B items the candidate actually ticked.
-
-    The keys are sent rather than a single boolean because the record has to
-    be able to say each item was agreed to separately (vivekium feature 6).
-    The server refuses anything but the complete Stage B set, so this is the
-    candidate's list of ticks and never a way to consent to a subset.
-    """
-
-    consent_keys: list[str] = []
-
-
-class ModeStateOut(BaseModel):
-    """Where this assessment session stands in the mode/consent flow."""
-
-    mode: str
-    #: True once the assessment has begun (or a recording exists): the mode
-    #: can no longer change, because the records already written belong to it.
-    mode_frozen: bool
-    #: Whether a consent row exists for THIS session in THIS mode.
-    consented: bool
-    #: The consent terms for the CURRENT mode.
-    consent: ConsentTermsOut
-
-
-class VideoQuestionOut(BaseModel):
-    """One question of the video interview, in served order."""
-
-    ordinal: int
-    #: The text the candidate reads aloud and answers in speech.
-    prompt: str
-    #: The format detail (candidate view only; the answer key never crosses).
-    question: QuestionOut
-
-
-class VideoStartOut(BaseModel):
-    """The video interview, opened: the recording session and the questions."""
-
-    conversation_id: uuid.UUID
-    recording_id: uuid.UUID
-    status: str
-    questions: list[VideoQuestionOut]
-    #: Ceilings the recorder must respect, served so the client and server
-    #: never disagree about a number (the proctoring config rule, applied here).
-    max_upload_bytes: int
-    max_duration_seconds: int
-
-
-class VideoMarkIn(BaseModel):
-    """The next-question control: the question now on screen."""
-
-    question_id: uuid.UUID
-
-
-class VideoRecordingStatusOut(BaseModel):
-    """The candidate's honest view of their recording (spec 16).
-
-    `status` is the lifecycle state, `message` is the plain-language account
-    of it. No score, no grade, no internal identifier beyond the recording's
-    own id, and the message never pretends a failed step ran.
-    """
-
-    recording_id: uuid.UUID
-    status: str
-    message: str
-    #: True only for `upload_failed`, where the fix is the candidate's own
-    #: re-upload; every other failure is retried server-side by staff.
-    can_retry_upload: bool = False
+# The invitation and consent shapes moved to
+# `schemas/assessment_conversation.py` on 2026-09-24. The mode-choice shapes
+# are DELETED with the mode choice: there is one assessment mode (Appendix B
+# section 1).
 
 
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ───

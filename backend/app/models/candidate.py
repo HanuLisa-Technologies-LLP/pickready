@@ -282,12 +282,38 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
     source: Mapped[LinkSource] = mapped_column(
         Enum(LinkSource, native_enum=False, length=10), nullable=False
     )
-    match_score: Mapped[float | None] = mapped_column(Float)  # overall × 10 (0–100), for sorting/tiers
-    match_rationale: Mapped[str | None] = mapped_column(Text)  # HR-visible, never candidate-visible
-    # 4-parameter weighted breakdown (rev 2): skills_match/experience_relevance/
-    # role_alignment/education_fit + overall, each {score 1-10, comment}.
+    # ── The retired matcher's output: HISTORY, readable and frozen (S4) ──────
+    # Written by nothing since migration 0122. Kept because a live row may
+    # still carry them and dropping a column that may hold customer data is an
+    # owner decision. The ranked table reads the Yukti columns below instead;
+    # 0122 carried every scored row across as a `legacy` Yukti reading.
+    match_score: Mapped[float | None] = mapped_column(Float)
+    match_rationale: Mapped[str | None] = mapped_column(Text)
     match_breakdown_json: Mapped[dict | None] = mapped_column(JSONB)
     tier: Mapped[Tier | None] = mapped_column(Enum(Tier, native_enum=False, length=25))
+    # ── Yukti (migration 0122) ───────────────────────────────────────────────
+    # Written ONLY by `services/yukti/scoring.apply_outcome`, under the
+    # per-link advisory lock. The pre-assessment score is INTERNAL: no schema
+    # serializes it, and the blended ranking score is derived in SQL at read
+    # time rather than stored (CONTRACT v2). CHECKs pin the vocabulary, the
+    # 0..100 range, "a number exactly when scored or legacy" and "a reason
+    # exactly when not assessed".
+    yukti_pre_score: Mapped[float | None] = mapped_column(Float)
+    yukti_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    yukti_failure_reason: Mapped[str | None] = mapped_column(String(40))
+    evidence_tags_json: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    yukti_provenance_json: Mapped[dict | None] = mapped_column(JSONB)
+    yukti_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The profile the reading was made from. Differs from `profile_id` when
+    #: the application's resume was replaced after the reading, which is how
+    #: the table knows the reading is stale.
+    yukti_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL")
+    )
     # ── Hiring pipeline (migration 0018) ─────────────────────────────────────
     # `application_source` records WHERE an applicant clicked: `direct` (the
     # portal board) or `external_link` (the public /apply page). `sourced` is

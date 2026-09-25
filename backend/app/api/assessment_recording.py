@@ -1,19 +1,36 @@
-"""The assessment's recording routes: the video interview and the proctored session's media.
+"""The proctored session's recording routes.
 
-Carved out of `api/assessments.py` on 2026-09-24 (PLAN-p3 WP0) as a PURE MOVE:
-identical URLs under the same `/api/v2/assessments` prefix, identical
-dependencies, identical behaviour. The candidate-side helpers these routes
-share with the conversation (`_candidate_conversation`, `_mode_frozen`, the
-consent and mode state) live in `api/assessment_conversation.py`.
+Carved out of `api/assessments.py` on 2026-09-24 (PLAN-p3 WP0), then rebuilt
+in the same release (PLAN-p3 WP5):
+
+  * THE VIDEO INTERVIEW MODE IS DELETED. Its start, question-mark, whole-file
+    upload, finalize and status routes are gone with the answer-transcription
+    pipeline behind them; `tests/test_video_interview_mode_removed.py` keeps
+    them gone. What remains is the recording every proctored assessment keeps.
+  * THE RECORDING ARRIVES IN SEGMENTS. The deleted whole-file upload route
+    read the session, up to a gigabyte, into the shared API task with one
+    `await file.read()`. Now the browser opens a segment (one S3 multipart
+    upload), streams parts of at most `video_part_max_bytes` into it, closes
+    it, and opens a new one after every device recovery. No request holds more
+    than one part.
+  * FINALIZE DISPATCHES AFTER COMMIT. Processing reads the rows finalize
+    writes, so the task is handed off only once they are durable
+    (`dispatch_after_commit`); a rolled-back request dispatches nothing.
+
+Candidate routes run in the candidate's bypass-scoped session and check
+ownership through the application, exactly as the conversation routes do.
+The one staff route, retry, is the hiring team's: `view_review_screen` through
+`rbac.authorize` over the job, so a scoped Recruiter, Hiring Manager or
+Interview Manager reaches only the jobs they are assigned to.
 """
 import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.assessment_conversation import _candidate_conversation, _candidate_link
 from app.api.deps import (
     CurrentUser,
     get_candidate_db,
@@ -21,125 +38,125 @@ from app.api.deps import (
     get_tenant_db,
     require_capability,
 )
-from app.models.assessment import (
-    AssessmentConversation,
-    CandidateQuestion,
+from app.core.config import get_settings
+from app.models.assessment import AssessmentConversation
+from app.models.dual_mode import VideoRecording, VideoRecordingSegment
+from app.models.job import Job
+from app.models.candidate import JobCandidateLink
+from app.schemas.videos import (
+    RecordingStatusOut,
+    SegmentOpenIn,
+    SegmentOut,
+    SessionMediaStartOut,
 )
-from app.schemas.assessments import (
-    VideoMarkIn,
-    VideoQuestionOut,
-    VideoRecordingStatusOut,
-    VideoStartOut,
-)
-# The proctored session's recording start. It lives beside the client-portal
-# video schemas rather than with the assessment ones because it is the
-# candidate-side half of the SAME artifact those schemas deliver, and both
-# halves are bound by the same rule: no bucket name and no object key.
-from app.schemas.videos import SessionMediaStartOut
+from app.services import assessment_consent, job_assessment_retention
+from app.services import assessment_video_access as video_access
 from app.services import capabilities as caps
-from app.services import (
-    assessment_consent,
-    hiring_pipeline,
-)
-# DUAL-MODE ASSESSMENT (2026-09-05 spec). The video package is reached ONLY by
-# these routes and the processing task, never by a scorer; the models carry the
-# consent audit and the recording lifecycle.
-from app.models.dual_mode import (
-    MODE_VIDEO_INTERVIEW,
-    RECORDING_PROCTORED_SESSION,
-    RECORDING_VIDEO_INTERVIEW,
-    VideoRecording,
-)
+from app.services.audit import audit
+# PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
+# this module's only dependency on the proctoring package, so the scoring
+# isolation the package promises stays visible in the import graph.
+from app.services.proctoring import gate as proctoring_gate
 from app.services.video import lifecycle as video_lifecycle
 from app.services.video import recordings as video_recordings
 from app.services.video import storage as video_storage
-from app.services.audit import audit
-# PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
-# this module's only import-time dependency on the proctoring package; the
-# behaviour recorder and the report loader are reached inside the handlers
-# that need them, so the scoring isolation the package promises stays
-# visible in the import graph as gate-plus-report-join and nothing else.
-from app.services.proctoring import gate as proctoring_gate
-from app.workers.dispatch import dispatch
-
-from app.api.assessment_conversation import (
-    _candidate_conversation,
-    _candidate_link,
-    _conversation_prompts,
-    _ensure_conversation_ready,
-    _question_out,
-)
-from app.core.config import get_settings as _get_settings
-from app.services.video import keys as video_keys
+from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/conversations/links/{link_id}/video/start", response_model=VideoStartOut)
-async def start_video_interview(
-    link_id: uuid.UUID,
-    user: CurrentUser = Depends(get_current_candidate),
-    session: AsyncSession = Depends(get_candidate_db),
-) -> VideoStartOut:
-    """Open the video interview: the mode's analog of the conversational
-    start, gate for gate (invitation, proctoring, mode, consent), plus the
-    recording session the browser uploads into.
+#: The candidate's plain-language account of each status. Every failure says
+#: what actually happened; none pretends progress.
+_STATUS_MESSAGES: dict[str, str] = {
+    video_lifecycle.RECORDING: "Your assessment is being recorded.",
+    video_lifecycle.UPLOADED: (
+        "Your recording was received and is waiting to be processed."
+    ),
+    video_lifecycle.COMPRESSING: "Your recording is being prepared for storage.",
+    video_lifecycle.STORING: "Your recording is being stored.",
+    video_lifecycle.READY: (
+        "Your recording was stored successfully. The hiring team will review "
+        "your assessment."
+    ),
+    video_lifecycle.UPLOAD_FAILED: (
+        "No part of your recording reached us. Your answers are unaffected, "
+        "and the hiring team can see that the recording is missing."
+    ),
+    video_lifecycle.COMPRESSION_FAILED: (
+        "Your recording was received. Preparing it for storage did not "
+        "complete; the team has been notified and no action is needed from you."
+    ),
+    video_lifecycle.STORAGE_FAILED: (
+        "Your recording was received. Final storage did not complete; the "
+        "team has been notified and no action is needed from you."
+    ),
+}
 
-    The questions are returned as ONE served list rather than one per turn:
-    a video interview shows each question while the camera runs and the
-    candidate answers in speech, so there is no per-turn request for a
-    rewritten prompt. The stored prompts were generated per candidate by
-    `assessment_questions.generate.generate_candidate_questions` from this candidate's own resume, so
-    every question is already theirs. The answer key still never crosses:
-    `_question_out` serves the candidate view only.
-    """
-    link, job, conversation = await _candidate_conversation(session, user, link_id)
-    await proctoring_gate.require_active(session, conversation)
-    if conversation.mode != MODE_VIDEO_INTERVIEW:
+
+def _status_out(recording: VideoRecording) -> RecordingStatusOut:
+    return RecordingStatusOut(
+        recording_id=recording.id,
+        status=recording.status,
+        message=_STATUS_MESSAGES.get(
+            recording.status, "Your recording is being handled."
+        ),
+    )
+
+
+def _segment_out(segment: VideoRecordingSegment) -> SegmentOut:
+    return SegmentOut(
+        segment_id=segment.id,
+        recording_id=segment.recording_id,
+        ordinal=segment.ordinal,
+        status=segment.status,
+        parts_received=sorted(int(number) for number in (segment.parts_json or {})),
+        bytes_received=int(segment.bytes or 0),
+        final_part_number=segment.final_part_number,
+    )
+
+
+def _refusal(exc: video_recordings.RecordingRefused) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+async def _owned_conversation(
+    session: AsyncSession, user: CurrentUser, conversation_id: uuid.UUID
+) -> AssessmentConversation:
+    """This candidate's own conversation, or 404."""
+    conversation = await session.get(AssessmentConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await _candidate_link(session, user, conversation.job_candidate_link_id)
+    return conversation
+
+
+async def _open_recording(
+    session: AsyncSession, user: CurrentUser, conversation_id: uuid.UUID
+) -> tuple[AssessmentConversation, VideoRecording]:
+    conversation = await _owned_conversation(session, user, conversation_id)
+    recording = await video_recordings.active_recording(session, conversation.id)
+    if recording is None:
         raise HTTPException(
             status_code=409,
             detail=(
-                "This assessment is set to the conversational mode. Choose "
-                "the video interview first if you want to answer on camera."
+                "No recording is open for this assessment. Start the "
+                "session's recording first."
             ),
         )
-    await assessment_consent.require_consent(session, conversation)
-    await _ensure_conversation_ready(session, job, link)
-    if conversation.started_at is None:
-        conversation.started_at = datetime.now(timezone.utc)
-        await session.flush()
-        if hiring_pipeline.can_transition(
-            link.status, hiring_pipeline.ASSESSMENT_IN_PROGRESS
-        ):
-            await hiring_pipeline.apply_transition(
-                session,
-                link_id=link.id,
-                tenant_id=link.tenant_id,
-                target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
-            )
-    recording = await video_recordings.create_recording(
-        session,
-        conversation,
-        candidate_id=link.candidate_id,
-        source_format=None,
-        kind=RECORDING_VIDEO_INTERVIEW,
-    )
-    prompts = await _conversation_prompts(session, job, link)
-    settings = _get_settings()
-    return VideoStartOut(
-        conversation_id=conversation.id,
-        recording_id=recording.id,
-        status=recording.status,
-        questions=[
-            VideoQuestionOut(
-                ordinal=index, prompt=row.prompt, question=_question_out(row)
-            )
-            for index, (_aspect, _key, _stored, row) in enumerate(prompts)
-        ],
-        max_upload_bytes=settings.video_max_upload_bytes,
-        max_duration_seconds=settings.video_max_duration_seconds,
-    )
+    return conversation, recording
+
+
+async def _owned_segment(
+    session: AsyncSession, recording: VideoRecording, segment_id: uuid.UUID
+) -> VideoRecordingSegment:
+    segment = await session.get(VideoRecordingSegment, segment_id)
+    if segment is None or segment.recording_id != recording.id:
+        raise HTTPException(status_code=404, detail="Recording segment not found")
+    return segment
+
+
+# ── Open the recording ───────────────────────────────────────────────────────
 
 
 @router.post(
@@ -151,302 +168,223 @@ async def start_session_media(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> SessionMediaStartOut:
-    """Open the proctored session's recording (owner ruling, 2026-09-22).
+    """Open (or reopen, after a reload) the proctored session's recording.
 
-    THE GATE IS THE PROCTORING GATE, and that is the whole authorization
-    story: media is captured during a proctored assessment and at no other
-    time, so a session that may not proceed may not be recorded either. There
-    is no enable flag here, because there is no enable flag for proctoring
-    (principle P4, re-affirmed by the same ruling).
-
-    A VIDEO INTERVIEW IS REFUSED, not silently accepted. In that mode the
-    interview recording already captures the same camera for the same
-    minutes and is already stored, compressed and served through the same
-    routes; opening a second recording would store the candidate twice and
-    give the hiring team two artifacts to choose between.
-
-    The browser then uses the EXISTING upload, finalize and status routes.
-    They are not duplicated for this kind: one recording lifecycle, one
-    upload path, one processing task, and the row's `kind` is what decides
-    which half of the pipeline the bytes take.
+    THE GATE IS THE PROCTORING GATE: media is captured during a proctored
+    assessment and at no other time, so a session that may not proceed may
+    not be recorded either. There is no enable flag here because there is no
+    enable flag for proctoring (principle P4). The assessment consent the
+    candidate gave names the recording, so it is required too.
     """
-    link, job, conversation = await _candidate_conversation(session, user, link_id)
+    link, _job, conversation = await _candidate_conversation(session, user, link_id)
     await proctoring_gate.require_active(session, conversation)
-    if conversation.mode == MODE_VIDEO_INTERVIEW:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This assessment is a video interview, and that recording is "
-                "already the stored record of the session."
-            ),
-        )
     await assessment_consent.require_consent(session, conversation)
-    await _ensure_conversation_ready(session, job, link)
     recording = await video_recordings.create_recording(
-        session,
-        conversation,
-        candidate_id=link.candidate_id,
-        source_format=None,
-        kind=RECORDING_PROCTORED_SESSION,
+        session, conversation, candidate_id=link.candidate_id
     )
-    settings = _get_settings()
+    settings = get_settings()
     return SessionMediaStartOut(
         conversation_id=conversation.id,
         recording_id=recording.id,
         status=recording.status,
         max_upload_bytes=settings.video_max_upload_bytes,
         max_duration_seconds=settings.video_max_duration_seconds,
+        part_max_bytes=settings.video_part_max_bytes,
+        part_min_bytes=video_storage.MIN_PART_BYTES,
+        video_bits_per_second=settings.video_recording_video_bps,
+        audio_bits_per_second=settings.video_recording_audio_bps,
+        max_width=settings.video_recording_max_width,
+        max_height=settings.video_recording_max_height,
     )
 
 
-async def _candidate_recording(
-    session: AsyncSession, user: CurrentUser, conversation_id: uuid.UUID
-) -> tuple[AssessmentConversation, VideoRecording]:
-    """This candidate's own conversation and its open (or latest) recording."""
-    conversation = await session.get(AssessmentConversation, conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    await _candidate_link(session, user, conversation.job_candidate_link_id)
-    recording = await video_recordings.active_recording(session, conversation.id)
-    if recording is None:
-        recording = await video_recordings.recording_for_link(
-            session, conversation.job_candidate_link_id
-        )
-    if recording is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "No recording session is open for this assessment. Start "
-                "the video interview first."
-            ),
-        )
-    return conversation, recording
+# ── Segments and parts ───────────────────────────────────────────────────────
 
 
 @router.post(
-    "/conversations/{conversation_id}/video/mark",
-    status_code=status.HTTP_204_NO_CONTENT,
+    "/conversations/{conversation_id}/recording/segments",
+    response_model=SegmentOut,
 )
-async def mark_video_question(
+async def open_recording_segment(
     conversation_id: uuid.UUID,
-    body: VideoMarkIn,
+    body: SegmentOpenIn,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> Response:
-    """The next-question control: stamp, with the SERVER's clock, that this
-    question just reached the screen. The transcript is segmented by these
-    marks; a client-reported timeline would be a timeline the client chose."""
-    conversation, recording = await _candidate_recording(session, user, conversation_id)
-    question = await session.get(CandidateQuestion, body.question_id)
-    if (
-        question is None
-        or question.job_candidate_link_id != conversation.job_candidate_link_id
-    ):
-        raise HTTPException(status_code=404, detail="Question not found")
-    if recording.status != video_lifecycle.RECORDING:
-        raise HTTPException(
-            status_code=409,
-            detail="This recording is no longer accepting question marks.",
+) -> SegmentOut:
+    """Start the next segment: at the session's start, after a device
+    recovery, or after a reload. Only while the proctored session is live."""
+    conversation, recording = await _open_recording(session, user, conversation_id)
+    await proctoring_gate.require_active(session, conversation)
+    try:
+        segment = await video_recordings.open_segment(
+            session, recording, source_format=body.source_format
         )
-    await video_recordings.mark_question_shown(
-        session, recording,
-        question_id=question.id, question_type=question.question_type,
-    )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except video_recordings.RecordingRefused as exc:
+        raise _refusal(exc) from exc
+    return _segment_out(segment)
 
 
-def _recording_status_out(recording: VideoRecording) -> VideoRecordingStatusOut:
-    """The candidate's honest processing status, in words (spec 16). Each
-    failure message says what actually happened; none pretends progress."""
-    messages = {
-        video_lifecycle.RECORDING: "Your interview is being recorded.",
-        video_lifecycle.UPLOADING: "Your recording is uploading.",
-        video_lifecycle.UPLOADED: (
-            "Your recording was received and is waiting to be processed."
-        ),
-        video_lifecycle.PROCESSING: (
-            "Your recording is being processed and your answers are being "
-            "transcribed."
-        ),
-        video_lifecycle.COMPRESSING: (
-            "Your answers were transcribed. The recording is being prepared "
-            "for storage."
-        ),
-        video_lifecycle.STORING: "Your recording is being stored.",
-        video_lifecycle.READY: (
-            "Your interview was processed successfully. The hiring team will "
-            "review your assessment."
-        ),
-        video_lifecycle.UPLOAD_FAILED: (
-            "The upload did not complete. Please retry the upload from this "
-            "browser."
-        ),
-        video_lifecycle.PROCESSING_FAILED: (
-            "Processing did not complete. Your recording is stored safely and "
-            "the team has been notified; no action is needed from you."
-        ),
-        video_lifecycle.TRANSCRIPTION_FAILED: (
-            "Your recording is stored safely, but transcription could not run "
-            "yet. The team has been notified; no action is needed from you."
-        ),
-        video_lifecycle.COMPRESSION_FAILED: (
-            "Your answers were captured. Final storage preparation did not "
-            "complete; the team has been notified."
-        ),
-        video_lifecycle.STORAGE_FAILED: (
-            "Your answers were captured. Final storage did not complete; the "
-            "team has been notified."
-        ),
-    }
-    return VideoRecordingStatusOut(
-        recording_id=recording.id,
-        status=recording.status,
-        message=messages.get(recording.status, "Your recording is being handled."),
-        can_retry_upload=recording.status == video_lifecycle.UPLOAD_FAILED,
-    )
+async def _read_capped(request: Request, limit: int) -> bytes:
+    """The request body, refused the moment it passes `limit`. A body is read
+    in chunks and never beyond one byte over the ceiling, so an oversized
+    upload costs this process a part's worth of memory and no more."""
+    received = bytearray()
+    async for chunk in request.stream():
+        received.extend(chunk)
+        if len(received) > limit:
+            raise HTTPException(
+                status_code=413,
+                detail="The recording part is larger than one upload accepts.",
+            )
+    return bytes(received)
 
 
-@router.post(
-    "/conversations/{conversation_id}/video/upload",
-    response_model=VideoRecordingStatusOut,
+@router.put(
+    "/conversations/{conversation_id}/recording/segments/{segment_id}/parts/{part_number}",
+    response_model=SegmentOut,
 )
-async def upload_video_recording(
+async def upload_recording_part(
     conversation_id: uuid.UUID,
-    file: UploadFile = File(...),
+    segment_id: uuid.UUID,
+    part_number: int,
+    request: Request,
+    final: bool = Query(default=False),
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> VideoRecordingStatusOut:
-    """Receive the finished recording and store it at the recording's raw key.
+) -> SegmentOut:
+    """Receive one part (the raw request body) and forward it to the store.
 
-    A failed store is RECORDED (`upload_failed`) and returned as a status the
-    candidate can retry from, rather than raised: an exception here would roll
-    back the very row that tells anyone the upload failed.
+    NOT gated on the proctoring session being live: a session that has just
+    ended, including one ended by a termination, still owes the store its
+    last parts, and that recording is exactly the one the hiring team will
+    want. The recording itself must still be open.
     """
-    conversation, recording = await _candidate_recording(session, user, conversation_id)
-    if recording.status not in (
-        video_lifecycle.RECORDING,
-        video_lifecycle.UPLOADING,
-        video_lifecycle.UPLOAD_FAILED,
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="This recording has already been uploaded.",
-        )
-    data = await file.read()
+    _conversation, recording = await _open_recording(session, user, conversation_id)
+    segment = await _owned_segment(session, recording, segment_id)
+    data = await _read_capped(request, get_settings().video_part_max_bytes)
     try:
-        video_recordings.validate_upload(data, file.content_type)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # The MediaRecorder's real MIME type arrives with the bytes; the raw key's
-    # extension is derived from it through the fixed table in `video/keys.py`,
-    # never from the client string itself.
-    recording.source_format = (
-        (file.content_type or "").split(";")[0] or recording.source_format
-    )
-    recording.s3_raw_key = video_keys.raw_key(
-        conversation.id, recording.id, recording.source_format
-    )
-    if recording.status != video_lifecycle.UPLOADING:
-        video_lifecycle.advance(recording, video_lifecycle.UPLOADING)
-    await session.flush()
-    try:
-        await run_in_threadpool(
-            video_storage.put,
-            key=recording.s3_raw_key,
-            data=data,
-            content_type=recording.source_format or "video/webm",
+        segment = await video_recordings.record_part(
+            session, recording, segment,
+            part_number=part_number, data=data, final=final,
         )
-    except Exception as exc:  # noqa: BLE001 -- recorded as the honest status
-        logger.warning(
-            "video_upload.failed recording_id=%s error=%s",
-            recording.id, type(exc).__name__,
-        )
-        video_lifecycle.advance(
-            recording, video_lifecycle.UPLOAD_FAILED,
-            error_detail="The object store refused or dropped the upload.",
-        )
-        await session.flush()
-        return _recording_status_out(recording)
-    video_lifecycle.advance(recording, video_lifecycle.UPLOADED)
-    recording.file_size_bytes = len(data)
-    recording.ended_at = datetime.now(timezone.utc)
-    await session.flush()
-    return _recording_status_out(recording)
+    except video_recordings.RecordingRefused as exc:
+        raise _refusal(exc) from exc
+    return _segment_out(segment)
 
 
 @router.post(
-    "/conversations/{conversation_id}/video/finalize",
-    response_model=VideoRecordingStatusOut,
+    "/conversations/{conversation_id}/recording/segments/{segment_id}/complete",
+    response_model=SegmentOut,
 )
-async def finalize_video_interview(
+async def complete_recording_segment(
+    conversation_id: uuid.UUID,
+    segment_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> SegmentOut:
+    """Close one segment into one object. Idempotent."""
+    _conversation, recording = await _open_recording(session, user, conversation_id)
+    segment = await _owned_segment(session, recording, segment_id)
+    segment = await video_recordings.complete_segment(session, segment)
+    return _segment_out(segment)
+
+
+# ── Finalize and status ──────────────────────────────────────────────────────
+
+
+@router.post(
+    "/conversations/{conversation_id}/recording/finalize",
+    response_model=RecordingStatusOut,
+)
+async def finalize_recording(
     conversation_id: uuid.UUID,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> VideoRecordingStatusOut:
-    """The candidate is done: hand the uploaded recording to the processing
-    pipeline (spec section 6). Asynchronous by rule 4; the response is the
-    honest status the candidate polls afterwards. Idempotent past `uploaded`:
-    a second finalize re-dispatches nothing the pipeline has moved on from."""
-    _conversation, recording = await _candidate_recording(session, user, conversation_id)
-    if recording.status in (
-        video_lifecycle.RECORDING,
-        video_lifecycle.UPLOADING,
-        video_lifecycle.UPLOAD_FAILED,
-    ):
+) -> RecordingStatusOut:
+    """The candidate's session is over: close every segment, stamp the purge
+    date, and hand the recording to processing once this commits.
+
+    Idempotent: a recording already past `recording` answers its status and
+    dispatches nothing. A tab closed before this call is finalized by the
+    hourly sweep instead, from the store's own list of parts.
+    """
+    conversation = await _owned_conversation(session, user, conversation_id)
+    recording = await video_recordings.latest_recording(session, conversation.id)
+    if recording is None:
         raise HTTPException(
-            status_code=409,
-            detail="The recording has not finished uploading yet.",
+            status_code=409, detail="No recording exists for this assessment."
         )
-    if recording.status == video_lifecycle.UPLOADED:
-        dispatch("pickready.process_assessment_video", args=[str(recording.id)])
-    return _recording_status_out(recording)
+    outcome = await video_recordings.finalize_recording(
+        session, recording, ended_at=datetime.now(timezone.utc)
+    )
+    if outcome.dispatch:
+        # Lost after commit? `pickready.reconcile_assessment_recordings`
+        # re-dispatches a recording left in `uploaded` past the grace.
+        dispatch_after_commit(
+            session, "pickready.process_assessment_video", args=[str(recording.id)]
+        )
+    return _status_out(recording)
 
 
 @router.get(
-    "/conversations/{conversation_id}/video/status",
-    response_model=VideoRecordingStatusOut,
+    "/conversations/{conversation_id}/recording/status",
+    response_model=RecordingStatusOut,
 )
-async def video_recording_status(
+async def recording_status(
     conversation_id: uuid.UUID,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> VideoRecordingStatusOut:
-    """What is happening to the candidate's recording, honestly (spec 16)."""
-    _conversation, recording = await _candidate_recording(session, user, conversation_id)
-    return _recording_status_out(recording)
+) -> RecordingStatusOut:
+    """What is happening to the candidate's recording, honestly."""
+    conversation = await _owned_conversation(session, user, conversation_id)
+    recording = await video_recordings.latest_recording(session, conversation.id)
+    if recording is None:
+        raise HTTPException(
+            status_code=404, detail="No recording exists for this assessment."
+        )
+    return _status_out(recording)
+
+
+# ── Staff retry ──────────────────────────────────────────────────────────────
 
 
 @router.post(
     "/videos/recordings/{recording_id}/retry",
-    response_model=VideoRecordingStatusOut,
+    response_model=RecordingStatusOut,
 )
 async def retry_video_processing(
     recording_id: uuid.UUID,
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
-) -> VideoRecordingStatusOut:
-    """Re-run the processing pipeline for a failed recording (spec 16: failed
-    asynchronous jobs are retryable).
+) -> RecordingStatusOut:
+    """Re-run processing for a recording whose compression or storage failed.
 
-    Gated on `view_review_screen`, the capability that already opens this
-    candidate's transcript and report: retrying a stalled pipeline is an act
-    of reviewing the assessment, not of deciding it. Only the server-side
-    failure states are retryable; `upload_failed` has no bytes to retry with
-    and stays with the candidate.
+    THE HIRING TEAM'S ACT, and only theirs: `view_review_screen` resolved by
+    `rbac.authorize` over THIS job, so tenant, grant and per-job assignment
+    scope all run, and a cross-tenant id answers 404. The job-closure gate
+    follows, because a closed job's recordings are withheld from everybody on
+    the employer's side. `upload_failed` is not retryable: no bytes arrived.
     """
     recording = await session.get(VideoRecording, recording_id)
     if recording is None or recording.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Recording not found")
+    link = await session.get(JobCandidateLink, recording.job_candidate_link_id)
+    job = await session.get(Job, link.job_id) if link is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    await video_access.require_hiring_team(session, user, job.id)
+    await job_assessment_retention.require_readable(session, user, job)
     if recording.status not in video_lifecycle.RETRYABLE_FAILURES:
         raise HTTPException(
             status_code=409,
             detail=(
                 "This recording is not in a retryable state. Only a failed "
-                "processing, transcription, compression or storage step can "
-                "be retried."
+                "compression or storage step can be retried."
             ),
         )
-    dispatch("pickready.process_assessment_video", args=[str(recording.id)])
+    dispatch_after_commit(
+        session, "pickready.process_assessment_video", args=[str(recording.id)]
+    )
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -456,4 +394,5 @@ async def retry_video_processing(
         target_id=recording.id,
         metadata={"status_at_retry": recording.status},
     )
-    return _recording_status_out(recording)
+    return _status_out(recording)
+

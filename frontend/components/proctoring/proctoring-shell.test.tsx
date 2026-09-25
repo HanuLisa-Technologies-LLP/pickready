@@ -6,42 +6,71 @@
 // device before it, and the assessment cannot begin until every system-check
 // row has passed. The system check and the session runtime are mocked,
 // because both need a real camera; what is exercised here is what the shell
-// does with their answers, including the two the SERVER decides, a warning
-// and a termination, which are driven through the callbacks the shell hands
-// the runtime.
+// does with their answers, including the three the SERVER decides, a
+// warning, a pause and a termination, which are driven through the callbacks
+// the shell hands the runtime.
+//
+// Phase 3 (2026-09-24): the consent screen renders the server's rules and
+// refuses to offer the agreement without them; a warning's hold is the
+// server's to measure, so acknowledging it is a call and not a stopwatch; and
+// a lost device puts up the pause screen, which the player also sees as
+// `paused` on the bridge.
 
 import * as React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SessionCallbacks } from "@/lib/proctoring/session";
+import type { PauseView, SessionCallbacks } from "@/lib/proctoring/session";
 
-const { apiGet, createSession, runSystemCheck, releaseOutcome, sessionStart, sessionStop, captured } =
-  vi.hoisted(() => ({
-    apiGet: vi.fn(),
-    createSession: vi.fn(),
-    runSystemCheck: vi.fn(),
-    releaseOutcome: vi.fn(),
-    sessionStart: vi.fn(),
-    sessionStop: vi.fn(),
-    captured: { callbacks: null as SessionCallbacks | null },
-  }));
-
-vi.mock("@/lib/api", () => ({ apiGet, apiPatch: vi.fn(), apiPost: vi.fn() }));
-vi.mock("@/lib/proctoring/api", () => ({ createSession }));
-vi.mock("@/lib/proctoring/session", () => ({
-  SessionRuntime: class {
-    constructor(_session: unknown, _media: unknown, callbacks: SessionCallbacks) {
-      captured.callbacks = callbacks;
-    }
-    start = sessionStart;
-    stop = sessionStop;
-    flush = () => Promise.resolve();
-    requestFullscreen = () => Promise.resolve(true);
-    fieldHooksFor = () => null;
-    collectAnswerBehaviour = () => null;
-  },
+const {
+  fetchClientConfig,
+  createSession,
+  startSessionMedia,
+  runSystemCheck,
+  releaseOutcome,
+  sessionStart,
+  sessionStop,
+  acknowledgeWarning,
+  retryDevices,
+  checkNow,
+  captured,
+} = vi.hoisted(() => ({
+  fetchClientConfig: vi.fn(),
+  createSession: vi.fn(),
+  startSessionMedia: vi.fn(),
+  runSystemCheck: vi.fn(),
+  releaseOutcome: vi.fn(),
+  sessionStart: vi.fn(),
+  sessionStop: vi.fn(),
+  acknowledgeWarning: vi.fn(),
+  retryDevices: vi.fn(),
+  checkNow: vi.fn(),
+  captured: { callbacks: null as SessionCallbacks | null },
 }));
+
+vi.mock("@/lib/proctoring/api", () => ({ createSession, fetchClientConfig, startSessionMedia }));
+vi.mock("@/lib/proctoring/session", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/proctoring/session")>(
+    "@/lib/proctoring/session"
+  );
+  return {
+    ...actual,
+    SessionRuntime: class {
+      constructor(_session: unknown, _media: unknown, callbacks: SessionCallbacks) {
+        captured.callbacks = callbacks;
+      }
+      start = sessionStart;
+      stop = sessionStop;
+      flush = () => Promise.resolve();
+      requestFullscreen = () => Promise.resolve(true);
+      fieldHooksFor = () => null;
+      collectAnswerBehaviour = () => null;
+      acknowledgeWarning = acknowledgeWarning;
+      retryDevices = retryDevices;
+      checkNow = checkNow;
+    },
+  };
+});
 vi.mock("@/lib/proctoring/system-check", async () => {
   const actual = await vi.importActual<typeof import("@/lib/proctoring/system-check")>(
     "@/lib/proctoring/system-check"
@@ -49,7 +78,9 @@ vi.mock("@/lib/proctoring/system-check", async () => {
   return { ...actual, runSystemCheck, releaseOutcome };
 });
 
-import { CONSENT_ACTION, CONSENT_POINTS } from "./consent-screen";
+import { CONSENT_ACTION, CONSENT_LOADING, CONSENT_RETRY } from "./consent-screen";
+import { MONITORING_PAUSED } from "./monitoring-indicator";
+import { PAUSE_RETRY, PAUSE_TITLE } from "./pause-overlay";
 import { useProctoring } from "./proctoring-context";
 import { ANSWERS_SAVED, ProctoringShell } from "./proctoring-shell";
 import { WARNING_ACKNOWLEDGE } from "./warning-modal";
@@ -71,7 +102,7 @@ const CONFIG = {
   audio_max_chunk_bytes: 2_097_152,
   heartbeat_interval_seconds: 10,
   integrity_failure_termination_seconds: 60,
-  camera_recovery_seconds: 60,
+  device_glitch_seconds: 5,
   sampling_fps_normal: 2,
   sampling_fps_confirming: 6,
   confirming_window_seconds: 5,
@@ -115,8 +146,21 @@ function outcome(passed: boolean): SystemCheckOutcome {
   };
 }
 
+const RULES = [
+  "Each question has its own timer, shown on screen.",
+  "If your camera or microphone stops, the assessment pauses for two minutes while you fix it.",
+];
+
 beforeEach(() => {
-  apiGet.mockResolvedValue({ config: CONFIG, max_warnings: 3 });
+  fetchClientConfig.mockResolvedValue({
+    config: CONFIG,
+    max_warnings: 3,
+    audio_analysis_available: true,
+    candidate_rules: RULES,
+  });
+  startSessionMedia.mockRejectedValue(new Error("no recording in this test"));
+  acknowledgeWarning.mockResolvedValue(undefined);
+  retryDevices.mockResolvedValue(true);
   createSession.mockResolvedValue({
     session_id: "session-1",
     conversation_id: "conversation-1",
@@ -138,23 +182,15 @@ afterEach(() => {
 
 /**
  * A stand-in for the assessment player: it reads the bridge exactly as the
- * conversation does, so `consumePausedMs` is exercised through the context
- * rather than through an internal the player cannot reach.
+ * conversation does, so `paused` is observed through the context rather than
+ * through an internal the player cannot reach.
  */
 function PausedProbe() {
-  const bridge = useProctoring();
-  const [paused, setPaused] = React.useState(0);
+  const bridge = useProctoring() as ReturnType<typeof useProctoring> & { paused?: boolean };
   return (
     <>
       <p>The first question</p>
-      <button
-        type="button"
-        data-testid="consume-paused"
-        data-paused={paused}
-        onClick={() => setPaused(bridge.consumePausedMs())}
-      >
-        consume
-      </button>
+      <p data-testid="bridge-paused">{bridge.paused ? "held" : "running"}</p>
     </>
   );
 }
@@ -167,30 +203,77 @@ function renderShell() {
   );
 }
 
+async function agree() {
+  fireEvent.click(await screen.findByRole("button", { name: CONSENT_ACTION }));
+}
+
 async function startSession() {
   runSystemCheck.mockResolvedValue(outcome(true));
   renderShell();
-  fireEvent.click(screen.getByRole("button", { name: CONSENT_ACTION }));
+  await agree();
   fireEvent.click(await screen.findByRole("button", { name: /Start the assessment/i }));
   await screen.findByText("The first question");
 }
 
+function pauseView(overrides: Partial<PauseView> = {}): PauseView {
+  return {
+    serverPaused: true,
+    message: "Your camera has stopped, so the assessment is paused.",
+    graceDeadlineMs: Date.now() + 120_000,
+    pausesUsed: 1,
+    maxPauses: 2,
+    lostDevices: ["camera"],
+    lossReported: true,
+    ...overrides,
+  };
+}
+
 describe("consent", () => {
-  it("states every one of the seven disclosures before anything is opened", () => {
+  it("states the server's rules, verbatim, before anything is opened", async () => {
     renderShell();
-    for (const point of CONSENT_POINTS) {
-      expect(screen.getByText(point), point).toBeTruthy();
+    for (const rule of RULES) {
+      expect(await screen.findByText(rule), rule).toBeTruthy();
     }
     expect(runSystemCheck).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
   });
 
+  it("does not offer the agreement while the rules are loading", async () => {
+    let resolve: (value: unknown) => void = () => undefined;
+    fetchClientConfig.mockReturnValue(new Promise((done) => (resolve = done)));
+    renderShell();
+    expect(screen.getByText(CONSENT_LOADING)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: CONSENT_ACTION })).toBeNull();
+    resolve({ config: CONFIG, max_warnings: 3, audio_analysis_available: true, candidate_rules: RULES });
+    expect(await screen.findByRole("button", { name: CONSENT_ACTION })).toBeTruthy();
+  });
+
+  it("says so and offers a retry when the rules cannot be loaded, never a fallback text", async () => {
+    fetchClientConfig
+      .mockRejectedValueOnce(new Error("The assessment rules could not be loaded. Please try again."))
+      .mockResolvedValueOnce({
+        config: CONFIG,
+        max_warnings: 3,
+        audio_analysis_available: true,
+        candidate_rules: RULES,
+      });
+    renderShell();
+    expect(
+      await screen.findByText("The assessment rules could not be loaded. Please try again.")
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: CONSENT_ACTION })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: CONSENT_RETRY }));
+    expect(await screen.findByText(RULES[0])).toBeTruthy();
+    expect(fetchClientConfig).toHaveBeenCalledTimes(2);
+  });
+
   it("does not reach the assessment or the devices until the explicit action", async () => {
     runSystemCheck.mockResolvedValue(outcome(true));
     renderShell();
+    await screen.findByText(RULES[0]);
     expect(screen.queryByText("The first question")).toBeNull();
     expect(runSystemCheck).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: CONSENT_ACTION }));
+    await agree();
     await waitFor(() => expect(runSystemCheck).toHaveBeenCalled());
     expect(screen.queryByText("The first question")).toBeNull();
   });
@@ -200,7 +283,7 @@ describe("system check", () => {
   it("refuses to start while a row has failed, and says how to fix it", async () => {
     runSystemCheck.mockResolvedValue(outcome(false));
     renderShell();
-    fireEvent.click(screen.getByRole("button", { name: CONSENT_ACTION }));
+    await agree();
     expect(await screen.findByText(CHECK_LABELS.camera)).toBeTruthy();
     expect(screen.getByText("Allow camera access for this site.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Start the assessment/i })).toBeNull();
@@ -211,7 +294,7 @@ describe("system check", () => {
   it("re-runs every check on retry and offers the start once they pass", async () => {
     runSystemCheck.mockResolvedValueOnce(outcome(false)).mockResolvedValueOnce(outcome(true));
     renderShell();
-    fireEvent.click(screen.getByRole("button", { name: CONSENT_ACTION }));
+    await agree();
     fireEvent.click(await screen.findByRole("button", { name: /Check again/i }));
     expect(await screen.findByRole("button", { name: /Start the assessment/i })).toBeTruthy();
     expect(runSystemCheck).toHaveBeenCalledTimes(2);
@@ -236,7 +319,7 @@ describe("system check", () => {
     createSession.mockRejectedValue(new Error("The invitation could not be found."));
     await runSystemCheck.mockResolvedValue(outcome(true));
     renderShell();
-    fireEvent.click(screen.getByRole("button", { name: CONSENT_ACTION }));
+    await agree();
     fireEvent.click(await screen.findByRole("button", { name: /Start the assessment/i }));
     expect(await screen.findByText("The invitation could not be found.")).toBeTruthy();
     expect(screen.queryByText("The first question")).toBeNull();
@@ -274,9 +357,9 @@ describe("the running session", () => {
     );
   });
 
-  it("accumulates the time a warning held the screen and pays it back once", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+  it("holds the player while a warning is open and tells the server when it is acknowledged", async () => {
     await startSession();
+    expect(screen.getByTestId("bridge-paused").textContent).toBe("running");
     act(() => {
       captured.callbacks?.onWarning(
         {
@@ -289,14 +372,12 @@ describe("the running session", () => {
         1
       );
     });
-    await vi.advanceTimersByTimeAsync(4000);
+    expect(screen.getByTestId("bridge-paused").textContent).toBe("held");
+    expect(acknowledgeWarning).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: WARNING_ACKNOWLEDGE }));
-    // The player reads this when it submits; it is cleared by the read, so a
-    // second answer is not credited for the same pause.
-    const paused = pausedFromShell();
-    expect(paused).toBeGreaterThanOrEqual(4000);
-    expect(pausedFromShell()).toBe(0);
-    vi.useRealTimers();
+    // The server measured the hold; the acknowledgement is what ends it.
+    expect(acknowledgeWarning).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId("bridge-paused").textContent).toBe("running"));
   });
 
   it("unmounts the assessment and explains the ending when the server terminates", async () => {
@@ -314,15 +395,55 @@ describe("the running session", () => {
   });
 });
 
-/**
- * The bridge's `consumePausedMs`, reached the way the player reaches it. The
- * shell provides the bridge through context, and the test's own consumer
- * below is mounted inside it by `startSession`'s children.
- */
-function pausedFromShell(): number {
-  const button = screen.getByTestId("consume-paused");
-  act(() => {
-    fireEvent.click(button);
+describe("the device pause", () => {
+  it("puts up the pause screen, holds the player and says so in the indicator", async () => {
+    await startSession();
+    act(() => {
+      captured.callbacks?.onPauseChange(pauseView());
+    });
+    expect(await screen.findByText(PAUSE_TITLE)).toBeTruthy();
+    // The server's sentence, verbatim.
+    expect(screen.getByText("Your camera has stopped, so the assessment is paused.")).toBeTruthy();
+    expect(screen.getByTestId("bridge-paused").textContent).toBe("held");
+    expect(screen.getByText(MONITORING_PAUSED)).toBeTruthy();
   });
-  return Number(screen.getByTestId("consume-paused").getAttribute("data-paused"));
-}
+
+  it("stays down for a glitch still inside its allowance", async () => {
+    await startSession();
+    act(() => {
+      captured.callbacks?.onPauseChange(
+        pauseView({ serverPaused: false, graceDeadlineMs: null, lossReported: false })
+      );
+    });
+    expect(screen.queryByText(PAUSE_TITLE)).toBeNull();
+    expect(screen.getByTestId("bridge-paused").textContent).toBe("running");
+  });
+
+  it("hands Try again to the runtime and asks the server when the grace runs out", async () => {
+    await startSession();
+    act(() => {
+      captured.callbacks?.onPauseChange(pauseView({ graceDeadlineMs: Date.now() + 60_000 }));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: PAUSE_RETRY }));
+    await waitFor(() => expect(retryDevices).toHaveBeenCalledTimes(1));
+    act(() => {
+      captured.callbacks?.onPauseChange(pauseView({ graceDeadlineMs: Date.now() - 1 }));
+    });
+    await waitFor(() => expect(checkNow).toHaveBeenCalledTimes(1));
+  });
+
+  it("lifts when the server says the pause is over", async () => {
+    await startSession();
+    act(() => {
+      captured.callbacks?.onPauseChange(pauseView());
+    });
+    await screen.findByText(PAUSE_TITLE);
+    act(() => {
+      captured.callbacks?.onPauseChange(
+        pauseView({ serverPaused: false, graceDeadlineMs: null, lostDevices: [], lossReported: false })
+      );
+    });
+    await waitFor(() => expect(screen.queryByText(PAUSE_TITLE)).toBeNull());
+    expect(screen.getByTestId("bridge-paused").textContent).toBe("running");
+  });
+});

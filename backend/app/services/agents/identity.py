@@ -186,15 +186,14 @@ AGENTS: dict[str, Agent] = {
             "resume is uploaded against a live job."
         ),
         portal=PORTAL_CUSTOMER,
-        skills=("build_matching_categories", "score_resume_fit", "retrieve_matching_evidence"),
+        skills=("ground_resume_evidence", "score_resume_fit", "retrieve_matching_evidence"),
         implemented_by=(
             "app.services.matching",
-            "app.services.matching_categories",
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         activates_to=(
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         produces=("ai_score",),

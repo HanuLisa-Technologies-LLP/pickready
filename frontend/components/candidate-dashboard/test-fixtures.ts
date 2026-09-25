@@ -5,12 +5,13 @@
  * name, and it must not survive into code, fixtures, seed data or screenshots.
  * Everything here is obviously not a person.
  *
- * The DEFAULT row is a candidate who applied a moment ago: nothing graded,
- * nothing assessed. That is the common case for this whole phase, so it is
- * what a test has to opt out of rather than into.
+ * The DEFAULT row is a candidate who applied a moment ago: AI Matching has not
+ * read the resume and nothing is assessed. That is the common case, so it is
+ * what a test has to opt out of rather than into. The words are the server's
+ * own (`services/dashboard.py`), copied so a test reads what a browser gets.
  */
 
-import { BAND_PENDING } from "./band";
+import { STATE_NOT_CHECKED } from "./grade";
 import type { DashboardControls, DashboardRow } from "./types";
 
 export function row(overrides: Partial<DashboardRow> = {}): DashboardRow {
@@ -25,21 +26,20 @@ export function row(overrides: Partial<DashboardRow> = {}): DashboardRow {
     source_type: "applied",
     source_label: "Applied",
 
-    pre_screen_grade: null,
-    pre_screen_label:
-      "Not pre-screened. This application has not been graded, which is not the same as being graded Hold.",
+    ai_match_state: STATE_NOT_CHECKED,
+    ai_match_label: "Not checked yet",
+    ai_match_screen_reader_label:
+      "Not checked yet. AI Matching has not read this resume yet.",
+    ai_match_note: "AI Matching has not read this resume yet.",
 
-    ready_pick_score: null,
-    band: BAND_PENDING,
-    band_label: "Pending Vivekium Profile",
-    band_screen_reader_label:
-      "Status: Pending Vivekium Profile, assessment in progress",
+    ranking_state: STATE_NOT_CHECKED,
+    ranking_label: "Not checked yet",
+    ranking_screen_reader_label:
+      "Not checked yet. AI Matching has not read this resume yet.",
+    ranking_note: "AI Matching has not read this resume yet.",
     confidence: null,
     confidence_indicator: "grayed",
-    confidence_label: "Insufficient confidence",
-    score_range: null,
-    score_range_note:
-      "No uncertainty interval is published by the evaluator, so no score range is shown.",
+    confidence_label: "No assessment yet",
 
     note: "Vivekium Profile not written yet.",
     note_is_pending: true,

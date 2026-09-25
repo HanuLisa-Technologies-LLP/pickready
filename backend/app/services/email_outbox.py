@@ -45,6 +45,21 @@ rolled-back request queues nothing, and the send can never start before its
 row is visible. A lost invoke leaves the row `queued`, and
 `pickready.reconcile_queued_emails` re-dispatches it; the worker's atomic
 claim is what makes that re-dispatch safe.
+
+THE STAGE-CHANGE EMAIL
+----------------------
+`queue_transition_email` is the email a pipeline stage change sends
+(`hiring_pipeline.TRANSITION_EMAIL`). It lived in `api/pipeline` as
+`_queue_transition_email`, built its `email_log` row by hand with no sender
+and dispatched the send before the request committed; it is here since Phase
+3 WP1, on the one writer. It is drafted by `lifecycle_email` and read by
+nobody before it goes, so it is NOT threaded: posting unreviewed machine copy
+into the recruiter's thread as the recruiter's own message would put words in
+a person's mouth that they never read. The recruiter who made the move is
+still recorded in `sent_by`. The assessment invitation is drafted inside a
+dispatched task (`pickready.send_assessment_invitation`), never inside the
+click that invited: a batch of two hundred would otherwise be two hundred
+model calls on one request.
 """
 from __future__ import annotations
 
@@ -55,7 +70,12 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.email_log import LOGGED_EMAIL_TYPES, STATUS_QUEUED, EmailLog
+from app.models.email_log import (
+    EMAIL_TYPE_ASSESSMENT_INVITATION,
+    LOGGED_EMAIL_TYPES,
+    STATUS_QUEUED,
+    EmailLog,
+)
 from app.models.email_sender import SENDER_ACTIVE, ClientEmailSender
 from app.workers.dispatch import dispatch_after_commit
 
@@ -86,6 +106,17 @@ def reminder_key(link_id: uuid.UUID | str, stage_hours: int) -> str:
 
 def message_notification_key(message_id: uuid.UUID | str) -> str:
     return f"message_notification:{message_id}"
+
+
+def invitation_key(link_id: uuid.UUID | str) -> str:
+    """One assessment invitation email per application.
+
+    An application is invited once: the `assessment_conversations` row the
+    invitation writes is unique per link and keeps its first
+    `invitation_sent_at`, so a second invitation email would duplicate the
+    first, never be a new invitation. The key is what lets a redelivered task
+    and the reconciliation's repair both run safely."""
+    return f"assessment_invitation:{link_id}"
 
 
 async def resolve_sender(
@@ -223,6 +254,111 @@ async def queue_candidate_email(
     # A lost invoke leaves the row `queued`; reconcile_queued_emails repairs it.
     dispatch_after_commit(session, SEND_TASK, args=[str(row.id)])
     return row
+
+
+def transition_context(
+    email_type: str, *, link_id: uuid.UUID | str, email: str | None
+) -> dict:
+    """Draft context a stage-change email needs beyond name, job and company.
+
+    The one thing that varies per email type. The invitation needs the SIGNED
+    assessment link (reported 2026-08-16: it was drafted with none, and the
+    last-line `repair_link` guard is a no-op when the expected link is empty),
+    built through the one builder so an invitation and a reminder can never
+    point at different things. Every other type needs nothing, and gets
+    nothing rather than an unused key.
+    """
+    if email_type == EMAIL_TYPE_ASSESSMENT_INVITATION:
+        from app.core.config import get_settings  # noqa: PLC0415
+        from app.services import assessment_invite  # noqa: PLC0415
+
+        frontend = get_settings().frontend_url.rstrip("/")
+        return {
+            "assessment_link": assessment_invite.assessment_link_url(
+                frontend, link_id=link_id, email=email
+            )
+        }
+    return {}
+
+
+async def queue_transition_email(
+    session: AsyncSession,
+    *,
+    link_id: uuid.UUID,
+    email_type: str,
+    sent_by: uuid.UUID | None,
+    extra_context: dict | None = None,
+    dedupe_key: str | None = None,
+) -> EmailLog | None:
+    """Draft the email a pipeline stage change sends, and queue it.
+
+    Returns the queued row, or None when there is nothing to send: the
+    candidate has no address (a skip, not an error: the stage change already
+    happened, and rolling it back over a mail problem is the wrong trade), or
+    `dedupe_key` was already queued. The key is checked BEFORE drafting, so a
+    redelivery does not pay for a model call it would throw away; the insert's
+    ON CONFLICT is still what makes it correct under concurrency.
+
+    The draft is a model call, so a request handler that calls this blocks on
+    it. The invitation path does not: it dispatches
+    `pickready.send_assessment_invitation`, which calls this from a worker.
+    """
+    from app.models.candidate import Candidate, JobCandidateLink  # noqa: PLC0415
+    from app.models.job import Job  # noqa: PLC0415
+    from app.models.tenant import Tenant  # noqa: PLC0415
+    from app.services import lifecycle_email  # noqa: PLC0415
+
+    link = await session.get(JobCandidateLink, link_id)
+    if link is None:
+        # Every caller has just moved this application or read it by id, so
+        # its absence is a programming error, never a recipient problem.
+        raise LookupError(f"application {link_id} not found")
+    candidate = await session.get(Candidate, link.candidate_id)
+    recipient = (candidate.email or "").strip() if candidate is not None else ""
+    if not recipient:
+        logger.info(
+            "email_outbox.transition_skipped type=%s link_id=%s reason=no_recipient",
+            email_type,
+            link_id,
+        )
+        return None
+    if dedupe_key is not None and await dedupe_key_exists(session, dedupe_key):
+        logger.info(
+            "email_outbox.deduplicated type=%s key=%s", email_type, dedupe_key
+        )
+        return None
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        raise LookupError(f"job {link.job_id} of application {link_id} not found")
+    tenant = await session.get(Tenant, link.tenant_id)
+    draft = await lifecycle_email.draft(
+        email_type,
+        {
+            "candidate_name": candidate.full_name or "there",
+            "job_title": job.title,
+            "company_name": tenant.name if tenant else "our team",
+            **transition_context(email_type, link_id=link.id, email=recipient),
+            **(extra_context or {}),
+        },
+        session=session,
+    )
+    return await queue_candidate_email(
+        session,
+        tenant_id=link.tenant_id,
+        email_type=email_type,
+        recipient_email=recipient,
+        candidate_id=candidate.id,
+        job_id=link.job_id,
+        link_id=link.id,
+        subject=draft["subject"],
+        body=draft["body"],
+        generated_by_ai=draft["generated_by_ai"],
+        # Nobody read it before it went; see the module docstring.
+        edited_by_human=False,
+        sent_by=sent_by,
+        dedupe_key=dedupe_key,
+        thread=False,
+    )
 
 
 async def _thread(

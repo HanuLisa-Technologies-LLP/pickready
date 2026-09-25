@@ -75,6 +75,14 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+
+#: S3's floor for every part of a multipart upload except the last, a fact of
+#: the S3 API rather than a tunable (AWS, "Amazon S3 multipart upload limits":
+#: part size 5 MiB to 5 GiB, the last part may be smaller). One definition,
+#: read by the settings validator and by `services/video/storage`.
+S3_MIN_PART_BYTES = 5 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -215,10 +223,6 @@ class Settings(BaseSettings):
     # response", and it takes a reason and writes an audit row. Without that an
     # expiry would convert a stale-credential risk into a dead end for a
     # candidate who did nothing wrong, which is the worse failure.
-    #: Vivekium feature 2 (C2, owner-ruled): the ceiling on questions a
-    #: candidate is ASKED in one assessment. Pre-filled questions cost
-    #: nothing against it; the trim drops lowest-weight items past it.
-    assessment_question_ceiling: int = 40
     verification_link_ttl_days: int = 3
 
     # -- A fresher's own verification documents (migration 0114) -------------
@@ -466,6 +470,15 @@ class Settings(BaseSettings):
     #: Localstack / MinIO only. None in every real environment, where boto3
     #: resolves the real regional endpoint.
     s3_endpoint_url: str = ""
+    #: The KMS key assessment media is encrypted under (Terraform output
+    #: `aws_kms_key.this.arn`, exported as S3_KMS_KEY_ID). The bucket policy in
+    #: `infra/modules/s3` DENIES any PutObject whose
+    #: `x-amz-server-side-encryption` header is not `aws:kms`, and a request
+    #: that names `aws:kms` without a key id is encrypted under the AWS-managed
+    #: `aws/s3` key rather than this environment's key. So `video/storage`
+    #: sends both, and REFUSES to write media while this is empty rather than
+    #: writing it under the wrong key or being denied one part at a time.
+    s3_kms_key_id: str = ""
     resume_signed_url_ttl_seconds: int = 300
 
     # ── Proctoring (proctoring-spec-doc.md) ─────────────────────────────────
@@ -521,6 +534,20 @@ class Settings(BaseSettings):
     proctoring_audio_chunk_seconds: int = 15
     proctoring_audio_max_chunk_bytes: int = 2 * 1024 * 1024
     proctoring_second_voice_consecutive_chunks: int = 2
+    #: A second voice is flagged only when it is STRONG (master prompt, Phase
+    #: 3): the second-loudest speaker the diarizer separates must have spoken
+    #: for at least this many seconds of one chunk. A split of the
+    #: candidate's own voice, a cough or a passing voice in the corridor is
+    #: shorter than this and counts for nothing.
+    proctoring_second_voice_min_seconds: float = 3.0
+    #: Speech in a chunk at or above this many seconds, while no spoken answer
+    #: is being captured, is "speaking during a question that does not take a
+    #: spoken answer". Logged every time, never a warning, never a
+    #: termination.
+    proctoring_speech_min_seconds: float = 2.0
+    #: From this many occurrences the report lifts the speaking finding into
+    #: its summary.
+    proctoring_speech_highlight_threshold: int = 3
     #: The analysis service (speaker diarization, AI-text detection). Empty
     #: means audio analysis is UNAVAILABLE, which the report states plainly;
     #: it is never silently treated as "no second voice".
@@ -530,7 +557,16 @@ class Settings(BaseSettings):
     proctoring_heartbeat_interval_seconds: int = 10
     proctoring_heartbeat_gap_seconds: int = 30
     proctoring_integrity_failure_termination_seconds: int = 60
-    proctoring_camera_recovery_seconds: int = 60
+    # Camera or microphone loss (master prompt, Phase 3). A loss PAUSES the
+    # assessment and gives the candidate this many seconds to restore the
+    # device; at most `device_max_pauses` pauses per session, and the next
+    # loss, or a pause not recovered in time, ends it as a technical failure.
+    # A loss shorter than the glitch window is logged and pauses nothing.
+    # SUPERSEDES `proctoring_camera_recovery_seconds`, which turned an
+    # unrecovered camera into an immediate termination.
+    proctoring_device_max_pauses: int = 2
+    proctoring_device_grace_seconds: int = 120
+    proctoring_device_glitch_seconds: int = 5
     # In-browser inference performance (section 3.6).
     proctoring_sampling_fps_normal: int = 2
     proctoring_sampling_fps_confirming: int = 6
@@ -620,35 +656,102 @@ class Settings(BaseSettings):
     #: own `GET /languages` by the operator verification task.
     judge0_language_ids: str = "python:71,java:62,cpp:54,javascript:63"
 
-    # ── Assessment question formats (assessment-spec-doc.md) ────────────────
+    # ── Coding question generation (Phase 4, `assessment_formats/coding_generation`)
     #
-    # Composition is enforced in code, not suggested in a prompt: evidence
-    # questions must be the majority of the assessment's time and weight, the
-    # supporting formats the minority, and the whole thing must fit the
-    # role's duration. These are the bounds. `services/assessment_formats/
-    # config.py` reads them into one object; nothing else carries a literal.
-    #: Evidence-based questions' minimum share of total weight AND of total
-    #: time allocation. Above one half by definition of "majority", with a
-    #: margin so a rounding effect cannot tip a valid assessment over.
-    assessment_evidence_min_share: float = 0.55
-    #: The supporting formats' (MCQ, fill-blank, coding) maximum share of the
-    #: QUESTION COUNT, by seniority. Senior roles skew further toward
-    #: evidence and away from recall-style questions.
-    assessment_supporting_max_share: float = 0.25
-    assessment_supporting_max_share_senior: float = 0.15
-    #: The assessment's total suggested duration per grade, in minutes. The
-    #: sum of every question's time allocation must fit inside it.
-    assessment_duration_minutes_non_managerial: int = 100
-    assessment_duration_minutes_managerial: int = 85
-    assessment_duration_minutes_leadership: int = 70
-    assessment_duration_minutes_cxo: int = 50
-    #: Suggested time per question, by format, in seconds.
-    assessment_time_evidence_seconds: int = 240
-    assessment_time_short_answer_seconds: int = 180
-    assessment_time_mcq_single_seconds: int = 60
-    assessment_time_mcq_multi_seconds: int = 90
-    assessment_time_fill_blank_seconds: int = 60
-    assessment_time_coding_seconds: int = 600
+    # A coding question is accepted only after its model-written reference
+    # solution has passed every one of its own tests IN THE SANDBOX. These are
+    # the bounds of what the model is asked for and of the validation.
+    #: Sample tests the candidate sees and may Run against.
+    coding_visible_tests_min: int = 2
+    coding_visible_tests_max: int = 3
+    #: Tests the final submission is graded against. Never shown to anybody.
+    #: The database refuses more than 30 per question.
+    coding_hidden_tests_min: int = 5
+    coding_hidden_tests_max: int = 10
+    #: The generation loop's wall clock, across every attempt. Larger than the
+    #: generic background loop's, because one attempt is a long JSON document
+    #: from the model PLUS sandbox runs of the reference and every starter.
+    coding_generation_deadline_seconds: float = 420.0
+    #: One sandbox validation run (submit, poll, collect) may take this long.
+    coding_validation_deadline_seconds: float = 60.0
+    #: The reference solution may use at most this fraction of a test's CPU
+    #: limit. A reference that nearly times out makes a correct candidate's
+    #: solution fail on a slower moment of the same host.
+    coding_reference_cpu_headroom: float = 0.5
+
+    # ── Coding Run, Submit, review and scoring (Phase 4 WP-4B2, `coding_assessment`)
+    #
+    # Run is interactive and bounded; Submit is final, stored first and
+    # executed by a dispatched task after commit. These are its bounds.
+    #: The HARD cap on Run presses per question, counted in `coding_runs`.
+    #: The Redis rate window fails open by design, so this count is the fence
+    #: that holds when Redis is down.
+    coding_run_max_per_question: int = 40
+    #: The Run routes' Redis rate windows, per candidate per minute (the API,
+    #: WP-4C). Abuse and cost control, not the fence: the window fails open
+    #: when Redis is down, and `coding_run_max_per_question` is what holds.
+    #: A poll is cheap but performs one bounded sandbox fetch, so it has a
+    #: window of its own sized for the editor's backoff (half a second rising
+    #: to two).
+    coding_run_rate_per_minute: int = 20
+    coding_run_poll_rate_per_minute: int = 120
+    coding_submission_state_rate_per_minute: int = 30
+    #: A queued Run whose sandbox has not answered for this long is recorded
+    #: as unavailable, so a poll that keeps failing cannot leave the Run
+    #: button disabled for the rest of a twenty-minute question.
+    coding_run_deadline_seconds: float = 60.0
+    #: How long one submission task polls the sandbox for its hidden tests
+    #: before it records the attempt and hands back to the retry loop. The
+    #: ticket is committed first, so a later attempt COLLECTS, never resubmits.
+    coding_submission_poll_deadline_seconds: float = 120.0
+    #: The sweep re-dispatches an execution still open after this long.
+    coding_submission_redispatch_minutes: int = 5
+    #: The sweep retries a failed or unstarted code-quality review after this.
+    coding_review_retry_minutes: int = 15
+    #: The share of a coding question's score that comes from the hidden tests
+    #: (CONTRACT v2: 70 hidden tests, 30 code-quality review). Internal.
+    coding_score_test_weight: float = 0.7
+    #: Scoring waits for a pending coding submission for at most this long;
+    #: past it the answer is "Not assessed" and the report goes to a person.
+    coding_execution_max_wait_hours: int = 24
+    #: The five-minute sandbox probe's canary run may take this long.
+    coding_probe_deadline_seconds: float = 20.0
+    #: One check of the operator verification task may take this long.
+    coding_verify_deadline_seconds: float = 45.0
+
+    # ── The question budget and the format mix (Appendix B, PLAN-p3 WP2) ─────
+    #
+    # HOW MANY: one question per skill in the contract, never fewer than the
+    # grade's floor. With at most five skills per bucket the budget is 8 to 15.
+    # EVERY ITEM IS ASKED: nothing is pre-filled from a resume or an earlier
+    # employer's record, and nothing is trimmed (supersedes C2 and CR 23).
+    assessment_question_floor_non_managerial: int = 10
+    assessment_question_floor_managerial: int = 10
+    assessment_question_floor_leadership: int = 10
+    assessment_question_floor_cxo: int = 8
+    #: WHAT KIND, BY COUNT, for a coding role (a STEM verdict AND a computing
+    #: occupation AND a working sandbox): prose, coding, objective (multiple
+    #: choice and fill-in-the-blank). Any other role gets no coding question
+    #: and the coding share joins prose. The three must sum to one.
+    assessment_share_prose: float = 0.7
+    assessment_share_coding: float = 0.2
+    assessment_share_objective: float = 0.1
+    #: The time each question is allocated, by family (Appendix B section 3),
+    #: is `assessment_time_prose_seconds`, `assessment_time_objective_seconds`
+    #: and `assessment_time_coding_seconds`: ONE setting each, declared with
+    #: the server's turn clock below (WP2 and WP3 each declared the first two;
+    #: merged at the stage 2 integration). Stamped on the question row when it
+    #: is written; the conversation's clock snapshots its own allocation per
+    #: turn.
+    #: The longest a blocking proctoring warning can stop the candidate's
+    #: clock for. The pause opens when the warning is issued and closes on the
+    #: candidate's acknowledgement, or here, whichever is first
+    #: (`services/assessment_conversation/pauses`).
+    assessment_warning_pause_max_seconds: int = 30
+    #: 20 minutes, Appendix B section 3. It is the ENFORCED turn clock for a
+    #: coding question now (`services/assessment_conversation/timers`), not a
+    #: suggestion, so it reads the owner's table rather than a composition fit.
+    assessment_time_coding_seconds: int = 1200
     #: INTERNAL weight per format, within a matrix item. What makes evidence
     #: dominance structural rather than stated.
     assessment_weight_evidence: float = 1.0
@@ -658,8 +761,8 @@ class Settings(BaseSettings):
     assessment_weight_fill_blank: float = 0.4
     assessment_weight_coding: float = 0.8
     #: How many times the composer may regenerate a mix that fails validation
-    #: before it falls back to an all-evidence allocation for the supporting
-    #: slots, which is always valid.
+    #: before every slot it could not fill soundly becomes a prose question,
+    #: each one recorded as a degradation on the conversation.
     assessment_composition_attempts: int = 3
     #: The fewest words an AI evaluation's reasoning may carry. A bare verdict
     #: with a sentence attached is not a reasoning a recruiter can act on.
@@ -671,50 +774,127 @@ class Settings(BaseSettings):
     #: before the option counts as a real misconception rather than filler.
     assessment_misconception_min_words: int = 4
 
-    # ── Dual-mode assessment: consent + video interview (2026-09-05 spec) ───
+    # ── The server's turn clock (Appendix B section 3, PLAN-p3 WP3) ─────────
     #
-    # CONSENT IS A HARD PREREQUISITE FOR BOTH MODES (spec section 3). The
-    # wording is CONFIGURABLE, never hardcoded in a handler (spec 3.2: "the
-    # exact legal wording should be configurable"), and the versions below are
-    # stamped onto every consent row so a dispute is settled by which wording
-    # was accepted. The defaults are complete and honest: they state
-    # collection, storage, processing, speech-to-text, AI analysis and the
-    # PRISM Report destination in plain language, with no em dash.
-    assessment_consent_version: str = "2026-09-05"
+    # ENFORCED, not suggested: a turn that runs past its allocation plus the
+    # grace is submitted by the server with whatever draft it holds, and an
+    # empty one is an evidence gap. Each turn SNAPSHOTS its allocation when it
+    # opens (`assessment_conversations.turn_allocation_seconds`), so changing
+    # one of these never moves the deadline of a question somebody is
+    # answering. Paused time (device loss, transcription, a warning on screen)
+    # is excluded by the server from rows it wrote; nothing the client reports
+    # enters the clock.
+    #: Prose (evidence-based and short-answer), typed or spoken.
+    assessment_time_prose_seconds: int = 180
+    #: Multiple choice and fill-in-the-blank.
+    assessment_time_objective_seconds: int = 60
+    #: A follow-up or a re-ask on a prose answer.
+    assessment_time_follow_up_seconds: int = 100
+    #: How late an answer may arrive and still be the candidate's own. Covers
+    #: the request in flight at the moment the countdown reaches zero.
+    assessment_submit_grace_seconds: int = 5
+    #: How long a START waits before dispatching question generation again for
+    #: a conversation whose questions are still missing. Generation runs on its
+    #: own Fargate task, and a start polled every few seconds must not start
+    #: one each time.
+    assessment_question_redispatch_seconds: int = 600
+
+    # ── Spoken answers (Appendix B section 3) ────────────────────────────────
+    #: The longest spoken answer the recorder captures. The client stops at it;
+    #: the byte ceiling below is the server's half of the same bound. ONE
+    #: setting (WP3 and WP4 each declared it; merged at the stage 2
+    #: integration): proctoring also reads it to bound how long an unfinished
+    #: capture can excuse speech in the audio monitoring.
+    assessment_voice_max_seconds: int = 180
+    #: Upper bound on one uploaded answer, sized for three minutes of browser
+    #: audio with headroom. Refused above it, never truncated.
+    assessment_voice_max_bytes: int = 6 * 1024 * 1024
+    #: Amazon Transcribe for ONE answer: seconds to wait, and the poll interval.
+    #: The candidate's clock is paused for the whole wait.
+    assessment_voice_transcribe_timeout_seconds: int = 120
+    assessment_voice_transcribe_poll_seconds: int = 3
+    #: How long the clock stays paused after a transcription FAILED, so the
+    #: candidate can read what happened before typing. Acknowledging ends it
+    #: sooner; it never needs a sweep to end.
+    assessment_voice_failure_pause_seconds: int = 30
+
+    # ── Assessment consent (2026-09-05 spec, one mode since 2026-09-24) ─────
+    #
+    # CONSENT IS A HARD PREREQUISITE FOR STARTING (spec section 3). The
+    # wording is CONFIGURABLE, never hardcoded in a handler (spec 3.2), and the
+    # versions below are stamped onto every consent row so a dispute is
+    # settled by which wording was accepted. The default is complete and
+    # honest, in plain language, with no em dash.
+    assessment_consent_version: str = "2026-09-24"
     assessment_privacy_policy_version: str = "2026-09-05"
     assessment_terms_version: str = "2026-09-05"
-    assessment_consent_text_video: str = (
-        "Before you begin the video interview, please understand and agree to "
-        "the following. Your interview will be recorded: both your video and "
-        "your audio are captured for the full session. The recording is "
-        "stored securely and is processed for assessment purposes. Your "
-        "speech is converted into text, and the resulting information is "
-        "analyzed by AI as part of your evaluation. Information derived from "
-        "this assessment may be included in the report the hiring team "
-        "receives about your candidacy. If you do not agree, you will not be "
-        "able to take the video interview; you may choose the conversational "
-        "assessment instead, which has its own consent terms."
-    )
-    assessment_consent_text_conversational: str = (
+    #: ONE text since 2026-09-24: there is one assessment mode (Appendix B
+    #: section 1). It states every collection the session makes, the
+    #: retention both clocks impose (D4), the transcription of spoken answers
+    #: with only the text kept, and the paste rule, because a candidate must be
+    #: told the rules before they start. No storage vendor is named
+    #: (claude.md 2026-07-26); the transcription service is, because it is a
+    #: processor of the candidate's voice.
+    assessment_consent_text: str = (
         "Before you begin the assessment, please understand and agree to the "
-        "following. Vivekium collects and processes what you submit during "
-        "the assessment: your written answers, your questions, your responses "
-        "to multiple-choice and coding questions, and session data such as "
-        "timings and interaction records. This information is stored, is "
-        "analyzed by AI as part of your evaluation, and may be included in "
-        "the report the hiring team receives about your candidacy. If you do "
-        "not agree, you will not be able to take the assessment."
+        "following. Your camera and microphone record the whole session, audio "
+        "and video, while you answer. The recording is compressed and stored "
+        "securely, and only the hiring team for this role can view it. It is "
+        "deleted 90 days after your session, or 30 days after the job closes if "
+        "that comes first. If you choose to speak an answer, your speech is "
+        "converted to text by an automated speech-to-text service (Amazon "
+        "Transcribe); only the text is kept, and that text is your final answer. "
+        "Vivekium collects what you submit during the assessment: your written "
+        "and spoken answers, your responses to multiple-choice, fill-in-the-blank "
+        "and coding questions, and session data such as timings and interaction "
+        "records. Copying and pasting are blocked, and every attempt is recorded. "
+        "Your answers are analyzed by AI as part of your evaluation and may be "
+        "included in the report the hiring team receives about your candidacy. "
+        "If you do not agree, you will not be able to take the assessment."
     )
-    # ── Video interview ceilings and processing knobs ───────────────────────
+    # ── The session recording: ceilings and processing knobs ────────────────
     # Every ceiling is a setting, never a literal in the pipeline (same rule
-    # as proctoring and projects). Sized for an hour-long interview recorded
-    # by MediaRecorder at browser defaults.
+    # as proctoring and projects).
+    #: The TOTAL bytes one recording may hold across all of its segments. No
+    #: longer an in-memory size: the bytes arrive one part at a time (see
+    #: `video_part_max_bytes`). At the capped bitrate below a gigabyte is
+    #: about five hours, twice the longest session the question budget allows.
     video_max_upload_bytes: int = 1024 * 1024 * 1024
-    video_max_duration_seconds: int = 2 * 3600
+    #: Sized for the worst-case assessment (about 113 minutes at 15 skills,
+    #: PLAN-p3 3.0) with room to spare.
+    video_max_duration_seconds: int = 3 * 3600
+    #: The largest single part the API accepts and forwards to S3. This is
+    #: the whole of what one request holds in memory, which is the point: the
+    #: old single upload read up to `video_max_upload_bytes` into the shared
+    #: API task. S3's own floor for every part but the last is 5 MiB
+    #: (`S3_MIN_PART_BYTES`, module level), so the validator below
+    #: refuses a value under it.
+    video_part_max_bytes: int = 16 * 1024 * 1024
+    #: How many segments one recording may be split into. A segment starts at
+    #: the session's start, after each device recovery (at most
+    #: `proctoring_device_max_pauses`) and after a page reload, so a real
+    #: session uses a handful; the ceiling bounds what a looping client can
+    #: make the store hold open.
+    video_max_segments: int = 32
+    #: The recorder ceilings, SERVED to the browser by the session-media start
+    #: so the client and the server never disagree about a number. About
+    #: 200 MiB an hour, which is what keeps a two-hour session's parts small
+    #: and its processing inside one Fargate task.
+    video_recording_video_bps: int = 400_000
+    video_recording_audio_bps: int = 48_000
+    video_recording_max_width: int = 640
+    video_recording_max_height: int = 360
+    #: How long a recording may sit with no new part after its session ended
+    #: (or after it outlived `video_max_duration_seconds`) before the hourly
+    #: sweep completes its uploaded segments and processes it without the
+    #: browser. Long enough for a slow final flush; short enough that a closed
+    #: tab never strands a recording.
+    video_orphan_grace_minutes: int = 30
     #: Amazon Transcribe. DISABLED by default because it needs an AWS account
-    #: with the service enabled in the deployment region; when disabled a
-    #: recording lands in `transcription_failed` with a message saying speech
-    #: to text is not configured. HONEST AND RETRYABLE, never a fake
+    #: with the service enabled in the deployment region. Since 2026-09-24 it
+    #: transcribes SPOKEN ANSWERS only (PLAN-p3 WP3); the session recording is
+    #: never transcribed, and the video-interview mode whose recording was
+    #: transcribed is deleted. Disabled is reported honestly, never a fake
     #: transcript (no silent fallback).
     transcribe_enabled: bool = False
     transcribe_language_code: str = "en-IN"
@@ -727,13 +907,14 @@ class Settings(BaseSettings):
     #: A Transcribe job reads its media from, and writes its output to, a
     #: bucket in ITS OWN region: a job running in ap-south-1 cannot read
     #: s3://bucket when that bucket lives in ap-south-2. This names the working
-    #: bucket in `transcribe_region`. The pipeline copies the extracted audio
-    #: in, runs the job, copies the transcript back to `s3_bucket` and deletes
-    #: both working objects, so nothing accumulates here. Empty means
-    #: `s3_bucket`, which is correct only when the two regions agree.
+    #: bucket in `transcribe_region`. The transcription step copies a spoken
+    #: answer's audio in, runs the job, copies the transcript back to
+    #: `s3_bucket` and deletes both working objects, so nothing accumulates
+    #: here. Empty means `s3_bucket`, which is correct only when the two
+    #: regions agree. (The whole-recording `video_transcribe_*` timeouts went
+    #: with the video-interview mode on 2026-09-24; a spoken answer carries
+    #: its own, shorter bounds.)
     transcribe_bucket: str = ""
-    video_transcribe_timeout_seconds: int = 1800
-    video_transcribe_poll_seconds: int = 15
     #: ffmpeg transcode settings for the long-term compressed mp4 (video spec
     #: section 8: codec and quality are configurable, storage optimization,
     #: not destructive compression). H.264 + AAC for browser playability.
@@ -753,18 +934,15 @@ class Settings(BaseSettings):
     #: cover the click and a slow connection's head start.
     video_preview_url_ttl_seconds: int = 3 * 3600
     video_download_url_ttl_seconds: int = 900
-    #: How long a stored assessment recording is kept after the compressed
-    #: object was verified present (`video_recordings.stored_at`). ZERO means
-    #: the platform's existing candidate-data policy, which is deletion by
-    #: cascade with the candidate or the application plus the erasure and
-    #: job-closure paths; the platform has no time-based purge and this
-    #: setting does not invent one. A positive value enables the hourly
-    #: `pickready.purge_assessment_media`, which HEAD-confirms every deletion.
-    #: Deliberately the same shape and the same default as
-    #: `proctoring_event_retention_days`: choosing a number is an owner
-    #: decision about a customer's data, not something this code decides on
-    #: their behalf.
-    assessment_media_retention_days: int = 0
+    #: Owner decision D4, the session half: a recording is purged this many
+    #: days after its session ended, or at the job-closure purge, whichever
+    #: comes first. The value is STAMPED onto each recording as
+    #: `media_purge_due_at` when it is finalized, so changing it here moves
+    #: no deadline a candidate was already given. Must be positive: zero used
+    #: to mean "no time-based purge", and D4 replaced that policy.
+    #: `infra/modules/s3` carries the same number as the backstop lifecycle
+    #: rule, and `tests/test_media_retention_d4.py` compares the two.
+    assessment_media_retention_days: int = 90
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #
@@ -1036,6 +1214,28 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_recording_retention(self) -> "Settings":
+        """Refuse a recording configuration the product cannot honour.
+
+        A non-positive retention would stamp a purge date in the past (or
+        at the session's end) onto every recording, so the hourly sweep would
+        delete each one the moment it was stored. A part ceiling under S3's
+        5 MiB floor would make every multipart upload fail at completion,
+        one candidate at a time, instead of at boot.
+        """
+        if self.assessment_media_retention_days <= 0:
+            raise ValueError(
+                "ASSESSMENT_MEDIA_RETENTION_DAYS must be positive (owner "
+                "decision D4 keeps a session recording for 90 days)."
+            )
+        if self.video_part_max_bytes < S3_MIN_PART_BYTES:
+            raise ValueError(
+                "VIDEO_PART_MAX_BYTES must be at least 5 MiB, the smallest "
+                "part S3 accepts in a multipart upload."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_email_transport(self) -> "Settings":
         """Exactly one of the two real transports; a typo must not silently
         select anything (Corporate Email System spec section 6)."""
@@ -1043,6 +1243,112 @@ class Settings(BaseSettings):
         if value not in {"smtp", "ses"}:
             raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
         object.__setattr__(self, "email_transport", value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_proctoring_pause_rules(self) -> "Settings":
+        """Refuse a device-pause or audio rule that cannot mean anything.
+
+        These numbers are read to a candidate before they start ("you have
+        about two minutes to fix it") and decide whether their assessment
+        ends, so a configuration under which the grace is shorter than the
+        glitch filter, or a pause cap is zero, must fail at boot rather than
+        on a candidate's camera.
+        """
+        if self.proctoring_device_max_pauses < 0:
+            raise ValueError("PROCTORING_DEVICE_MAX_PAUSES must be zero or more")
+        if self.proctoring_device_glitch_seconds < 0:
+            raise ValueError("PROCTORING_DEVICE_GLITCH_SECONDS must be zero or more")
+        if self.proctoring_device_grace_seconds <= self.proctoring_device_glitch_seconds:
+            raise ValueError(
+                "PROCTORING_DEVICE_GRACE_SECONDS must be longer than "
+                "PROCTORING_DEVICE_GLITCH_SECONDS"
+            )
+        if self.proctoring_second_voice_min_seconds <= 0:
+            raise ValueError("PROCTORING_SECOND_VOICE_MIN_SECONDS must be positive")
+        if self.proctoring_speech_min_seconds <= 0:
+            raise ValueError("PROCTORING_SPEECH_MIN_SECONDS must be positive")
+        if self.proctoring_speech_highlight_threshold < 1:
+            raise ValueError("PROCTORING_SPEECH_HIGHLIGHT_THRESHOLD must be at least one")
+        if self.assessment_warning_pause_max_seconds <= 0:
+            raise ValueError("ASSESSMENT_WARNING_PAUSE_MAX_SECONDS must be positive")
+        if self.assessment_voice_max_seconds <= 0:
+            raise ValueError("ASSESSMENT_VOICE_MAX_SECONDS must be positive")
+        return self
+
+    @model_validator(mode="after")
+    def validate_turn_clock(self) -> "Settings":
+        """Refuse a turn clock or a spoken-answer bound that cannot work, at
+        boot rather than on a candidate's turn: a zero allocation would expire
+        every question the moment it opened, and a poll no shorter than its
+        timeout would never poll twice."""
+        positive = {
+            "ASSESSMENT_TIME_PROSE_SECONDS": self.assessment_time_prose_seconds,
+            "ASSESSMENT_TIME_OBJECTIVE_SECONDS": self.assessment_time_objective_seconds,
+            "ASSESSMENT_TIME_FOLLOW_UP_SECONDS": self.assessment_time_follow_up_seconds,
+            "ASSESSMENT_TIME_CODING_SECONDS": self.assessment_time_coding_seconds,
+            "ASSESSMENT_QUESTION_REDISPATCH_SECONDS": self.assessment_question_redispatch_seconds,
+            "ASSESSMENT_VOICE_MAX_BYTES": self.assessment_voice_max_bytes,
+            "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS": (
+                self.assessment_voice_transcribe_timeout_seconds
+            ),
+            "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS": (
+                self.assessment_voice_transcribe_poll_seconds
+            ),
+            "ASSESSMENT_VOICE_FAILURE_PAUSE_SECONDS": self.assessment_voice_failure_pause_seconds,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.assessment_submit_grace_seconds < 0:
+            raise ValueError("ASSESSMENT_SUBMIT_GRACE_SECONDS must not be negative")
+        if (
+            self.assessment_voice_transcribe_poll_seconds
+            >= self.assessment_voice_transcribe_timeout_seconds
+        ):
+            raise ValueError(
+                "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS must be shorter than "
+                "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_question_mix(self) -> "Settings":
+        """Refuse a question budget or mix that cannot describe an assessment.
+
+        The three shares are apportioned by largest remainder over the budget
+        (`assessment_questions.budget.mix`), which only means something when
+        they are non-negative and sum to one. A floor below one would let a
+        job with one skill be assessed on one question. Refused at boot rather
+        than discovered when the first candidate's questions are written.
+        """
+        shares = (
+            self.assessment_share_prose,
+            self.assessment_share_coding,
+            self.assessment_share_objective,
+        )
+        if any(share < 0 for share in shares) or abs(sum(shares) - 1.0) > 1e-9:
+            raise ValueError(
+                "ASSESSMENT_SHARE_PROSE, ASSESSMENT_SHARE_CODING and "
+                "ASSESSMENT_SHARE_OBJECTIVE must be non-negative and sum to 1"
+            )
+        if self.assessment_share_prose <= 0:
+            raise ValueError("ASSESSMENT_SHARE_PROSE must be above 0")
+        floors = (
+            self.assessment_question_floor_non_managerial,
+            self.assessment_question_floor_managerial,
+            self.assessment_question_floor_leadership,
+            self.assessment_question_floor_cxo,
+        )
+        if any(floor < 1 for floor in floors):
+            raise ValueError("every ASSESSMENT_QUESTION_FLOOR_* must be at least 1")
+        times = (
+            self.assessment_time_prose_seconds,
+            self.assessment_time_objective_seconds,
+            self.assessment_time_coding_seconds,
+        )
+        if any(seconds < 1 for seconds in times):
+            raise ValueError("every ASSESSMENT_TIME_*_SECONDS must be at least 1")
         return self
 
     @model_validator(mode="after")
@@ -1099,6 +1405,43 @@ class Settings(BaseSettings):
             raise ValueError("CODE_EXECUTION_CPU_EXTRA_SECONDS must not be negative")
         if self.code_execution_wall_seconds < self.code_execution_cpu_seconds:
             raise ValueError("CODE_EXECUTION_WALL_SECONDS must be at least CODE_EXECUTION_CPU_SECONDS")
+
+        # Coding question generation. 30 is `models.coding.HIDDEN_TESTS_MAX`,
+        # the database CHECK; a range the table refuses would fail every
+        # question at INSERT, after the model and the sandbox had been paid.
+        if not 1 <= self.coding_visible_tests_min <= self.coding_visible_tests_max <= 5:
+            raise ValueError(
+                "CODING_VISIBLE_TESTS_MIN and _MAX must satisfy 1 <= min <= max <= 5"
+            )
+        if not 1 <= self.coding_hidden_tests_min <= self.coding_hidden_tests_max <= 30:
+            raise ValueError(
+                "CODING_HIDDEN_TESTS_MIN and _MAX must satisfy 1 <= min <= max <= 30"
+            )
+        if self.coding_generation_deadline_seconds <= self.coding_validation_deadline_seconds:
+            raise ValueError(
+                "CODING_GENERATION_DEADLINE_SECONDS must exceed "
+                "CODING_VALIDATION_DEADLINE_SECONDS"
+            )
+        if self.coding_validation_deadline_seconds <= 0:
+            raise ValueError("CODING_VALIDATION_DEADLINE_SECONDS must be greater than zero")
+        if not 0 < self.coding_reference_cpu_headroom <= 1:
+            raise ValueError("CODING_REFERENCE_CPU_HEADROOM must be in (0, 1]")
+        # Coding Run, Submit and scoring. A weight of 0 or 1 would silently
+        # drop one of the two halves the contract says a coding score has.
+        if not 0 < self.coding_score_test_weight < 1:
+            raise ValueError("CODING_SCORE_TEST_WEIGHT must be strictly between 0 and 1")
+        for name, value in {
+            "CODING_RUN_MAX_PER_QUESTION": self.coding_run_max_per_question,
+            "CODING_RUN_DEADLINE_SECONDS": self.coding_run_deadline_seconds,
+            "CODING_SUBMISSION_POLL_DEADLINE_SECONDS": self.coding_submission_poll_deadline_seconds,
+            "CODING_SUBMISSION_REDISPATCH_MINUTES": self.coding_submission_redispatch_minutes,
+            "CODING_REVIEW_RETRY_MINUTES": self.coding_review_retry_minutes,
+            "CODING_EXECUTION_MAX_WAIT_HOURS": self.coding_execution_max_wait_hours,
+            "CODING_PROBE_DEADLINE_SECONDS": self.coding_probe_deadline_seconds,
+            "CODING_VERIFY_DEADLINE_SECONDS": self.coding_verify_deadline_seconds,
+        }.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
         return self
 
     @property

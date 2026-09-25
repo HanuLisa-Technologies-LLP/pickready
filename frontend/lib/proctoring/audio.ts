@@ -24,11 +24,23 @@
  * toward uploading, because a false "silence" would hide a second voice and
  * a false "speech" costs one analysis call. The SERVER decides speaker
  * counts; this module only decides whether to ask.
+ *
+ * SPEECH DURING A QUESTION THAT TAKES NO SPOKEN ANSWER (Phase 3, 2026-09-24).
+ * The same chunk is what the server reads to log a candidate talking while an
+ * MCQ, a blank or a code editor is on screen. The server decides it, against
+ * its own record of the spoken answers open around the time the chunk
+ * arrived; this module sends the audio and nothing about when it was heard.
+ *
+ * A LOST MICROPHONE PAUSES the assessment (see `device-watch.ts`). This
+ * monitor reports the loss through `onLost`, retries a failed stream on its
+ * own every `DEVICE_RETRY_MS`, waits for the candidate on a revoked
+ * permission, and hands a recovered stream to `onRecovered` so the session
+ * recording can start a new segment on it.
  */
 import type { AudioChunkOut, TerminationOut, WarningOut } from "./api";
 import { isSessionEnded } from "./api";
-import type { EventDraft } from "./events";
 import { isPermissionDenied } from "./camera";
+import { DEVICE_RETRY_MS, type LossKind } from "./device-watch";
 
 /** See the header. Quietest-to-loudest RMS ratio within one chunk. */
 export const SPEECH_ENERGY_RATIO = 4;
@@ -45,9 +57,9 @@ export interface AudioOptions {
   maxChunkBytes: number;
   /** `SessionOut.audio_analysis_available`. When false nothing is recorded. */
   uploadEnabled: boolean;
-  retryIntervalMs: number;
   upload: (chunk: Blob) => Promise<AudioChunkOut>;
-  onEvent: (draft: EventDraft) => void;
+  onLost: (kind: LossKind) => void;
+  onRecovered: (stream: MediaStream) => void;
   onWarning: (warning: WarningOut, warningsUsed: number) => void;
   onTermination: (termination: TerminationOut) => void;
   onSessionEnded: (message: string) => void;
@@ -78,6 +90,10 @@ export class AudioMonitor {
   private loudest = 0;
   private readonly nav: Navigator;
   private permissionStatus: PermissionStatus | null = null;
+  /** Why the microphone is down, or null while it is live. */
+  private lostKind: LossKind | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private reacquiring: Promise<boolean> | null = null;
 
   constructor(private readonly options: AudioOptions) {
     this.nav = options.navigator ?? window.navigator;
@@ -94,20 +110,28 @@ export class AudioMonitor {
     return Boolean(track && track.readyState === "live");
   }
 
+  /** The stream being monitored, or null while the microphone is down. */
+  currentStream(): MediaStream | null {
+    return this.lostKind === null ? this.stream : null;
+  }
+
+  /** Open the microphone again now; see `CameraMonitor.reacquire`. */
+  reacquire(): Promise<boolean> {
+    if (this.stopped) return Promise.resolve(false);
+    if (this.lostKind === null) return Promise.resolve(true);
+    if (this.reacquiring === null) {
+      this.reacquiring = this.attemptRecovery().finally(() => {
+        this.reacquiring = null;
+      });
+    }
+    return this.reacquiring;
+  }
+
   stop(): void {
     this.stopped = true;
-    this.clearTimers();
+    this.clearRetry();
     if (this.permissionStatus) this.permissionStatus.onchange = null;
-    if (this.recorder && this.recorder.state !== "inactive") {
-      this.recorder.ondataavailable = null;
-      this.recorder.stop();
-    }
-    this.recorder = null;
-    this.stream?.getTracks().forEach((track) => track.stop());
-    this.stream = null;
-    void this.context?.close();
-    this.context = null;
-    this.analyser = null;
+    this.release();
   }
 
   private attach(stream: MediaStream): void {
@@ -188,7 +212,13 @@ export class AudioMonitor {
       .then((status) => {
         this.permissionStatus = status;
         status.onchange = () => {
-          if (status.state === "denied") this.permissionLost();
+          // As for the camera: anything but "granted" is lost, and "granted"
+          // again reopens the microphone without waiting for a click.
+          if (status.state === "granted") {
+            if (this.lostKind === "permission") void this.reacquire();
+          } else {
+            this.lose("permission");
+          }
         };
       })
       .catch(() => {
@@ -197,39 +227,96 @@ export class AudioMonitor {
       });
   }
 
-  private permissionLost(): void {
+  private onTrackEnded(): void {
     if (this.stopped) return;
-    this.options.onEvent({ event_type: "MIC_PERMISSION_LOST", metadata: {} });
-    this.stop();
+    this.lose(this.permissionStatus?.state === "denied" ? "permission" : "stream");
   }
 
-  private async onTrackEnded(): Promise<void> {
+  /** Release the dead stream and its analysis, and say so. The chunk that was
+   *  being captured is dropped with it: its recorder is bound to a track that
+   *  no longer produces audio. */
+  private lose(kind: LossKind): void {
     if (this.stopped) return;
-    if (this.permissionStatus?.state === "denied") {
-      this.permissionLost();
-      return;
+    if (this.lostKind === kind || this.lostKind === "permission") return;
+    const first = this.lostKind === null;
+    this.lostKind = kind;
+    if (first) this.release();
+    this.options.onLost(kind);
+    if (kind === "stream") {
+      this.scheduleRetry();
+    } else {
+      this.clearRetry();
     }
+  }
+
+  private release(): void {
     this.clearTimers();
+    if (this.recorder && this.recorder.state !== "inactive") {
+      this.recorder.ondataavailable = null;
+      this.recorder.onstop = null;
+      this.recorder.stop();
+    }
+    this.recorder = null;
+    const dead = this.stream;
+    this.stream = null;
+    const track = dead?.getAudioTracks()[0];
+    if (track) track.onended = null;
+    dead?.getTracks().forEach((each) => each.stop());
+    void this.context?.close();
+    this.context = null;
+    this.analyser = null;
+  }
+
+  private scheduleRetry(): void {
+    this.clearRetry();
+    if (this.stopped || this.lostKind !== "stream") return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.reacquire().then((live) => {
+        if (!live) this.scheduleRetry();
+      });
+    }, DEVICE_RETRY_MS);
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
+  private async attemptRecovery(): Promise<boolean> {
+    let stream: MediaStream;
     try {
-      const stream = await openMicrophone(this.nav);
-      this.stream?.getTracks().forEach((track) => track.stop());
-      this.stream = stream;
-      void this.context?.close();
-      this.context = null;
+      stream = await openMicrophone(this.nav);
+    } catch (error) {
+      if (isPermissionDenied(error)) this.lose("permission");
+      // Any other refusal leaves the outage as it is; see the camera.
+      return false;
+    }
+    if (this.stopped) {
+      stream.getTracks().forEach((track) => track.stop());
+      return false;
+    }
+    try {
       this.attach(stream);
     } catch (error) {
-      if (isPermissionDenied(error)) {
-        this.permissionLost();
-        return;
-      }
-      // The device is gone but the permission stands. The self-check reports
-      // the microphone down and the session quality note says so.
-      this.options.onEvent({
-        event_type: "SESSION_QUALITY_DEGRADED",
-        metadata: { note: "microphone_unavailable" },
-      });
-      setTimeout(() => void this.onTrackEnded(), this.options.retryIntervalMs);
+      // A stream that opened and could not be analysed is not a recovered
+      // microphone; the outage stands and the next attempt asks again.
+      this.clearTimers();
+      stream.getTracks().forEach((track) => track.stop());
+      void this.context?.close();
+      this.context = null;
+      this.analyser = null;
+      console.warn(
+        "proctoring microphone could not be resumed: " +
+          (error instanceof Error ? error.message : "unknown")
+      );
+      return false;
     }
+    this.stream = stream;
+    this.lostKind = null;
+    this.clearRetry();
+    this.options.onRecovered(stream);
+    return true;
   }
 
   private clearTimers(): void {

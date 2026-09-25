@@ -176,4 +176,49 @@ describe("event queue", () => {
     expect(post).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
+
+  it("posts a device loss and a recovery at once: the pause should begin and lift now", async () => {
+    vi.useFakeTimers();
+    const post = vi.fn<Post>(async () => ingest());
+    const { queue } = build(post);
+    queue.enqueue({ event_type: "CAMERA_STREAM_FAILED", duration_ms: 5000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1);
+    queue.enqueue({ event_type: "DEVICE_RECOVERED", metadata: { devices: ["camera"] } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(2);
+    // A plain Path C note still waits for its batch window.
+    queue.enqueue({ event_type: "LOW_LIGHT" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("hands on the pause state a response carries, and nothing when it carries none", async () => {
+    vi.useFakeTimers();
+    const pause = { paused: true, grace_deadline_at: "2026-09-24T10:02:00Z", pauses_used: 1, max_pauses: 2 };
+    const post = vi
+      .fn<Post>()
+      .mockResolvedValueOnce(ingest({ pause }))
+      .mockResolvedValueOnce(ingest());
+    const pauses: unknown[] = [];
+    const queue = new EventQueue({
+      batchMax: 10,
+      maxBackoffMs: 10_000,
+      flushIntervalMs: 1000,
+      post,
+      onWarning: () => undefined,
+      onTermination: () => undefined,
+      onSessionEnded: () => undefined,
+      onPause: (state) => pauses.push(state),
+    });
+    queue.enqueue({ event_type: "MIC_PERMISSION_LOST" });
+    await vi.advanceTimersByTimeAsync(0);
+    queue.enqueue({ event_type: "MIC_PERMISSION_LOST" });
+    await vi.advanceTimersByTimeAsync(0);
+    // The second response said nothing about the pause, which is not "not
+    // paused": nothing is handed on for it.
+    expect(pauses).toEqual([pause]);
+    vi.useRealTimers();
+  });
 });

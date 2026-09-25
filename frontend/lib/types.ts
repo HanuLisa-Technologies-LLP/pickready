@@ -501,13 +501,8 @@ export const RATING_GRADES = [
 ] as const;
 export type RatingGrade = (typeof RATING_GRADES)[number];
 
-/** @deprecated Use RATING_GRADES. Kept so older imports keep compiling. */
-export const MATCHING_LABELS = RATING_GRADES;
-export type MatchingLabel = RatingGrade;
-
 export type RatingWordLabel = RatingGrade;
 
-/** One row of the job page's inline candidate table. Carries no numbers. */
 /** The three ways a candidate reaches a job. See `RankedCandidate.source_type`. */
 export type CandidateProcurement = "applied" | "sourced" | "databank";
 
@@ -547,14 +542,22 @@ export interface ValidationAnswer {
   group?: string;
 }
 
-/** One matching category this candidate was ACTUALLY scored on. */
-export interface MatchingCategoryResult {
-  key: string;
-  name: string;
-  comment: string | null;
-  label: RatingGrade | null;
+/** One piece of evidence the resume check found, or a Must-have it did not.
+ *  Mirrors `schemas/ranking.EvidenceTagOut`. `text` is the skill's CURRENT
+ *  name or a short server-vetted phrase; `shown_in_row` is the SERVER's choice
+ *  of which tags fit on the table row (the Details dialog shows them all). */
+export interface EvidenceTag {
+  text: string;
+  polarity: "positive" | "negative";
+  shown_in_row: boolean;
 }
 
+/** What the resume check holds for a row. `legacy` is a grade carried over
+ *  from the retired matcher until AI Matching runs again. */
+export type AiMatchStatus = "pending" | "scored" | "not_assessed" | "legacy";
+
+/** One row of the job page's inline candidate table. Carries no numbers:
+ *  mirrors `schemas/ranking.RankedCandidateOut`, which forbids extra keys. */
 export interface RankedCandidate {
   link_id: string;
   candidate_id: string;
@@ -567,10 +570,7 @@ export interface RankedCandidate {
    */
   reference_code?: string;
   email?: string | null;
-  /** The job's grade as a display label ("Non-managerial", "CXO", ...). */
-  level: string;
   source?: CandidateSource | null;
-  tier?: Tier | null;
   archived_at?: string | null;
   /** The application's Profile. Resumes live in private storage, so this is
    *  the handle the viewer and the download endpoint are keyed on. */
@@ -599,6 +599,9 @@ export interface RankedCandidate {
   source_type: CandidateProcurement;
   /** Server-rendered display text for `source_type`. */
   source_type_label: string;
+  /** "Databank, not an applicant" / "Sourced, not an applicant" while the
+   *  candidate has not applied, null once they have. Server-worded. */
+  applicant_label?: string | null;
   /** `old` when this application arrived BEFORE the job's current 30-day
    *  posting window, i.e. the job has since been renewed. Presentation and
    *  billing only: an Old Profile is ranked, listed and openable exactly like
@@ -623,21 +626,23 @@ export interface RankedCandidate {
    *  `allowed_transitions`: the labels come from the server, so the UI never
    *  has to hardcode a stage name it might get wrong. */
   allowed_transition_options: TransitionOption[];
-  ranking_status: "not_scored" | "ready";
-  skills_match_comment?: string | null;
-  experience_comment?: string | null;
-  role_alignment_comment?: string | null;
-  education_comment?: string | null;
-  overall_comment?: string | null;
-  skills_match_label?: MatchingLabel | null;
-  experience_label?: MatchingLabel | null;
-  role_alignment_label?: MatchingLabel | null;
-  education_label?: MatchingLabel | null;
-  overall_label?: MatchingLabel | null;
+  /** AI Match (Yukti), words only. The grade word is blended with the Tatva
+   *  Assessment once there is one; null when there is no grade at all, in
+   *  which case `ai_match_status_word` says why ("Not checked yet" /
+   *  "Not assessed"). No score, percentage or rank ever arrives here. */
+  ai_match_status: AiMatchStatus;
+  ai_match_label: RatingGrade | null;
+  ai_match_status_word: string | null;
+  /** Positives first, in the server's order. */
+  evidence_tags: EvidenceTag[];
+  /** Where the grade came from, as server-written sentences. */
+  provenance: string[];
+  /** The skills or the resume changed after the check: a rerun refreshes it. */
+  ai_match_stale: boolean;
   validation_answers: ValidationAnswer[];
   /** How the assessment was conducted: 'conversational' | 'video_interview',
    *  or null before any session opens (2026-09-05 dashboard/video spec 4.1). */
-  assessment_mode?: AssessmentMode | null;
+  assessment_mode?: StoredAssessmentMode | null;
   /** "Video interview" / "Conversational" / "Not started", server-rendered. */
   assessment_mode_label?: string;
   /** PRISM Report availability word: Available / Processing / Not available. */
@@ -647,10 +652,6 @@ export interface RankedCandidate {
   /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
    *  words come from the server so the table never invents a state. */
   video_status?: string;
-  /** The Executive Profile Match Score (vivekium feature 3, column 2). The
-   *  ONE number a client surface may show, per the 2026-09-18 rule-1
-   *  amendment; null until the matching pipeline has scored the link. */
-  match_percent?: number | null;
   /** "Within range" / "Above range" / "Below range", or null for "Not
    *  stated". Derived server-side; nothing here computes a comparison. */
   ctc_match_label?: string | null;
@@ -670,7 +671,8 @@ export interface RankedCandidate {
 export interface RankedCandidatesResponse {
   job_id: string;
   grade: JobGrade;
-  level: string;
+  /** The one line above the table, written by the server. */
+  ranking_header: string;
   results: RankedCandidate[];
   total: number;
   page: number;
@@ -825,12 +827,6 @@ export const jobCompensation = (
 
 // ---- Candidates & matching ----
 
-export type Tier =
-  | "highly_matching"
-  | "moderately_matching"
-  | "matching"
-  | "not_matching";
-
 export type CandidateSource = "fresh" | "databank";
 
 export type PipelineStatus =
@@ -841,39 +837,6 @@ export type PipelineStatus =
   | "joined"
   | "pending"
   | string;
-
-export interface CandidateSummary {
-  id: string;
-  full_name: string;
-  email: string;
-  phone?: string | null;
-}
-
-/** Client-safe projection of one stored ranking dimension. */
-export interface MatchComment {
-  comment: string;
-}
-
-/**
- * Comments-only API projection. Numeric ranking values remain server-side.
- */
-export interface MatchBreakdown {
-  skills_match?: MatchComment;
-  experience_relevance?: MatchComment;
-  role_alignment?: MatchComment;
-  education_fit?: MatchComment;
-  overall?: MatchComment;
-  scoring_mode?: string;
-}
-
-export interface MatchingResult {
-  link_id: string;
-  candidate: CandidateSummary;
-  source: CandidateSource;
-  tier: Tier;
-  rationale?: string | null;
-  breakdown?: MatchBreakdown | null;
-}
 
 // ---- Portal ----
 
@@ -1136,7 +1099,7 @@ export interface ProviderBillingRow {
 }
 
 /**
- * GET /matching/tasks/{task_id}.
+ * GET /matching/jobs/{job_id}/tasks/{task_id}.
  *
  * `stages` is the inline reasoning the job page renders while a run is under
  * way. It is a fixed vocabulary the backend pipeline emits as it reaches each
@@ -1157,6 +1120,10 @@ export interface MatchingTaskStatus {
   /** Counts of candidate ROWS being processed. Never a score or a rank. */
   candidate_count: number;
   scored_count: number;
+  /** True when the run could not do everything it set out to, with the
+   *  server's own sentences saying what. */
+  degraded: boolean;
+  degraded_reasons: string[];
 }
 
 // ---- Proctoring (proctoring spec sections 6 and 7) ----
@@ -1376,9 +1343,17 @@ export interface EmailSenderList {
 
 // EmailSenderVerifyResult went with it: nothing verifies a code any more.
 
-// ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
+// ── The single-mode assessment (2026-09-24, Appendix B section 1) ────────────
+//
+// There is one assessment mode. The dual-mode types that lived here (the mode
+// choice, the per-mode consent state and the video interview's question list)
+// are deleted with the screens that used them. A mode is still STORED on old
+// rows, so the recruiter-side payloads that describe a recording carry it as
+// the server's plain string; nothing on the candidate side reads or sends one.
 
-export type AssessmentMode = "conversational" | "video_interview";
+/** The mode a stored session was taken in: "conversational" for every new
+ *  session, "video_interview" only on rows written before 2026-09-24. */
+export type StoredAssessmentMode = string;
 
 /** One consent item, server-authored (vivekium feature 6). The version is the
  *  wording's, bumped whenever the text changes, and it is stored with the
@@ -1402,9 +1377,10 @@ export interface ConsentItemStatus extends ConsentCatalogueItem {
   wording_current: boolean;
 }
 
-/** One mode's consent terms, exactly as the server will stamp them. */
+/** The assessment's consent terms, exactly as the server will stamp them.
+ *  One text for the one mode; the versions travel with it so the screen shows
+ *  what the server will record. */
 export interface AssessmentConsentTerms {
-  assessment_mode: AssessmentMode;
   text: string;
   consent_version: string;
   privacy_policy_version: string;
@@ -1414,32 +1390,11 @@ export interface AssessmentConsentTerms {
   items?: ConsentCatalogueItem[];
 }
 
-/** Where the session stands in the mode/consent flow. */
-export interface AssessmentModeState {
-  mode: AssessmentMode;
-  mode_frozen: boolean;
+/** GET and POST /assessments/conversations/links/{id}/consent: whether this
+ *  session has been consented to, and the terms that apply to it. */
+export interface AssessmentConsentState {
   consented: boolean;
   consent: AssessmentConsentTerms;
-}
-
-export interface VideoInterviewQuestion {
-  ordinal: number;
-  prompt: string;
-  question: {
-    id: string;
-    question_type: string;
-    payload: Record<string, unknown>;
-    time_allocation_seconds: number;
-  };
-}
-
-export interface VideoInterviewStart {
-  conversation_id: string;
-  recording_id: string;
-  status: string;
-  questions: VideoInterviewQuestion[];
-  max_upload_bytes: number;
-  max_duration_seconds: number;
 }
 
 export interface VideoRecordingStatus {
@@ -1457,7 +1412,7 @@ export interface VideoAccess {
   job_candidate_link_id: string;
   /** Null when no recording exists (every conversational session today). */
   recording_id: string | null;
-  assessment_mode: AssessmentMode | null;
+  assessment_mode: StoredAssessmentMode | null;
   /** "Video interview" / "Conversational" / "Not started". */
   assessment_mode_label: string;
   /** "Ready" / "Processing" / "Failed" / "No recording". */

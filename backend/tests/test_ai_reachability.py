@@ -84,8 +84,7 @@ LIVE: dict[str, str] = {
         "api/assessments.py directly, and miti.tiering underneath the scorer"
     ),
     "app.services.agents": (
-        "identity, artifacts and gates, through ppi / matching "
-        "and functional_assessment"
+        "identity, artifacts and gates, through ppi and functional_assessment"
     ),
     "app.services.proctoring": "api/proctoring.py and the assessment gate",
     "app.services.assessment_formats": "the six question formats on the live turn",
@@ -102,6 +101,24 @@ LIVE: dict[str, str] = {
         "-> assessment_pipeline.evidence, the one per-answer ledger writer, run "
         "as the scoring backfill. The conversation's per-answer call is wired by "
         "the assessment phase."
+    ),
+    "app.services.coding_assessment": (
+        "Phase 4 WP-4B2. workers/coding_tasks.py registers "
+        "pickready.execute_coding_submission, pickready.reconcile_coding_submissions, "
+        "pickready.probe_code_execution and pickready.verify_code_execution_sandbox, "
+        "which call submissions, sweeps and review."
+    ),
+    "app.services.code_execution": (
+        "Phase 4. Reached through coding_assessment from the coding tasks; the "
+        "port is the only way a program reaches the sandbox."
+    ),
+    "app.services.yukti": (
+        "Vivekium release, Phase 2. api/jobs.py's ranked table -> "
+        "job_candidates -> yukti.ranking (the one rank key and its words), and "
+        "workers/tasks.py pickready.run_matching / pickready.yukti_score_profile "
+        "-> matching -> yukti.scoring.score_links (the resume reading). It "
+        "replaced the retired matcher, hiring.prescreen and services.longevity, "
+        "which are deleted rather than left unreachable."
     ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
@@ -185,16 +202,37 @@ IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
 #: shape the next dead entry point needs and rebuilding it would cost more than
 #: the lines it occupies.
 ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
-    # The skills contract landed (migration 0118) ahead of its two callers, on
-    # purpose: the assessment phase stamps `started_at` and must call
-    # `lock_contract` in the same transaction, and Vaada and Miti read the
-    # bound contract. Until then `job_skill_snapshots` is written only by the
-    # migration. The owning directory is `app/services`, so this asks about
-    # callers in routes, workers and scripts, which is where the start lives.
-    ("app/services/assessment_contract.py", "lock_contract"): (
-        "the only writer of job_skill_snapshots after migration 0118; the "
-        "assessment phase calls it where assessment_conversations.started_at "
-        "is stamped. When it does, move this entry to REQUIRED_CALLERS."
+    # The skills contract landed (migration 0118) ahead of its callers, on
+    # purpose. `lock_contract` moved to REQUIRED_CALLERS on 2026-09-24 when the
+    # conversation start began calling it; the bound read below is reached
+    # from `services/vaada_context` (not a route) and from Miti at grading.
+    # The owning directory is `app/services`, so this asks about callers in
+    # routes, workers and scripts.
+    # Phase 4 WP-4B2 landed the coding services ahead of their three callers,
+    # each owned by another package: the candidate's submit (Phase 3's respond
+    # structured branch), the Run and submission-state routes (Phase 4 WP-4C,
+    # now wired and moved to REQUIRED_CALLERS) and the grader (Phase 5's Miti
+    # coding sub-stage and scoring hold). The tasks that DO call into the
+    # package are in REQUIRED_CALLERS below.
+    #
+    # `accept_final` is reached through `final_answer.accept_structured_answer`
+    # (4C), which lives in the same package, so it has no caller OUTSIDE the
+    # package BY DESIGN: the turn engine calls the hook, and the hook calls
+    # `accept_final`. The hook and `latest_draft` moved to REQUIRED_CALLERS at
+    # the stage 2 integration, when the turn engine started calling them.
+    ("app/services/coding_assessment/submissions.py", "accept_final"): (
+        "the only writer of coding_submissions, reached only through "
+        "final_answer.accept_structured_answer inside its own package."
+    ),
+    ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
+        "Phase 5's scoring entry waits on it while coding work is open."
+    ),
+    ("app/services/coding_assessment/evidence.py", "evidence_for_answer"): (
+        "Phase 5's Miti coding sub-stage, the one grading authority."
+    ),
+    ("app/services/coding_assessment/evidence.py", "for_conversation"): (
+        "Phase 5's Miti coding sub-stage. The recruiter transcript (4C) reads "
+        "it through `coding_assessment.transcript`, inside the package."
     ),
     ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
         "Vaada (conversation start) and Miti (grading) both read the contract "
@@ -225,6 +263,43 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    # The one line that hands a final v2 coding answer to execution (p4-4c
+    # hunk 1, wired at the stage 2 integration). Without a caller a final
+    # coding answer is stored and never executed, and nothing fails.
+    ("app/services/coding_assessment/final_answer.py", "accept_structured_answer"): (
+        "app/services/assessment_conversation/turns.py, submit_turn's "
+        "structured branch, after the answer row is written."
+    ),
+    ("app/services/coding_assessment/submissions.py", "latest_draft"): (
+        "app/services/assessment_conversation/turns.py: an expired coding turn "
+        "with no answer in hand submits the latest Run's code."
+    ),
+    # A spoken answer's audio whose first deletion could not be confirmed, or
+    # whose transcription never reported back. Wired into the hourly
+    # recording repair at the stage 2 integration (p3-w5 hunk 2); without it
+    # the S3 lifecycle rule on `voice-answers/` is the only backstop.
+    ("app/services/assessment_conversation/voice_audio.py", "repair_pending_audio"): (
+        "app/workers/tasks_media.py, pickready.reconcile_assessment_recordings."
+    ),
+    # Phase 4 WP-4B1, wired by the Phase 3 WP2 composer (the p4-4b1 hunk 3,
+    # applied at the stage 2 integration). The only writer of an executed
+    # coding question and its answer key: without a caller no coding question
+    # is ever served, and nothing fails, because the slot quietly becomes prose.
+    ("app/services/assessment_formats/coding_generation.py", "write_coding_question"): (
+        "app/services/assessment_questions/generate.py, for every coding slot "
+        "the budgeted mix allocates."
+    ),
+    ("app/services/assessment_formats/coding_generation.py", "persist_coding_question"): (
+        "app/services/assessment_questions/generate.py, in the transaction "
+        "that writes the candidate_questions row, so a question never exists "
+        "without its key."
+    ),
+    ("app/services/assessment_contract.py", "lock_contract"): (
+        "app/api/assessment_conversation.py, the first start. The only writer "
+        "of job_skill_snapshots after migration 0118, in the transaction that "
+        "stamps started_at; without it no skill ever locks (D5) and Miti has "
+        "no snapshot to grade against."
+    ),
     ("app/services/rag/index.py", "index_document"): (
         "app/workers/tasks.py, from pickready.index_document. Without a caller "
         "the index is never written, and retrieval over an empty table returns "
@@ -261,6 +336,69 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "Without it a chunk written with a NULL vector during an embedding "
         "outage, or embedded by a retired model, stays keyword-only for ever: "
         "the reconcile sweep sees a document that HAS chunks and moves on."
+    ),
+    # Phase 4 WP-4B2: the coding tasks. Without the first, a final coding
+    # answer is stored and never executed; without the others, a lost
+    # dispatch is never repaired and a sandbox outage pages nobody.
+    ("app/services/coding_assessment/submissions.py", "execute_submission"): (
+        "app/workers/coding_tasks.py, pickready.execute_coding_submission."
+    ),
+    ("app/services/coding_assessment/sweeps.py", "probe"): (
+        "app/workers/coding_tasks.py, pickready.probe_code_execution."
+    ),
+    ("app/services/coding_assessment/sweeps.py", "verify_sandbox"): (
+        "app/workers/coding_tasks.py, pickready.verify_code_execution_sandbox."
+    ),
+    # Vivekium release, Phase 2. The two doors to the ranked table: without a
+    # caller of `score_links` no link is ever read and every row stays "Not
+    # checked yet"; without a caller of `order_by_sql` the page is ordered by
+    # something other than the one key the dashboard and the ranked table
+    # share, which is the drift the derived rank exists to prevent.
+    ("app/services/yukti/scoring.py", "score_links"): (
+        "app/services/matching.py, from run_matching and score_profile "
+        "(pickready.run_matching and pickready.yukti_score_profile)."
+    ),
+    ("app/services/yukti/ranking.py", "order_by_sql"): (
+        "app/services/job_candidates.py, the ranked table's ORDER BY."
+    ),
+    ("app/services/yukti/ranking.py", "rank_score_sql"): (
+        "app/services/job_candidates.py and app/services/dashboard.py: the "
+        "ranked table and the Candidate Dashboard read one key."
+    ),
+    # Phase 4 WP-4F: the code-execution port's two doors. Every program that
+    # reaches the sandbox asks `get_provider` for it, and every answer is
+    # judged by `outputs_match` in the application, never by the sandbox.
+    # Without a caller of the first, the package is importable and runs
+    # nothing; without the second, a hidden test is graded somewhere else.
+    ("app/services/code_execution/provider.py", "get_provider"): (
+        "app/services/coding_assessment/runs.py (Run) and submissions.py "
+        "(the final answer), both reached from app/api/assessment_coding.py "
+        "and app/workers/coding_tasks.py."
+    ),
+    ("app/services/code_execution/provider.py", "outputs_match"): (
+        "app/services/coding_assessment/execution.py and keys.py, the only "
+        "places a program's output is compared with an expected one."
+    ),
+    # Phase 4 WP-4C: the candidate's Run button and the final answer's state.
+    # Without the first two the editor can only fail; without the third the
+    # candidate cannot tell a stored final answer from a lost one.
+    ("app/services/coding_assessment/runs.py", "start_run"): (
+        "app/api/assessment_coding.py, POST .../coding/{qid}/runs. The only "
+        "writer of coding_runs."
+    ),
+    ("app/services/coding_assessment/runs.py", "refresh_run"): (
+        "app/api/assessment_coding.py, GET .../runs/{run_id}. Without it a "
+        "queued run is never collected and the button spins until its deadline."
+    ),
+    ("app/services/coding_assessment/runs.py", "candidate_results"): (
+        "app/api/assessment_coding.py, the Run poll route's response."
+    ),
+    ("app/services/coding_assessment/submissions.py", "candidate_state_word"): (
+        "app/api/assessment_coding.py, GET .../coding/{qid}/submission."
+    ),
+    ("app/services/coding_assessment/transcript.py", "recruiter_views"): (
+        "app/api/assessments.py, the recruiter transcript. Without it an "
+        "executed coding answer reads as nothing beside the candidate's code."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "

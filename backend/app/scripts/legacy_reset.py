@@ -95,6 +95,7 @@ from app.config.llm_providers import (
 from app.core.config import get_settings
 from app.core.db import get_session_factory, superadmin_scope
 from app.services.audit import audit
+from app.services.yukti import config as yukti_config
 
 logger = logging.getLogger("pickready.legacy_reset")
 
@@ -303,12 +304,21 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         RESET,
         "The application. Preserved by D2, including its timestamps. The "
         "pre-screen grade written onto it is not: match_score, its rationale, "
-        "the four-parameter breakdown and the tier are all old machine output.",
+        "the four-parameter breakdown and the tier are all old machine output. "
+        "Neither is Yukti's reading: it goes back to `pending`, the state a link "
+        "no run has read yet, so the next AI Matching run reads it afresh.",
         resets=(
             ("match_score", "NULL"),
             ("match_rationale", "NULL"),
             ("match_breakdown_json", "NULL"),
             ("tier", "NULL"),
+            ("yukti_pre_score", "NULL"),
+            ("yukti_status", "'pending'"),
+            ("yukti_failure_reason", "NULL"),
+            ("evidence_tags_json", "'[]'::jsonb"),
+            ("yukti_provenance_json", "NULL"),
+            ("yukti_scored_at", "NULL"),
+            ("yukti_profile_id", "NULL"),
         ),
         order=70,
     ),
@@ -2476,13 +2486,14 @@ async def run_purge(
 # deterministic dev fallback, which would write a hash-derived ranking into the
 # column a recruiter sorts on.
 
-#: The task the pre-screen grade is routed under, and therefore the model and
-#: the price it is estimated at. Read from the routing policy rather than
-#: restated, so a change to the policy moves the estimate with it.
-REGRADE_TASK = "rerank"
-#: `matching._RERANK_BATCH_SIZE`. Imported below rather than duplicated; this
-#: name exists so the work plan can say which constant it used.
-REGRADE_BATCH_ATTRIBUTE = "_RERANK_BATCH_SIZE"
+#: The task a regrade is routed under, and therefore the model and the price
+#: it is estimated at: Yukti's reading, the one matcher left (Phase 2 WP-B).
+#: Read from Yukti's own config rather than restated, so a change to the
+#: routing moves the estimate with it.
+REGRADE_TASK = yukti_config.TASK_TYPE
+#: `yukti.config.BATCH_SIZE`, read below rather than duplicated; this name
+#: exists so the work plan can say which constant it used.
+REGRADE_BATCH_ATTRIBUTE = "BATCH_SIZE"
 #: Rough per-call token shape for the estimate, and labelled as an estimate
 #: everywhere it surfaces. A batch prompt carries the JD, the job's categories
 #: and up to ten profile summaries; the completion is one JSON object per
@@ -2520,9 +2531,7 @@ class RegradePlan:
 
 
 def _regrade_batch_size() -> int:
-    from app.services import matching  # noqa: PLC0415
-
-    return int(getattr(matching, REGRADE_BATCH_ATTRIBUTE))
+    return int(getattr(yukti_config, REGRADE_BATCH_ATTRIBUTE))
 
 
 async def plan_regrade(session: AsyncSession) -> RegradePlan:

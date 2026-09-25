@@ -44,12 +44,17 @@ class ProctoringConfig:
     audio_chunk_seconds: int
     audio_max_chunk_bytes: int
     second_voice_consecutive_chunks: int
+    second_voice_min_seconds: float
+    speech_min_seconds: float
+    speech_highlight_threshold: int
     analysis_service_url: str
     analysis_timeout_seconds: float
     heartbeat_interval_seconds: int
     heartbeat_gap_seconds: int
     integrity_failure_termination_seconds: int
-    camera_recovery_seconds: int
+    device_max_pauses: int
+    device_grace_seconds: int
+    device_glitch_seconds: int
     sampling_fps_normal: int
     sampling_fps_confirming: int
     confirming_window_seconds: int
@@ -103,7 +108,12 @@ CLIENT_FIELDS: tuple[str, ...] = (
     "audio_max_chunk_bytes",
     "heartbeat_interval_seconds",
     "integrity_failure_termination_seconds",
-    "camera_recovery_seconds",
+    # The browser holds a camera or microphone loss back for the glitch window
+    # before reporting it. The grace and the pause allowance are deliberately
+    # NOT client fields: the browser decides neither, and reads both from the
+    # server's `pause` state on every ingest and heartbeat response
+    # (`schemas.proctoring.PauseOut`), with the grace as a server deadline.
+    "device_glitch_seconds",
     "sampling_fps_normal",
     "sampling_fps_confirming",
     "confirming_window_seconds",

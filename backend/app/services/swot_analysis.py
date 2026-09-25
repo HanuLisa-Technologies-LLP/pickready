@@ -83,7 +83,7 @@ from app.models.job_setup import (
     JobSwotAnalysis,
 )
 from app.prompts import registry
-from app.services import generation_sufficiency, llm_router
+from app.services import compensation_guard, generation_sufficiency, llm_router
 from app.workers.dispatch import TaskHandle, dispatch_after_commit
 
 log = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
     sibling here: the client never supplies GENERATION INPUT either. Every
     value below is read from the row.
     """
-    jd = dict(job.jd_json or {})
+    jd = compensation_guard.strip_keys(dict(job.jd_json or {}))
     experience = ""
     if job.experience_min_years is not None and job.experience_max_years is not None:
         experience = f"{job.experience_min_years} to {job.experience_max_years} years"
@@ -209,14 +209,14 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
         "grade": grade_label(job.assessment_grade),
         "role_classification": _clean(job.role_classification),
         "experience": experience,
-        "role_summary": _clean(jd.get("role")),
+        "role_summary": _clean(compensation_guard.redact_text(jd.get("role"))),
         "responsibilities": _listed(jd.get("responsibilities")),
         "skills": _listed(jd.get("skills")),
         "education": _clean(jd.get("education")),
-        "jd_document": _clean(job.jd_markdown)[:6000],
-        "about_company": _clean(job.about_company),
-        "work_life": _clean(job.work_life),
-        "benefits": _clean(job.benefits),
+        "jd_document": _clean(compensation_guard.redact_text(job.jd_markdown))[:6000],
+        "about_company": _clean(compensation_guard.redact_text(job.about_company)),
+        "work_life": _clean(compensation_guard.redact_text(job.work_life)),
+        "benefits": _clean(compensation_guard.redact_text(job.benefits)),
     }
 
 

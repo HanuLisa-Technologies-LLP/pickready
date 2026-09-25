@@ -7,6 +7,7 @@
 // send a blank answer that another refused.
 
 import {
+  isCodingPayloadV2,
   isTextType,
   type AnswerPayload,
   type CodingPayloadView,
@@ -15,6 +16,7 @@ import {
   type QuestionOut,
   type QuestionType,
 } from "@/lib/assessment/contracts";
+import { numberInWords } from "@/lib/assessment/words";
 
 export type TextAnswer = { text: string };
 export type McqSingleAnswer = { selected_option_id: string };
@@ -59,6 +61,10 @@ export function emptyAnswerFor(question: QuestionOut): AnswerPayload {
         values: (question.payload as FillBlankPayloadView).blanks.map(() => ""),
       };
     case "coding": {
+      if (isCodingPayloadV2(question.payload)) {
+        const language = question.payload.languages[0] ?? "";
+        return { language, code: question.payload.starter_code[language] ?? "" };
+      }
       const payload = question.payload as CodingPayloadView;
       return { language: payload.language, code: payload.starter_code };
     }
@@ -99,10 +105,10 @@ export function isAnswerEmpty(value: AnswerPayload | null, starterCode = ""): bo
 
 /**
  * The answer as one readable line, for the candidate's own transcript bubble
- * the moment they press Send. The server renders the authoritative line
- * (`ConversationTurn.answer_line`) and the bubble adopts it on arrival; this
- * one exists so the optimistic bubble is not blank for the seconds in
- * between. Chosen options are quoted by their TEXT, never by their id, for the
+ * the moment they press Send. The server renders the authoritative line (the
+ * `answer` of its `history` entry) and the screen shows that once the response
+ * arrives; this one exists so the pending bubble is not blank for the seconds
+ * in between. Chosen options are quoted by their TEXT, never by their id, for the
  * same reason the recruiter's view quotes them: an id is not evidence of what
  * somebody chose.
  */
@@ -127,7 +133,9 @@ export function answerLine(question: QuestionOut | null, value: AnswerPayload | 
   }
   if (isCodingAnswer(value)) {
     const lines = value.code.split("\n").length;
-    return `Code submitted in ${languageLabel(value.language)}, ${lines === 1 ? "one line" : `${lines} lines`}.`;
+    // Counts written out, as everywhere on the assessment surface
+    // (`words.ts`): a digit on this screen reads as a clock or a score.
+    return `Code submitted in ${languageLabel(value.language)}, ${lines === 1 ? "one line" : `${numberInWords(lines)} lines`}.`;
   }
   return "";
 }
@@ -150,16 +158,24 @@ export function fillTemplate(template: string, values: string[]): string {
     .join("");
 }
 
-/** How each permitted coding language is written for a person. Mirrors
- *  `services/assessment_formats/types.CODING_LANGUAGES`. */
+/**
+ * How each coding language is written for a person.
+ *
+ * The first four are the languages a deployment can offer, in the words of
+ * the backend's language registry
+ * (`backend/app/services/code_execution/languages.py`, `LanguageSpec.label`);
+ * `coding-languages-parity.test.ts` fails when the two disagree. The rest are
+ * the older keys a stored answer from before code execution may carry, so
+ * the recruiter's transcript can still name them.
+ */
 export const CODING_LANGUAGE_LABELS: Record<string, string> = {
-  python: "Python",
-  javascript: "JavaScript",
-  typescript: "TypeScript",
+  python: "Python 3",
   java: "Java",
+  cpp: "C++",
+  javascript: "JavaScript (Node.js)",
+  typescript: "TypeScript",
   go: "Go",
   csharp: "C#",
-  cpp: "C++",
   sql: "SQL",
   plaintext: "Plain text",
 };
@@ -168,19 +184,39 @@ export function languageLabel(language: string): string {
   return CODING_LANGUAGE_LABELS[language] ?? language;
 }
 
+/**
+ * The starter code the candidate was given for the language their answer is
+ * in, or "" for anything that is not a coding question. A version 2 question
+ * carries one starter per language, so the comparison follows the language
+ * the candidate picked rather than the first one offered: an answer that
+ * switched to Java and left the Java starter untouched has written nothing,
+ * however different it is from the Python starter.
+ */
+export function starterCodeFor(
+  question: QuestionOut | null | undefined,
+  value: AnswerPayload | null
+): string {
+  if (!question || question.question_type !== "coding") return "";
+  if (isCodingPayloadV2(question.payload)) {
+    const language = isCodingAnswer(value)
+      ? value.language
+      : (question.payload.languages[0] ?? "");
+    return question.payload.starter_code[language] ?? "";
+  }
+  return (question.payload as CodingPayloadView).starter_code ?? "";
+}
+
 /** The key under which a turn's answer is drafted and its behaviour captured.
  *
- *  A base question has an id. A follow-up or a re-ask is prose with no
- *  question row of its own, so its key is derived from where it sits in the
- *  conversation: at most one follow-up and one re-ask can be pending on one
- *  base question, so the answered count plus the re-ask flag names it. */
-export function turnKeyFor(
-  question: QuestionOut | null | undefined,
-  answeredQuestions: number,
-  isReask: boolean
-): string {
-  if (question) return question.id;
-  return `prose:${answeredQuestions}:${isReask ? "reask" : "follow-up"}`;
+ *  The server's `turn_seq` names every turn it opens, a base question, a
+ *  follow-up and a re-ask alike, and it only ever increases within one
+ *  conversation. Keying on it rather than on the question id means a re-ask
+ *  of the same question is a fresh draft and a fresh capture, which is what
+ *  the server measures it as, and a key can never be reused by a later turn.
+ *  The conversation id is part of the key because local drafts are stored
+ *  per application and a retaken conversation starts its sequence again. */
+export function turnKeyFor(conversationId: string, turnSeq: number): string {
+  return `${conversationId}:turn:${turnSeq}`;
 }
 
 /** Whether a turn is answered in prose: a text-type base question, or any

@@ -20,26 +20,70 @@ from pydantic import BaseModel
 
 
 class SessionMediaStartOut(BaseModel):
-    """The recording opened for a proctored session (owner ruling 2026-09-22).
+    """The recording opened for a proctored session.
 
-    Deliberately NOT `VideoStartOut`: that schema carries the interview's
-    served question list, and a proctored conversational session asks its
-    questions one turn at a time through `respond`. Returning an empty
-    question list there would be a shape that reads as "this interview has no
-    questions".
-
-    It carries the same two CEILINGS the interview start does, because the
-    browser has to know them before it opens a MediaRecorder, and a client
-    that guessed would discover the limit only when the upload was refused.
-    No bucket name and no object key, like every other schema in this file.
+    Carries every number the browser needs BEFORE it opens a MediaRecorder,
+    because a client that guessed would discover a limit only when a part was
+    refused mid-session: the part ceiling and floor, the recording's total
+    ceiling, the longest session, and the recorder's own caps. The server
+    refuses anything outside them regardless, so these are served for the
+    client's benefit and are not a boundary. No bucket name and no object key,
+    like every other schema in this file.
     """
 
     conversation_id: uuid.UUID
     recording_id: uuid.UUID
     #: A `services/video/lifecycle` status; `recording` on a fresh open.
     status: str
+    #: Total bytes across every segment of this recording.
     max_upload_bytes: int
     max_duration_seconds: int
+    #: One part's ceiling, and S3's floor for every part but a segment's last.
+    part_max_bytes: int
+    part_min_bytes: int
+    #: The MediaRecorder caps (`videoBitsPerSecond`, `audioBitsPerSecond`,
+    #: and the capture resolution).
+    video_bits_per_second: int
+    audio_bits_per_second: int
+    max_width: int
+    max_height: int
+
+
+class SegmentOpenIn(BaseModel):
+    """The MediaRecorder's MIME type for the segment about to start. Only its
+    subtype is used, through the fixed extension table in `video/keys.py`."""
+
+    source_format: str | None = None
+
+
+class SegmentOut(BaseModel):
+    """One segment as the server holds it. The candidate's browser uses the
+    id to address parts; it never learns where the bytes land."""
+
+    segment_id: uuid.UUID
+    recording_id: uuid.UUID
+    ordinal: int
+    #: `open`, `completed` or `aborted`.
+    status: str
+    #: Part numbers received so far, so a reloaded page can resume without
+    #: re-sending a part the store already holds.
+    parts_received: list[int]
+    #: Operational byte count of what arrived, never an assessment figure.
+    bytes_received: int
+    final_part_number: int | None = None
+
+
+class RecordingStatusOut(BaseModel):
+    """The candidate's honest view of their recording.
+
+    `status` is the lifecycle state and `message` the plain-language account
+    of it. The message never pretends a failed step ran, and no internal
+    identifier crosses beyond the recording's own id.
+    """
+
+    recording_id: uuid.UUID
+    status: str
+    message: str
 
 
 class VideoAccessOut(BaseModel):
@@ -49,9 +93,10 @@ class VideoAccessOut(BaseModel):
     #: Null when no recording exists (every conversational session today).
     recording_id: uuid.UUID | None = None
 
-    #: 'conversational' | 'video_interview', or null before any session opens.
+    #: 'conversational', or null before any session opens. A row written by
+    #: the deleted video-interview mode still reads 'video_interview'.
     assessment_mode: str | None = None
-    #: "Video interview" / "Conversational" / "Not started".
+    #: "Conversational" / "Not started", or "Video interview" for such a row.
     assessment_mode_label: str
 
     #: "Ready" / "Processing" / "Failed" / "No recording" -- the four dashboard

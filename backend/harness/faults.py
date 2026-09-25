@@ -62,6 +62,7 @@ import httpx
 from app.config.llm_providers import SETTINGS_ATTR_FOR_MODEL
 
 from harness.doubles.clock import Clock
+from harness.doubles.code_execution import SANDBOX_HOST, SANDBOX_URL, judge0_responder
 from harness.doubles.storage import FailingObjectStore
 from harness.doubles.vendor import (
     OPENAI_HOST,
@@ -82,6 +83,7 @@ __all__ = [
     "assert_clean",
     "clock_advance",
     "clock_at",
+    "code_execution_failure",
     "dispatch_failure",
     "embedding_failure",
     "model_answers",
@@ -526,6 +528,82 @@ def embedding_failure(kind: str) -> Iterator[FaultSpec]:
         yield applied
 
 
+# -- The code-execution seam -------------------------------------------------
+
+#: The token the fault configures as `JUDGE0_AUTH_TOKEN`. Obviously not a
+#: token, for the reason `_HARNESS_CREDENTIAL` gives, and it unlocks nothing:
+#: the routing transport answers the sandbox host from a fixture.
+_HARNESS_SANDBOX_TOKEN = "harness-fault-sandbox-token-not-a-real-token"
+
+
+def _configure_sandbox() -> Callable[[], None]:
+    """Configure the deployment the way a live sandbox is configured, and put
+    back exactly what was there.
+
+    WHY SETTINGS AND NOT `override_provider`
+    ------------------------------------------
+    `override_provider` would hand the product an adapter the harness built.
+    Configuring the three settings instead makes the product's OWN
+    `code_execution.get_provider()` build the real `Judge0Provider` from them,
+    so `is_enabled`, `get_provider` and the adapter's timeouts, headers and
+    language ids are all the product's, and the only thing the harness owns is
+    what the host answers. With the backend left `disabled` a Run would still
+    answer 503, but for `ExecutionNotConfigured` rather than for the outage the
+    scenario injected, and the two are told apart by the `error_class` the row
+    records: a scenario asserting on it proves which one it met.
+    """
+    from app.core.config import get_settings  # noqa: PLC0415 -- product import
+
+    settings = get_settings()
+    values = {
+        "code_execution_backend": "judge0",
+        "judge0_url": SANDBOX_URL,
+        "judge0_auth_token": _HARNESS_SANDBOX_TOKEN,
+    }
+    previous = {name: getattr(settings, name) for name in values}
+    for name, value in values.items():
+        object.__setattr__(settings, name, value)
+
+    def restore() -> None:
+        for name, value in previous.items():
+            object.__setattr__(settings, name, value)
+
+    return restore
+
+
+@contextmanager
+def code_execution_failure(kind: str) -> Iterator[FaultSpec]:
+    """Serve `kind` from the Judge0 host for the duration.
+
+    Kinds: unavailable (500), queue_full (503), credential (401), each an
+    authored fixture from `tests/fixtures/vendor/judge0/`, and timeout, which
+    is the absence of a response and cannot have one. See
+    `harness.doubles.code_execution` for what the real adapter makes of each.
+
+    The route goes in FIRST and comes out LAST, so at no instant is a sandbox
+    configured without the transport that answers for it: a request built in
+    that window would try to resolve the `.invalid` host, fail as a network
+    error, and be classified as an outage the scenario never injected.
+    """
+    spec = FaultSpec("code_execution_failure", {"kind": kind})
+    responder = judge0_responder(kind)
+
+    def install() -> Callable[[], None]:
+        undo_route = _install_route(
+            _HttpRoute(label=f"sandbox:{kind}", host=SANDBOX_HOST, responder=responder)
+        )
+        restore_settings = _configure_sandbox()
+
+        def undo() -> None:
+            restore_settings()
+            undo_route()
+
+        return undo
+
+    with _applied(spec, install) as applied:
+        yield applied
+
+
 # -- The Redis seam ----------------------------------------------------------
 
 
@@ -904,6 +982,7 @@ def clock_advance(seconds: float) -> Iterator[FaultSpec]:
 _REGISTRY: Mapping[str, Callable[..., Any]] = {
     "model_failure": model_failure,
     "embedding_failure": embedding_failure,
+    "code_execution_failure": code_execution_failure,
     "redis_down": redis_down,
     "redis_slow": redis_slow,
     "object_store_failure": object_store_failure,

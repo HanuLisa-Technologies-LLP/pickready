@@ -203,6 +203,14 @@ class EvidenceClaimLink(Base, UUIDPKMixin, CreatedAtMixin):
 class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
     """One fact about a PERSON that outlives the job it was first read on (0113).
 
+    HISTORY ONLY SINCE 2026-09-25. Phase 3 of the Vivekium release asks every
+    item of every assessment, so nothing reuses portable evidence any more:
+    the service module that was its only reader and writer is deleted,
+    and so is the consent item that authorised the reuse. The TABLE stays,
+    mapped, with whatever rows it holds (S4: no irreversible drop of a table
+    that may hold customer rows); a drop is a later owner decision. The rest
+    of this docstring describes the shape as it was built.
+
     THE OWNER RULING OF 2026-09-22 reversed the 2026-07-30 "reuse is retired"
     decision, and this table is where the reversal lives. Read
     `services/retake.py` for the reversal itself; what matters here is the
@@ -223,9 +231,8 @@ class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
     would state a verdict about criteria the candidate was never assessed on,
     which is the exact error the 2026-07-30 retirement was written to prevent
     and which the reversal does not license. A column is the only place a
-    verdict could travel, so there is no column, and
-    `tests/test_portable_evidence.py` reads `information_schema` and fails on
-    one appearing.
+    verdict could travel, so there is no column (the test that read
+    `information_schema` for one went with the feature on 2026-09-25).
 
     `statement` is the product's OWN normalised wording, like
     `evidence_claims.claim` and for the same reason: a verbatim copy of what a
@@ -245,9 +252,8 @@ class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
     `uq_portable_evidence_subject` is UNIQUE with no predicate, and `status`
     is a soft retirement, which is the exact pairing that produced a 500 on
     the matrix editor in pilot on 2026-09-20. It is safe here for the one
-    reason it was not safe there: the only writer is an UPSERT that REVIVES
-    the row on conflict (`services/portable_evidence.record`). There is no
-    INSERT path that can land on an occupied key.
+    reason it was not safe there: the only writer was an UPSERT that REVIVED
+    the row on conflict. Since 2026-09-25 there is no writer at all.
     """
 
     __tablename__ = "portable_evidence_items"
@@ -260,9 +266,8 @@ class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
         ForeignKey("candidates.id", ondelete="CASCADE"),
         nullable=False,
     )
-    #: One of `portable_evidence.PORTABLE_KINDS`, pinned by a CHECK. A closed
-    #: vocabulary rather than free text: an unrecognised kind is a new claim
-    #: about what may be reused, and it should cost a reviewed line.
+    #: A closed vocabulary pinned by a CHECK (migration 0113), which is where
+    #: the kinds are read from now that the module that wrote them is gone.
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     #: What the fact is ABOUT: a skill, an employer, a qualification. This is
     #: what a matrix criterion is matched against.

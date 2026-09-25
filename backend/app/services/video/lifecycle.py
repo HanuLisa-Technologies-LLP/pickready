@@ -1,77 +1,63 @@
-"""The recording status machine (dual-mode spec 16, video spec 8).
+"""The session recording's status machine.
 
 Explicit states, explicit transitions, and every failure state names the STEP
 that failed. `advance` is the only way a status moves, so an illegal jump
-raises instead of persisting -- the same posture as `hiring_pipeline`, on a
+raises instead of persisting, the same posture as `hiring_pipeline` on a
 smaller machine.
 
-    recording -> uploading -> uploaded -> processing -> compressing
-                                                     -> storing -> ready
+    recording -> uploaded -> compressing -> storing -> ready
 
-A `proctored_session` recording (owner ruling, 2026-09-22) takes the SHORT
-edge `uploaded -> compressing` and never enters `processing`. That edge is not
-a convenience: `processing` is where the audio is extracted, transcribed and
-segmented into the records the scorers read, so a monitoring recording that
-could reach it would be one call away from being graded. The state it cannot
-enter is the enforcement, exactly as the missing `sourced -> shortlisted` edge
-is in `hiring_pipeline`.
+`recording` covers the whole session: the browser opens segments and streams
+their parts while the candidate answers. `finalize` (the candidate's last call,
+or the orphan sweep when the tab closed) moves the row to `uploaded` once every
+segment is one completed object, and the processing task takes it from there.
+
+THERE IS NO TRANSCRIPTION STATE ANY MORE, and the absence is the enforcement.
+The deleted video-interview mode had a `processing` state where audio was
+extracted, transcribed and written into the records the scorers read; a
+proctored session recording never had a door into it, and now there is no
+such room at all. The values `uploading`, `processing`, `processing_failed`
+and `transcription_failed` stay legal in the database CHECK (migration 0081)
+so a row written before the removal still loads, and the delivery layer
+reads any status it does not know as Processing rather than failing.
 
 Failure states and where they lead back to on retry:
 
-    upload_failed          the candidate re-uploads (client-side retry only;
-                           there are no server-side bytes to retry with)
-    processing_failed      -> uploaded (re-dispatch reruns the pipeline)
-    transcription_failed   -> uploaded
-    compression_failed     -> uploaded
+    upload_failed          terminal: no bytes ever arrived, so there is
+                           nothing server-side to retry with
+    compression_failed     -> uploaded (re-dispatch reruns the pipeline)
     storage_failed         -> uploaded
 
-Re-running the whole pipeline after a late failure is safe because every step
-is idempotent: transcript structuring skips questions that already carry a
-spoken answer, compression overwrites its own key, and raw deletion is a
-verified no-op once the object is gone.
+Re-running the pipeline after a late failure is safe because every step is
+idempotent: assembly and compression overwrite their own working files, the
+compressed object overwrites its own key, and raw deletion is a verified no-op
+once an object is gone.
 """
 from __future__ import annotations
 
 RECORDING = "recording"
-UPLOADING = "uploading"
 UPLOADED = "uploaded"
-PROCESSING = "processing"
 COMPRESSING = "compressing"
 STORING = "storing"
 READY = "ready"
 
 UPLOAD_FAILED = "upload_failed"
-PROCESSING_FAILED = "processing_failed"
-TRANSCRIPTION_FAILED = "transcription_failed"
 COMPRESSION_FAILED = "compression_failed"
 STORAGE_FAILED = "storage_failed"
 
-WORKING_STATUSES = (
-    RECORDING, UPLOADING, UPLOADED, PROCESSING, COMPRESSING, STORING, READY,
-)
-FAILURE_STATUSES = (
-    UPLOAD_FAILED, PROCESSING_FAILED, TRANSCRIPTION_FAILED,
-    COMPRESSION_FAILED, STORAGE_FAILED,
-)
+WORKING_STATUSES = (RECORDING, UPLOADED, COMPRESSING, STORING, READY)
+FAILURE_STATUSES = (UPLOAD_FAILED, COMPRESSION_FAILED, STORAGE_FAILED)
 STATUSES = WORKING_STATUSES + FAILURE_STATUSES
 
 #: Failure states the staff retry endpoint may reset to `uploaded` for a
-#: re-dispatch. `upload_failed` is absent deliberately: the raw bytes never
+#: re-dispatch. `upload_failed` is absent deliberately: the bytes never
 #: arrived, so there is nothing server-side to retry with.
-RETRYABLE_FAILURES = frozenset(
-    {PROCESSING_FAILED, TRANSCRIPTION_FAILED, COMPRESSION_FAILED, STORAGE_FAILED}
-)
+RETRYABLE_FAILURES = frozenset({COMPRESSION_FAILED, STORAGE_FAILED})
 
 _ALLOWED: dict[str, frozenset[str]] = {
-    RECORDING: frozenset({UPLOADING, UPLOAD_FAILED}),
-    UPLOADING: frozenset({UPLOADED, UPLOAD_FAILED}),
-    UPLOAD_FAILED: frozenset({UPLOADING}),
-    # PROCESSING for an interview recording, COMPRESSING for a proctored
-    # session recording, which has no transcript to build.
-    UPLOADED: frozenset({PROCESSING, COMPRESSING}),
-    PROCESSING: frozenset({COMPRESSING, PROCESSING_FAILED, TRANSCRIPTION_FAILED}),
-    PROCESSING_FAILED: frozenset({UPLOADED}),
-    TRANSCRIPTION_FAILED: frozenset({UPLOADED}),
+    RECORDING: frozenset({UPLOADED, UPLOAD_FAILED}),
+    UPLOAD_FAILED: frozenset(),
+    UPLOADED: frozenset({COMPRESSING}),
     COMPRESSING: frozenset({STORING, COMPRESSION_FAILED}),
     COMPRESSION_FAILED: frozenset({UPLOADED}),
     STORING: frozenset({READY, STORAGE_FAILED}),

@@ -63,13 +63,11 @@ from app.schemas.jobs import (
     JobPatchIn,
     PublicJobOut,
     PublishJobOut,
-    RankedCandidateOut,
-    RankedCandidatesOut,
     ReportingToOptionsOut,
     ReviewProfileOut,
     jd_body_is_empty,
 )
-from app.schemas.matching import RunMatchingOut
+from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
 from uuid import uuid4 as _uuid4
 
 from app.services import approval_fsm as fsm
@@ -89,7 +87,7 @@ from app.services import swot_analysis
 from app.services import telemetry_events
 from app.services.audit import audit, record_action
 from app.workers import agent_client
-from app.workers.dispatch import dispatch, dispatch_after_commit
+from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -1342,30 +1340,29 @@ async def list_job_candidates(
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> RankedCandidatesOut:
-    """The job page's inline candidate table — ranked, paginated, word-labelled.
+    """The job page's inline candidate table: ranked, paginated, in words.
 
-    Ordering is decided in SQL from the job's grade (services/job_candidates)
-    and is a TOTAL order, so page boundaries stay stable across requests. No
-    numeric score appears in the response: the five comments each carry a word
-    label instead (spec §2.2 / claude.md).
+    The order is ONE key derived in SQL (`services/yukti/ranking`): the Yukti
+    resume check, blended with the Tatva Assessment once a report exists,
+    capped after the blend when a Must-have failed, then arrival, then id. It
+    is a TOTAL order, so page boundaries stay stable across requests. No
+    number appears in the response (D3): the AI Match is a grade word, its
+    evidence tags are text and its provenance is sentences, and the page's
+    `ranking_header` says in words how the order is made.
 
     Every row carries `profile_age`. After a renewal, applicants from the
-    previous window read as Old Profiles — still listed, still ranked, still
+    previous window read as Old Profiles: still listed, still ranked, still
     openable; the distinction is provenance and billing, never access.
 
     Every row also carries `is_new_candidate`, and the page carries
-    `new_candidate_count` (workflow section 32). Somebody who applies the
-    morning after a selection round lands wherever their score puts them, which
-    is usually a page nobody opens again; the count is how the team finds out
-    they are there at all, so it is computed over the WHOLE job rather than
-    over the rows on this page.
+    `new_candidate_count` (workflow section 32), computed over the WHOLE job
+    rather than over the rows on this page.
     """
     job = await _get_visible_job(session, user, job_id)
     grade = job.assessment_grade or "non_managerial"
     result = await job_candidates.ranked_candidates(
         session,
         job.id,
-        grade,
         page=page,
         page_size=page_size,
         include_archived=include_archived,
@@ -1375,7 +1372,7 @@ async def list_job_candidates(
     return RankedCandidatesOut(
         job_id=job.id,
         grade=grade,
-        level=job_candidates.grade_label(grade),
+        ranking_header=result.ranking_header,
         results=[RankedCandidateOut.model_validate(row) for row in result.rows],
         total=result.total,
         page=result.page,
@@ -1454,28 +1451,6 @@ async def review_profile(
         charged=charged,
         subunits_charged=CONSUMPTION_SUBUNITS[EVENT_OLD_PROFILE_REVIEW] if charged else 0,
     )
-
-
-@router.post(
-    "/{job_id}/run-matching",
-    response_model=RunMatchingOut,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def run_job_matching(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.TRIGGER_MATCHING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> RunMatchingOut:
-    """"RUN AI MATCHING" on the job page (spec §7).
-
-    Job-scoped alias for POST /matching/jobs/{job_id}/run, so the job page does
-    not have to reach into a second router for its own primary action. Both
-    paths share one implementation — there is no second copy of the eligibility
-    rules to drift.
-    """
-    from app.api.matching import run_matching as _run_matching
-
-    return await _run_matching(job_id=job_id, user=user, session=session)
 
 
 @router.put("/{job_id}/compensation", response_model=JobDetailOut)
@@ -1706,18 +1681,20 @@ async def _store_one_databank_resume(
         # procurement tag the job page renders. Both say databank here.
         source=LinkSource.databank,
         source_type=SOURCE_TYPE_DATABANK,
-        # Gate 5. NOT `applied`: the recruiter moved a file out of their own
-        # databank, and the person has not read this job, wanted it, or
-        # answered a single question about their notice period. `sourced` has
-        # exactly one forward edge, `applied`, which the candidate takes
-        # themselves in the portal -- so nothing here can invite them to an
-        # assessment or shortlist them by mistake.
-        status=hiring_pipeline.SOURCED,
-        status_updated_at=datetime.now(timezone.utc),
-        current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.SOURCED],
     )
-    session.add(link)
-    await session.flush()
+    # Gate 5. NOT `applied`: the recruiter moved a file out of their own
+    # databank, and the person has not read this job, wanted it, or answered a
+    # single question about their notice period. `sourced` has exactly one
+    # forward edge, `applied`, which the candidate takes themselves in the
+    # portal, so nothing here can invite them to an assessment or shortlist
+    # them by mistake. `start_sourced` also writes the history row this path
+    # used to skip (audit Part 1 #5).
+    await hiring_pipeline.start_sourced(
+        session,
+        link,
+        actor_user_id=user.user_id,
+        remarks="Uploaded to the job from the recruitment team's databank",
+    )
     # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT for a profile
     # entering the pipeline via the databank upload path.
     await telemetry_events.emit(
@@ -1758,12 +1735,16 @@ async def upload_databank_candidates(
 ) -> DatabankUploadOut:
     """Upload Candidate Data Bank: up to 25 resumes in one request.
 
-    PARTIAL SUCCESS IS THE CONTRACT. Each file is handled on its own and every
-    file gets a result row, so one corrupt PDF costs the recruiter that one
-    file and not the other 24. Nothing here parses a resume inline: each
-    accepted file enqueues the existing `parse_resume` task, and one
-    `run_matching` is enqueued for the job at the end rather than once per file
-    (claude.md rule 4).
+    PARTIAL SUCCESS IS THE CONTRACT. Each file is handled on its own, inside
+    its own savepoint, and every file gets a result row, so one corrupt PDF
+    costs the recruiter that one file and not the other 24: a file that fails
+    after writing a row rolls back its own rows and leaves the others and the
+    request transaction intact. Nothing here parses a resume inline: each
+    accepted file enqueues the existing `parse_resume` task AFTER the commit,
+    so no parse can start on a row the request then rolls back. The parse
+    dispatches `pickready.yukti_score_profile`, which reads that one link
+    against the job's saved skills; a job-wide AI Matching run here would
+    re-read every other candidate on the job to rank the new ones.
 
     Databank candidates go through IDENTICAL AI parsing, embedding, matching
     and assessment to applied and sourced candidates. `source_type` is a tag
@@ -1798,8 +1779,11 @@ async def upload_databank_candidates(
     results: list[DatabankUploadResultOut] = []
     for upload in files:
         try:
-            results.append(await _store_one_databank_resume(session, user, job, upload))
-        except Exception as exc:  # noqa: BLE001 — one bad file, not a failed batch
+            async with session.begin_nested():
+                results.append(
+                    await _store_one_databank_resume(session, user, job, upload)
+                )
+        except Exception as exc:  # noqa: BLE001 -- one bad file, not a failed batch
             logger.warning(
                 "databank.file_failed job_id=%s file=%s error=%s",
                 job_id, upload.filename, type(exc).__name__,
@@ -1814,12 +1798,9 @@ async def upload_databank_candidates(
 
     created = [r for r in results if r.ok]
     for result in created:
-        dispatch("pickready.parse_resume", args=[str(result.profile_id)])
-    if created:
-        # One matching run for the batch. Twenty-five is the same job scored
-        # twenty-five times otherwise, and matching already scores every
-        # non-archived link on the job.
-        dispatch("pickready.run_matching", args=[str(job.id)])
+        dispatch_after_commit(
+            session, "pickready.parse_resume", args=[str(result.profile_id)]
+        )
 
     await audit(
         session,

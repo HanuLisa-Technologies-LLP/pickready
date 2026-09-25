@@ -124,11 +124,25 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         task="pickready.purge_assessment_media",
         interval_minutes=60,
         why=(
-            "Deletes nothing while `assessment_media_retention_days` is zero, "
-            "which is the platform's current posture. The owner ruling of "
-            "2026-09-22 requires stored assessment media to have a retention "
-            "and deletion lifecycle, and a retention window with no sweep "
-            "behind it is a paragraph rather than a policy."
+            "Owner decision D4: a session recording is purged at the earlier "
+            "of its stored purge date (session end plus 90 days) and its "
+            "job's closure purge. The S3 lifecycle rule is only the backstop; "
+            "this is the HEAD-confirmed deletion that stamps the row, and a "
+            "retention promise with no sweep behind it is a paragraph rather "
+            "than a policy."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-reconcile-assessment-recordings",
+        task="pickready.reconcile_assessment_recordings",
+        interval_minutes=60,
+        why=(
+            "Retries raw segment deletions that did not confirm, finalizes a "
+            "recording whose tab closed before it could, re-hands a "
+            "finalized recording no processing run picked up, and gives a run "
+            "whose task was killed the failure state of its step. Before it, a "
+            "failed raw deletion was counted on the row and never looked at "
+            "again."
         ),
     ),
     ScheduledTask(
@@ -296,6 +310,35 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "re-dispatch of a row that is merely slow a no-op. Rows stuck "
             "mid-send are reported, never resent. Every fifteen minutes "
             "because a confirmation or a reminder is only useful on the day."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-reconcile-coding-submissions",
+        task="pickready.reconcile_coding_submissions",
+        interval_minutes=15,
+        why=(
+            "Phase 4 WP-4B2: a final coding answer is executed by a task "
+            "dispatched AFTER its submit commits, and that invoke can be lost, "
+            "a worker can die mid-poll and a code-quality review can fail. "
+            "Each leaves a row owing work with nothing working on it. This "
+            "asks the TABLE, re-dispatches it (the task's advisory lock makes "
+            "a slow row a no-op), reports a row stuck past the alarm threshold "
+            "without giving up on it, and hands a completed conversation to "
+            "scoring once its coding work is done or has waited past the "
+            "maximum. Fifteen minutes, because scoring waits on it."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-probe-code-execution",
+        task="pickready.probe_code_execution",
+        interval_minutes=5,
+        why=(
+            "Phase 4 WP-4B2: one canary program through the code sandbox and "
+            "its health, logged as status and latency only. The alarm on "
+            "`code_execution.probe status=failed` is how a sandbox outage "
+            "pages somebody before candidates report it. With execution "
+            "disabled it logs `status=disabled`, so the policy is visible "
+            "rather than inferred from silence."
         ),
     ),
 

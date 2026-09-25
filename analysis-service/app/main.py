@@ -3,7 +3,8 @@
 Three routes, called only by the Vivekium backend over the private network:
 
     POST /diarize   multipart field `chunk` (audio/webm or audio/wav, at most
-                    MAX_CHUNK_BYTES) -> {"speaker_count": int, "speech_seconds": float}
+                    MAX_CHUNK_BYTES) -> {"speaker_count": int, "speech_seconds": float,
+                    "speaker_seconds": [float, ...] longest first}
     POST /ai-text   {"text": str} -> {"probability_ai": float, "model": str, "note": str}
                     Behind AI_TEXT_ENABLED. Informational only; see app/ai_text.py.
     GET  /health    {"status": "ok" | "degraded", "diarization": ..., "ai_text": ...}
@@ -46,6 +47,9 @@ ACCEPTED_CONTENT_TYPES = frozenset({"audio/webm", "audio/wav", "audio/x-wav", "a
 class DiarizeOut(BaseModel):
     speaker_count: int = Field(ge=0)
     speech_seconds: float = Field(ge=0.0)
+    #: Seconds each speaker spoke, longest first; one entry per speaker, so
+    #: its length always equals `speaker_count`. Figures, never audio.
+    speaker_seconds: list[float]
 
 
 class AiTextIn(BaseModel):
@@ -151,7 +155,11 @@ def create_app(
             raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail=str(error)) from error
         finally:
             del data
-        return DiarizeOut(speaker_count=result.speaker_count, speech_seconds=result.speech_seconds)
+        return DiarizeOut(
+            speaker_count=result.speaker_count,
+            speech_seconds=result.speech_seconds,
+            speaker_seconds=list(result.speaker_seconds),
+        )
 
     @application.post("/ai-text", response_model=AiTextOut)
     async def ai_text(request: Request, body: AiTextIn) -> AiTextOut:

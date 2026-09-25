@@ -389,8 +389,9 @@ async def can_start_assessment(
     tenant_id: uuid.UUID,
     *,
     role_classification: str | None,
+    count: int = 1,
 ) -> tuple[bool, Decimal, Decimal]:
-    """May an assessment START against a job of this classification?
+    """May `count` assessments START against a job of this classification?
 
     Master Directive Part 5 §2.3: the pool must hold the FULL cost of the
     report the assessment will produce — 1.5 credits for a STEM job, 1.0 for
@@ -403,11 +404,27 @@ async def can_start_assessment(
     message can state the role type, the credits required, and the current
     balance, exactly as §2.3 requires. A demonstration tenant is always
     allowed, same as every other billing refusal.
+
+    `count` IS THE WHOLE BATCH (PLAN-p3 3.2). The invitation route used to
+    ask about ONE report and then invite every ticked applicant, so a balance
+    holding one assessment let a recruiter invite two hundred people, each of
+    whom would then be charged at completion into a deficit nobody chose.
+    The batch is now asked for `count x cost` in ONE question and refused in
+    ONE sentence naming the shortfall. The START of each assessment is where
+    this is asked again with the default of one (PLAN-p3 3.2 step 5, owned by
+    the start route in `api/assessment_conversation`), because two batches
+    that each fit the balance are not jointly covered by it, and the start is
+    the last moment the work is still a choice.
     """
     from app.models.billing import EVENT_COMPLETED
 
-    required = consumption_subunits(EVENT_COMPLETED, role_classification)
-    assert required is not None  # EVENT_COMPLETED is always billable
+    if count < 1:
+        # A programming error: an empty batch starts nothing and asks nothing,
+        # and "zero assessments are affordable" would read as a green light.
+        raise ValueError(f"count must be at least one, got {count}")
+    unit = consumption_subunits(EVENT_COMPLETED, role_classification)
+    assert unit is not None  # EVENT_COMPLETED is always billable
+    required = unit * count
     if await is_demo_tenant(session, tenant_id):
         return True, credits_from_subunits(required), credits_from_subunits(
             await balance_subunits(session, tenant_id)

@@ -61,11 +61,10 @@ def video_download_allowed(candidate: Any) -> bool:
 
 
 # `reuse_across_jobs_allowed` USED TO LIVE HERE and was deleted on
-# 2026-09-22 rather than deprecated. Cross-employer reuse of portable
-# evidence is now answered by `consent_catalog.cross_employer_reuse_allowed`,
-# which reads the catalogue row whose wording actually names that purpose.
-# This module's flag speaks about RETENTION and is wired to the DOWNLOAD
-# verb; reading it for reuse would have stretched one consent over two
-# purposes, and two records for one permission is what rule 5 forbids.
+# 2026-09-22 rather than deprecated: this module's flag speaks about
+# RETENTION and is wired to the DOWNLOAD verb, and reading it for reuse would
+# have stretched one consent over two purposes. The reuse it would have
+# gated was itself retired on 2026-09-25 (every item of every assessment is
+# asked), together with its own catalogue item (`consent_catalog.RETIRED_KEYS`).
 
 

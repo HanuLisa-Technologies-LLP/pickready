@@ -54,9 +54,9 @@ THE THREE ENDPOINTS, AND NOTHING ELSE
 The two-tier split is the point of the mapping and it survived the vendor
 change intact: every task that ran on the reasoning tier still runs on the
 reasoning tier, and every task that ran on the extraction tier still runs on
-the extraction tier. No task moved. `claim_extraction` in particular MUST NOT
-EVALUATE, and moving it up a tier would be a boundary violation rather than an
-upgrade -- see `MODEL_FOR_TASK` below.
+the extraction tier. No task moved. An extraction task MUST NOT EVALUATE, and
+moving one up a tier would be a boundary violation rather than an upgrade --
+see `MODEL_FOR_TASK` below.
 
 No third model, no second embedding model. Adding one is a later decision and
 not one to take on implementation judgment, so `MODEL_FOR_TASK` is a closed
@@ -175,18 +175,15 @@ TaskType = Literal[
     "conversation_turn",
     # ── Job setup ──
     "jd_generation",
-    "technical_questions",
     "swot_analysis",
     "skills_drafting",
     "assessment_context",
-    "situation_classification",
-    "competency_transformation",
     # ── Scoring ──
     "behavioral_assessment",
-    "claim_extraction",
-    "evidence_tiering",
     "dimension_evaluation",
     "triangulation",
+    # ── Ranking (Vivekium release, Phase 2) ──
+    "yukti_matching",
     # ── Output ──
     "report_synthesis",
     "email_composition",
@@ -198,6 +195,11 @@ TaskType = Literal[
     "format_composition",
     "answer_evaluation",
     "fill_blank_equivalence",
+    "coding_question_generation",
+    # Phase 3 WP2: the per-candidate prose questions against the locked
+    # skills contract. Background, inside pickready.generate_candidate_questions.
+    "question_generation",
+    "coding_quality_review",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
     # ── Web research (BD Portal AI Reach, Company Profile research) ──
@@ -205,7 +207,6 @@ TaskType = Literal[
     "company_profile_research",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
-    "rerank",
     "extraction",
 ]
 
@@ -213,16 +214,20 @@ TaskType = Literal[
 #: WHICH MODEL EACH TASK RUNS ON (spec-doc5 §B.3).
 #:
 #: The split is one question: does this task JUDGE or WRITE (Terra), or does it
-#: EXTRACT, CLASSIFY or ROUTE (Luna)? Two entries below are worth their own
-#: sentence because the obvious answer is the wrong one:
+#: EXTRACT, CLASSIFY or ROUTE (Luna)? An extraction task is Luna and MUST NOT
+#: EVALUATE: Runbook §57.1 makes extraction a narrow mechanical step precisely
+#: so that a model's opinion cannot leak into the pipeline before the
+#: components allowed to hold one. Putting Terra there would not be an upgrade,
+#: it would be a boundary violation. `dimension_evaluation` and
+#: `yukti_matching` are Terra because they grade.
 #:
-#:   * `claim_extraction` is Luna and MUST NOT EVALUATE. Runbook §57.1 makes
-#:     extraction a narrow mechanical step precisely so that a model's opinion
-#:     of a claim cannot leak into the pipeline before the dimension evaluators,
-#:     which are the only components allowed to hold one. Putting Terra here
-#:     would not be an upgrade, it would be a boundary violation.
-#:   * `rerank` is Luna because reranking exists to be fast and orders a list
-#:     it does not grade. `dimension_evaluation` is Terra because it grades.
+#: SIX TASK TYPES WERE DELETED in the Vivekium release (Phase 2 WP-F): the
+#: `rerank` hint (its last caller, the retired matcher, now runs as
+#: `yukti_matching`) and five job-setup and scoring types no call site had
+#: used. A task type with no caller is a routing row nothing exercises.
+#: `tests/test_llm_task_routing.DELETED_TASK_TYPES` names all six and keeps
+#: them out of every table, and `test_yukti_legacy_removed` refuses a call
+#: site that passes one.
 #:
 #: What is NOT here: the aggregator. spec-doc5 §B.3 assigns it "No model.
 #: Deterministic code only", so it has no task type at all, and
@@ -233,7 +238,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     # Vaada. "Human-quality dialogue is a stated product bar" (§B.3).
     "conversation_turn": MODEL_TERRA,
     "jd_generation": MODEL_TERRA,
-    "technical_questions": MODEL_TERRA,
     # The recruitment-facing SWOT document: writing, and evidence-bounded.
     "swot_analysis": MODEL_TERRA,
     # Sutra (Vivekium release). The skills draft JUDGES what a role needs from
@@ -241,14 +245,18 @@ MODEL_FOR_TASK: dict[str, str] = {
     # line every candidate is assessed against. Both sides of the Terra half.
     "skills_drafting": MODEL_TERRA,
     "assessment_context": MODEL_TERRA,
-    # Sutra: competency naming, observable-evidence authoring, weight
-    # derivation. Judgment-heavy.
-    "competency_transformation": MODEL_TERRA,
     "behavioral_assessment": MODEL_TERRA,
     # Miti: five isolated rubric-anchored evaluators.
     "dimension_evaluation": MODEL_TERRA,
     # Miti: contradiction reasoning and benign-explanation generation.
     "triangulation": MODEL_TERRA,
+    # Yukti (Vivekium release, Phase 2): reads a batch of resumes against a
+    # job's saved skills and named needs and returns a verdict and a verbatim
+    # quote per item. That is JUDGING, so it is Terra. It used to ride the
+    # Luna `rerank` hint (deleted), which was for a call that "orders a list it
+    # does not grade"; this call grades the evidence the order is built from,
+    # which is the boundary violation that table exists to prevent.
+    "yukti_matching": MODEL_TERRA,
     # Siddhi: writing quality and evidence-citation enforcement.
     "report_synthesis": MODEL_TERRA,
     # Project Evidence Intelligence: assesses how strongly deterministic
@@ -272,6 +280,16 @@ MODEL_FOR_TASK: dict[str, str] = {
     # the reasoning tier's job by definition.
     "format_composition": MODEL_TERRA,
     "answer_evaluation": MODEL_TERRA,
+    # A coding question: the statement, a starter program per language, the
+    # visible and hidden tests AND a reference solution that must pass every
+    # one of them in the sandbox. Writing that is correct under execution is
+    # the hardest writing task in the product, so it is Terra.
+    "coding_question_generation": MODEL_TERRA,
+    # Writes the per-candidate questions every answer is judged against.
+    "question_generation": MODEL_TERRA,
+    # Judges the quality of a candidate's program beside its hidden-test
+    # results. It JUDGES, so it is on the reasoning tier with the other judges.
+    "coding_quality_review": MODEL_TERRA,
     # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
     # 2026-09-08. That was the single reason AI Reach returned two or three
     # companies and a researched company profile read thin, and it is the same
@@ -296,25 +314,13 @@ MODEL_FOR_TASK: dict[str, str] = {
     # yes-or-no equivalence classification over two short strings, on the
     # candidate's own request path. Narrow, mechanical, must be fast.
     "fill_blank_equivalence": MODEL_LUNA,
-    # Bodha's situation-type call is a six-way classification over a completed
-    # SWOT, and the Hiring Manager confirms it explicitly before the session
-    # closes, so a wrong label is caught by a human rather than by a rescore.
-    "situation_classification": MODEL_LUNA,
-    # Miti stage 2. Narrow, mechanical, must-not-evaluate.
-    "claim_extraction": MODEL_LUNA,
-    # Miti stage 3. Mostly rule-based; only the specificity modifier needs
-    # model judgment at all.
-    "evidence_tiering": MODEL_LUNA,
-    # Yukti's AI Score. "Must be fast; this is an 'instant' product
-    # requirement" (§B.3).
-    "rerank": MODEL_LUNA,
     # Resume parsing and field extraction.
     "extraction": MODEL_LUNA,
     # Contextual retrieval's situating prefix. It says WHERE a passage sits
     # in its document and nothing about how good the passage is: it
     # summarises and situates, it does not judge. Terra here would be a
     # boundary violation dressed as an upgrade, the same argument that keeps
-    # `claim_extraction` on Luna. Pinned by tests/test_contextual_prefix.py.
+    # every extraction task on Luna. Pinned by tests/test_contextual_prefix.py.
     "context_prefix": MODEL_LUNA,
     # BGV employer-reply field extraction (add-features spec 2026-09-05).
     # Narrow and mechanical, exactly like `extraction`: it copies what the
@@ -388,9 +394,7 @@ TASK_TIMEOUTS: dict[str, float] = {
     #    flash-model era put it, so the candidate-facing latency contract is
     #    unmoved by the vendor change.
     "conversation_turn": 12.0,
-    "situation_classification": 12.0,
     "email_composition": 15.0,
-    "rerank": 15.0,
     # ── GENERATIVE interactive: a request handler is blocked and the output is
     #    a DOCUMENT. This is the one number the model consolidation genuinely
     #    moved, and it is worth stating why rather than letting a reader assume
@@ -419,13 +423,15 @@ TASK_TIMEOUTS: dict[str, float] = {
     # Background: the skills draft runs in pickready.draft_job_skills.
     "skills_drafting": 60.0,
     # Background.
-    "technical_questions": 90.0,
-    "competency_transformation": 90.0,
     "behavioral_assessment": 60.0,
-    "claim_extraction": 60.0,
-    "evidence_tiering": 45.0,
     "dimension_evaluation": 60.0,
     "triangulation": 60.0,
+    # Background (the matching run on Route.ECS, the per-profile rescore on
+    # Route.LAMBDA). Up to five resumes in and one structured reading each
+    # out, on the reasoning tier: the output is the largest of any judging
+    # task, so the per-attempt cap matches report_synthesis rather than the
+    # single-verdict evaluators.
+    "yukti_matching": 120.0,
     "report_synthesis": 120.0,
     "extraction": 60.0,
     # Background, on Route.LAMBDA at index time. One short paragraph out, one
@@ -453,6 +459,15 @@ TASK_TIMEOUTS: dict[str, float] = {
     "format_composition": 60.0,
     # Background: one evaluation with reasoning, inside the scoring task.
     "answer_evaluation": 60.0,
+    # Background, inside question generation. The longest single document the
+    # assessment asks for: four starter programs, up to thirteen tests and a
+    # reference solution in one JSON object.
+    "coding_question_generation": 90.0,
+    # Background: one call writes every prose question for one candidate.
+    "question_generation": 60.0,
+    # Background, inside the submission task. One review with reasoning and
+    # verbatim citations, the same size of job as `answer_evaluation`.
+    "coding_quality_review": 60.0,
     # IMMEDIATE interactive. A candidate has just submitted a fill-blank
     # answer and is waiting for the next question; the equivalence check runs
     # only when the exact match failed. Same cap as `conversation_turn`, for
@@ -472,21 +487,19 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     # is 26s and must stay above this number, or the loop's own deadline would
     # be tighter than one router call and the second attempt could never run.
     "conversation_turn": 24.0,
-    "situation_classification": 24.0,
     "email_composition": 30.0,
-    "rerank": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
     "assessment_context": 50.0,
     "swot_analysis": 120.0,
     "skills_drafting": 120.0,
-    "technical_questions": 200.0,
-    "competency_transformation": 200.0,
     "behavioral_assessment": 140.0,
-    "claim_extraction": 140.0,
-    "evidence_tiering": 100.0,
     "dimension_evaluation": 140.0,
     "triangulation": 140.0,
+    # Two attempts at the cap, and no more: the per-profile rescore runs in the
+    # task-worker Lambda (600 seconds), and one reading plus its corrective
+    # retry must fit inside that with the database work around it.
+    "yukti_matching": 240.0,
     "report_synthesis": 280.0,
     "extraction": 140.0,
     "context_prefix": 70.0,
@@ -501,6 +514,12 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
     "fill_blank_equivalence": 24.0,
+    # Two attempts at the 90s cap. The generation loop around it re-asks with
+    # the sandbox's verdict, so a third router attempt would buy less than a
+    # second loop attempt does.
+    "coding_question_generation": 180.0,
+    "question_generation": 140.0,
+    "coding_quality_review": 140.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -533,16 +552,15 @@ TASK_MAX_TOKENS: dict[str, int] = {
     # A role summary and up to fifteen one-sentence evidence lines.
     "assessment_context": 2048,
     "email_composition": 1024,
-    "situation_classification": 512,
-    "rerank": 2048,
-    "technical_questions": 8192,
     # Seven stages over a whole matrix.
-    "competency_transformation": 8192,
     "behavioral_assessment": 4096,
-    "claim_extraction": 8192,
-    "evidence_tiering": 4096,
     "dimension_evaluation": 4096,
     "triangulation": 4096,
+    # Five candidates, each with a verdict and a quote per skill (up to ten),
+    # per named need (up to twelve), plus experience and role fit. The
+    # completion ceiling also carries the reasoning tier's own reasoning
+    # tokens, so it is sized above report_synthesis rather than beside it.
+    "yukti_matching": 12288,
     # Seven report sections in one response -- the largest thing we ask for.
     "report_synthesis": 8192,
     "extraction": 8192,
@@ -563,6 +581,12 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "project_evidence": 4096,
     "format_composition": 4096,
     "answer_evaluation": 4096,
+    # Four starter programs, a reference solution and up to thirteen tests.
+    "coding_question_generation": 8192,
+    # Up to fifteen questions of about eighty tokens, with JSON around them.
+    "question_generation": 4096,
+    # Four criterion scores, reasoning and a handful of quoted fragments.
+    "coding_quality_review": 4096,
     # A boolean and one sentence of reason.
     "fill_blank_equivalence": 256,
 }
@@ -592,20 +616,20 @@ TASK_TEMPERATURE: dict[str, float] = {
     # ── Deterministic: these judge. ─────────────────────────────────────────
     "behavioral_assessment": 0.0,
     "report_synthesis": 0.0,        # states the grades a client reads
-    "rerank": 0.0,                  # orders candidates
     "extraction": 0.0,
     "bgv_reply_extraction": 0.0,
-    "claim_extraction": 0.0,
-    "evidence_tiering": 0.0,
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
     "triangulation": 0.0,
-    "situation_classification": 0.0,
+    # Judges resume evidence. Two runs over the same resumes must not read
+    # them differently, or the order depends on when matching ran.
+    "yukti_matching": 0.0,
     # Deterministic, and it is a RE-INDEX argument rather than a grading one:
     # the same chunk of the same document must situate the same way on every
     # pass, or a re-index silently moves every vector in the corpus.
     "context_prefix": 0.0,
     "project_evidence": 0.0,        # judges claims against evidence
     "answer_evaluation": 0.0,       # judges an answer against its rubric
+    "coding_quality_review": 0.0,   # judges a program beside its test results
     "fill_blank_equivalence": 0.0,  # classifies two strings as equivalent or not
     # Judges retrieved pages for truthfulness and relevance and drops what it
     # cannot support. A judging task, so deterministic: two runs over the same
@@ -613,12 +637,16 @@ TASK_TEMPERATURE: dict[str, float] = {
     "bd_reach_evaluate": 0.0,
 
     # ── Generative: these write. ────────────────────────────────────────────
-    "competency_transformation": 0.2,
-    "technical_questions": 0.4,
     # Writes the payload of a structured question and the wording of an
     # anchored evidence question. Same tier of creativity as the question
     # bank writer it sits beside; what is asked is fixed by the matrix.
     "format_composition": 0.4,
+    # Writes one coding problem and its tests. Same tier as the other question
+    # writers; correctness is enforced by the sandbox, not by the sampler.
+    "coding_question_generation": 0.4,
+    # WRITES, never judges: phrasing may vary per candidate; WHAT is asked is
+    # fixed by the contract and the composer, not by the sampler.
+    "question_generation": 0.4,
     "jd_generation": 0.5,
     "swot_analysis": 0.5,
     # Proposes a list a person edits. Low: the same JD and SWOT should not
@@ -662,21 +690,17 @@ def temperature_for(task_type: str) -> float:
 # just makes the caller wait longer to hear it.
 TASK_RETRY_BUDGET: dict[str, int] = {
     "conversation_turn": 2,
-    "situation_classification": 2,
     "jd_generation": 3,
     "swot_analysis": 3,
     "skills_drafting": 3,
     # Interactive: a person pressed Save and is waiting.
     "assessment_context": 2,
     "email_composition": 3,
-    "rerank": 3,
-    "technical_questions": 3,
-    "competency_transformation": 3,
     "behavioral_assessment": 3,
-    "claim_extraction": 3,
-    "evidence_tiering": 3,
     "dimension_evaluation": 3,
     "triangulation": 3,
+    # Two, for the Lambda budget argued at TASK_TOTAL_BUDGET above.
+    "yukti_matching": 2,
     "report_synthesis": 3,
     "extraction": 3,
     "bgv_reply_extraction": 3,
@@ -684,6 +708,9 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "format_composition": 3,
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
+    "coding_question_generation": 2,
+    "question_generation": 3,
+    "coding_quality_review": 3,
     # TWO, NOT THREE, and both are interactive. Measured on the live pilot
     # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
     # full attempt on it, and the retry alone consumed more than the remaining
@@ -1192,9 +1219,7 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     # Interactive, short output. A candidate is waiting; a call here that could
     # cost a fifth of a dollar has a prompt that has gone wrong.
     "conversation_turn": 0.20,
-    "situation_classification": 0.05,
     "email_composition": 0.15,
-    "rerank": 0.06,
     "fill_blank_equivalence": 0.05,
     # Interactive, document output.
     "jd_generation": 0.25,
@@ -1204,13 +1229,13 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "bd_reach_evaluate": 0.60,
     "company_profile_research": 0.40,
     # Background.
-    "technical_questions": 0.40,
-    "competency_transformation": 0.40,
     "behavioral_assessment": 0.25,
-    "claim_extraction": 0.12,
-    "evidence_tiering": 0.08,
     "dimension_evaluation": 0.25,
     "triangulation": 0.25,
+    # Five resumes in, the largest judging output out: above report_synthesis
+    # because its completion ceiling is, and twice its own worst case as
+    # tests/test_router_recovery.py requires of every row.
+    "yukti_matching": 0.50,
     # Seven report sections in one response, on the reasoning tier.
     "report_synthesis": 0.40,
     "extraction": 0.12,
@@ -1218,6 +1243,15 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "project_evidence": 0.25,
     "format_composition": 0.25,
     "answer_evaluation": 0.25,
+    # A fully budgeted call (the whole context plus 8192 output tokens on the
+    # reasoning tier) is about 0.17 USD, and every ceiling here sits at twice
+    # its task's worst case (`test_router_recovery`). The same row as the
+    # other 8192-token background writers.
+    "coding_question_generation": 0.40,
+    # 4096 output tokens on the reasoning tier, the behavioral_assessment row.
+    "question_generation": 0.25,
+    # The same row as `answer_evaluation`, the same size of judging call.
+    "coding_quality_review": 0.25,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of

@@ -58,6 +58,9 @@ on a public page, neutral and precise in an internal report.
 | services/gap_analysis         | report_gap_probes.txt           | report_synthesis          | internal         | `gap_probe_state` |
 | services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `swot_analysis.is_saved` (a saved SWOT) |
 | services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
+| assessment_formats/coding_generation | coding_question_generation.txt | coding_question_generation | candidate-facing | `code_execution.is_enabled()` and a skill name and evidence line |
+| services/yukti/judge          | yukti_matching_system.txt       | yukti_matching            | internal         | `grounding` over every tag and quote; a failure is `not_assessed`, never a default |
+| assessment_questions/generate | assessment_question_generation.txt | question_generation | candidate-facing | a saved, invited contract (`ContractNotReady`, `LookupError`); a template, recorded, for any slot not written |
 | services/swot_analysis        | swot_analysis_system.txt        | swot_analysis             | internal         | `swot_input_state` |
 | services/outreach_content     | outreach_email_system.txt       | email_composition         | candidate-facing | `outreach_state` |
 | services/outreach_content     | email_generation.txt            | email_composition         | candidate-facing | `outreach_state` |
@@ -81,8 +84,7 @@ sweep was complete: the live conversation (`services/interviewer`,
 `services/ppi_interview`), the PRISM remarks themselves
 (`services/siddhi`, `services/functional_assessment`), the six question formats
 (`services/assessment_formats`), project evidence (`services/projects`), BD
-reach (`services/web_research`), resume and reply extraction, and
-`services/matching_categories`. Each is owned elsewhere in this programme and
+reach (`services/web_research`), and resume and reply extraction. Each is owned elsewhere in this programme and
 gating a generator whose call site another change owns would be half a change.
 """
 from __future__ import annotations
@@ -153,7 +155,19 @@ GATED_PROMPTS: tuple[str, ...] = (
     # would otherwise narrate its own uncertainty into what Vaada reads.
     "sutra_skills_draft",
     "sutra_assessment_context",
+    # Yukti (Vivekium release, Phase 2): the resume reading. Internal, and the
+    # tags it writes reach a recruiter's screen, so a model narrating its own
+    # uncertainty into a tag is exactly what this gate exists to stop.
+    "yukti_matching_system",
     "email_generation",
+    # Phase 4 (Vivekium release): the executed coding question. Its statement
+    # is candidate-facing, and a model narrating how thin the role summary was
+    # would put that narration in front of every candidate on the job.
+    "coding_question_generation",
+    # Phase 3 WP2 (Vivekium release): the per-candidate prose questions. Every
+    # line is read by a candidate, so a model narrating the resume it was
+    # given would put that narration in front of the person being assessed.
+    "assessment_question_generation",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
 #: The few-shot block every gated prompt carries, and the fence around the one

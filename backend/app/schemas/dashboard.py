@@ -39,26 +39,25 @@ class DashboardSummaryOut(BaseModel):
 
 # ── The Candidate Dashboard (spec-doc6 §8, Dashboard Specification) ──────────
 #
-# THE ONE PLACE IN THIS PRODUCT WHERE A SCORE CROSSES THE API BOUNDARY.
+# NO ASSESSMENT NUMBER AND NO LETTER GRADE CROSSES THIS BOUNDARY (D3, C8).
 #
-# spec-doc6 D8 rules that the Vivekium Score (0-100, plus band, plus
-# confidence) is a DASHBOARD TRIAGE ARTIFACT: it renders in the candidate list
-# and nowhere else, and it must be technically impossible for it to enter a
-# delivered PRISM Report. Two things make that hold here rather than by
-# convention:
+# SUPERSEDES spec-doc6 D8, which made the row's numeric Vivekium Score the
+# one place a 0-100 score reached a client. The Vivekium brief removed that
+# exception with no replacement: column 3 (AI Match) and column 4 (Vivekium
+# Grade) are the four `services/rating` words plus a STATE the browser styles
+# by, both chosen server-side in `services/dashboard.py`.
+# `tests/test_dashboard_numbers.py` walks every model in this module and fails
+# on a numeric field that is not a COUNT, so a score cannot come back by a
+# field somebody adds next month.
 #
-#   * `DashboardRowOut.ready_pick_score` is the only numeric assessment field
-#     in any response schema, and `tests/test_dashboard_numbers.py` walks the
-#     schema package to keep it that way.
-#   * `ReadyPickProfileOut` and the PRISM report schemas are different types
-#     over different tables (C10). The profile panel carries NAMED per-dimension
-#     ratings and no raw D1-D5 number. No schema carries the raw numbers any
-#     more: the audited calibration view was deleted in the Vivekium release
-#     (PLAN-p7 WP-B6), because it returned them to a client.
+# The profile panel carries NAMED per-dimension ratings and no raw D1-D5
+# number. No schema carries the raw numbers any more: the audited calibration
+# view was deleted in the Vivekium release (PLAN-p7 WP-B6), because it returned
+# them to a client.
 #
-# Every schema below is words-plus-one-number by construction. Nothing is
-# assembled by filtering a wider dict, because a filter is a list somebody has
-# to remember to extend.
+# Every schema below is words by construction. Nothing is assembled by
+# filtering a wider dict, because a filter is a list somebody has to remember
+# to extend.
 import datetime as _dt
 from typing import Any, Literal
 
@@ -102,27 +101,26 @@ class DashboardRowOut(BaseModel):
     source_type: str
     source_label: str
 
-    # 3. Pre-Screen Grade. A / B / C / Hold, or null before Yukti has graded
-    #    the resume. Rendered muted and outline ONLY, never a solid fill; that
-    #    styling rule is enforced by a component test, not by this schema.
-    pre_screen_grade: str | None = None
-    pre_screen_label: str
+    # 3. AI Match. Yukti's reading of the RESUME alone: one of the four
+    #    `rating` words, or "Not checked yet" / "Not assessed" with the reason.
+    #    Rendered muted and outline ONLY, never a solid fill; that styling rule
+    #    is enforced by a component test, not by this schema.
+    ai_match_state: str
+    ai_match_label: str
+    ai_match_screen_reader_label: str
+    ai_match_note: str
 
-    # 4. Vivekium Score. The number D8 permits, and the band and confidence
-    #    beside it. A null score with a `pending` or `under_review` band is the
-    #    documented honest state, never a zero.
-    ready_pick_score: int | None = None
-    band: str
-    band_label: str
-    band_screen_reader_label: str
+    # 4. Vivekium Grade. The word for the ONE rank the ranked table also sorts
+    #    by (`yukti.ranking`): the resume check blended with the Tatva
+    #    Assessment and capped by a failed Must-have. Withheld as "Under Review"
+    #    while an integrity finding is open.
+    ranking_state: str
+    ranking_label: str
+    ranking_screen_reader_label: str
+    ranking_note: str
     confidence: str | None = None
     confidence_indicator: str
     confidence_label: str
-    #: Always null today: no uncertainty interval is published by the
-    #: evaluator, and inventing one would print a number with no provenance
-    #: beside one that has some. `score_range_note` says so in the hover.
-    score_range: str | None = None
-    score_range_note: str
 
     # 5. Vivekium Note.
     note: str
@@ -207,8 +205,9 @@ class DashboardPageOut(BaseModel):
     source_labels: dict[str, str] = Field(
         default_factory=lambda: dict(_dashboard.SOURCE_LABELS)
     )
-    pre_screen_grades: list[str] = Field(
-        default_factory=lambda: list(_dashboard.PRE_SCREEN_GRADES)
+    #: The AI Match filter's domain: the four grade words, never a range.
+    ai_match_grades: list[str] = Field(
+        default_factory=lambda: list(_dashboard.AI_MATCH_GRADES)
     )
     stages: list[str] = Field(default_factory=list)
     sort_keys: list[str] = Field(default_factory=lambda: list(_dashboard.SORT_KEYS))

@@ -6,10 +6,11 @@ Each one names exactly the fields an agent is allowed to reason over, and
 nothing else. That is doing real work in two places:
 
   Compensation.  `JobFacts` has no compensation field and no free-form escape
-  hatch that could carry one. ESD 16 says the re-rank chain never receives
-  compensation data; today that is enforced by `matching._strip_compensation`
-  at one call site. Making it a property of the SHAPE means the next agent that
-  reads a JD inherits the guarantee instead of having to remember it.
+  hatch that could carry one. ESD 16 says the ranking model never receives
+  compensation data; the one implementation of stripping it from a dict and
+  from prose is `services/compensation_guard`. Making it a property of the
+  SHAPE as well means the next agent that reads a JD inherits the guarantee
+  instead of having to remember it.
 
   Numbers.  `ReportableGrade` is the four words of `services.rating` and cannot
   hold a score. A tool that returned `overall_score: 87` would put a number one

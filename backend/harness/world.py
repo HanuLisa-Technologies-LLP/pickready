@@ -552,14 +552,19 @@ async def _seed_link(
     profile: uuid.UUID,
     status: str = "applied",
     source_type: str = "applied",
-    match_score: float | None = 74.0,
+    pre_score: float | None = 74.0,
 ) -> uuid.UUID:
+    """One link as a Yukti run leaves it: a pre-assessment score and the
+    `scored` status when a score is given, `pending` otherwise. The ranked
+    table orders on these (`yukti.ranking`); the retired `match_score` and
+    `tier` are history columns the Vivekium release stopped writing, so a
+    world that seeded them would rank on nothing."""
     link = uuid.uuid4()
     await session.execute(
         sa.text(
             "INSERT INTO job_candidate_links (id, tenant_id, job_id, "
             " candidate_id, profile_id, source, status, source_type, "
-            " match_score, tier, created_at) "
+            " yukti_pre_score, yukti_status, yukti_profile_id, created_at) "
             # `source` is `LinkSource`, whose only values are `fresh` and
             # `databank`; `source_type` is the separate applied/sourced/databank
             # provenance of 2026-07-28. Seeding 'applied' into the first of them
@@ -567,7 +572,7 @@ async def _seed_link(
             # values` inside SQLAlchemy's row processor, which is the same shape
             # as the defect `PipelineStatus`'s own docstring records.
             "VALUES (:id, :tid, :job, :cid, :pid, 'fresh', :status, :stype, "
-            " :score, :tier, :at)"
+            " :score, :ystatus, :ypid, :at)"
         ),
         {
             "id": str(link),
@@ -577,8 +582,9 @@ async def _seed_link(
             "pid": str(profile),
             "status": status,
             "stype": source_type,
-            "score": match_score,
-            "tier": None if match_score is None else "matching",
+            "score": pre_score,
+            "ystatus": "pending" if pre_score is None else "scored",
+            "ypid": None if pre_score is None else str(profile),
             "at": ANCHOR - timedelta(days=1),
         },
     )
@@ -977,18 +983,57 @@ async def _seed_candidate_questions(
     world.ids["questions"] = ids
 
 
+async def _start_under_proctoring(
+    session: AsyncSession,
+    world: World,
+    *,
+    conversation: uuid.UUID,
+    link: uuid.UUID,
+    candidate: uuid.UUID,
+) -> None:
+    """Start the conversation and write the live proctoring session its gate reads.
+
+    THE PROCTORING ROW IS NOT OPTIONAL AND IS NOT A CONVENIENCE. Monitoring is
+    mandatory, and `proctoring.gate.require_active` runs FIRST in `respond` and
+    in the coding Run route, so a world without it would make every turn and
+    every Run refused and the scenario would be measuring the gate. Seeding the
+    row the consent screen would have written is what keeps the path under
+    test the path a real candidate takes; stubbing the gate would make the
+    scenario pass on a route nobody can reach.
+    """
+    await session.execute(
+        sa.text(
+            "UPDATE assessment_conversations SET started_at = :at WHERE id = :id"
+        ),
+        {"at": ANCHOR, "id": str(conversation)},
+    )
+    await session.execute(
+        sa.text(
+            "INSERT INTO proctoring_sessions (id, tenant_id, conversation_id, "
+            " job_candidate_link_id, candidate_id, job_id, consented_at, "
+            " started_at, outcome) "
+            "VALUES (:id, :tid, :conv, :link, :cid, :job, :at, :at, 'active')"
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "tid": str(world.id("tenant")),
+            "conv": str(conversation),
+            "link": str(link),
+            "cid": str(candidate),
+            "job": str(world.id("job")),
+            "at": ANCHOR,
+        },
+    )
+
+
 async def _assessment_in_progress(
     session: AsyncSession, world: World, overrides: Mapping[str, Any]
 ) -> None:
     """An invited candidate, their questions, and a live proctoring session.
 
-    THE PROCTORING ROW IS NOT OPTIONAL AND IS NOT A CONVENIENCE. Monitoring is
-    mandatory and `proctoring.gate.require_active` runs FIRST in `respond`, so
-    a world without it would make every turn answer 403 and the scenario would
-    be measuring the gate rather than the billing. Seeding the row the consent
-    screen would have written is what keeps the path under test the path a real
-    candidate takes; stubbing the gate would make the scenario pass on a route
-    nobody can reach.
+    The proctoring row is seeded by `_start_under_proctoring`, whose docstring
+    says why it is not optional: without it every turn would answer 403 and
+    the scenario would be measuring the gate rather than the billing.
     """
     await _job_with_saved_skills(session, world, overrides)
     candidate, _user, profile = await _seed_candidate(session, world, key="candidate")
@@ -1026,29 +1071,175 @@ async def _assessment_in_progress(
         job=world.id("job"),
         link=link,
     )
-    await session.execute(
-        sa.text(
-            "UPDATE assessment_conversations SET started_at = :at WHERE id = :id"
-        ),
-        {"at": ANCHOR, "id": str(conversation)},
+    await _start_under_proctoring(
+        session, world, conversation=conversation, link=link, candidate=candidate
     )
+
+
+#: The answer key of the world's coding question, as SENTINELS: strings that
+#: occur nowhere else in the product, so finding one anywhere a client, a log
+#: line, a prompt or a stored row can reach is proof the key travelled there.
+#: Lower case and free of digits and punctuation, so neither a normaliser nor
+#: the number guard can rewrite one out of existence and make the sweep pass.
+CODING_HIDDEN_STDIN = "zqharnesshiddenstdin"
+CODING_HIDDEN_OUT = "zqharnesshiddenexpected"
+CODING_REFERENCE = "zqharnessreferencesolution"
+CODING_APPROACH = "zqharnessapproachnotes"
+
+#: How many hidden tests the key carries. More than one, so an outcome
+#: sentence has to spell a count out, which the scenarios also read.
+CODING_HIDDEN_TESTS = 3
+
+
+def _coding_draft() -> Any:
+    """The v2 coding question and its answer key, built with the product's types.
+
+    Built through `coding_generation.CodingQuestionDraft`, `keys.HiddenTest`,
+    `keys.hidden_digest` and `payload.LanguageLimits.of`, never as a literal
+    payload: the database refuses a coding payload that carries a key, and a
+    key whose digest does not match its tests is refused when it is loaded, so
+    a hand-written shape would be one of those two refusals waiting to happen.
+    """
+    from app.services.assessment_formats import coding_generation  # noqa: PLC0415
+    from app.services.code_execution import limits as execution_limits  # noqa: PLC0415
+    from app.services.coding_assessment import keys as coding_keys  # noqa: PLC0415
+    from app.services.coding_assessment import payload as coding_payload  # noqa: PLC0415
+
+    hidden = tuple(
+        coding_keys.HiddenTest(
+            key=f"h{index}",
+            stdin=f"{CODING_HIDDEN_STDIN}{'x' * index}\n",
+            expected_stdout=f"{CODING_HIDDEN_OUT}{'x' * index}\n",
+        )
+        for index in range(1, CODING_HIDDEN_TESTS + 1)
+    )
+    title = "Busiest failing endpoint"
+    return coding_generation.CodingQuestionDraft(
+        title=title,
+        statement=(
+            "Read a list of request log lines and print the path with the most "
+            "server errors, or NONE when there are none."
+        ),
+        payload={
+            "payload_version": coding_payload.PAYLOAD_VERSION,
+            "title": title,
+            "io": "stdin_stdout",
+            "input_format": "A count, then that many lines of a path and a status.",
+            "output_format": "One line: the path, or NONE.",
+            "constraints": "At most ten thousand lines.",
+            "languages": ["python"],
+            "starter_code": {"python": "import sys\nprint()\n"},
+            "visible_tests": [
+                {"id": "v1", "stdin": "0\n", "expected_stdout": "NONE\n", "explanation": ""},
+                {"id": "v2", "stdin": "1\n/a 500\n", "expected_stdout": "/a\n", "explanation": ""},
+            ],
+            "limits": {
+                "python": coding_payload.LanguageLimits.of(
+                    execution_limits.for_language("python")
+                ).model_dump()
+            },
+        },
+        rubric={
+            "criteria": list(coding_payload.CODING_REVIEW_CRITERIA),
+            "payload_version": coding_payload.PAYLOAD_VERSION,
+        },
+        reference_language="python",
+        validation={
+            "provider": "harness_world",
+            "hidden_digest": coding_keys.hidden_digest(hidden),
+        },
+        generated_at=ANCHOR - timedelta(hours=1),
+        hidden_tests=hidden,
+        reference_source=f"# {CODING_REFERENCE}\nimport sys\nprint()\n",
+        expected_approach=f"Count server errors per path. {CODING_APPROACH}",
+    )
+
+
+async def _coding_question_open(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """An invited candidate whose OPEN question is an executed (v2) coding question.
+
+    One question, at ordinal zero, so it is the conversation's current base
+    question and the Run route's open-question fence lets a Run through. The
+    question and its answer key are written by the PRODUCT's
+    `coding_generation.persist_coding_question`, in this world's transaction,
+    rather than by raw SQL like the other seeds. The raw-SQL rule exists so a
+    world can establish a state the product would refuse to create; this one
+    must be exactly the state the product creates, because the key is sealed
+    by a digest the read path recomputes, and a key written any other way is
+    a key the product refuses to grade with.
+
+    `world.ids` carries the question id, the visible and hidden inputs (a
+    workload step scripts the echoing program with them) and the sentinels
+    the exfiltration probes sweep for.
+    """
+    from app.models.assessment import CandidateQuestion  # noqa: PLC0415
+    from app.services.assessment_formats import coding_generation  # noqa: PLC0415
+
+    await _job_with_saved_skills(session, world, overrides)
+    candidate, _user, profile = await _seed_candidate(session, world, key="candidate")
+    link = await _seed_link(
+        session,
+        world,
+        key="link",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        candidate=candidate,
+        profile=profile,
+        status="assessment_invited",
+    )
+    draft = _coding_draft()
+    question = CandidateQuestion(
+        tenant_id=world.id("tenant"),
+        job_id=world.id("job"),
+        job_candidate_link_id=link,
+        competency_id=world.id("must_have_skills")[0],
+        ordinal=0,
+        prompt=draft.statement,
+    )
+    await coding_generation.persist_coding_question(session, question, draft)
+    conversation = await _seed_conversation(
+        session,
+        world,
+        key="conversation",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        link=link,
+    )
+    await _start_under_proctoring(
+        session, world, conversation=conversation, link=link, candidate=candidate
+    )
+    # The coding question is ON SCREEN: the server's turn clock has its turn
+    # open, with the coding allocation, as `respond` leaves it after opening a
+    # turn. The Run route reads that clock (p4-4c hunk 2, stage 2 integration)
+    # and refuses a Run on a turn with no clock, so a world without it would
+    # measure the clock refusal instead of the path under test. `now()` rather
+    # than the world's fixed anchor, because the clock is read against the
+    # real time of the request.
+    from app.core.config import get_settings  # noqa: PLC0415
+
     await session.execute(
         sa.text(
-            "INSERT INTO proctoring_sessions (id, tenant_id, conversation_id, "
-            " job_candidate_link_id, candidate_id, job_id, consented_at, "
-            " started_at, outcome) "
-            "VALUES (:id, :tid, :conv, :link, :cid, :job, :at, :at, 'active')"
+            "UPDATE assessment_conversations SET turn_seq = 1, prompt_shown_at = now(), "
+            "turn_allocation_seconds = :allocation WHERE id = :id"
         ),
         {
-            "id": str(uuid.uuid4()),
-            "tid": str(world.id("tenant")),
-            "conv": str(conversation),
-            "link": str(link),
-            "cid": str(candidate),
-            "job": str(world.id("job")),
-            "at": ANCHOR,
+            "allocation": get_settings().assessment_time_coding_seconds,
+            "id": str(conversation),
         },
     )
+    world.ids["coding_question"] = question.id
+    world.ids["coding_visible_stdins"] = [
+        test["stdin"] for test in draft.payload["visible_tests"]
+    ]
+    world.ids["coding_hidden_stdins"] = [test.stdin for test in draft.hidden_tests]
+    world.ids["coding_key_sentinels"] = [
+        CODING_HIDDEN_STDIN,
+        CODING_HIDDEN_OUT,
+        CODING_REFERENCE,
+    ]
+    world.ids["coding_approach_sentinel"] = CODING_APPROACH
 
 
 async def _two_tenants(
@@ -1119,7 +1310,7 @@ async def _ranked_pool(
             # assertion has something to order. `index % 37` rather than a
             # random draw: `seed_mock_data.py` makes the same choice, and for
             # the same reason.
-            match_score=float(40 + (index * 37) % 55),
+            pre_score=float(40 + (index * 37) % 55),
         )
         links.append(link)
     world.ids["pool_links"] = links
@@ -1219,6 +1410,23 @@ _BUILDERS: dict[str, Builder] = {
         _assessment_in_progress,
         "an invited candidate mid-assessment, with questions and a live "
         "proctoring session",
+    ),
+    "coding_question_open": Builder(
+        "coding_question_open",
+        _APPLIED
+        + (
+            "assessment_conversations",
+            "assessment_messages",
+            "assessment_answers",
+            "candidate_questions",
+            "proctoring_sessions",
+            "coding_question_keys",
+            "coding_runs",
+            "coding_submissions",
+        ),
+        _coding_question_open,
+        "an invited candidate whose open question is an executed coding "
+        "question, with its answer key sealed and a live proctoring session",
     ),
     "two_tenants_one_job_each": Builder(
         "two_tenants_one_job_each",

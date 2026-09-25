@@ -42,6 +42,11 @@ import pytest
 
 from app.config import llm_providers
 from app.core import cache
+from app.core.config import get_settings
+from app.services import code_execution
+from app.services.code_execution import provider as code_execution_provider
+from app.services.code_execution.limits import for_language
+from app.services.code_execution.provider import ExecutionUnavailable, TestInput
 from app.services import embeddings, llm_router, object_storage
 from app.services.llm_router import LLMUnavailableError, _RouterKey
 from app.services.reliability import vendor_contract
@@ -50,6 +55,12 @@ from harness import faults
 from harness.doubles import clock as clock_module
 from harness.doubles.redis import InMemoryRedis, RedisDoubleError
 from harness.doubles.vendor import FixtureMissing, load_fixture
+from harness.doubles.code_execution import (
+    CODE_EXECUTION_FAULT_KINDS,
+    JUDGE0_ERROR_FIXTURES,
+    SANDBOX_URL,
+    echoing_program,
+)
 
 #: Short enough that the router refuses the 429 fixture's retry-after rather
 #: than sleeping on it. See the module docstring.
@@ -58,6 +69,9 @@ _TIGHT_BUDGET = 0.2
 #: One task type per model tier, so a fixture is chosen the way the responder
 #: chooses it: from the model named in the request.
 _PROSE_TASK = "report_synthesis"
+
+#: The three settings the code-execution fault configures, and must put back.
+_SANDBOX_SETTINGS = ("code_execution_backend", "judge0_url", "judge0_auth_token")
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +118,7 @@ def _messages(text: str = "Summarise the evidence.") -> list[dict[str, str]]:
 _SAMPLES: tuple[faults.FaultSpec, ...] = (
     faults.FaultSpec("model_failure", {"kind": "rate_limited"}),
     faults.FaultSpec("embedding_failure", {"kind": "credential"}),
+    faults.FaultSpec("code_execution_failure", {"kind": "queue_full"}),
     faults.FaultSpec("redis_down", {}),
     faults.FaultSpec("redis_slow", {"seconds": 0.0}),
     faults.FaultSpec("object_store_failure", {"kind": "server_error"}),
@@ -130,7 +145,11 @@ def _seam_snapshot() -> dict[str, object]:
         "cache._redis": cache._redis,
         "object_storage._client": object_storage._client,
         "dispatch._recorded": dispatch._recorded,
+        "code_execution._override": code_execution_provider._override,
     }
+    settings = get_settings()
+    for name in _SANDBOX_SETTINGS:
+        snapshot[f"settings.{name}"] = getattr(settings, name)
     for seam in faults.CLOCK_SEAMS:
         module = importlib.import_module(seam.module)
         snapshot[f"{seam.module}.{seam.attribute}"] = getattr(module, seam.attribute)
@@ -402,6 +421,83 @@ def test_an_embedding_fault_with_no_fixture_is_refused_rather_than_invented() ->
 
     assert "voyage/error_500_server_error.json" in str(caught.value)
     faults.assert_clean()
+
+
+# ── Code execution ──────────────────────────────────────────────────────────
+
+#: What the REAL Judge0 adapter makes of each injected kind. Stated here rather
+#: than read from the double, so the double and the adapter cannot drift into
+#: agreeing with each other about something neither of them does.
+_SANDBOX_REASON = {
+    "unavailable": "server_error",
+    "queue_full": "queue_full",
+    "credential": "credential",
+    "timeout": "timeout",
+}
+
+
+def test_every_sandbox_fault_kind_has_an_expected_classification() -> None:
+    assert set(_SANDBOX_REASON) == set(CODE_EXECUTION_FAULT_KINDS)
+    for relative in JUDGE0_ERROR_FIXTURES.values():
+        assert load_fixture(relative).status >= 400
+
+
+@pytest.mark.parametrize("kind", sorted(_SANDBOX_REASON))
+async def test_the_products_own_provider_classifies_each_injected_sandbox_failure(
+    kind: str,
+) -> None:
+    """Through `code_execution.get_provider()`, never a double of the adapter.
+
+    The fault configures the deployment as a live one is, so the product builds
+    the real `Judge0Provider` from its own settings, and the reason checked is
+    the one the adapter's real `_request` reached from the fixture's status.
+    """
+    with faults.code_execution_failure(kind):
+        assert code_execution.is_enabled() is True
+        sandbox = code_execution.get_provider()
+        assert type(sandbox).__name__ == "Judge0Provider"
+        with pytest.raises(ExecutionUnavailable) as caught:
+            await sandbox.submit(
+                language="python",
+                source="print()\n",
+                tests=[TestInput(key="v1", stdin="1\n")],
+                limits=for_language("python"),
+            )
+    assert caught.value.reason == _SANDBOX_REASON[kind]
+    assert code_execution.is_enabled() is False, (
+        "the fault left the deployment configured with a sandbox after it unwound"
+    )
+
+
+def test_a_sandbox_fault_with_no_fixture_is_refused_rather_than_invented() -> None:
+    with pytest.raises(FixtureMissing) as caught:
+        with faults.code_execution_failure("wrong_answer"):
+            pass
+    assert "tests/fixtures/vendor/judge0/" in str(caught.value)
+    faults.assert_clean()
+
+
+def test_the_sandbox_address_cannot_resolve_to_anything() -> None:
+    """RFC 2606: a request that escaped the routing transport goes nowhere."""
+    assert httpx.URL(SANDBOX_URL).host.endswith(".invalid")
+
+
+async def test_the_echoing_program_echoes_through_the_products_override() -> None:
+    """The success double is the product's own fake, installed through the
+    product's own door, and it is gone again when the block ends."""
+    inputs = ["alpha\n", "beta\n"]
+    with echoing_program("print()\n", inputs):
+        sandbox = code_execution.get_provider()
+        results = await sandbox.run(
+            language="python",
+            source="print()\n",
+            tests=[TestInput(key=f"k{i}", stdin=text) for i, text in enumerate(inputs)],
+            limits=for_language("python"),
+            deadline_seconds=1.0,
+        )
+    assert [item.stdout for item in results] == inputs
+    assert "beta" in results[-1].stderr
+    assert code_execution_provider._override is None
 
 
 # ── Object store ────────────────────────────────────────────────────────────

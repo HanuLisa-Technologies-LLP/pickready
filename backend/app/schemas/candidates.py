@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import LinkSource, PipelineStatus, Tier
+from app.models.enums import LinkSource
 
 from app.schemas.pagination import PageMeta
 
@@ -69,68 +69,11 @@ class InterviewOut(BaseModel):
     notes: str | None
 
 
-class LinkOut(BaseModel):
-    link_id: uuid.UUID
-    candidate: CandidateOut
-    profile_id: uuid.UUID | None
-    source: LinkSource
-    #: Type of procurement: applied | sourced | databank (2026-07-28).
-    source_type: str = "applied"
-    source_type_label: str = "Applied"
-    tier: Tier | None
-    breakdown: dict | None = None  # Stored 4-param ranking + comments for review UI
-    # Comments-only projection for the review screen — always present, each
-    # comment 25-30 words. ranking_status: "not_scored" | "ready".
-    ranking_status: str = "not_scored"
-    skills_match_comment: str | None = None
-    experience_comment: str | None = None
-    role_alignment_comment: str | None = None
-    education_comment: str | None = None
-    overall_comment: str | None = None
-    hm_access_granted: bool
-    archived_at: datetime | None = None
-    current_status: PipelineStatus | None
-    status_remarks: str | None = None
 
 
 class LinkArchiveOut(BaseModel):
     link_id: uuid.UUID
     archived: bool
-
-
-class JobLinksOut(BaseModel):
-    """Deliberately NOT on `PageMeta`.
-
-    It already carried the derived fields, and it reports a MINIMUM of one page
-    (`max(1, ...)` in the handler) where `PageMeta` reports zero for an empty
-    result. Both readings are defensible and this one is already in a shipped
-    client, so it keeps its own: Section 1's rule is extend, never replace, and
-    changing a number an existing UI renders is a replacement.
-
-    `has_previous` is added so the vocabulary matches everywhere even though
-    the empty-set convention does not.
-    """
-
-    job_id: uuid.UUID
-    links: list[LinkOut]
-    # Pagination. Defaults describe a single full page so an older client that
-    # ignores these fields still reads a coherent response.
-    total: int = 0
-    page: int = 1
-    page_size: int = 25
-    total_pages: int = 1
-    has_next: bool = False
-    has_previous: bool = False
-
-
-class RankingCommentsOut(BaseModel):
-    """Comments-only ranking response. Numeric scores never cross this API."""
-
-    skills_match_comment: str | None = None
-    experience_comment: str | None = None
-    role_alignment_comment: str | None = None
-    education_comment: str | None = None
-    overall_comment: str | None = None
 
 
 #: A Team Review verdict, per the Candidate Dashboard Specification Column 7.

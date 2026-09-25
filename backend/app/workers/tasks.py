@@ -3,6 +3,7 @@
   pickready.send_email(tenant_id, to, template_name, context, attachments=None)
   pickready.run_matching(job_id)
   pickready.parse_resume(profile_id)
+  pickready.yukti_score_profile(profile_id)
   pickready.refresh_dashboard_views()
 
 All slow work happens here, never inline in a request handler (claude.md rule
@@ -852,64 +853,18 @@ def run_matching(ctx: TaskContext, job_id: str):
             scored = await matching.run_matching(session, job_id, progress=progress)
             progress.complete()
             logger.info("matching.complete job_id=%s scored=%d", job_id, scored)
-            # Report synthesis used to run INLINE here, in a plain loop with no
-            # try/except, for every completed conversation on the job -- on
-            # every trigger of this task (publish, resubmit, databank upload,
-            # or "Run AI matching"). One candidate's synthesis exception (a bad
-            # transcript, a dimension mismatch, an LLM outage) propagated out of
-            # THIS task and failed it, even though `scored` above had already
-            # committed successfully -- which is what the UI's "AI matching
-            # ended in failure state" banner was actually reporting (2026-08-16
-            # incident). It also bypassed the credit gate and re-synthesized a
-            # report for every completed conversation every time, not just
-            # newly-completed ones.
+            # Nothing else. This task used to re-dispatch report synthesis for
+            # every completed conversation on the job with no report (PLAN-p2
+            # NF-5), a side effect of ranking that duplicated
+            # `pickready.release_held_assessments`, the scheduled sweep that
+            # owns exactly that repair. One owner per repair.
             #
-            # `pickready.run_functional_assessment` already does this correctly
-            # -- credit-gated, one task per candidate so one failure
-            # cannot sink another's -- and is the task actually dispatched when
-            # a conversation completes (api/assessments.py). Report synthesis
-            # from a matching run reuses that same task instead of a second,
-            # unsafe copy of the same logic living here.
-            from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
-            from app.models.candidate import JobCandidateLink
-            from app.models.job import Job
-
-            job = await session.get(Job, uuid.UUID(str(job_id)))
-            if job is not None:
-                link_ids = (
-                    await session.execute(
-                        select(JobCandidateLink.id)
-                        .join(
-                            AssessmentConversation,
-                            AssessmentConversation.job_candidate_link_id
-                            == JobCandidateLink.id,
-                        )
-                        .outerjoin(
-                            FunctionalSkillsReport,
-                            FunctionalSkillsReport.job_candidate_link_id
-                            == JobCandidateLink.id,
-                        )
-                        .where(
-                            JobCandidateLink.job_id == job.id,
-                            JobCandidateLink.archived_at.is_(None),
-                            AssessmentConversation.status == "completed",
-                            # A report is immutable once written (spec) -- this
-                            # dispatch is for candidates who completed since the
-                            # last matching run, not a resynthesis of everyone.
-                            FunctionalSkillsReport.id.is_(None),
-                        )
-                    )
-                ).scalars().all()
-                for link_id in link_ids:
-                    dispatch(
-                        "pickready.run_functional_assessment", args=[str(link_id)]
-                    )
-                logger.info(
-                    "functional_assessment.dispatched job_id=%s reports=%d",
-                    job_id,
-                    len(link_ids),
-                )
-    _run(_task())
+            # The FINAL stage payload is the return value, so the run-status
+            # record's SUCCESS payload carries the finished stages and the
+            # degraded flag. Returning nothing left SUCCESS holding None and
+            # the job page redrew every finished run as an all-pending plan.
+            return progress.payload()
+    return _run(_task())
 
 
 @task(
@@ -1609,6 +1564,36 @@ def parse_resume(profile_id: str):
     # into a retried one: the resume is parsed either way, and the hourly sweep
     # repairs an index write that never happened.
     dispatch("pickready.index_document", args=["resume", str(profile_id)])
+    # Yukti reads the resume that was just stored, against every job it is
+    # applied to (PLAN-p2 3.8). After the commit for the same reason as the
+    # index: it reads the committed text. Separate, because a model outage in
+    # the reading must not turn a successful parse into a retried one.
+    dispatch("pickready.yukti_score_profile", args=[str(profile_id)])
+
+
+@task(
+    name="pickready.yukti_score_profile",
+    route=Route.LAMBDA,
+    max_attempts=2,
+    backoff_seconds=5.0,
+)
+def yukti_score_profile(profile_id: str):
+    """Read one parsed resume against every open job it is applied to.
+
+    Route.LAMBDA: one resume against the jobs it is on is one model call per
+    job, which is seconds, not the minutes a whole pool takes
+    (`pickready.run_matching`, Route.ECS). A model failure is recorded on the
+    link as "Not assessed" by Yukti itself and is NOT a task failure, so the
+    retry here is for infrastructure (the database, the dispatch), never a
+    second paid reading of the same resume. Dispatched by
+    `pickready.parse_resume` after its commit, and by nothing else.
+    """
+    from app.services import matching
+
+    async def _task():
+        async with _worker_session() as session:
+            await matching.score_profile(session, profile_id)
+    _run(_task())
 
 
 # ── The retrieval index (RPN-AI-UP-001 W2) ───────────────────────────────────
@@ -3174,6 +3159,10 @@ async def _support_staff_recipients(session, rbac, User, capability) -> list[str
 # Importing them here is what registers them: `registry.resolve` imports this
 # module and nothing else, so a task module not imported here would be a task
 # no dispatch could reach.
-from app.workers import tasks_media, tasks_proctoring, tasks_questions  # noqa: E402,F401
+from app.workers import tasks_media, tasks_proctoring, tasks_questions, tasks_voice  # noqa: E402,F401
+from app.workers import tasks_invitations  # noqa: E402,F401
+# Phase 4 WP-4B2: the coding submission, its sweep, the sandbox probe and the
+# operator's sandbox verification. Registered by the same import rule.
+from app.workers import coding_tasks  # noqa: E402,F401
 # The semantic index repair sweep (PLAN-p5 WP5-E), registered the same way.
 from app.workers import tasks_retrieval  # noqa: E402,F401

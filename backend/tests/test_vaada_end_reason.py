@@ -1,10 +1,10 @@
 """WHY a Vaada session ended, recorded where somebody can read it later.
 
-The early exit itself is old. `question_budget.conversation_may_close` has decided it since
-2026-08-23 and `tests/test_question_count_range.py` and
-`tests/test_vaada_miti_loop.py` between them pin the rule, the floor and the
-fact that nothing else may end a conversation. None of that is re-asserted
-here.
+SINCE 2026-09-24 THERE IS ONE ENDING FOR A NEW ROW. Appendix B section 3:
+every item is asked, so the early close on evidence coverage that stopped a
+conversation at its floor is gone, and a conversation ends when its written
+questions are exhausted. The column and its six-word vocabulary stay, because
+rows written before that carry the other words and must still read.
 
 What is new, and what this file is about, is that the decision is now DURABLE.
 Before change request 28B the reason lived in one `assessments.conversation_state`
@@ -16,10 +16,9 @@ fourteen of fourteen is an interview with nothing left to ask.
 
 Three properties, and the third is the one that would be easy to lose:
 
-  1. both endings really do write their own word, through the real handler
-     rather than through a patched stopping rule -- the early-close case below
-     answers twelve questions out of fourteen against a floor of twelve, so it
-     is `conversation_may_close` that stops it and not this test;
+  1. the one ending writes its word through the real handler, and a
+     conversation that has covered every skill long before its last question
+     is NOT closed early: it runs to the end of what was written;
   2. the vocabulary is one vocabulary. `interviewer.STOP_CONDITIONS`, the
      model's CHECK and migration 0116 all restate the same six words, because
      a model and a migration are not importable from each other here;
@@ -46,7 +45,6 @@ from tests.test_conversation_flow import (
     _respond,
     _seed,
 )
-from app.services.assessment_questions import budget as question_budget
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
@@ -85,22 +83,20 @@ def _stub_the_model_calls(monkeypatch):
 
 
 def _no_probes(monkeypatch) -> None:
-    """No follow-up anywhere in these two conversations.
+    """No follow-up anywhere in these conversations.
 
     A probe outstanding holds completion open by design, so leaving the real
     writer in place would make which turn completes depend on what a model
     decided to ask, and a test that cannot say which turn it is asserting about
     is not asserting anything.
     """
-    from app.api import assessment_conversation as mod
-
     async def _none(**kwargs):
         return None
 
-    monkeypatch.setattr(mod.interviewer, "next_follow_up", _none)
+    monkeypatch.setattr(interviewer, "next_follow_up", _none)
 
 
-# ── The two endings, through the real handler ────────────────────────────────
+# ── The one ending, through the real handler ────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -111,8 +107,6 @@ async def test_running_out_of_questions_is_recorded_as_exhaustion(
     from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-
-    monkeypatch.setattr(mod, "dispatch", lambda name, *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -145,32 +139,22 @@ async def test_running_out_of_questions_is_recorded_as_exhaustion(
 
 
 @pytest.mark.asyncio
-async def test_stopping_on_coverage_is_recorded_as_the_reason_it_stopped(
+async def test_covering_every_skill_early_does_not_close_the_conversation(
     monkeypatch,
 ) -> None:
-    """Fourteen questions written, twelve answered, and the stop is real.
+    """Fourteen questions written over three skills, and all fourteen asked.
 
-    The counts are chosen against `question_budget.GRADE_QUESTION_RANGES`, not picked: a
-    non-managerial floor is twelve, so the twelfth substantive answer is the
-    first turn at which `conversation_may_close` may say yes, and two prompts
-    are deliberately left unasked so the early exit is observable rather than
-    indistinguishable from exhaustion. The fixture seeds three competencies and
-    cycles the questions across them, so every matrix item carries a
-    substantive answer long before the floor is reached.
-
-    `every_dimension_covered` rather than `floor_reached` is the assertion that
-    matters. The floor is PERMISSION to stop; recording it would read as "we
-    stopped at the minimum", which is the fail-style early exit this product
-    deliberately does not do.
+    Every skill carries a substantive answer after the third turn, which is
+    exactly the state the retired early close stopped on. It must not stop:
+    the conversation stays active until the last written question is
+    answered, and then it records `prompts_exhausted`, the one ending a new
+    row can have. Read back from a SECOND session after the commit.
     """
     from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
-    monkeypatch.setattr(mod, "dispatch", lambda name, *a, **k: None)
-
-    floor = question_budget.min_questions("non_managerial", None)
-    written = floor + 2
+    written = 14
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -182,22 +166,29 @@ async def test_stopping_on_coverage_is_recorded_as_the_reason_it_stopped(
         async with factory() as session:
             async with session.begin():
                 async with superadmin_scope(session):
-                    for _ in range(floor):
+                    for _ in range(written - 1):
                         await _respond(mod, fx, session)
 
         async with factory() as session:
             async with superadmin_scope(session):
                 conv = await session.get(AssessmentConversation, fx.conv_id)
+                assert conv.status == "active", (
+                    "the conversation closed before its last written question"
+                )
+                assert conv.end_reason is None
+                assert conv.next_question_index == written - 1
 
-        assert conv.status == "completed", (
-            "the conversation did not stop on coverage at the floor; the "
-            "recorded reason below would be meaningless"
-        )
-        assert conv.next_question_index == floor < written, (
-            "every written question was asked, so this is exhaustion and not "
-            "an early exit"
-        )
-        assert conv.end_reason == interviewer.STOP_EVERY_DIMENSION_COVERED
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await _respond(mod, fx, session)
+
+        async with factory() as session:
+            async with superadmin_scope(session):
+                conv = await session.get(AssessmentConversation, fx.conv_id)
+                assert conv.status == "completed"
+                assert conv.next_question_index == written
+                assert conv.end_reason == interviewer.STOP_PROMPTS_EXHAUSTED
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -243,12 +234,27 @@ def test_the_vocabulary_is_one_vocabulary() -> None:
     assert _migration_reasons() == interviewer.STOP_CONDITIONS
 
 
-def test_both_recorded_reasons_are_in_the_vocabulary() -> None:
-    """The two words the handler can actually write.
+def test_the_engine_writes_one_reason_and_it_is_in_the_vocabulary() -> None:
+    """The ONE word the engine can write for a new row, read from its source.
 
-    Named here rather than inferred, so widening what `respond` records is a
-    change somebody has to make deliberately in two places.
+    Every assignment to `end_reason` in the conversation engine names
+    `STOP_PROMPTS_EXHAUSTED`, so widening what a new row records is a change
+    somebody has to make deliberately here. The retired early-close word stays
+    in the vocabulary because rows written before 2026-09-24 carry it.
     """
+    from app.services.assessment_conversation import turns
+
+    tree = ast.parse(pathlib.Path(turns.__file__).read_text(encoding="utf-8"))
+    written = [
+        ast.unparse(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute) and target.attr == "end_reason"
+            for target in node.targets
+        )
+    ]
+    assert written == ["interviewer.STOP_PROMPTS_EXHAUSTED"], written
     assert interviewer.STOP_PROMPTS_EXHAUSTED in END_REASON_VALUES
     assert interviewer.STOP_EVERY_DIMENSION_COVERED in END_REASON_VALUES
 
@@ -323,7 +329,7 @@ def test_no_response_schema_carries_the_end_reason() -> None:
 
 def test_the_conversation_response_model_has_no_end_reason_field() -> None:
     """The one schema a candidate mid-assessment actually receives."""
-    from app.schemas.assessments import ConversationOut
+    from app.schemas.assessment_conversation import ConversationOut
 
     assert "end_reason" not in ConversationOut.model_fields
 

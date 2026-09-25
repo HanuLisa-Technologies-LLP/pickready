@@ -32,6 +32,7 @@ Provenance: docs/spec/HARNESS.md section 3.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -39,7 +40,7 @@ from app.services import conversation_guardrails as guard
 from app.services.siddhi import numbers
 
 from harness.context import Observation, ScenarioContext, StateReader
-from harness.world import World
+from harness.world import World, WorldError
 
 __all__ = [
     "ProbeError",
@@ -328,6 +329,29 @@ async def _conversations_for_link(
     )
 
 
+async def _conversations_for_job(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Every conversation on the job, whoever wrote it. For a world where the
+    application is the thing under test, so there is no seeded link to key on:
+    the row an apply might wrongly create has an id the world never saw."""
+    return await reader.scalar(
+        "SELECT count(*) FROM assessment_conversations WHERE job_id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _questions_for_job(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    return await reader.scalar(
+        "SELECT count(*) FROM candidate_questions q "
+        "JOIN job_candidate_links l ON l.id = q.job_candidate_link_id "
+        "WHERE l.job_id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
 async def _conversation_status(
     reader: StateReader, world: World, arg: str | None
 ) -> Any:
@@ -423,6 +447,129 @@ async def _tenant_still_exists(
     )
 
 
+
+# ── The coding question (Phase 4) ───────────────────────────────────────────
+
+
+def _conversation(world: World) -> str:
+    return str(world.id("conversation"))
+
+
+async def _coding_run_statuses(reader: StateReader, world: World, arg: str | None) -> Any:
+    return await reader.column(
+        "SELECT status FROM coding_runs WHERE conversation_id = :c ORDER BY created_at",
+        {"c": _conversation(world)},
+    )
+
+
+async def _coding_run_error_classes(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Which error each Run recorded. What separates "the sandbox was down"
+    (`ExecutionUnavailable`) from "no sandbox is configured"
+    (`ExecutionNotConfigured`), which answer the candidate with the same 503."""
+    return await reader.column(
+        "SELECT error_class FROM coding_runs WHERE conversation_id = :c ORDER BY created_at",
+        {"c": _conversation(world)},
+    )
+
+
+#: The `coding_submissions` columns a scenario may read. An allowlist, because
+#: the column name arrives from a scenario file and is placed into SQL.
+_CODING_SUBMISSION_COLUMNS = frozenset(
+    {
+        "execution_status",
+        "review_status",
+        "execution_attempts",
+        "last_error_class",
+        "auto_submitted",
+    }
+)
+
+
+async def _coding_submission_column(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """One column of the conversation's coding submission, by name.
+
+    None when no submission row exists, which is itself the finding a scenario
+    about a lost submission would assert on; a list when there is more than
+    one, so a duplicate cannot hide behind the first row's value.
+    """
+    if arg not in _CODING_SUBMISSION_COLUMNS:
+        raise ProbeError(
+            f"coding_submissions.column needs one of "
+            f"{', '.join(sorted(_CODING_SUBMISSION_COLUMNS))} after the colon, "
+            f"got {arg!r}"
+        )
+    values = await reader.column(
+        f"SELECT {arg} FROM coding_submissions WHERE conversation_id = :c "
+        "ORDER BY created_at",
+        {"c": _conversation(world)},
+    )
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
+
+
+def _coding_sentinels(world: World) -> list[str]:
+    try:
+        return [str(item) for item in world.id("coding_key_sentinels")]
+    except WorldError as exc:
+        raise ProbeError(
+            f"world {world.name!r} carries no coding answer key to sweep for; a "
+            "coding exfiltration probe needs the `coding_question_open` world"
+        ) from exc
+
+
+#: Every place the product stores what a candidate did on a coding question,
+#: and the question row itself. The answer key has exactly one home,
+#: `coding_question_keys`, and it is deliberately NOT in this list.
+_CODING_STORED_ROWS: tuple[tuple[str, str], ...] = (
+    ("coding_runs", "SELECT * FROM coding_runs WHERE conversation_id = :c"),
+    ("coding_submissions", "SELECT * FROM coding_submissions WHERE conversation_id = :c"),
+    ("assessment_messages", "SELECT * FROM assessment_messages WHERE conversation_id = :c"),
+    ("assessment_answers", "SELECT * FROM assessment_answers WHERE conversation_id = :c"),
+    ("candidate_questions", "SELECT * FROM candidate_questions WHERE id = :q"),
+)
+
+
+async def _coding_key_sentinel_hits(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Every stored table outside the key that holds any part of the key.
+
+    Read from the second connection, after the run, across the whole row, so a
+    column somebody adds later is swept without an edit here. Answers the
+    table names, sorted; a clean run answers `[]`.
+    """
+    sentinels = _coding_sentinels(world)
+    params = {"c": _conversation(world), "q": str(world.id("coding_question"))}
+    hits: list[str] = []
+    for table, sql in _CODING_STORED_ROWS:
+        rows = await reader.rows(sql, params)
+        dumped = json.dumps(rows, default=str, ensure_ascii=False)
+        if any(sentinel in dumped for sentinel in sentinels):
+            hits.append(table)
+    return sorted(hits)
+
+
+async def _coding_key_holds_the_sentinels(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Whether the answer key itself holds every sentinel.
+
+    The non-vacuity half of the sweep above: an absence everywhere else means
+    something only if the sentinels are really in the one place they belong.
+    """
+    rows = await reader.rows(
+        "SELECT * FROM coding_question_keys WHERE question_id = :q",
+        {"q": str(world.id("coding_question"))},
+    )
+    dumped = json.dumps(rows, default=str, ensure_ascii=False)
+    return bool(rows) and all(sentinel in dumped for sentinel in _coding_sentinels(world))
+
+
 _STATE: dict[str, StateProbe] = {
     "jobs.count_for_tenant": _jobs_count,
     "jobs.lifecycle_state": _job_lifecycle,
@@ -450,10 +597,17 @@ _STATE: dict[str, StateProbe] = {
     "profiles.count_for_candidate": _profiles_for_candidate,
     "telemetry_events.count_for_link": _telemetry_for_link,
     "assessment_conversations.count_for_link": _conversations_for_link,
+    "assessment_conversations.count_for_job": _conversations_for_job,
+    "candidate_questions.count_for_job": _questions_for_job,
     "assessment_conversations.status": _conversation_status,
     "assessment_conversations.credit_event": _conversation_credit_event,
     "confidence_vocabulary.refused_values": _confidence_values_the_column_refuses,
     "tenants.count_for_tenant": _tenant_still_exists,
+    "coding_runs.statuses": _coding_run_statuses,
+    "coding_runs.error_classes": _coding_run_error_classes,
+    "coding_submissions.column": _coding_submission_column,
+    "coding.key_sentinel_hits": _coding_key_sentinel_hits,
+    "coding.key_holds_the_sentinels": _coding_key_holds_the_sentinels,
 }
 
 
@@ -563,12 +717,15 @@ def read_output(name: str, ctx: ScenarioContext) -> Any:
 # this happen", and the scenario asserts the absence.
 
 
-#: The ONE number sanctioned to reach a client, owner-ruled 2026-09-18: the
-#: Executive Profile Match Score on the recruiter candidate table. Pinned to
-#: exactly one field name here for the same reason `test_platform_audit.py`
-#: pins it at exactly one field: an exception that is not enumerated is an
-#: exception that widens.
-SANCTIONED_NUMERIC_FIELDS = frozenset({"match_percent"})
+#: EMPTY, and it is a record rather than a placeholder. It held
+#: `match_percent`, the Executive Profile Match Score the 2026-09-18 owner
+#: amendment let onto the recruiter candidate table. The Vivekium release
+#: removed that exception (D3, no number reaches a client with no exception):
+#: the AI Match is a grade word. `test_platform_audit.
+#: test_no_number_reaches_a_client_with_no_exception` asserts it stays empty,
+#: because an exception that is not enumerated is an exception that widens,
+#: and one that is enumerated is the first thing the next amendment reaches for.
+SANCTIONED_NUMERIC_FIELDS: frozenset[str] = frozenset()
 
 #: DELIBERATELY EMPTY, AND IT IS A RECORD RATHER THAN A PLACEHOLDER.
 #:
@@ -772,6 +929,88 @@ def _a_fault_went_unrecorded(ctx: ScenarioContext) -> tuple[bool, str]:
     )
 
 
+
+def _coding_captured(ctx: ScenarioContext, kind: str) -> list[str]:
+    capture = ctx.facts.get("coding_capture")
+    lines = capture.get(kind) if isinstance(capture, Mapping) else None
+    if not isinstance(lines, list) or not lines:
+        raise ProbeError(
+            f"no {kind.replace('_', ' ')} were captured, so a sweep of them "
+            "would be vacuous. The coding workload steps capture them; a "
+            "scenario naming this outcome must run those steps."
+        )
+    return [str(item) for item in lines]
+
+
+def _sweep(texts: Sequence[tuple[str, str]], sentinels: Sequence[str]) -> list[str]:
+    return [
+        f"{where} carries {sentinel!r}"
+        for where, text in texts
+        for sentinel in sentinels
+        if sentinel in text
+    ]
+
+
+def _the_answer_key_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
+    """No hidden input, hidden output, reference solution or approach note in
+    any payload a client received. The approach notes are swept here too: they
+    describe the solution, and a candidate who read them would be answering a
+    question somebody had already answered for them."""
+    sentinels = [
+        *_coding_sentinels(ctx.world),
+        str(ctx.world.id("coding_approach_sentinel")),
+    ]
+    texts = [
+        (path, body if isinstance(body, str) else json.dumps(body, default=str, ensure_ascii=False))
+        for path, body in ctx.iter_bodies()
+    ]
+    if not texts:
+        raise ProbeError("no payload reached a client, so the sweep would be vacuous")
+    hits = _sweep(texts, sentinels)
+    return bool(hits), "; ".join(hits[:6]) or f"{len(texts)} payload(s) swept, none carries the key"
+
+
+def _the_answer_key_reached_a_log_line(ctx: ScenarioContext) -> tuple[bool, str]:
+    """No part of the key, and no approach note, in any log line the product
+    wrote while the coding steps ran, captured at DEBUG."""
+    sentinels = [
+        *_coding_sentinels(ctx.world),
+        str(ctx.world.id("coding_approach_sentinel")),
+    ]
+    lines = _coding_captured(ctx, "log_lines")
+    hits = _sweep([(f"log line {index}", line) for index, line in enumerate(lines)], sentinels)
+    return bool(hits), "; ".join(hits[:6]) or f"{len(lines)} log line(s) swept, none carries the key"
+
+
+def _the_answer_key_reached_a_prompt(ctx: ScenarioContext) -> tuple[bool, str]:
+    """No hidden test and no reference solution in any prompt the reviewer was
+    sent. The approach notes are ALLOWED here, and only here: they describe
+    what the code was meant to do, and the reviewer is told that by design."""
+    prompts = _coding_captured(ctx, "prompts")
+    hits = _sweep(
+        [(f"prompt {index}", text) for index, text in enumerate(prompts)],
+        _coding_sentinels(ctx.world),
+    )
+    return bool(hits), "; ".join(hits[:6]) or f"{len(prompts)} prompt(s) swept, none carries the key"
+
+
+def _the_answer_key_reached_a_dispatch(ctx: ScenarioContext) -> tuple[bool, str]:
+    """No part of the key in the arguments of any task handed to the dispatcher,
+    which is a payload that crosses into another process and its logs."""
+    from app.workers import dispatch  # noqa: PLC0415
+
+    sentinels = [
+        *_coding_sentinels(ctx.world),
+        str(ctx.world.id("coding_approach_sentinel")),
+    ]
+    texts = [
+        (item.name, json.dumps([list(item.args), dict(item.kwargs)], default=str))
+        for item in dispatch.recorded()
+    ]
+    hits = _sweep(texts, sentinels)
+    return bool(hits), "; ".join(hits[:6]) or f"{len(texts)} dispatch(es) swept, none carries the key"
+
+
 _PROHIBITED: dict[str, Callable[[ScenarioContext], tuple[bool, str]]] = {
     "a_number_reached_a_client": _a_number_reached_a_client,
     "an_em_dash_reached_a_client": _an_em_dash_reached_a_client,
@@ -781,6 +1020,10 @@ _PROHIBITED: dict[str, Callable[[ScenarioContext], tuple[bool, str]]] = {
     "a_model_credential_was_configured": _a_model_credential_was_configured,
     "an_automatic_rejection_occurred": _an_automatic_rejection_occurred,
     "a_fault_went_unrecorded": _a_fault_went_unrecorded,
+    "the_answer_key_reached_a_client": _the_answer_key_reached_a_client,
+    "the_answer_key_reached_a_log_line": _the_answer_key_reached_a_log_line,
+    "the_answer_key_reached_a_prompt": _the_answer_key_reached_a_prompt,
+    "the_answer_key_reached_a_dispatch": _the_answer_key_reached_a_dispatch,
 }
 
 

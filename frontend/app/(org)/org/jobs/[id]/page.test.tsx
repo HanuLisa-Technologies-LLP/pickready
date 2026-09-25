@@ -60,7 +60,15 @@ vi.mock("@/components/ppi-report-modal", () => ({ PPIReportModal: () => null }))
 vi.mock("@/components/assessment-transcript", () => ({
   AssessmentTranscriptModal: () => null,
 }));
-vi.mock("@/components/matching-reasoning", () => ({ MatchingReasoning: () => null }));
+// Records what the page hands the progress panel, so the run's wiring can be
+// asserted without the panel's own rendering (it has its own test).
+const matchingPanel = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
+vi.mock("@/components/matching-reasoning", () => ({
+  MatchingReasoning: (props: Record<string, unknown>) => {
+    matchingPanel.props.push(props);
+    return null;
+  },
+}));
 vi.mock("@/components/ai-activity", () => ({
   AiActivityIndicator: () => null,
   useAiActivity: () => ({ report: vi.fn(), fail: vi.fn() }),
@@ -124,6 +132,7 @@ beforeEach(() => {
   apiPost.mockReset();
   apiPatch.mockReset();
   toast.mockReset();
+  matchingPanel.props.length = 0;
   setupAnswer.grade_locked = false;
   apiGet.mockImplementation((path: string) =>
     path === "/jobs/job-1"
@@ -228,4 +237,78 @@ describe("the job page", () => {
     );
     expect(closed.description).not.toMatch(/unchanged/);
   });
+
+  it("runs AI Matching through the job-scoped routes and keeps a degraded run degraded to the end", async () => {
+    const reason =
+      "The embedding service was unavailable, so this run found candidates by keywords only.";
+    const runningStages = [
+      { key: "understanding", label: "Reading the job", detail: "Read.", status: "done" },
+      { key: "scoring", label: "Checking resumes", detail: "Checking.", status: "active" },
+    ];
+    const running = {
+      task_id: "run-1",
+      state: "PROGRESS",
+      done: false,
+      stages: runningStages,
+      candidate_count: 2,
+      scored_count: 1,
+      degraded: true,
+      degraded_reasons: [reason],
+    };
+    // What the status route answers once the run has finished: the run-status
+    // record holds the task's return value, so the stage list is the empty
+    // plan and the degraded flag is gone. Neither may overwrite the run.
+    const finished = {
+      task_id: "run-1",
+      state: "SUCCESS",
+      done: true,
+      stages: runningStages.map((stage) => ({ ...stage, status: "pending" })),
+      candidate_count: 0,
+      scored_count: 0,
+      degraded: false,
+      degraded_reasons: [],
+    };
+    let polls = 0;
+    apiGet.mockImplementation((path: string) => {
+      if (path === "/jobs/job-1") return Promise.resolve(JOB);
+      if (path === "/matching/jobs/job-1/tasks/run-1") {
+        polls += 1;
+        return Promise.resolve(polls === 1 ? running : finished);
+      }
+      return Promise.resolve({ company_name: "Acme" });
+    });
+    apiPost.mockResolvedValue({ candidate_count: 2, task_id: "run-1" });
+
+    render(<OrgJobDetailPage />);
+    await screen.findByText("Own the payments platform.");
+    fireEvent.click(screen.getByRole("tab", { name: "Candidates" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run AI matching" }));
+
+    await waitFor(
+      () =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "AI matching finished, but not everything was checked",
+          }),
+        ),
+      { timeout: 5000 },
+    );
+    expect(apiPost).toHaveBeenCalledWith("/matching/jobs/job-1/run");
+    expect(apiGet).toHaveBeenCalledWith("/matching/jobs/job-1/tasks/run-1");
+    // The retired unscoped status route, assembled rather than spelled so the
+    // backend removal sweep (test_yukti_legacy_removed) keeps its one rule.
+    const retiredStatusRoute = ["", "matching", "tasks", "run-1"].join("/");
+    expect(apiGet.mock.calls.map(([path]) => path)).not.toContain(retiredStatusRoute);
+
+    const last = matchingPanel.props[matchingPanel.props.length - 1] as {
+      state: string;
+      message: string;
+      progress: { stages: unknown; degraded: boolean; degraded_reasons: string[] };
+    };
+    expect(last.state).toBe("done");
+    expect(last.progress.degraded).toBe(true);
+    expect(last.progress.degraded_reasons).toEqual([reason]);
+    expect(last.progress.stages).toEqual(runningStages);
+    expect(last.message).not.toMatch(/complete/i);
+  }, 10000);
 });

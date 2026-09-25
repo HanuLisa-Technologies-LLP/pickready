@@ -57,6 +57,8 @@ __all__ = [
     "bump_consecutive",
     "reset_consecutive",
     "count_in_minute",
+    "remember",
+    "recall",
     "clear_session",
 ]
 
@@ -203,6 +205,23 @@ async def bump_consecutive(session_id: uuid.UUID, name: str) -> int:
 async def reset_consecutive(session_id: uuid.UUID, name: str) -> None:
     client = _redis()
     await _call("consecutive.reset", lambda: client.delete(_key("consecutive", session_id, name)))
+
+
+async def remember(session_id: uuid.UUID, name: str, value: str) -> None:
+    """Hold one small marker for a session: the id of the event a running
+    rule is extending (the speech rule's current occurrence). Expires with
+    every other key of the session."""
+    client = _redis()
+    await _call(
+        "marker.set",
+        lambda: client.set(_key("marker", session_id, name), value, ex=SESSION_KEY_TTL_SECONDS),
+    )
+
+
+async def recall(session_id: uuid.UUID, name: str) -> str | None:
+    client = _redis()
+    raw = await _call("marker.get", lambda: client.get(_key("marker", session_id, name)))
+    return str(raw) if raw is not None else None
 
 
 # ── The abuse ceiling ────────────────────────────────────────────────────────

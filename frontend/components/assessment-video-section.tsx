@@ -1,8 +1,16 @@
 "use client";
 
 // The Assessment video section of the Executive Profile surface (2026-09-05
-// dashboard/video spec, sections 15, 18, 20): mode, duration, an honest status
-// word, and the two delivery actions.
+// dashboard/video spec, sections 15, 18, 20): duration, an honest status word,
+// and the two delivery actions.
+//
+// ONE MODE, AND THE OLD ROWS SAY WHAT THEY ARE (Phase 3, 2026-09-24). Every
+// assessment is now the same proctored session, so a row naming "the mode"
+// told the hiring team nothing and is gone. A recording made before that, as
+// a video interview, is still readable, and it says so in one sentence: its
+// layout (one answer spoken per question, no typed answers) is not what a
+// reviewer now expects, and a recording that looks unlike every other one
+// with nothing explaining why reads as a broken recording.
 //
 // This section sits BESIDE the PRISM Report, never inside it. The report is an
 // immutable document with a fixed, test-pinned section order; the video is a
@@ -28,6 +36,14 @@ import { apiGet, apiPost } from "@/lib/api";
 import type { VideoAccess, VideoDelivery, VideoRecordingStatus } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
+
+/** The stored mode a recording made before 2026-09-24 as a video interview
+ *  still carries. Compared, never written: no new session takes it. */
+export const LEGACY_VIDEO_INTERVIEW_MODE = "video_interview";
+
+export const LEGACY_FORMAT_NOTE =
+  "This assessment was taken as a video interview, an earlier format that is no " +
+  "longer offered. The recording is shown as it was made.";
 
 /** 1840 seconds reads "30:40"; anything over an hour reads "1:02:05". */
 export function formatDuration(totalSeconds: number): string {
@@ -169,11 +185,10 @@ export function AssessmentVideoSection({ linkId }: { linkId: string }) {
         <p className="py-2 text-sm">{error}</p>
       ) : access ? (
         <div className="space-y-3">
+          {access.assessment_mode === LEGACY_VIDEO_INTERVIEW_MODE ? (
+            <p className="text-sm">{LEGACY_FORMAT_NOTE}</p>
+          ) : null}
           <dl className="grid gap-x-8 gap-y-1 text-sm sm:grid-cols-3">
-            <div>
-              <dt className="font-medium">Assessment mode</dt>
-              <dd>{access.assessment_mode_label}</dd>
-            </div>
             {access.duration_seconds !== null ? (
               <div>
                 <dt className="font-medium">Duration</dt>

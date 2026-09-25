@@ -51,9 +51,7 @@ SINGLE_FILES = ("frontend/proxy.ts",)
 
 #: Files another work package still has to clean, and who. MUST SHRINK TO
 #: EMPTY. Paths are repository-relative with forward slashes.
-PENDING: dict[str, str] = {
-    "backend/app/services/resume_prefill.py": "Phase 3 deletes the module",
-}
+PENDING: dict[str, str] = {}
 
 #: Routes that must not be served. Both are gone: the portal half went with
 #: WP6-B and the recruiter's half with WP6-C.

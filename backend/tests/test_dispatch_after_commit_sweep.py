@@ -42,32 +42,30 @@ SCOPE = (
     APP / "api",
     APP / "services" / "proctoring",
     APP / "services" / "video",
+    # The conversation engine completes an assessment from inside a request
+    # (PLAN-p3 WP3), exactly the shape the rule exists for.
+    APP / "services" / "assessment_conversation",
 )
 
 #: (file relative to app/, enclosing function) -> (allowed bare dispatch
 #: calls, proposed owner phase). Owners marked "proposed" were not assigned by
 #: a phase plan and are the orchestrator's to confirm.
 LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
-    ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3"),
-    ("api/assessment_conversation.py", "respond"): (2, "P3"),
-    ("api/assessment_recording.py", "finalize_video_interview"): (1, "P3"),
-    ("api/assessment_recording.py", "retry_video_processing"): (1, "P3"),
+    # The Phase 3 entries all left this list at the stage 2 integration: the
+    # answer route (WP3), the recording routes and the processing completion
+    # (WP5) and the proctoring termination (WP4) dispatch after commit, and the
+    # conversation's readiness helper was deleted with the video interview
+    # start, its last caller. The admin console's entries left with the
+    # console (PLAN-p7 WP-B6) and support's `_notify` was converted in stage 3.
     ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
     ("api/bgv.py", "append_employer_route"): (1, "P6 proposed"),
     ("api/bgv.py", "send"): (1, "P6 proposed"),
     ("api/bgv.py", "submit_employer_checkbox_form"): (1, "P6 proposed"),
     ("api/candidates.py", "schedule_interview"): (1, "P6 proposed"),
-    ("api/candidates.py", "upload_resume"): (1, "P6"),
     ("api/companies.py", "_issue_invite"): (1, "P6 proposed"),
-    ("api/jobs.py", "upload_databank_candidates"): (2, "P2"),
-    ("api/matching.py", "run_matching"): (1, "P2"),
     ("api/outreach.py", "send_outreach"): (1, "P6"),
-    ("api/pipeline.py", "_queue_transition_email"): (1, "P3"),
-    ("api/pipeline.py", "select_candidates_for_assessment"): (1, "P3"),
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
-    ("services/proctoring/ingestion.py", "enqueue_assessment"): (1, "P3"),
-    ("services/video/processing.py", "complete_assessment"): (1, "P3"),
 }
 
 #: (file relative to app/, the alias) -> proposed owner phase. The same

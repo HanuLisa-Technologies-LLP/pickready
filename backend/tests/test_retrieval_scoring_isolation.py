@@ -56,7 +56,10 @@ FORBIDDEN_IMPORTERS: dict[str, str] = {
     ),
     "services/miti/caps.py": "applies the Must-have cap to the composite score",
     "services/rating.py": "the ONE rating scale, four grades, 90/75/60",
-    "services/tiers.py": "a thin alias over rating; it has no arithmetic left",
+    "services/yukti/ranking.py": (
+        "the one rank key the ranked table and the dashboard order by, and its "
+        "four words"
+    ),
 }
 
 #: Packages `services/rag` must never reach into. Every one of them decides,
@@ -65,7 +68,7 @@ FORBIDDEN_TARGETS = (
     "app.services.miti",
     "app.services.siddhi",
     "app.services.rating",
-    "app.services.tiers",
+    "app.services.yukti",
     "app.services.matching",
     "app.services.functional_assessment",
     "app.services.ppi",

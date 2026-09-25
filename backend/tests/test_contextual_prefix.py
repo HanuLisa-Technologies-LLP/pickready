@@ -233,7 +233,7 @@ async def test_the_model_sees_the_document_and_the_chunk_and_no_identifier(
 def test_the_task_runs_on_luna_registered_or_not() -> None:
     """It SITUATES; it does not judge. Terra here would be a boundary
     violation dressed as an upgrade, the argument that keeps
-    `claim_extraction` on Luna. This reads as Luna whether or not the mapping
+    every extraction task on Luna. This reads as Luna whether or not the mapping
     has landed, and fails the day it lands as anything else."""
     assert contextual.REQUIRED_MODEL == llm_providers.MODEL_LUNA
     assert (

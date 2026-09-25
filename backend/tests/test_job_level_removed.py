@@ -38,7 +38,6 @@ _DECLARES = APP / "models" / "job.py"
 
 #: Readers other packages own, each deleted by its owner. Not permanent.
 PENDING_BACKEND = {
-    APP / "services" / "matching.py": "Phase 2 (`_jd_text`)",
     APP / "services" / "functional_assessment.py": "Phase 7 (`infer_grade`)",
 }
 

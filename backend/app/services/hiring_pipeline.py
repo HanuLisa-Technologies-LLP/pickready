@@ -244,7 +244,28 @@ def can_transition(current: str | None, target: str) -> bool:
 # The API now returns the allowed manual set (GET /pipeline/applications/{id}
 # /transitions and every candidate row), so this rule lives in one place and
 # the UI never hardcodes a stage list of its own.
-MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED})
+#
+# `assessment_in_progress` is withdrawn too (Vivekium release, stage 2
+# integration, from PLAN-p3 WP1). It promises that the candidate has OPENED
+# the assessment, and it has a system writer that keeps that promise: the
+# start routes move the application when the session begins. A hand move to
+# it claimed a started session that did not exist. `api/pipeline.change_status`
+# refuses it as a target, not only the dropdown. `assessment_completed` is
+# NOT withdrawn yet: nothing in the product writes it automatically today, so
+# withdrawing the hand move would strand every assessed candidate before
+# shortlisting. It goes when the report writer moves the application itself
+# (Phase 5; recorded in docs/release/2026-09-vivekium/stage2-deferred-hunks.md).
+MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED, ASSESSMENT_IN_PROGRESS})
+
+#: Targets `api/pipeline.change_status` refuses outright, because a system
+#: writer owns them and a hand move would claim an event that did not happen.
+SYSTEM_ONLY_TARGETS: frozenset[str] = frozenset({ASSESSMENT_IN_PROGRESS})
+
+#: The sentence a refused hand move to a system-only target answers with.
+SYSTEM_ONLY_REFUSAL = (
+    "An application moves to Assessment in progress when the candidate opens "
+    "the assessment. It cannot be set by hand."
+)
 
 
 def manual_transitions(current: str | None) -> frozenset[str]:
@@ -451,6 +472,66 @@ async def apply_transition(
         stage_label=label,
         email_type=TRANSITION_EMAIL.get(status),
         changed_at=now,
+    )
+
+
+async def start_sourced(
+    session: AsyncSession,
+    link: Any,
+    *,
+    actor_user_id: uuid.UUID | None = None,
+    remarks: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Enter a link the recruitment team or AI Matching CREATED at `sourced`.
+
+    The one way a non-applicant enters a job (audit Part 1 #5). Three callers
+    make such a link: the databank bulk upload, the single recruiter upload and
+    the matching run's databank discovery. Each used to set the mirror by hand
+    or not at all, so a link the matcher minted read `applied` (the column
+    default) and none of the three wrote the `pipeline_status` row the rest of
+    this module treats as authoritative. Here, the same two writes
+    `apply_transition` makes, for the one stage that is ENTERED rather than
+    reached: there is no previous status, so there is no transition to assert.
+
+    CREATION ONLY. `link` must be new in this session (transient or pending):
+    a link that already exists has a stage, and moving it is a transition,
+    which is `apply_transition`'s job and has its own rules. The caller's
+    transaction commits both writes; nothing is committed here.
+
+    No Updates feed row, deliberately: `sourced` is not an event the candidate
+    caused (the 2026-09-04 rule), and `candidate_updates.for_stage` has no
+    entry for it.
+    """
+    from sqlalchemy import inspect as sa_inspect  # noqa: PLC0415
+
+    state = sa_inspect(link)
+    if not (state.transient or state.pending):
+        raise ValueError(
+            f"link {getattr(link, 'id', None)} already exists: start_sourced "
+            "only enters a link being created; move an existing one with "
+            "apply_transition"
+        )
+    now = now or datetime.now(timezone.utc)
+    link.status = SOURCED
+    link.status_updated_at = now
+    link.current_stage = STAGE_LABELS[SOURCED]
+    session.add(link)
+    await session.flush()
+    await session.execute(
+        text(
+            "INSERT INTO pipeline_status "
+            "(id, tenant_id, job_candidate_link_id, status, remarks, set_by, at) "
+            "VALUES (gen_random_uuid(), :tid, :lid, :status, :remarks, :actor, :at)"
+        ),
+        {
+            "tid": str(link.tenant_id),
+            "lid": str(link.id),
+            "status": SOURCED,
+            "remarks": remarks,
+            "actor": str(actor_user_id) if actor_user_id else None,
+            "at": now,
+        },
     )
 
 

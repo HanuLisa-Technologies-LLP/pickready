@@ -145,6 +145,19 @@ export class BehaviourCapture {
     };
   }
 
+  /**
+   * Count a blocked action against the answer on screen. The lockdown layer
+   * catches copy, cut, paste and drop on the DOCUMENT, in the capture phase,
+   * and stops the event there, so the field it was aimed at never sees it and
+   * its own `onBlockedAction` never runs. Without this the behaviour record's
+   * `blocked_action_count` read zero for every answer while the session's
+   * event log listed every attempt.
+   */
+  recordBlocked(): void {
+    const capture = this.active();
+    if (capture) capture.blockedActions += 1;
+  }
+
   /** Keystrokes beyond the sample ceiling for a capture still open. */
   droppedKeystrokes(questionKey: string): number {
     return this.captures.get(questionKey)?.droppedKeystrokes ?? 0;

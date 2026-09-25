@@ -9,7 +9,7 @@ PPI Assessment Report.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -17,14 +17,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
-from app.core.config import get_settings
-from app.models.email_log import EMAIL_TYPE_ASSESSMENT_INVITATION
-from app.services import assessment_invite, capabilities as caps
-from app.services import credits
+from app.services import assessment_invitations, capabilities as caps
+from app.services import email_outbox
 from app.services import hiring_pipeline as pipeline
-from app.services import telemetry_events
+from app.services import rbac, telemetry_events
 from app.services.audit import audit
-from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -128,79 +125,6 @@ async def _link_or_404(session: AsyncSession, user: CurrentUser, link_id: uuid.U
     return row
 
 
-def _transition_email_extra_context(
-    email_type: str, row, link_id: uuid.UUID
-) -> dict | None:
-    """Extra draft context a transition email needs beyond name/job/company.
-
-    Isolated from `_queue_transition_email` so the one thing that actually
-    varies per email type -- and the thing that was missing for
-    `assessment_invitation`, per the 2026-08-16 report -- is unit-testable
-    without a database.
-    """
-    if email_type == EMAIL_TYPE_ASSESSMENT_INVITATION:
-        frontend = get_settings().frontend_url.rstrip("/")
-        return {
-            "assessment_link": assessment_invite.assessment_link_url(
-                frontend, link_id=link_id, email=row["email"]
-            )
-        }
-    return None
-
-
-async def _queue_transition_email(
-    session: AsyncSession,
-    user: CurrentUser,
-    row,
-    email_type: str,
-    extra_context: dict | None = None,
-) -> bool:
-    """Draft and queue the email for a status change.
-
-    Returns whether anything was queued. A missing recipient is a skip, not an
-    error: the status change itself already succeeded and rolling it back
-    because of a mail problem would be the wrong trade.
-    """
-    from app.models.email_log import STATUS_QUEUED, EmailLog
-    from app.models.tenant import Tenant
-    from app.services import lifecycle_email
-
-    if not row["email"]:
-        return False
-    tenant = await session.get(Tenant, uuid.UUID(str(row["tenant_id"])))
-    draft = await lifecycle_email.draft(
-        email_type,
-        {
-            "candidate_name": row["full_name"] or "there",
-            "job_title": row["title"],
-            "company_name": tenant.name if tenant else "our team",
-            **(extra_context or {}),
-        },
-        session=session,
-    )
-    log = EmailLog(
-        tenant_id=uuid.UUID(str(row["tenant_id"])),
-        email_type=email_type,
-        recipient_email=row["email"],
-        candidate_id=uuid.UUID(str(row["candidate_id"])),
-        job_id=uuid.UUID(str(row["job_id"])),
-        job_candidate_link_id=uuid.UUID(str(row["id"])),
-        subject=draft["subject"],
-        body=draft["body"],
-        status=STATUS_QUEUED,
-        # Sent by the system on a recruiter's action rather than reviewed
-        # sentence by sentence — the recruiter can still compose manually via
-        # /emails/draft when they want to.
-        edited_by_human=False,
-        generated_by_ai=draft["generated_by_ai"],
-        sent_by=user.user_id,
-    )
-    session.add(log)
-    await session.flush()
-    dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
-    return True
-
-
 # ── Assessment selection (spec §3.1) ─────────────────────────────────────────
 
 @router.post(
@@ -214,183 +138,30 @@ async def select_candidates_for_assessment(
     user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SelectCandidatesOut:
-    """Invite selected applicants to the unified assessment conversation.
+    """Invite selected applicants to the assessment.
 
     This is the gate the whole pipeline turns on: an application that is never
-    selected here never gets an assessment, and therefore never gets a PPI
-    Assessment Report. Creating the conversation row IS the invitation —
-    assessment access is checked against it (see api/assessments), so an
-    uninvited candidate cannot reach the questions by guessing a URL.
+    selected here never gets an assessment, and therefore never gets a PRISM
+    Report. The conversation row IS the invitation, so an uninvited candidate
+    cannot reach the questions by guessing a URL.
+
+    `services/assessment_invitations.invite_batch` owns the three passes (read
+    and lock, one credit question for the whole batch, write). The invitation
+    email is drafted by a dispatched task after the commit, never here.
     """
-    job = (
-        await session.execute(
-            text(
-                "SELECT id, tenant_id, assessment_grade, assessment_status, "
-                "       role_classification, credit_cost_per_report "
-                "FROM jobs WHERE id = :jid"
-            ),
-            {"jid": str(job_id)},
-        )
-    ).mappings().first()
-    if job is None or str(job["tenant_id"]) != str(user.tenant_id):
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # ── The review gate (spec §5, §11) ──────────────────────────────────────
-    # Inviting before the PPI framework is approved would mail candidates an
-    # assessment they cannot open, so the refusal happens here rather than at
-    # the door the candidate walks into.
-    #
-    # The message named the technical bank until 2026-08-04, when that half of
-    # the gate was removed. Left as it was, it would have sent a recruiter
-    # hunting for a Finalise control that no longer exists on the page, on the
-    # one screen where they are already blocked.
-    if job["assessment_status"] != "ready_for_candidates":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This job is still awaiting review. Save the PPI framework on "
-                "the job's setup screen before inviting candidates."
-            ),
-        )
-
-    # ── The credit gate (spec §11) ──────────────────────────────────────────
-    # A completed assessment cannot be un-completed, so its charge is never
-    # refused and the balance is allowed to go negative. What IS refused is
-    # STARTING more work, which is the one act that is still a choice.
-    #
-    # TWO THRESHOLDS, AND THE DIFFERENCE IS LOAD-BEARING
-    # --------------------------------------------------
-    # Draft v4 moved this line from "negative" to "zero or below". At exactly
-    # zero the pool is exhausted: there is nothing left to spend, and letting
-    # one more candidate into the conversation would be a credit drawn from an
-    # empty account. The negative-balance gate that sat beside it answered a
-    # question about work already performed, had no caller left, and was
-    # deleted (Vivekium release).
-    #
-    # This applies platform-wide, across every job, existing or new, and
-    # regardless of how many un-assessed applicants are already sitting in the
-    # pipeline. That is what closes the free-ATS gap: a recruiter cannot use
-    # already-created jobs, or a backlog, to keep assessing for free once the
-    # quota is exhausted.
-    #
-    # The refusal is LOUD and immediate, at the point the recruiter attempts the
-    # action. No silent failure, no degraded mode, no partial batch.
-    if not await credits.has_positive_balance(session, user.tenant_id):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                "Your credit pool is exhausted, so no further candidates can be "
-                "moved into assessment. Purchase a credit bundle to continue. "
-                "Any conversation already in progress will finish."
-            ),
-        )
-
-    # ── The per-report gate (Master Directive Part 5 §2.3) ──────────────────
-    # Stricter than "above zero": the pool must hold the FULL cost of the
-    # report this job's classification produces before an assessment may
-    # start. 1.2 credits starts a non-STEM assessment (1.0) and refuses a
-    # STEM one (1.5). The message states role type, credits required and the
-    # current balance, and the client renders the top-up link with it.
-    allowed, required, balance = await credits.can_start_assessment(
-        session, user.tenant_id, role_classification=job["role_classification"]
-    )
-    if not allowed:
-        role_word = "STEM" if job["role_classification"] == "STEM" else "Non-STEM"
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                f"Insufficient credits. This {role_word} role requires "
-                f"{required} credits per assessment. Current balance: "
-                f"{balance} credits. Please top up to continue."
-            ),
-        )
-
-    now = datetime.now(timezone.utc)
-    invited = 0
-    skipped: list[dict] = []
-
-    for link_id in body.link_ids:
-        try:
-            row = await _link_or_404(session, user, link_id)
-        except HTTPException:
-            skipped.append({"link_id": str(link_id), "reason": "Application not found"})
-            continue
-        if str(row["job_id"]) != str(job_id):
-            skipped.append(
-                {"link_id": str(link_id), "reason": "Application belongs to another job"}
-            )
-            continue
-
-        current = pipeline.normalize(row["status"])
-        if current != pipeline.APPLIED:
-            # Re-inviting someone already mid-assessment would restart their
-            # clock and re-mail them; someone already rejected should not be
-            # invited at all.
-            skipped.append(
-                {
-                    "link_id": str(link_id),
-                    "name": row["full_name"],
-                    "reason": f"Already at stage '{pipeline.STAGE_LABELS.get(current, current)}'",
-                }
-            )
-            continue
-
-        await session.execute(
-            text(
-                """
-                INSERT INTO assessment_conversations
-                    (id, tenant_id, job_id, job_candidate_link_id, grade, status,
-                     next_question_index, invitation_sent_at, invited_by, created_at)
-                VALUES
-                    (gen_random_uuid(), :tid, :jid, :lid, :grade, 'active', 0,
-                     :at, :actor, :at)
-                ON CONFLICT (job_candidate_link_id) DO UPDATE
-                SET invitation_sent_at = COALESCE(
-                        assessment_conversations.invitation_sent_at, EXCLUDED.invitation_sent_at
-                    ),
-                    invited_by = COALESCE(
-                        assessment_conversations.invited_by, EXCLUDED.invited_by
-                    )
-                """
-            ),
-            {
-                "tid": str(user.tenant_id), "jid": str(job_id), "lid": str(link_id),
-                "grade": job["assessment_grade"] or "non_managerial",
-                "at": now, "actor": str(user.user_id),
-            },
-        )
-        result = await pipeline.apply_transition(
+    try:
+        result = await assessment_invitations.invite_batch(
             session,
-            link_id=uuid.UUID(str(link_id)),
             tenant_id=uuid.UUID(str(user.tenant_id)),
-            target=pipeline.ASSESSMENT_INVITED,
+            job_id=job_id,
+            link_ids=list(body.link_ids),
             actor_user_id=user.user_id,
-            now=now,
         )
-        if result.email_type:
-            extra_context = _transition_email_extra_context(
-                result.email_type, row, uuid.UUID(str(link_id))
-            )
-            await _queue_transition_email(session, user, row, result.email_type, extra_context)
-        # This candidate's PPI questions are generated from their own resume
-        # against the job's saved framework (spec §6.4). Enqueued at invitation
-        # rather than at first open, so the questions are waiting when they
-        # arrive instead of making them retry while an LLM call runs.
-        dispatch(
-            "pickready.generate_candidate_questions", args=[str(link_id)]
-        )
-        invited += 1
-
-    await audit(
-        session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
-        action="assessment_invitations_sent",
-        target_type="job",
-        target_id=job_id,
-        metadata={"invited": invited, "skipped": len(skipped)},
+    except assessment_invitations.InvitationRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return SelectCandidatesOut(
+        invited=len(result.invited), skipped=list(result.skipped)
     )
-    return SelectCandidatesOut(invited=invited, skipped=skipped)
 
 
 # ── Status transitions (spec §3.3 / §7.3) ────────────────────────────────────
@@ -409,17 +180,55 @@ async def change_status(
     act on the message without reading the spec.
     """
     row = await _link_or_404(session, user, link_id)
-    try:
-        result = await pipeline.apply_transition(
-            session,
-            link_id=link_id,
-            tenant_id=uuid.UUID(str(user.tenant_id)),
-            target=body.status,
-            actor_user_id=user.user_id,
-            remarks=body.remarks,
-        )
-    except pipeline.InvalidTransition as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if pipeline.normalize(body.status) in pipeline.SYSTEM_ONLY_TARGETS:
+        raise HTTPException(status_code=409, detail=pipeline.SYSTEM_ONLY_REFUSAL)
+    if pipeline.normalize(body.status) == pipeline.ASSESSMENT_INVITED:
+        # "Move to: Assessment invitation sent" IS an invitation, so it goes
+        # through the one invitation path. Applied directly it wrote the stage
+        # with no `assessment_conversations` row (which IS the invitation):
+        # the candidate was mailed a link the start route refused, no credit
+        # was asked about, and `select-candidates` could never invite them
+        # afterwards because they were no longer at `applied` (PLAN-p3 WP1).
+        # The invitation email is always sent, by a worker after the commit,
+        # because it carries the candidate's only way in; `send_email` cannot
+        # withhold it, and `email_queued` says so. Inviting takes the
+        # invitation's own capability as well as this route's: a person who
+        # may decide on a profile but not invite must not invite by this door.
+        if not await rbac.has_capability(
+            session, user.tenant_id, user.role, caps.SEND_OUTREACH, user.user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing capability: {caps.SEND_OUTREACH}",
+            )
+        try:
+            invited = await assessment_invitations.invite_batch(
+                session,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                job_id=uuid.UUID(str(row["job_id"])),
+                link_ids=[link_id],
+                actor_user_id=user.user_id,
+                remarks=body.remarks,
+            )
+        except assessment_invitations.InvitationRefused as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if not invited.transitions:
+            raise HTTPException(status_code=409, detail=invited.skipped[0]["reason"])
+        result = invited.transitions[0]
+        queued = True
+    else:
+        try:
+            result = await pipeline.apply_transition(
+                session,
+                link_id=link_id,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                target=body.status,
+                actor_user_id=user.user_id,
+                remarks=body.remarks,
+            )
+        except pipeline.InvalidTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        queued = False
 
     # Master Directive Part 2 section 5.1: EV_HM_DECISION, one row per explicit
     # pipeline decision. Feeds SLA_PR / PRL (services/metrics.py).
@@ -435,9 +244,23 @@ async def change_status(
         payload={"from_status": result.previous, "to_status": result.status},
     )
 
-    queued = False
-    if body.send_email and result.email_type:
-        queued = await _queue_transition_email(session, user, row, result.email_type)
+    if (
+        body.send_email
+        and result.email_type
+        and result.status != pipeline.ASSESSMENT_INVITED
+    ):
+        # Drafted here, in the request: a single stage change is one draft,
+        # and the recruiter is told whether it was queued. The send itself is
+        # dispatched after this request commits (`email_outbox`). The
+        # invitation is the exception above: a worker drafts it.
+        queued = (
+            await email_outbox.queue_transition_email(
+                session,
+                link_id=link_id,
+                email_type=result.email_type,
+                sent_by=user.user_id,
+            )
+        ) is not None
 
     await audit(
         session,
@@ -579,9 +402,12 @@ async def schedule_interview(
             # The date and time are passed through for the prompt to repeat
             # VERBATIM. Reformatting or converting a timezone here is how
             # someone ends up missing their interview.
-            await _queue_transition_email(
-                session, user, row, result.email_type,
-                {
+            await email_outbox.queue_transition_email(
+                session,
+                link_id=link_id,
+                email_type=result.email_type,
+                sent_by=user.user_id,
+                extra_context={
                     "stage_name": body.stage_name,
                     "scheduled_at": body.scheduled_at.strftime(
                         "%A %d %B %Y at %H:%M UTC"

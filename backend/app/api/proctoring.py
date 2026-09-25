@@ -1,11 +1,15 @@
 """Proctoring routes (proctoring-spec-doc.md sections 5, 8 and 9).
 
-Candidate routes: the session, its events, its heartbeat and its audio. Each
-one proves the caller is the candidate the application belongs to before it
-reads a row, exactly as `api/assessments` does for the conversation. The one
-staff route serves the report to a recruiter who may view the review screen,
-and answers 404 for a link outside the tenant rather than 403, because a
-cross-tenant read must not confirm the row exists.
+Candidate routes: the session, its events, its heartbeat, its audio and the
+acknowledgement of a warning. Each one proves the caller is the candidate the
+application belongs to before it reads a row: the signed-in person is resolved
+to their candidate record by `services/candidate_identity`, the one resolver,
+and the application must be theirs. The one staff route serves the report to a
+recruiter who may view the review screen, answers 404 for a link outside the
+tenant rather than 403, because a cross-tenant read must not confirm the row
+exists, and answers 410 once the job's assessment records are withheld by its
+closure (`job_assessment_retention.require_readable`), exactly as the PRISM
+Report, the transcript and the recording do.
 
 WHAT THIS MODULE DOES NOT DO. It decides nothing. Every rule (which path an
 event takes, whether a warning is issued, whether the session ends) lives in
@@ -33,7 +37,7 @@ from app.api.deps import (
     require_capability,
 )
 from app.models.assessment import AssessmentConversation
-from app.models.candidate import Candidate, JobCandidateLink
+from app.models.candidate import JobCandidateLink
 from app.models.job import Job
 from app.models.proctoring import OUTCOME_ACTIVE, ProctoringEvent, ProctoringSession
 from app.schemas.proctoring import (
@@ -46,13 +50,15 @@ from app.schemas.proctoring import (
     ProctoringReportOut,
     SessionCreateIn,
     SessionOut,
+    WarningAckOut,
 )
+from app.services import candidate_identity, job_assessment_retention
 from app.services import capabilities as caps
 from app.services.proctoring import audio as proctoring_audio
 from app.services.proctoring import catalog
 from app.services.proctoring import gate as proctoring_gate
 from app.services.proctoring import identity as proctoring_identity
-from app.services.proctoring import ingestion
+from app.services.proctoring import ingestion, phrasing
 from app.services.proctoring import report as proctoring_report
 from app.services.proctoring import state as proctoring_state
 from app.services.proctoring.config import client_config, get_config
@@ -79,11 +85,9 @@ async def _candidate_link(
     session: AsyncSession, user: CurrentUser, link_id: uuid.UUID
 ) -> tuple[JobCandidateLink, Job]:
     """The application, only if it belongs to the signed-in candidate."""
-    candidate = (
-        await session.execute(select(Candidate).where(Candidate.user_id == user.user_id))
-    ).scalars().first()
+    candidate_id = await candidate_identity.resolve_candidate_id(session, user.user_id)
     link = await session.get(JobCandidateLink, link_id)
-    if candidate is None or link is None or link.candidate_id != candidate.id:
+    if candidate_id is None or link is None or link.candidate_id != candidate_id:
         raise HTTPException(status_code=404, detail="Application not found")
     job = await session.get(Job, link.job_id)
     if job is None:
@@ -109,8 +113,13 @@ def _state_unavailable(exc: proctoring_state.StateUnavailable) -> HTTPException:
     )
 
 
-def _session_out(ps: ProctoringSession, job: Job) -> SessionOut:
+async def _session_out(
+    session: AsyncSession, ps: ProctoringSession, job: Job
+) -> SessionOut:
     config = get_config()
+    pause = await ingestion.pause_out(session, ps)
+    if pause is None:  # pragma: no cover - both callers return only active sessions
+        raise RuntimeError(f"proctoring session {ps.id} ended while being described")
     return SessionOut(
         session_id=ps.id,
         conversation_id=ps.conversation_id,
@@ -121,6 +130,7 @@ def _session_out(ps: ProctoringSession, job: Job) -> SessionOut:
         consented_at=ps.consented_at,
         config=client_config(),
         audio_analysis_available=config.audio_analysis_available,
+        pause=pause,
     )
 
 
@@ -128,12 +138,14 @@ def _session_out(ps: ProctoringSession, job: Job) -> SessionOut:
 async def get_client_config(
     _user: CurrentUser = Depends(get_current_candidate),
 ) -> ProctoringConfigOut:
-    """The browser-side thresholds, from the same object the server reads."""
+    """The browser-side thresholds and the rules the candidate is shown before
+    starting, both from the same object the server enforces."""
     config = get_config()
     return ProctoringConfigOut(
         config=client_config(),
         max_warnings=config.max_warnings,
         audio_analysis_available=config.audio_analysis_available,
+        candidate_rules=phrasing.candidate_rules(config),
     )
 
 
@@ -224,7 +236,7 @@ async def create_session(
         existing.session_quality = quality
         existing.updated_at = now
         await session.flush()
-        return _session_out(existing, job)
+        return await _session_out(session, existing, job)
     ps = ProctoringSession(
         tenant_id=link.tenant_id,
         conversation_id=conversation.id,
@@ -248,7 +260,7 @@ async def create_session(
         "proctoring.session_created session_id=%s link_id=%s quality=%s",
         ps.id, link.id, quality,
     )
-    return _session_out(ps, job)
+    return await _session_out(session, ps, job)
 
 
 @router.post("/sessions/{session_id}/events", response_model=IngestOut)
@@ -296,6 +308,21 @@ async def post_heartbeat(
         raise _state_unavailable(exc) from exc
 
 
+@router.post("/sessions/{session_id}/warnings/ack", response_model=WarningAckOut)
+async def acknowledge_warning(
+    session_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> WarningAckOut:
+    """The candidate dismissed the warning on their screen; their clock runs
+    again (PLAN-p3 3.7). Idempotent: the browser retries a lost reply, and a
+    warning whose pause already reached its cap has nothing left to close."""
+    ps, _job = await _candidate_session(session, user, session_id)
+    resumed = await ingestion.acknowledge_warning(session, ps, now=_now())
+    await session.flush()
+    return WarningAckOut(resumed=resumed)
+
+
 @router.post("/sessions/{session_id}/audio", response_model=AudioChunkOut)
 async def post_audio_chunk(
     session_id: uuid.UUID,
@@ -339,10 +366,19 @@ async def get_proctoring_report(
 ) -> ProctoringReportOut:
     """The report on its own. It is also joined onto the PRISM Report by
     `api/assessments.get_report`; this route exists for the review screen to
-    show it before, or without, the PRISM Report."""
+    show it before, or without, the PRISM Report.
+
+    The closure gate runs AFTER the tenant check and BEFORE the report is
+    loaded: a refusal that read the row first has already read what it was
+    refusing to show. The report is part of the job's assessment record, so a
+    closed job withholds it exactly as it withholds the PRISM Report."""
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    await job_assessment_retention.require_readable(session, user, job)
     report = await proctoring_report.load_report_out(session, link.id)
     if report is None:
         raise HTTPException(status_code=404, detail="The proctoring report is not ready")

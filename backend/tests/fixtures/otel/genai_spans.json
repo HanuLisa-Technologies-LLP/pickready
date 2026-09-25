@@ -73,7 +73,7 @@
         "readypick.prompt_digest": "c41d0e2b",
         "readypick.prompt_version": "1",
         "readypick.route": "ecs",
-        "readypick.task_type": "claim_extraction",
+        "readypick.task_type": "extraction",
         "readypick.tenant_hash": "bafde89c041e1756"
       }
     },

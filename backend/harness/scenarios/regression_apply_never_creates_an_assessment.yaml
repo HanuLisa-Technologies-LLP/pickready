@@ -1,0 +1,46 @@
+id: regression.applying_never_creates_an_assessment
+version: 1
+tier: regression
+description: >
+  Applying is not being invited, even to a job whose skills are saved and
+  which is ready for candidates. Applying used to create an
+  `assessment_conversations` row and dispatch question generation, so every
+  applicant held a half-made invitation that the assessment page then refused,
+  and the skills lock counted it as an issued contract before any recruiter
+  had invited anybody. The row IS the invitation and only the recruiter's
+  invitation writes it (`services/assessment_invitations`). Read from a SECOND
+  connection after the response, and the dispatches are the ones the commit
+  released, so a row that rolled back or a dispatch sent before the commit
+  cannot pass.
+tags: [portal, apply, invitation-gate, regression]
+
+given:
+  world: job_with_unapplied_candidate
+
+workload:
+  - apply_to_job
+
+expect:
+  state:
+    - job_candidate_links.count_for_job == 1
+    - job_candidate_links.status_for_candidate == applied
+    - assessment_conversations.count_for_job == 0
+    - candidate_questions.count_for_job == 0
+  dispatched:
+    pickready.parse_resume: 1
+    pickready.generate_candidate_questions: 0
+    pickready.send_assessment_invitation: 0
+  output:
+    - status.apply_to_job == 201
+  trajectory:
+    - application_attempted
+    - application_accepted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - no_numbers_to_client
+    - safety_and_policy

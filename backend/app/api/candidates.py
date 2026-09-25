@@ -21,7 +21,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import jwt
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
@@ -30,10 +30,8 @@ from app.models.candidate import (
     CandidateTeamReview,
     Interview,
     JobCandidateLink,
-    PipelineStatusEntry,
     Profile,
     SOURCE_TYPE_SOURCED,
-    source_type_label,
 )
 from app.models.enums import LinkSource
 from app.models.job import Job
@@ -43,11 +41,8 @@ from app.schemas.candidates import (
     CandidateOut,
     InterviewIn,
     InterviewOut,
-    JobLinksOut,
     LinkArchiveOut,
-    LinkOut,
     ProfileOut,
-    RankingCommentsOut,
     TeamReviewIn,
     TeamReviewOut,
     TeamReviewRewriteIn,
@@ -55,13 +50,12 @@ from app.schemas.candidates import (
     TeamReviewsOut,
     UploadResumeOut,
     )
-from app.services import candidate_identity
+from app.services import candidate_identity, hiring_pipeline
 from app.services import capabilities as caps
 from app.services import email_render
 from app.services import rbac
 from app.services import team_review
 from app.services.audit import audit
-from app.services.matching import client_breakdown, ranking_payload
 from app.services import llm_router
 from app.services.resume_storage import (
     ALLOWED_RESUME_CONTENT_TYPES,
@@ -74,7 +68,7 @@ from app.services.resume_storage import (
     store_resume,
 )
 from app.services.resume_access import issue_resume_token, verify_resume_token
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch, dispatch_after_commit
 
 router = APIRouter()
 
@@ -85,24 +79,6 @@ async def _get_link(
     if link is None or link.tenant_id != user.tenant_id:  # defense in depth
         raise HTTPException(status_code=404, detail="Link not found")
     return link
-
-
-async def _latest_status(
-    session: AsyncSession, link_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, PipelineStatusEntry]:
-    if not link_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(PipelineStatusEntry)
-            .where(PipelineStatusEntry.job_candidate_link_id.in_(link_ids))
-            .order_by(PipelineStatusEntry.at)
-        )
-    ).scalars().all()
-    latest: dict[uuid.UUID, PipelineStatusEntry] = {}
-    for row in rows:  # ordered ascending, so the last write wins
-        latest[row.job_candidate_link_id] = row
-    return latest
 
 
 @router.post(
@@ -119,8 +95,14 @@ async def upload_resume(
     user: CurrentUser = Depends(require_capability(caps.UPLOAD_RESUMES)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> UploadResumeOut:
-    """Recruiter uploads a freshly sourced resume (FR-4.3): creates
-    candidate + profile + link (source=fresh) and enqueues parsing."""
+    """Recruiter uploads ONE resume they found outside Vivekium (FR-4.3).
+
+    Creates the candidate, the profile and a link that enters at `sourced`
+    with its history row (`hiring_pipeline.start_sourced`): a person whose
+    resume a recruiter found has not read this job or applied to it, and this
+    route used to record them as `applied` (audit Part 1 #5). The parse is
+    dispatched AFTER the commit, and the parse dispatches Yukti's reading.
+    """
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -166,10 +148,14 @@ async def upload_resume(
         # recruiter procured from outside Vivekium.
         source_type=SOURCE_TYPE_SOURCED,
     )
-    session.add(link)
-    await session.flush()
+    await hiring_pipeline.start_sourced(
+        session,
+        link,
+        actor_user_id=user.user_id,
+        remarks="Uploaded to the job by the recruitment team",
+    )
 
-    dispatch("pickready.parse_resume", args=[str(profile.id)])
+    dispatch_after_commit(session, "pickready.parse_resume", args=[str(profile.id)])
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="resume_uploaded", target_type="profile", target_id=profile.id,
                 metadata={"job_id": str(job.id), "candidate_id": str(candidate.id),
@@ -464,42 +450,6 @@ async def resume_file(
     )
 
 
-@router.get("/{candidate_id}/ranking", response_model=RankingCommentsOut)
-async def get_candidate_ranking(
-    candidate_id: uuid.UUID,
-    job_id: uuid.UUID | None = Query(default=None),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> RankingCommentsOut:
-    """Return only the five human-readable ranking comments for a candidate.
-
-    A candidate may be ranked for several jobs. Callers should pass `job_id`;
-    when omitted, the newest ranking in the current tenant is returned for
-    backwards compatibility with the path-only contract.
-    """
-    filters = [
-        JobCandidateLink.candidate_id == candidate_id,
-        JobCandidateLink.tenant_id == user.tenant_id,
-    ]
-    if job_id is not None:
-        filters.append(JobCandidateLink.job_id == job_id)
-    link = (
-        await session.execute(
-            select(JobCandidateLink)
-            .where(*filters)
-            .order_by(JobCandidateLink.created_at.desc())
-        )
-    ).scalars().first()
-    if link is None:
-        raise HTTPException(status_code=404, detail="Ranking not found")
-    payload = ranking_payload(link.match_breakdown_json)
-    return RankingCommentsOut(
-        skills_match_comment=payload["skills_match_comment"],
-        experience_comment=payload["experience_comment"],
-        role_alignment_comment=payload["role_alignment_comment"],
-        education_comment=payload["education_comment"],
-        overall_comment=payload["overall_comment"],
-    )
 
 
 @router.delete("/links/{link_id}", response_model=LinkArchiveOut)
@@ -808,84 +758,6 @@ async def schedule_interview(
                 action="interview_scheduled", target_type="interview",
                 target_id=interview.id, metadata={"link_id": str(link.id)})
     return InterviewOut.model_validate(interview)
-
-
-@router.get("/jobs/{job_id}", response_model=JobLinksOut)
-async def list_job_links(
-    job_id: uuid.UUID,
-    include_archived: bool = Query(default=False),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=1, le=100),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_DATABANK)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobLinksOut:
-    """One page of candidate links for a job, with score/tier/current status.
-
-    Joined and paginated: this used to load every link for the job and then
-    fetch each candidate individually, so a job with 400 applicants was 401
-    queries and a response nobody could render.
-    """
-    job = await session.get(Job, job_id)
-    if job is None or job.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    filters = [JobCandidateLink.job_id == job.id]
-    if not include_archived:
-        filters.append(JobCandidateLink.archived_at.is_(None))
-
-    total = (
-        await session.execute(
-            select(func.count()).select_from(JobCandidateLink).where(*filters)
-        )
-    ).scalar_one()
-    rows = (
-        await session.execute(
-            select(JobCandidateLink, Candidate)
-            .join(Candidate, Candidate.id == JobCandidateLink.candidate_id)
-            .where(*filters)
-            # `id` makes the order total, so page boundaries are stable when
-            # two links share a score.
-            .order_by(
-                JobCandidateLink.match_score.desc().nulls_last(),
-                JobCandidateLink.id,
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).all()
-    latest = await _latest_status(session, [link.id for link, _ in rows])
-    out: list[LinkOut] = []
-    for link, candidate in rows:
-        entry = latest.get(link.id)
-        out.append(LinkOut(
-            link_id=link.id,
-            candidate=CandidateOut.model_validate(candidate),
-            profile_id=link.profile_id,
-            source=link.source,
-            source_type=link.source_type,
-            source_type_label=source_type_label(link.source_type),
-            tier=link.tier,
-            # Numeric parameter scores are internal ranking data and never
-            # cross this boundary (claude.md) — comments + scoring_mode only.
-            breakdown=client_breakdown(link.match_breakdown_json),
-            # Comments-only projection (always present; see services.matching).
-            **ranking_payload(link.match_breakdown_json),
-            hm_access_granted=link.hm_access_granted,
-            archived_at=link.archived_at,
-            current_status=entry.status if entry else None,
-            status_remarks=entry.remarks if entry else None,
-        ))
-    total_pages = max(1, (int(total) + page_size - 1) // page_size)
-    return JobLinksOut(
-        job_id=job.id,
-        links=out,
-        total=int(total),
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
-        has_next=page < total_pages,
-        has_previous=page > 1,
-    )
 
 
 # ── Background verification, recruiter view (add-features spec 2026-09-05) ──

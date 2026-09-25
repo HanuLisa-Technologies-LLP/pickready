@@ -132,12 +132,6 @@ async def test_a_complete_profile_is_refused_while_stage_a_is_outstanding() -> N
         # cannot describe the requirement in words of its own.
         for key in consent_catalog.STAGE_A_REQUIRED_KEYS:
             assert consent_catalog.ITEMS_BY_KEY[key].text in refused.value.detail
-        # The OPTIONAL item is never demanded: declining cross-employer
-        # evidence reuse costs the candidate that reuse, not their profile.
-        assert (
-            consent_catalog.ITEMS_BY_KEY["cross_employer_evidence_reuse"].text
-            not in refused.value.detail
-        )
 
         # NOTHING WAS WRITTEN. The refusal is before the answers land, so a
         # candidate is never left with a saved profile they did not consent to.
@@ -272,44 +266,33 @@ async def test_consent_given_elsewhere_is_never_asked_for_again() -> None:
         await engine.dispose()
 
 
-async def test_the_optional_reuse_item_neither_blocks_nor_is_assumed() -> None:
-    """Change request 23's cross-employer evidence reuse.
-
-    Two properties, and both directions matter. A candidate who ticks only
-    the two mandatory items completes their profile, so the optional consent
-    cannot hold anything hostage. And nothing records it on their behalf:
-    absence refuses, exactly as a NULL retention flag does, so the reuse path
-    never finds a consent nobody gave.
-    """
+async def test_the_retired_reuse_key_is_refused_by_the_registration_route() -> None:
+    """Change request 23's cross-employer evidence reuse retired on
+    2026-09-25 (`consent_catalog.RETIRED_KEYS`). A browser still holding the
+    old catalogue that posts the key gets the route's own 422, and nothing is
+    stamped: a consent to something the product no longer does is not a
+    consent anybody should hold."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
-    from app.services import consent_catalog
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
     try:
         await _seed(factory, fx)
         user = _user(fx)
-
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
-                    saved = await portal_mod.save_profile_form(
-                        portal_mod.ProfileFormIn(
-                            answers=dict(COMPLETE_ANSWERS),
-                            consent_keys=list(
-                                consent_catalog.STAGE_A_REQUIRED_KEYS
+                    with pytest.raises(HTTPException) as refused:
+                        await portal_mod.save_profile_form(
+                            portal_mod.ProfileFormIn(
+                                answers=dict(COMPLETE_ANSWERS),
+                                consent_keys=["cross_employer_evidence_reuse"],
                             ),
-                        ),
-                        user=user, session=s,
-                    )
-        assert saved.complete is True
-        reuse = next(
-            item for item in saved.consent_items
-            if item["key"] == "cross_employer_evidence_reuse"
-        )
-        assert reuse["required"] is False
-        assert reuse["consented_at"] is None
+                            user=user, session=s,
+                        )
+        assert refused.value.status_code == 422
+        assert "cross_employer_evidence_reuse" in refused.value.detail
 
         async with factory() as s:
             async with superadmin_scope(s):
@@ -321,26 +304,6 @@ async def test_the_optional_reuse_item_neither_blocks_nor_is_assumed() -> None:
                     {"c": str(fx.cand_id)},
                 )).scalars().all()
         assert "cross_employer_evidence_reuse" not in rows
-
-        # Ticking it later is a normal save, stamped like any other item.
-        async with factory() as s:
-            async with s.begin():
-                async with superadmin_scope(s):
-                    after = await portal_mod.save_profile_form(
-                        portal_mod.ProfileFormIn(
-                            answers=dict(COMPLETE_ANSWERS),
-                            consent_keys=["cross_employer_evidence_reuse"],
-                        ),
-                        user=user, session=s,
-                    )
-        granted = next(
-            item for item in after.consent_items
-            if item["key"] == "cross_employer_evidence_reuse"
-        )
-        assert granted["consented_at"] is not None
-        assert granted["consented_version"] == (
-            consent_catalog.ITEMS_BY_KEY["cross_employer_evidence_reuse"].version
-        )
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()

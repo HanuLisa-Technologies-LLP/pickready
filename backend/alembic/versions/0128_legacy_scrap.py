@@ -1,7 +1,7 @@
 """The legacy scrap: four empty tables, two dead columns, one retired capability.
 
 Revision ID: 0128_legacy_scrap
-Revises: 0121_candidate_comms
+Revises: 0126_recording_retention
 
 Phase 7 Wave B (WP-B2) of the Vivekium release. Every object below lost its
 last live reader in the same change, and CONTRACT v3 (the read-only pilot
@@ -84,7 +84,7 @@ import logging
 from alembic import op
 
 revision = "0128_legacy_scrap"
-down_revision = "0121_candidate_comms"
+down_revision = "0126_recording_retention"
 branch_labels = None
 depends_on = None
 

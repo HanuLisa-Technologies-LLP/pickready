@@ -21,11 +21,19 @@ from __future__ import annotations
 
 import uuid
 
-from app.schemas.jobs import RankedCandidateOut
+from app.schemas.ranking import RankedCandidateOut
 from app.services import job_candidates
+from app.services.yukti.projection import JobSkillsView
 from app.services.hiring_pipeline import APPLIED
 
 PROFILE_ID = uuid.uuid4()
+
+#: The job's skills as the page reads them once; empty is enough here.
+VIEW = JobSkillsView(names={}, digest="digest")
+
+
+def _payload(row: dict) -> dict:
+    return job_candidates._row_payload(row, VIEW, weight_pct=70)
 
 
 def _row(**overrides) -> dict:
@@ -38,13 +46,14 @@ def _row(**overrides) -> dict:
         "tenant_id": uuid.uuid4(),
         "profile_id": PROFILE_ID,
         "source": "fresh",
-        "tier": None,
         "status": APPLIED,
         "status_updated_at": None,
         "application_source": "direct",
         "source_type": "applied",
         "archived_at": None,
-        "breakdown": None,
+        # Yukti has not read this resume yet: the honest default state.
+        "yukti_status": "pending",
+        "rank_score": None,
         # The validation questionnaire this row carries for the recruiter's
         # Q&A column. None is what a link submitted before the fields existed
         # looks like, which is the case worth having in the default fixture.
@@ -73,7 +82,7 @@ def _row(**overrides) -> dict:
 
 
 def test_the_row_carries_the_profile_the_resume_is_read_through() -> None:
-    payload = job_candidates._row_payload(_row(), "Non-managerial")
+    payload = _payload(_row())
     assert payload["profile_id"] == PROFILE_ID
 
 
@@ -83,7 +92,7 @@ def test_the_response_schema_exposes_it_rather_than_dropping_it_at_the_edge() ->
     absent in the browser."""
     assert "profile_id" in RankedCandidateOut.model_fields
     out = RankedCandidateOut.model_validate(
-        job_candidates._row_payload(_row(), "Non-managerial")
+        _payload(_row())
     )
     assert out.profile_id == PROFILE_ID
 
@@ -91,9 +100,7 @@ def test_the_response_schema_exposes_it_rather_than_dropping_it_at_the_edge() ->
 def test_a_link_with_no_profile_yet_is_a_null_rather_than_an_error() -> None:
     """`profiles` is LEFT JOINed: a link can exist before its profile row does,
     and that row must still render (as a candidate with no readable resume)."""
-    payload = job_candidates._row_payload(
-        _row(profile_id=None, resume_url=None, resume_filename=None), "CXO"
-    )
+    payload = _payload(_row(profile_id=None, resume_url=None, resume_filename=None))
     assert payload["profile_id"] is None
     assert RankedCandidateOut.model_validate(payload).profile_id is None
 
@@ -102,7 +109,7 @@ def test_the_row_still_carries_the_mime_type_the_viewer_routes_on() -> None:
     """A private object name has no extension, so the recorded MIME type is
     what tells the viewer to use the server-side DOCX renderer instead of
     handing the bytes to an iframe that renders nothing."""
-    payload = job_candidates._row_payload(_row(), "Non-managerial")
+    payload = _payload(_row())
     assert payload["resume_mime_type"].endswith("wordprocessingml.document")
 
 
@@ -121,7 +128,7 @@ def test_no_storage_uri_crosses_the_api_boundary() -> None:
     in their Downloads folder, the other is what decides whether the DOCX
     renderer or the raw file is the right target, and neither names a bucket.
     """
-    payload = job_candidates._row_payload(_row(), "Non-managerial")
+    payload = _payload(_row())
     serialized = RankedCandidateOut.model_validate(payload).model_dump_json()
     for scheme in ("s3://", "gs://", "pickready-resumes-private"):
         assert scheme not in serialized, (
@@ -135,16 +142,18 @@ def test_no_storage_uri_crosses_the_api_boundary() -> None:
 def test_a_row_with_no_resume_reads_as_false_rather_than_absent() -> None:
     """The empty state is a real state: the table renders a disabled control
     rather than a link that 404s."""
-    payload = job_candidates._row_payload(
-        _row(profile_id=None, resume_url=None, resume_filename=None), "CXO"
-    )
+    payload = _payload(_row(profile_id=None, resume_url=None, resume_filename=None))
     assert payload["has_resume"] is False
     assert RankedCandidateOut.model_validate(payload).has_resume is False
 
 
 def test_no_score_leaked_into_the_row_while_adding_a_field() -> None:
     """The row is client-facing (claude.md: no numbers reach a client)."""
-    payload = job_candidates._row_payload(_row(), "Non-managerial")
+    payload = _payload(_row())
     assert not any(
-        key in payload for key in ("score", "overall_score", "match_score", "rank")
+        key in payload
+        for key in (
+            "score", "overall_score", "match_score", "rank", "rank_score",
+            "match_percent", "tier", "weight_pct", "yukti_pre_score",
+        )
     )

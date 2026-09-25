@@ -19,9 +19,17 @@ CTC or a "No match" education changes no ordering, no grade and no access;
 the recruiter reads the word and decides. That is the same boundary
 `validation_answers` already draws around this exact data.
 
-The one NUMBER on the table, the Executive Profile Match Score, does not come
-from here: it is `job_candidate_links.match_score` serialized directly, under
-the 2026-09-18 amendment to rule 1 recorded in `claude.md`.
+THERE IS NO NUMBER ON THE TABLE. The 2026-09-18 amendment to rule 1 put one
+there, the Executive Profile Match Score; the Vivekium release removed it
+again (D3, no exception). The AI Match column is a grade word from
+`yukti.projection`, and these four columns stay words beside it.
+
+UNTIL THE VIVEKIUM RELEASE THESE WORDS NEVER REACHED A BROWSER. The ranked
+row's old response schema did not declare them and ignored extra keys, so
+pydantic dropped every one of them and the table showed its empty word in
+every row (PLAN-p2 NF-1). `schemas/ranking.RankedCandidateOut` declares them
+and forbids extras, and `tests/test_ranked_candidates_api.py` reads them from
+the response JSON.
 """
 from __future__ import annotations
 

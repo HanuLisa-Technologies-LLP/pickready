@@ -148,6 +148,40 @@ describe("face absence and obstruction", () => {
   });
 });
 
+describe("a camera outage", () => {
+  it("is not face absence: the first frame back is measured from the outage's end", () => {
+    // The face left the frame, then the camera died for two minutes. Without
+    // the reset the first frame back would measure absence from before the
+    // outage and read as FACE_ABSENT_EXTENDED, a Path A termination for time
+    // the device pause already accounts for.
+    const rules = new DetectionRules(CONFIG);
+    expect(types(rules, frame(0, { faces: 0, persons: 0 }))).toEqual([]);
+    expect(types(rules, frame(10_000, { faces: 0, persons: 0 }))).toEqual([]);
+    rules.resetPresence();
+    rules.resetPresence();
+    expect(types(rules, frame(130_000, { faces: 0, persons: 0 }))).toEqual([]);
+    expect(types(rules, frame(135_000, { faces: 0, persons: 0 }))).toEqual([]);
+  });
+
+  it("does not join a run of detections across the gap", () => {
+    const rules = new DetectionRules(CONFIG);
+    expect(types(rules, frame(0, { objects: [phone] }))).toEqual([]);
+    expect(types(rules, frame(500, { objects: [phone] }))).toEqual([]);
+    rules.resetPresence();
+    // Two frames minutes apart are not consecutive: the run starts again.
+    expect(types(rules, frame(120_000, { objects: [phone] }))).toEqual([]);
+    expect(types(rules, frame(120_500, { objects: [phone] }))).toEqual([]);
+    expect(types(rules, frame(121_000, { objects: [phone] }))).toEqual(["DEVICE_DETECTED_PHONE"]);
+  });
+
+  it("keeps the identity reading, which describes the candidate and not the stream", () => {
+    const rules = new DetectionRules(CONFIG);
+    rules.observeIdentity(0.2);
+    rules.resetPresence();
+    expect(rules.identityMatched).toBe(true);
+  });
+});
+
 describe("identity", () => {
   it("reports one mismatch as one check and leaves the counting to the server", () => {
     const rules = new DetectionRules(CONFIG);

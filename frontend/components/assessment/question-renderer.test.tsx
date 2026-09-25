@@ -3,24 +3,35 @@
 // The dispatcher and the six answer components (assessment spec 5, 8).
 
 import * as React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { installCodeMirrorDomShims } from "@/lib/assessment/jsdom-shims";
+// Monaco cannot run under jsdom; the double records what the editor is handed
+// and renders a textarea inside the editor's host (see its header).
+vi.mock("@monaco-editor/react", async () =>
+  (await import("@/lib/assessment/monaco-test-double")).monacoReactModule()
+);
+
+import { CodingConversationContext } from "@/lib/assessment/coding";
 import type {
   AnswerComponentProps,
   AnswerPayload,
+  CodingPayloadViewV2,
   ProctoringFieldHooks,
   QuestionOut,
   QuestionType,
 } from "@/lib/assessment/contracts";
+import { resetMonacoDouble } from "@/lib/assessment/monaco-test-double";
 
 import { blankSize } from "./fill-blank-answer";
 import { selectionInstruction } from "./mcq-multi-answer";
 import { QuestionRenderer } from "./question-renderer";
 
-beforeAll(installCodeMirrorDomShims);
-afterEach(cleanup);
+beforeEach(resetMonacoDouble);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function hooks(): ProctoringFieldHooks {
   return {
@@ -61,8 +72,29 @@ function renderQuestion(
     onSubmitShortcut: vi.fn(),
     ...overrides,
   };
-  const view = render(<QuestionRenderer {...props} />);
+  // The player provides the conversation a coding question's Run belongs to;
+  // every other format ignores it.
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <CodingConversationContext.Provider value="conv-1">{children}</CodingConversationContext.Provider>
+  );
+  const view = render(<QuestionRenderer {...props} />, { wrapper });
   return { ...view, fieldHooks, onChange, props };
+}
+
+function codingPayload(overrides: Partial<CodingPayloadViewV2> = {}): CodingPayloadViewV2 {
+  return {
+    payload_version: 2,
+    title: "Remove duplicates",
+    io: "stdin_stdout",
+    input_format: "One line of integers.",
+    output_format: "The integers without duplicates.",
+    constraints: "Do not sort the input.",
+    languages: ["python"],
+    starter_code: { python: "def solve(items):\n    pass\n" },
+    visible_tests: [{ id: "v1", stdin: "3 1 3", expected_stdout: "3 1", explanation: "" }],
+    limits: {},
+    ...overrides,
+  };
 }
 
 describe("dispatch", () => {
@@ -76,7 +108,7 @@ describe("dispatch", () => {
         template: "Use ___ here.",
         blanks: [{ index: 0, case_sensitive: false, expected_length: 5 }],
       },
-      coding: { language: "python", language_options: ["python"], starter_code: "", constraints: "" },
+      coding: codingPayload(),
     };
     const seen = new Set<string>();
     for (const type of Object.keys(payloads) as QuestionType[]) {
@@ -127,10 +159,45 @@ describe("text fields", () => {
     const paste = fireEvent.paste(box);
     expect(paste).toBe(false);
     expect(fieldHooks.onBlockedAction).toHaveBeenCalledTimes(1);
+    expect(fieldHooks.onBlockedAction).toHaveBeenLastCalledWith("paste");
 
     fireEvent.change(box, { target: { value: "I led the migration" } });
     expect(onChange).toHaveBeenCalledWith({ text: "I led the migration" });
   });
+
+  // Appendix B section 3: copy and paste are disabled EVERYWHERE, and every
+  // attempt is reported with its kind so the proctoring report can name a
+  // paste as a paste. Asserted per format, because a format that forgot the
+  // spread would be the one hole.
+  const TEXT_BOXES: Array<[string, QuestionOut, string]> = [
+    ["short answer", question("short_answer"), "Your answer"],
+    ["evidence-based", question("evidence_based"), "Your answer"],
+    [
+      "fill in the blank",
+      question("fill_blank", {
+        template: "Postgres reclaims dead tuples with ___.",
+        blanks: [{ index: 0, case_sensitive: false, expected_length: 6 }],
+      }),
+      "Blank one",
+    ],
+  ];
+
+  for (const [name, format, label] of TEXT_BOXES) {
+    it(`refuses copy, cut, paste and drop in the ${name} box and names each`, () => {
+      const { fieldHooks: hooks } = renderQuestion(format);
+      const box = screen.getByLabelText(label);
+      expect(fireEvent.copy(box)).toBe(false);
+      expect(fireEvent.cut(box)).toBe(false);
+      expect(fireEvent.paste(box)).toBe(false);
+      expect(fireEvent.drop(box)).toBe(false);
+      expect(vi.mocked(hooks.onBlockedAction).mock.calls.map(([kind]) => kind)).toEqual([
+        "copy",
+        "cut",
+        "paste",
+        "drop",
+      ]);
+    });
+  }
 
   it("sends on Ctrl+Enter from the text field", () => {
     const onSubmitShortcut = vi.fn();
@@ -227,69 +294,68 @@ describe("fill in the blank", () => {
 });
 
 describe("coding", () => {
-  const CODING = question("coding", {
-    language: "python",
-    language_options: ["python"],
-    starter_code: "def solve(items):\n    pass\n",
-    constraints: "Do not sort the input.",
-  });
+  const CODING = question("coding", codingPayload());
 
-  it("mounts CodeMirror with the starter code, line numbers and no completion", () => {
+  function editorInput(): HTMLTextAreaElement {
+    return screen.getByTestId("monaco-input") as HTMLTextAreaElement;
+  }
+
+  it("mounts the editor with the starter code, the problem and the sample tests", async () => {
     renderQuestion(CODING, {
       value: { language: "python", code: "def solve(items):\n    pass\n" },
     });
-    const editor = screen.getByTestId("code-editor");
-    expect(editor.querySelector(".cm-editor")).toBeTruthy();
-    expect(editor.querySelector(".cm-gutter.cm-lineNumbers")).toBeTruthy();
-    expect(editor.querySelector(".cm-tooltip-autocomplete")).toBeNull();
-    expect(editor.textContent).toContain("def solve(items):");
-    expect(screen.getByTestId("language-indicator").textContent).toBe("Python");
+    await waitFor(() => expect(editorInput().value).toContain("def solve(items):"));
+    expect(editorInput().getAttribute("data-language")).toBe("python");
+    expect(screen.getByTestId("language-indicator").textContent).toBe("Python 3");
     expect(screen.getByText("Do not sort the input.")).toBeTruthy();
+    expect(screen.getByText("One line of integers.")).toBeTruthy();
+    expect(screen.getByTestId("coding-samples").textContent).toContain("3 1 3");
   });
 
-  it("refuses paste and drop at the editor and reports each attempt", () => {
+  it("refuses paste, copy and drop at the editor and reports each attempt", async () => {
     const { fieldHooks } = renderQuestion(CODING, {
       value: { language: "python", code: "" },
     });
-    const content = screen.getByTestId("code-editor").querySelector(".cm-content") as HTMLElement;
-    const paste = new Event("paste", { bubbles: true, cancelable: true });
-    content.dispatchEvent(paste);
-    expect(paste.defaultPrevented).toBe(true);
-
-    const drop = new Event("drop", { bubbles: true, cancelable: true });
-    content.dispatchEvent(drop);
-    expect(drop.defaultPrevented).toBe(true);
-
-    expect(fieldHooks.onBlockedAction).toHaveBeenCalledTimes(2);
+    await waitFor(() => editorInput());
+    for (const type of ["paste", "copy", "drop"]) {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      editorInput().dispatchEvent(event);
+      expect(event.defaultPrevented, type).toBe(true);
+    }
+    expect(fieldHooks.onBlockedAction).toHaveBeenCalledTimes(3);
   });
 
-  it("records keystrokes in the editor and reports the change", () => {
+  it("records keystrokes in the editor and reports the change", async () => {
     const onChange = vi.fn();
     const { fieldHooks } = renderQuestion(CODING, {
       onChange,
       value: { language: "python", code: "" },
     });
-    const content = screen.getByTestId("code-editor").querySelector(".cm-content") as HTMLElement;
-    content.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+    await waitFor(() => editorInput());
+    editorInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
     expect(fieldHooks.onKeyDown).toHaveBeenCalledTimes(1);
     expect(vi.mocked(fieldHooks.onKeyDown).mock.calls[0][1]).toBe(true);
+    fireEvent.change(editorInput(), { target: { value: "print(1)" } });
+    expect(onChange).toHaveBeenCalledWith({ language: "python", code: "print(1)" });
   });
 
-  it("sends on Ctrl+Enter without the editor inserting a line break", () => {
-    // The shortcut is caught before the editor sees the key, so the document
-    // is untouched: a candidate who sends with the cursor mid-function does
-    // not find a stray newline in the code that was submitted.
+  it("runs the sample tests on Ctrl+Enter and never sends the final answer", async () => {
+    // A coding answer is final once sent, so the keys a candidate types with
+    // must not be able to send it. The shortcut runs the samples instead.
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    vi.stubGlobal("fetch", fetchMock);
     const onSubmitShortcut = vi.fn();
-    const onChange = vi.fn();
     renderQuestion(CODING, {
       onSubmitShortcut,
-      onChange,
-      value: { language: "python", code: "def solve(items):\n    pass\n" },
+      value: { language: "python", code: "print(input())\n" },
     });
-    const content = screen.getByTestId("code-editor").querySelector(".cm-content") as HTMLElement;
-    fireEvent.keyDown(content, { key: "Enter", ctrlKey: true });
-    expect(onSubmitShortcut).toHaveBeenCalledTimes(1);
-    expect(onChange).not.toHaveBeenCalled();
+    await waitFor(() => editorInput());
+    fireEvent.keyDown(editorInput(), { key: "Enter", ctrlKey: true });
+    expect(onSubmitShortcut).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v2/assessments/conversations/conv-1/coding/q-coding/runs");
+    expect(init.method).toBe("POST");
   });
 
   it("offers a language selector only when the question permits more than one", () => {
@@ -297,12 +363,13 @@ describe("coding", () => {
     expect(screen.queryByLabelText("Language")).toBeNull();
     cleanup();
     renderQuestion(
-      question("coding", {
-        language: "python",
-        language_options: ["python", "go"],
-        starter_code: "",
-        constraints: "",
-      }),
+      question(
+        "coding",
+        codingPayload({
+          languages: ["python", "java"],
+          starter_code: { python: "", java: "public class Main {}" },
+        })
+      ),
       { value: { language: "python", code: "" } }
     );
     expect(screen.getByLabelText("Language")).toBeTruthy();

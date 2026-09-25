@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -111,6 +112,14 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     # rather than a release (migration 0037).
     is_demo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: How much an assessed candidate's rank rests on their Tatva Assessment
+    #: (the rest is Yukti's resume reading), 0..100 by CHECK, 70 by default
+    #: (migration 0122, CONTRACT v2). INTERNAL: read by the ranking SQL and by
+    #: nothing that serializes. No route and no capability writes it; a change
+    #: is operator SQL until the owner rules on who may set it (PLAN-p2 Q4).
+    yukti_assessment_weight_pct: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=70, server_default="70"
     )
     # ── Two-tier credit warnings (Master Directive Part 5 §4) ────────────────
     # "Sent" flags for the LOW (<= 20 credits) and CRITICAL (<= 10 credits)

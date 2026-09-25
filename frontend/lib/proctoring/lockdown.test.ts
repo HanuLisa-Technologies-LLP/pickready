@@ -20,9 +20,12 @@ afterEach(() => {
   handle = null;
 });
 
-function install(): BlockedAction[] {
-  const reported: BlockedAction[] = [];
-  handle = installLockdown({ onBlocked: (action) => reported.push(action) });
+/** What was reported, as `action` or `action:via`. */
+function install(): string[] {
+  const reported: string[] = [];
+  handle = installLockdown({
+    onBlocked: (action: BlockedAction, via) => reported.push(via ? `${action}:${via}` : action),
+  });
   return reported;
 }
 
@@ -45,6 +48,24 @@ describe("lockdown", () => {
       expect(dispatch(type).defaultPrevented, type).toBe(true);
     }
     expect(reported).toEqual(["copy", "cut", "paste", "context_menu", "drop"]);
+  });
+
+  it("refuses a paste aimed at an answer field before the field ever sees it", () => {
+    // Why the session counts document-level refusals against the answer on
+    // screen: the listener runs in the CAPTURE phase on the document and
+    // stops the event, so a field's own paste handler, and a code editor's
+    // hidden input, never receive it.
+    const reported = install();
+    const field = document.createElement("textarea");
+    document.body.appendChild(field);
+    const fieldSaw = vi.fn();
+    field.addEventListener("paste", fieldSaw);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    field.dispatchEvent(paste);
+    expect(paste.defaultPrevented).toBe(true);
+    expect(fieldSaw).not.toHaveBeenCalled();
+    expect(reported).toEqual(["paste"]);
+    field.remove();
   });
 
   it("cancels dragover so a drop can be refused at all, without reporting it", () => {
@@ -105,7 +126,11 @@ describe("lockdown", () => {
     Object.defineProperty(window.navigator, "clipboard", { value: clipboard, configurable: true });
     const reported = install();
     await expect(window.navigator.clipboard.readText()).rejects.toThrow(/not available/i);
-    expect(reported).toEqual(["clipboard_api"]);
+    // A clipboard READ is a paste attempt and is reported as one, so the
+    // report's paste sentence counts it; the route travels beside it.
+    expect(reported).toEqual(["paste:clipboard_api"]);
+    await expect(window.navigator.clipboard.writeText("x")).rejects.toThrow(/not available/i);
+    expect(reported).toEqual(["paste:clipboard_api", "copy:clipboard_api"]);
     handle?.release();
     handle = null;
     // Released, the page is a page again: the original method is back.

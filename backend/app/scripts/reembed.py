@@ -161,26 +161,52 @@ class Target:
         return f"{self.table}.{self.column}"
 
 
-#: The JD text `matching._jd_text` builds, expressed in SQL so it can be rebuilt
-#: from the row. Compensation is excluded, and that is not incidental: ESD 16
-#: and `matching._strip_compensation` keep salary out of every model prompt, and
-#: an embedding is a model prompt.
-_JD_TEXT_SQL = """
+def _jd_text_sql() -> str:
+    """The JD text `yukti.inputs.jd_text` builds, expressed in SQL so it can be
+    rebuilt from the row.
+
+    The SAME FIELDS, in the same order: title, department, the grade label,
+    the experience band, then the JD keys `inputs._JD_JSON_KEYS` names. Never
+    `level` (a pre-2026-07-28 field no form collects) and never `reportees`,
+    which is what the retired `matching._jd_text` read (Phase 2 WP-F).
+    Compensation is excluded, and that is not incidental: ESD 16 and
+    `compensation_guard` keep salary out of every model prompt, and an
+    embedding is a model prompt. The grade labels and the key list are READ
+    from the Python builder's own constants, so the two cannot name different
+    fields; the text itself is still rebuilt from the row.
+    """
+    from app.services.job_candidates import GRADE_LABELS
+    from app.services.yukti.inputs import _JD_JSON_KEYS
+
+    grade_cases = " ".join(
+        f"WHEN '{code}' THEN '{label}'" for code, label in GRADE_LABELS.items()
+    )
+    key_lines = ",\n        ".join(
+        f"CASE WHEN j.jd_json ? '{key}' THEN "
+        f"'{key.replace('_', ' ').title()}: ' || (j.jd_json ->> '{key}') END"
+        for key in _JD_JSON_KEYS
+    )
+    return f"""
     concat_ws(E'\\n',
         'Job title: ' || j.title,
         CASE WHEN j.department IS NOT NULL THEN 'Department: ' || j.department END,
-        CASE WHEN j.level IS NOT NULL THEN 'Level: ' || j.level END,
-        CASE WHEN j.jd_json ? 'role' THEN 'Role: ' || (j.jd_json ->> 'role') END,
-        CASE WHEN j.jd_json ? 'responsibilities'
-             THEN 'Responsibilities: ' || (j.jd_json ->> 'responsibilities') END,
-        CASE WHEN j.jd_json ? 'education'
-             THEN 'Education: ' || (j.jd_json ->> 'education') END,
-        CASE WHEN j.jd_json ? 'skills' THEN 'Skills: ' || (j.jd_json ->> 'skills') END,
-        CASE WHEN j.jd_json ? 'experience_years'
-             THEN 'Experience Years: ' || (j.jd_json ->> 'experience_years') END,
-        j.jd_markdown
+        'Grade: ' || CASE COALESCE(j.assessment_grade, 'non_managerial')
+            {grade_cases} ELSE '{GRADE_LABELS["non_managerial"]}' END,
+        CASE
+            WHEN j.experience_min_years IS NOT NULL AND j.experience_max_years IS NOT NULL
+                THEN 'Experience: ' || j.experience_min_years || ' to '
+                     || j.experience_max_years || ' years'
+            WHEN j.experience_min_years IS NOT NULL
+                THEN 'Experience: ' || j.experience_min_years || ' or more years'
+            WHEN j.experience_max_years IS NOT NULL
+                THEN 'Experience: up to ' || j.experience_max_years || ' years'
+        END,
+        {key_lines}
     )
 """
+
+
+_JD_TEXT_SQL = _jd_text_sql()
 
 #: `bd_leads.role_embedding_text`, in SQL. Title plus the parsed skill list, and
 #: nothing else: AI Reach ranks ROLES against each other, so a full JD would

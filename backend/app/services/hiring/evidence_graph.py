@@ -112,7 +112,6 @@ __all__ = [
     "corroboration_targets",
     "discriminator_levels",
     "department_keys",
-    "extension_ceiling",
     "graph_for",
     "independence_groups",
     "minimum_discriminator_fraction",
@@ -757,37 +756,6 @@ def probe_level(*, ordinal: int, prior_substantive: int = 0) -> SpecificityLevel
         if level.level == wanted:
             return level
     return levels[-1]
-
-
-def extension_ceiling() -> int:
-    """How many questions the conversation may add above Sutra's written plan.
-
-    DERIVED, AND THE DERIVATION IS THE ARGUMENT. The Runbook states no
-    conversation length anywhere: no question count, no probe count, no
-    interview duration outside 21.5's twenty-minute walkthrough. What it does
-    bound is how far ONE claim can be probed, and it bounds it exactly: 38.3's
-    gradient has five rungs and probing stops "until either the candidate
-    demonstrates participatory knowledge or the probe exhausts".
-
-    Taking that same bound for the whole extension is the tightest reading the
-    document supports, and the strict direction: five extra questions cannot
-    turn a twenty-question assessment into a different instrument, and a
-    conversation that still lacks evidence after climbing an entire gradient has
-    established that the evidence is not there to be had. Reporting insufficient
-    evidence at that point is the correct outcome and is never a rejection
-    (6.7, and the architecture note's "never convert unresolved uncertainty into
-    artificial confidence").
-
-    SOURCE: RPN-PHIL-001 section 38.3 (v1.3). The gradient bounds how far ONE
-    claim is probed; the Runbook now also bounds the SESSION, "by the number of
-    specificity levels the gradient defines, applied across the session rather
-    than per claim". An unbounded session is the same failure at a different
-    scale: a candidate answering an ever-deepening sequence learns that
-    thoroughness is punished. When the bound is reached with evidence still
-    insufficient, the shortfall is reported as a shortfall and never converted
-    into a low score.
-    """
-    return len(specificity_levels())
 
 
 # -- The four classes of question --------------------------------------------

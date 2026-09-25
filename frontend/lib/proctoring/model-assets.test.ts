@@ -136,7 +136,8 @@ describe("the client and the server share one vocabulary", () => {
 
   it("emits exactly the events the backend catalog marks client-emittable", () => {
     const emittable = new Set<string>();
-    const entry = /EventSpec\(\s*"([A-Z_]+)",\s*(PATH_[ABC])[\s\S]*?client_emittable=(True|False)/g;
+    // Four paths since Phase 3 (2026-09-24): P is the device pause.
+    const entry = /EventSpec\(\s*"([A-Z_]+)",\s*(PATH_[ABCP])[\s\S]*?client_emittable=(True|False)/g;
     const paths: Record<string, string> = {};
     let match: RegExpExecArray | null;
     while ((match = entry.exec(catalogSource)) !== null) {

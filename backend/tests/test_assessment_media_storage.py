@@ -12,9 +12,10 @@ scoring half, that a deletion is confirmed rather than assumed, and that the
 retention sweep converges instead of enumerating the same rows for ever.
 
 These are pure-function and source tests on purpose. The database-backed
-behaviour of the pipeline is covered by `tests/test_dual_mode_assessment.py`,
-which drives the real table; what is asserted here is the set of decisions a
-future change is most likely to break without any test noticing.
+behaviour is covered by `tests/test_recording_segments.py` and
+`tests/test_media_retention_d4.py`, which drive the real tables; what is
+asserted here is the set of decisions a future change is most likely to break
+without any test noticing.
 """
 from __future__ import annotations
 
@@ -42,12 +43,16 @@ APP = BACKEND / "app"
 # ── The kind, and what each one is allowed to reach ──────────────────────────
 
 
-def test_the_two_kinds_are_the_only_two_and_the_default_is_the_truthful_one() -> None:
-    """Rows written before migration 0110 are all interview recordings, so the
-    backfill states a fact. A default of `proctored_session` would have
-    relabelled every historical interview as a monitoring record."""
+def test_both_kinds_still_read_and_only_the_session_kind_is_written() -> None:
+    """Rows written before migration 0110 are interview recordings and keep
+    that label, so the vocabulary keeps both kinds for READS. The
+    video-interview mode is deleted (2026-09-24), so the one kind a new row
+    can be is the proctored session's, and migration 0126 moved the server
+    default with it."""
     assert RECORDING_KINDS == (RECORDING_VIDEO_INTERVIEW, RECORDING_PROCTORED_SESSION)
-    assert DEFAULT_RECORDING_KIND == RECORDING_VIDEO_INTERVIEW
+    assert DEFAULT_RECORDING_KIND == RECORDING_PROCTORED_SESSION
+    column = VideoRecording.__table__.c.kind
+    assert column.server_default.arg == RECORDING_PROCTORED_SESSION
 
 
 def test_the_check_constraint_matches_the_python_vocabulary() -> None:
@@ -69,27 +74,23 @@ def test_the_check_constraint_matches_the_python_vocabulary() -> None:
         assert f'"{kind}"' in migration
 
 
-def test_a_proctored_recording_can_never_enter_the_transcription_state() -> None:
-    """THE ENFORCEMENT OF P3 IS A MISSING STEP, not a flag. `processing` is
-    where the audio is extracted, transcribed and segmented into the records
-    the scorers read. A monitoring recording reaches `compressing` directly,
-    and `process_proctored_session_recording` is the only thing that moves it,
-    so there is no code path from a stored proctoring recording to a grade."""
-    assert lifecycle.can_transition(lifecycle.UPLOADED, lifecycle.COMPRESSING)
+def test_nothing_in_the_pipeline_can_reach_a_scorer() -> None:
+    """THE ENFORCEMENT OF P3 IS A MISSING STEP, not a flag. The deleted
+    interview half extracted audio, transcribed it, segmented it and wrote it
+    into the records the scorers read, then completed the assessment. None of
+    those steps exists in the pipeline any more, defined or called, so there
+    is no code path from a stored recording to a grade."""
     source = (APP / "services" / "video" / "processing.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    function = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "process_proctored_session_recording"
-    )
+    defined = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
     called = {
-        node.func.id
-        for node in ast.walk(function)
+        node.func.id for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } | {
-        node.func.attr
-        for node in ast.walk(function)
+        node.func.attr for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     for banned in (
@@ -99,28 +100,23 @@ def test_a_proctored_recording_can_never_enter_the_transcription_state() -> None
         "complete_assessment",
         "extract_audio",
     ):
-        assert banned not in called, (
-            f"the proctored-session path calls {banned}(). That step feeds the "
+        assert banned not in defined | called, (
+            f"the recording pipeline names {banned}(). That step feeds the "
             "records a scorer reads, and a monitoring recording must not."
         )
 
 
-def test_the_kind_is_read_from_the_row_not_passed_to_the_task() -> None:
-    """A dispatch argument can disagree with the record; a column cannot. One
-    task, one entry point, and the row says what it is."""
+def test_one_task_one_path_and_no_branch_on_the_kind() -> None:
+    """With one kind written there is one path, and the pipeline must not
+    grow a branch on `kind` that a future second kind could fall through."""
     source = (APP / "services" / "video" / "processing.py").read_text(encoding="utf-8")
-    assert "if recording.kind == RECORDING_PROCTORED_SESSION:" in source
-    # Every task module, since the Phase 3 tasks were carved out of
-    # `workers/tasks.py` on 2026-09-24 (PLAN-p3 WP0).
+    assert "recording.kind" not in source
     tasks = "\n".join(
         module.read_text(encoding="utf-8")
         for module in sorted((APP / "workers").glob("tasks*.py"))
     )
     assert "pickready.process_assessment_video" in tasks
-    assert "process_proctored_session" not in tasks, (
-        "a second processing task would be a second way to decide what a "
-        "recording is; the kind on the row is the one way"
-    )
+    assert "process_proctored_session" not in tasks
 
 
 # ── Keys carry ids only, for both kinds ──────────────────────────────────────
@@ -132,7 +128,7 @@ def test_the_object_key_still_carries_nothing_but_ids() -> None:
     conversation_id = uuid.uuid4()
     recording_id = uuid.uuid4()
     for key in (
-        keys.raw_key(conversation_id, recording_id, "video/webm"),
+        keys.segment_key(conversation_id, recording_id, 0, "video/webm"),
         keys.compressed_key(conversation_id, recording_id),
     ):
         assert str(conversation_id) in key
@@ -252,36 +248,6 @@ def test_the_outcome_with_a_failure_and_nothing_remaining_cannot_exist() -> None
 # ── Retention ────────────────────────────────────────────────────────────────
 
 
-def test_zero_retention_enumerates_nothing_at_all() -> None:
-    """ZERO means the platform's cascade policy, and the sweep says so in its
-    log rather than deleting everything or silently deleting nothing. A
-    negative value is treated the same way, because "minus one day" is not a
-    retention window anybody meant."""
-
-    class _Session:
-        async def execute(self, *args: object, **kwargs: object) -> object:
-            raise AssertionError("a zero retention window must not query at all")
-
-    import asyncio
-
-    for days in (0, -1):
-        assert asyncio.run(
-            media_retention.expired_recordings(
-                _Session(),  # type: ignore[arg-type]
-                retention_days=days,
-            )
-        ) == []
-
-
-def test_the_retention_setting_defaults_to_the_platform_policy() -> None:
-    """Choosing a number is an owner decision about a customer's data. The
-    default states the current policy instead of inventing one, the same
-    shape and the same default `proctoring_event_retention_days` carries."""
-    from app.core.config import Settings
-
-    assert Settings.model_fields["assessment_media_retention_days"].default == 0
-
-
 def test_the_purge_task_and_its_schedule_entry_both_exist() -> None:
     """A retention window with no sweep behind it is a paragraph. An entry in
     Python with no rule in Terraform is the silent half and
@@ -298,52 +264,42 @@ def test_the_purge_task_and_its_schedule_entry_both_exist() -> None:
     assert 'name="pickready.purge_assessment_media"' in tasks
 
 
-def test_the_retention_query_reads_stored_at_and_skips_deleted_rows() -> None:
-    """The sweep must CONVERGE. Without `media_deleted_at IS NULL` it would
-    re-enumerate every recording it has already finished with, for ever, and
-    the only symptom would be a bill."""
+def test_the_retention_query_reads_both_stored_dates_and_skips_deleted_rows() -> None:
+    """The sweep must CONVERGE, and it must read DATES. Without
+    `media_deleted_at IS NULL` it would re-enumerate every recording it has
+    already finished with, for ever; and the due moment is the LEAST of the
+    recording's stored date and its job's closure date, never a window
+    computed from a module constant at sweep time (owner decision D4)."""
     source = (
         APP / "services" / "assessment_media_retention.py"
     ).read_text(encoding="utf-8")
-    assert "VideoRecording.stored_at < cutoff" in source
+    assert "VideoRecording.media_purge_due_at, Job.assessment_purge_due_at" in source
+    assert "func.least(" in source
     assert "VideoRecording.media_deleted_at.is_(None)" in source
-    assert "VideoRecording.stored_at.is_not(None)" in source
+    assert "retention_days" not in source[source.index("async def due_recordings"):]
 
 
-def test_the_retention_clock_starts_at_the_verified_store() -> None:
+def test_the_stored_at_stamp_is_the_verified_store() -> None:
     """`stored_at` is stamped where the compressed object was HEAD-confirmed,
-    and nowhere else. Stamping it at upload would start the clock on media
-    that might never have been stored at all."""
+    and nowhere else. Stamping it at upload would claim stored media that
+    might never have been stored at all."""
     source = (APP / "services" / "video" / "processing.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assignments = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and node.attr == "stored_at"
+    stamped = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute) and target.attr == "stored_at"
+            for target in node.targets
+        )
     ]
-    assert assignments, "nothing stamps stored_at"
+    assert len(stamped) == 1, "stored_at is stamped more than once"
     function = next(
         node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "compress_store_and_finish"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "process_recording"
     )
-    stamped_here = [
-        node for node in ast.walk(function)
-        if isinstance(node, ast.Attribute) and node.attr == "stored_at"
-    ]
-    assert len(stamped_here) == len(assignments), (
-        "stored_at is stamped outside the verified-store step"
-    )
-
-
-def test_a_cutoff_older_than_the_window_is_what_expires(
-) -> None:
-    """The arithmetic itself, stated once so an inverted comparison is caught
-    here rather than by a customer noticing their videos went early."""
-    now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
-    cutoff = now - timedelta(days=30)
-    assert (now - timedelta(days=31)) < cutoff
-    assert (now - timedelta(days=29)) > cutoff
+    body = ast.unparse(function)
+    assert body.index("head_size(") < body.index("stored_at =")
 
 
 # ── The erasure and job-closure hooks ────────────────────────────────────────

@@ -63,9 +63,12 @@ def test_every_task_name_is_namespaced() -> None:
         "app.workers.tasks",
         # The Phase 3 task modules carved out of `tasks` on 2026-09-24 (PLAN-p3
         # WP0). Their bodies import lazily too, so each is swept by name.
+        "app.workers.tasks_invitations",
         "app.workers.tasks_media",
         "app.workers.tasks_proctoring",
         "app.workers.tasks_questions",
+        # PLAN-p3 WP3: the spoken-answer transcription task.
+        "app.workers.tasks_voice",
         "app.workers.dispatch",
         "app.workers.runtime",
         "app.workers.entrypoints.lambda_worker",
@@ -102,6 +105,23 @@ def test_every_deferred_import_in_a_worker_module_resolves(module_name: str) -> 
     assert not unresolved, (
         f"{module_name} imports modules that do not exist: {unresolved}"
     )
+
+
+def test_every_task_module_is_imported_by_the_registration_line() -> None:
+    """`registry.resolve` imports `app.workers.tasks` and nothing else, so a
+    `tasks_*.py` module that `tasks.py` does not import registers nothing: its
+    tasks exist in the source and every dispatch of them raises UnknownTask in
+    production. Asked of the FILES, so a new module cannot be forgotten by a
+    list that has to be edited too."""
+    source = (WORKERS / "tasks.py").read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module == "app.workers":
+            imported.update(alias.name for alias in node.names)
+    modules = {path.stem for path in WORKERS.glob("tasks_*.py")}
+    assert modules, "no tasks_*.py modules found; the sweep has gone vacuous"
+    missing = sorted(modules - imported)
+    assert not missing, f"task modules never imported by workers/tasks.py: {missing}"
 
 
 def test_every_scheduled_entry_names_a_registered_task() -> None:
@@ -188,7 +208,10 @@ def test_the_deleted_probe_task_is_gone() -> None:
     the reason attached instead of as a generic import error.
     """
     assert "pickready.probe_llm_models" not in names()
-    assert not [e for e in SCHEDULE if "probe" in e.rule]
+    # The DELETED task's rule, by the task it named. A different probe is not
+    # the deleted one: `pickready.probe_code_execution` (Phase 4 WP-4B2) is a
+    # live five-minute sandbox health check with its own scheduler rule.
+    assert not [e for e in SCHEDULE if e.task == "pickready.probe_llm_models"]
     for module in sorted(WORKERS.glob("tasks*.py")):
         assert "probe_llm_models" not in module.read_text(encoding="utf-8"), module.name
 

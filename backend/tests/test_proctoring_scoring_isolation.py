@@ -47,6 +47,12 @@ PERMITTED_IMPORTERS: dict[str, str] = {
     # recording start, and nothing else.
     "api/assessment_conversation.py": "the gate on the conversation",
     "api/assessment_recording.py": "the gate on the recording start",
+    # The conversation engine that replaced the body of `respond` (PLAN-p3
+    # WP3, 2026-09-24). It HANDS the answer field's timings to proctoring's
+    # behaviour log, exactly as `respond` did, and reads nothing back.
+    "services/assessment_conversation/turns.py": (
+        "writes an answer field's timings to the behaviour log, reads nothing"
+    ),
     "services/report_pdf.py": "renders the report's final section",
     "workers/tasks.py": "the proctoring event purge",
     # The report and the reconciler, carved out of workers/tasks.py on
@@ -66,7 +72,7 @@ FORBIDDEN_TARGETS = (
     "app.services.siddhi",
     "app.services.matching",
     "app.services.rating",
-    "app.services.tiers",
+    "app.services.yukti",
     "app.services.hiring",
     "app.services.dashboard",
     "app.services.job_candidates",
@@ -139,7 +145,7 @@ def test_the_scorer_specifically_does_not_import_proctoring() -> None:
 @pytest.mark.parametrize(
     "module",
     ["services/miti", "services/siddhi", "services/hiring", "services/matching.py",
-     "services/rating.py", "services/tiers.py", "services/dashboard.py"],
+     "services/rating.py", "services/yukti", "services/dashboard.py"],
 )
 def test_no_grading_surface_reaches_proctoring(module: str) -> None:
     target = APP / module
@@ -184,11 +190,12 @@ def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> Non
     finished report. It may not read a warning count, an event or a session's
     behaviour profile into anything it computes."""
     source = "\n".join(
-        (APP / "api" / name).read_text(encoding="utf-8")
+        (APP / name).read_text(encoding="utf-8")
         for name in (
-            "assessments.py",
-            "assessment_conversation.py",
-            "assessment_recording.py",
+            "api/assessments.py",
+            "api/assessment_conversation.py",
+            "api/assessment_recording.py",
+            "services/assessment_conversation/turns.py",
         )
     )
     for banned in (

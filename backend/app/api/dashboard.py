@@ -4,7 +4,7 @@
 # by a scheduled sweep; the views live in Track B's migrations. Until they exist,
 # this endpoint aggregates live over the base tables (data volumes are small
 # pre-launch); the query shape maps 1:1 onto the future views.
-# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments" — staff are
+# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments": staff are
 # assigned per tenant (PRD §4) and no per-job assignment table exists, so the
 # scope is the caller's tenant (enforced by RLS).
 """
@@ -266,17 +266,17 @@ def _row_out(row: dashboard_service.DashboardRow) -> DashboardRowOut:
         job_title=row.job_title,
         source_type=row.source_type,
         source_label=row.source_label,
-        pre_screen_grade=row.pre_screen_grade,
-        pre_screen_label=row.pre_screen_label,
-        ready_pick_score=row.ready_pick_score,
-        band=row.band,
-        band_label=row.band_label,
-        band_screen_reader_label=row.band_screen_reader_label,
+        ai_match_state=row.ai_match_state,
+        ai_match_label=row.ai_match_label,
+        ai_match_screen_reader_label=row.ai_match_screen_reader_label,
+        ai_match_note=row.ai_match_note,
+        ranking_state=row.ranking_state,
+        ranking_label=row.ranking_label,
+        ranking_screen_reader_label=row.ranking_screen_reader_label,
+        ranking_note=row.ranking_note,
         confidence=row.confidence,
         confidence_indicator=row.confidence_indicator,
         confidence_label=row.confidence_label,
-        score_range=row.score_range,
-        score_range_note=row.score_range_note,
         note=row.note,
         note_is_pending=row.note_is_pending,
         profile=(
@@ -308,7 +308,7 @@ async def dashboard_candidates(
     job_id: uuid.UUID | None = Query(default=None),
     source_type: list[str] | None = Query(default=None),
     stage: list[str] | None = Query(default=None),
-    pre_screen_grade: list[str] | None = Query(default=None),
+    ai_match: list[str] | None = Query(default=None),
     search: str | None = Query(default=None, max_length=120),
     include_archived: bool = Query(default=False),
     sort: str | None = Query(default=None),
@@ -326,7 +326,7 @@ async def dashboard_candidates(
     filtering a fetched page in the browser makes the match count depend on
     which page happened to be loaded. The order carries a trailing
     `created_at, id` so it is TOTAL: without that, two candidates sharing a
-    score can swap between two fetches and one of them appears twice or not at
+    grade can swap between two fetches and one of them appears twice or not at
     all.
 
     Scope comes from the §24 cell, not from a role name. A Recruiter, a Hiring
@@ -340,10 +340,10 @@ async def dashboard_candidates(
     for value in source_type or ():
         if value not in dashboard_service.SOURCE_TYPES:
             raise HTTPException(status_code=422, detail=f"Unknown source {value!r}")
-    for value in pre_screen_grade or ():
-        if value not in dashboard_service.PRE_SCREEN_GRADES:
+    for value in ai_match or ():
+        if value not in dashboard_service.AI_MATCH_GRADES:
             raise HTTPException(
-                status_code=422, detail=f"Unknown pre-screen grade {value!r}"
+                status_code=422, detail=f"Unknown AI Match grade {value!r}"
             )
     stage_values = {s.value for s in hiring_pipeline.CandidatePipelineStage}
     for value in stage or ():
@@ -360,7 +360,7 @@ async def dashboard_candidates(
         job_id=job_id,
         source_types=source_type,
         stages=stage,
-        pre_screen_grades=pre_screen_grade,
+        ai_match_grades=ai_match,
         search=search,
         include_archived=include_archived,
         sort=sort,
@@ -467,7 +467,7 @@ async def ready_pick_profile(
     ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> ReadyPickProfileOut:
-    """Column 6's slide-over panel: the evidence behind the score.
+    """Column 6's slide-over panel: the evidence behind the grade.
 
     NAMED per-dimension ratings, never raw D1-D5 numbers (spec-doc6 D8 / C2).
     No route returns the raw numbers to a client.

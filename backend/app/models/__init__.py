@@ -65,7 +65,8 @@ from app.models.conversation import (
     ConversationParticipant,
 )
 from app.models.employment import CandidateEmployment
-from app.models.dual_mode import AssessmentConsent, VideoRecording
+from app.models.dual_mode import AssessmentConsent, VideoRecording, VideoRecordingSegment
+from app.models.voice import VoiceAnswer
 from app.models.project import CandidateProject
 from app.models.drishti import DrishtiProfile
 from app.models.candidate import (
@@ -112,6 +113,9 @@ from app.models.job_setup import (
     JobSwotAnalysis,
     JobSwotIntake,
 )
+# The pause record the turn timer subtracts (migration 0125). Written by
+# proctoring and the voice answer route; read by the conversation engine.
+from app.models.assessment_pause import AssessmentPause
 from app.models.proctoring import (
     ProctoringEvent,
     ProctoringReport,
@@ -137,6 +141,10 @@ from app.models.job_scorecard_binding import JobScorecardBinding
 # The immutable skills contract locked at a job's first assessment start
 # (migration 0118). Read by `services/assessment_contract`.
 from app.models.job_skill_snapshot import JobSkillSnapshot
+# A coding question's answer key, its Run history and its final submission
+# (migration 0124). The key is read and written only by
+# `services/coding_assessment/keys`.
+from app.models.coding import CodingQuestionKey, CodingRun, CodingSubmission
 from app.models.user import User
 
 __all__ = [
@@ -154,6 +162,7 @@ __all__ = [
     "AssessmentConversation",
     "AssessmentMessage",
     "VideoRecording",
+    "VideoRecordingSegment",
     "AuditLog",
     "BillingTransaction",
     "Candidate",
@@ -229,6 +238,9 @@ __all__ = [
     "ReviewDisposition",
     "JobScorecardBinding",
     "JobSkillSnapshot",
+    "CodingQuestionKey",
+    "CodingRun",
+    "CodingSubmission",
     "AgentToolApprovalRule",
     "ContextChunk",
     "EvidenceClaim",
@@ -238,6 +250,7 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
+    "AssessmentPause",
     "ProctoringEvent",
     "ProctoringReport",
     "ProctoringSession",
@@ -257,4 +270,5 @@ __all__ = [
     "ConversationParticipant",
     "ConversationMessage",
     "ConversationAttachment",
+    "VoiceAnswer",
 ]

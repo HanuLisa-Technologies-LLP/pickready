@@ -286,44 +286,28 @@ def test_an_unknown_segment_is_refused_rather_than_dropped() -> None:
         prompt_cache.ordered_fields({"scratchpad": {"x": 1}})
 
 
-def test_the_interviewer_payload_leads_with_its_stable_half() -> None:
-    """The reordering reached the caller it was written for.
+def test_the_question_writer_payload_leads_with_its_stable_half() -> None:
+    """The live question writer sends its stable half FIRST.
 
-    `interviewer._deliver_compose` used to open its body with
-    `competency_to_probe`, the most volatile field it has, so the JD and the
-    resume behind it were re-read at full price on every turn of every
-    interview. This asserts the field ORDER and, separately, that the field SET
-    did not change: this was an ordering fix, and a prompt that quietly gained
-    or lost a field would be a product change wearing its clothes.
+    The interviewer's deleted delivery graph (2026-09-24) once opened its body
+    with the most volatile field it had, so the JD and the resume behind it
+    were re-read at full price on every turn. The live writer
+    is `ppi_interview.write_question`, and its payload builder keeps the job
+    description and the resume, which do not change for a candidate's whole
+    conversation, ahead of the per-turn fields. The SET is asserted separately:
+    a payload that quietly gained or lost a field would be a product change.
     """
-    from app.services import interviewer
+    from app.models.job import Job
+    from app.services import ppi_interview
 
-    state = {
-        "mode": interviewer.MODE_GENERATE,
-        "competency": "Kafka",
-        "competency_hint": "streaming",
-        "jd_excerpt": "JD",
-        "resume_excerpt": "CV",
-        "transcript": [],
-        "asked_before": [],
-        "question": "",
-    }
-    payload = prompt_cache.ordered_fields(
-        {
-            "job_description": {"job_description": state["jd_excerpt"]},
-            "candidate": {"candidate_resume": state["resume_excerpt"]},
-            "turn": {
-                "competency_to_probe": state["competency"],
-                "what_it_means": state["competency_hint"],
-                "conversation_so_far": "",
-                "already_asked": [],
-            },
-        }
+    payload = ppi_interview.request_payload(
+        job=Job(jd_markdown="JD"),
+        resume_excerpt="CV",
+        recent=[],
+        asked_before=[],
     )
     assert list(payload)[:2] == ["job_description", "candidate_resume"]
     assert set(payload) == {
-        "competency_to_probe",
-        "what_it_means",
         "job_description",
         "candidate_resume",
         "conversation_so_far",
@@ -382,7 +366,7 @@ def _usage(task_type: str, model: str, *, cached: int | None = None) -> None:
 
 def test_nothing_is_recorded_when_no_scope_is_bound() -> None:
     assert cost_telemetry.note_usage(
-        task_type="rerank",
+        task_type="extraction",
         model=llm_providers.MODEL_LUNA,
         provider=llm_providers.PROVIDER,
         prompt_tokens=10,
@@ -404,17 +388,17 @@ def test_synthesis_is_attributed_to_its_own_line_by_task_type() -> None:
 
 def test_an_inner_scope_does_not_hide_the_spend_from_an_outer_one() -> None:
     with cost_telemetry.collect() as outer:
-        _usage("rerank", llm_providers.MODEL_LUNA)
+        _usage("extraction", llm_providers.MODEL_LUNA)
         with cost_telemetry.collect() as inner:
-            _usage("rerank", llm_providers.MODEL_LUNA)
+            _usage("extraction", llm_providers.MODEL_LUNA)
     assert inner.calls == 1
     assert outer.calls == 2
 
 
 def test_the_tally_counts_the_calls_that_reported_a_cache_separately() -> None:
     with cost_telemetry.collect() as tally:
-        _usage("rerank", llm_providers.MODEL_LUNA, cached=None)
-        _usage("rerank", llm_providers.MODEL_LUNA, cached=250_000)
+        _usage("extraction", llm_providers.MODEL_LUNA, cached=None)
+        _usage("extraction", llm_providers.MODEL_LUNA, cached=250_000)
     assert tally.calls == 2
     assert tally.calls_reporting_cache == 1
     assert tally.cached_prompt_tokens == 250_000
@@ -438,15 +422,15 @@ def test_a_scope_bound_in_one_task_cannot_reach_the_next_one() -> None:
 
     async def _leaky() -> None:
         cost_telemetry.begin()
-        _usage("rerank", llm_providers.MODEL_LUNA)
+        _usage("extraction", llm_providers.MODEL_LUNA)
 
     async def _next_request() -> tuple[bool, int]:
         with cost_telemetry.collect() as tally:
-            _usage("rerank", llm_providers.MODEL_LUNA)
+            _usage("extraction", llm_providers.MODEL_LUNA)
             return (
                 # No scope survives into a task that bound none of its own.
                 cost_telemetry.note_usage(
-                    task_type="rerank",
+                    task_type="extraction",
                     model=llm_providers.MODEL_LUNA,
                     provider=llm_providers.PROVIDER,
                     prompt_tokens=1,
