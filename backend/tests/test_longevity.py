@@ -260,17 +260,13 @@ def test_no_schema_module_knows_the_signal_exists():
         assert "longevity" not in path.read_text(encoding="utf-8").casefold(), path
 
 
-def test_matching_reads_only_the_band_and_the_adjuster():
-    """The integration point touches no tenure number.
-
-    `matching.py` may ask for the WORD band and the grade-preserving
-    adjustment, and nothing else: not TenureStats, not the averages, not the
-    stint counts. A new `longevity.` call site in matching is a reviewed
-    change to this list, not a drive-by.
-    """
+def test_matching_no_longer_nudges_anything_with_longevity():
+    """The nudge moved `match_score`, which no ranking reads since Phase 2
+    WP-B: the ranked table orders on Yukti's derived score. The run stopped
+    calling this module rather than moving a number nobody sorts on; WP-F
+    deletes the module with its last reader."""
     src = pathlib.Path(matching.__file__).read_text(encoding="utf-8")
-    used = set(re.findall(r"\blongevity\.(\w+)", src))
-    assert used == {"band_for_history", "adjusted_match_score"}
+    assert not set(re.findall(r"longevity\.(\w+)", src))
 
 
 def test_the_breakdown_carries_the_word_and_client_projections_stay_clean():
