@@ -196,6 +196,7 @@ def add_link(
     status: str = "applied",
     source_type: str = "applied",
     yukti_status: str = "pending",
+    failure_reason: str | None = None,
     pre: float | None = None,
     tags: list[dict[str, Any]] | None = None,
     provenance: dict[str, Any] | None = None,
@@ -207,7 +208,14 @@ def add_link(
     created_days_ago: float = 5,
     read_other_profile: bool = False,
 ) -> uuid.UUID:
-    """One candidate, their profile and their link, as a run left them."""
+    """One candidate, their profile and their link, as a run left them.
+
+    A `not_assessed` link carries a failure reason (migration 0122's
+    `ck_jcl_yukti_failure_reason` requires exactly that pairing), so one is
+    defaulted to `model_unavailable` when the caller names none.
+    """
+    if yukti_status == "not_assessed" and failure_reason is None:
+        failure_reason = "model_unavailable"
     candidate, profile, link = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     other_profile = uuid.uuid4()
     at = NOW - timedelta(days=created_days_ago)
@@ -245,11 +253,13 @@ def add_link(
                         sa.text(
                             "INSERT INTO job_candidate_links (id, tenant_id, job_id, "
                             " candidate_id, profile_id, source, status, source_type, "
-                            " validation_json, yukti_status, yukti_pre_score, "
+                            " validation_json, yukti_status, yukti_failure_reason, "
+                            " yukti_pre_score, "
                             " evidence_tags_json, yukti_provenance_json, yukti_profile_id, "
                             " yukti_scored_at, created_at) "
                             "VALUES (:id, :tid, :job, :cid, :pid, :source, :status, :stype, "
-                            " CAST(:validation AS jsonb), :ystatus, :pre, CAST(:tags AS jsonb), "
+                            " CAST(:validation AS jsonb), :ystatus, :reason, :pre, "
+                            " CAST(:tags AS jsonb), "
                             " CAST(:prov AS jsonb), :ypid, :scored_at, :at)"
                         ),
                         {
@@ -263,6 +273,7 @@ def add_link(
                             "stype": source_type,
                             "validation": json.dumps(validation) if validation is not None else None,
                             "ystatus": yukti_status,
+                            "reason": failure_reason,
                             "pre": pre,
                             "tags": json.dumps(tags or []),
                             "prov": json.dumps(provenance) if provenance is not None else None,

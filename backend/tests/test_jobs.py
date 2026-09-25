@@ -202,9 +202,7 @@ def _stub_create_deps(monkeypatch) -> dict:
     monkeypatch.setattr(jobs_api, "record_action", _fake_record)
     monkeypatch.setattr(jobs_api.rbac, "assign_creator", _fake_assign)
     # Create dispatches NOTHING any more; any attempt is recorded and asserted.
-    monkeypatch.setattr(
-        jobs_api, "dispatch", lambda *a, **k: calls["dispatched"].append(a)
-    )
+    # `dispatch_after_commit` is the only dispatcher the jobs router imports.
     monkeypatch.setattr(
         jobs_api, "dispatch_after_commit", lambda *a, **k: calls["dispatched"].append(a)
     )
@@ -934,9 +932,11 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     monkeypatch.setattr(resume_storage, "store_resume", _store)
     monkeypatch.setattr(resume_storage, "apply_resume_asset", lambda p, a: None)
     monkeypatch.setattr(resume_parsing, "extract_contact_identity", _identity)
+    # The upload hands each parse to `dispatch_after_commit`, so a rolled-back
+    # upload starts nothing (Phase 2 WP-B).
     monkeypatch.setattr(
-        jobs_api, "dispatch",
-        lambda *a, **k: calls["tasks"].append(a),
+        jobs_api, "dispatch_after_commit",
+        lambda session, name, **k: calls["tasks"].append((name, k.get("args"))),
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
@@ -950,11 +950,25 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     return calls
 
 
+class _Savepoint:
+    """`session.begin_nested()` as the upload uses it: one savepoint per file,
+    so a failing file rolls back its own rows (Phase 2 WP-B)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _DatabankSession(_PublishSession):
     """Fake session where no candidate or link pre-exists."""
 
     async def execute(self, *a, **k):
         return _Result()
+
+    def begin_nested(self) -> _Savepoint:
+        return _Savepoint()
 
 
 @pytest.mark.asyncio
@@ -977,11 +991,13 @@ async def test_databank_accepts_twenty_five_files(monkeypatch) -> None:
     # Every stored link is tagged as a databank procurement.
     assert all(link.source_type == SOURCE_TYPE_DATABANK for link in links)
 
-    # One parse task per file, and exactly ONE matching run for the batch.
+    # One parse task per file and NO matching run: each parse dispatches
+    # `pickready.yukti_score_profile`, which reads the new link (Phase 2 WP-B
+    # superseded the one-run-per-batch rule of 2026-07-28).
     parse_tasks = [t for t in calls["tasks"] if t[0] == "pickready.parse_resume"]
     match_tasks = [t for t in calls["tasks"] if t[0] == "pickready.run_matching"]
     assert len(parse_tasks) == 25
-    assert len(match_tasks) == 1
+    assert match_tasks == []
 
 
 @pytest.mark.asyncio
