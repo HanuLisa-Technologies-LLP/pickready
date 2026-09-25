@@ -123,17 +123,9 @@ PENDING_REMOVAL: dict[tuple[str, str], str] = {
     ("backend/app/prompts/assessment_answer_evaluation_coding.txt", "assessment_answer_evaluation_coding"): "Phase 4 hunk, with Phase 5",
     ("backend/app/prompts/assessment_answer_evaluation_coding.txt", "never executed"): "Phase 4 hunk, with Phase 5",
     ("backend/tests/test_assessment_formats_evaluation.py", "NOT_EXECUTED_NOTE"): "Phase 4 hunk, with Phase 5",
-    # The old question writer: deleted when the Phase 3 composer sends coding
-    # slots to `coding_generation.write_coding_question` (4B1 hunk 2).
-    ("backend/app/services/assessment_formats/generation.py", "assessment_format_coding"): "Phase 3 composer, 4B1 hunk 2",
-    ("backend/app/prompts/assessment_format_coding.txt", "assessment_format_coding"): "Phase 3 composer, 4B1 hunk 2",
-    ("backend/app/prompts/assessment_format_coding.txt", "never executed"): "Phase 3 composer, 4B1 hunk 2",
-    # The editor: replaced by Monaco on the Phase 4 frontend branch (WP-4D).
-    ("frontend/components/assessment/code-editor.tsx", "codemirror"): "Phase 4 WP-4D",
-    ("frontend/components/assessment/code-editor.tsx", "@lezer/"): "Phase 4 WP-4D",
-    ("frontend/lib/assessment/coding-languages.ts", "codemirror"): "Phase 4 WP-4D",
-    ("frontend/package.json", "codemirror"): "Phase 4 WP-4D",
-    ("frontend/package.json", "@lezer/"): "Phase 4 WP-4D",
+    # The old question writer (4B1 hunk 2, via wip/p3-w2) and the CodeMirror
+    # editor (WP-4D) both left at the stage 2 integration; their entries went
+    # with them.
 }
 
 
