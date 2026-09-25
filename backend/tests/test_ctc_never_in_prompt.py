@@ -83,10 +83,10 @@ PROMPT_BUILDERS: dict[str, Builder] = {
         "HUNK: redact with compensation_guard.redact_text before the call",
     ),
     "app/services/swot_analysis.py::draft": Builder(
-        "Phase 1 (orchestrator hunk)",
-        "job fields and the JD markdown, unredacted",
-        PENDING,
-        "HUNK: build_context redacts jd_document, benefits, about_company, work_life",
+        "Phase 1 (orchestrator hunk, applied at the stage 2 integration)",
+        "job fields and the JD markdown, redacted",
+        CANARY,
+        "build_context strips compensation keys and redacts jd_document, benefits, about_company, work_life",
     ),
     "app/services/jd_generation.py::generate_job_description": Builder(
         "Phase 1",
@@ -99,16 +99,16 @@ PROMPT_BUILDERS: dict[str, Builder] = {
     ),
     # ── Phase 1: Sutra ──────────────────────────────────────────────────────
     "app/services/hiring/sutra.py::draft_skills._execute": Builder(
-        "Phase 1 (orchestrator hunk)",
-        "JD markdown unredacted, SWOT, company profile",
-        PENDING,
-        "HUNK: sutra._payload redacts job_description and the company profile sections",
+        "Phase 1 (orchestrator hunk, applied at the stage 2 integration)",
+        "JD markdown, SWOT and company profile, each redacted",
+        CANARY,
+        "sutra._payload redacts job_description, the SWOT sections and the company profile sections",
     ),
     "app/services/hiring/sutra.py::build_context._execute": Builder(
-        "Phase 1 (orchestrator hunk)",
+        "Phase 1 (orchestrator hunk, applied at the stage 2 integration)",
         "the same `_payload` as the draft",
-        PENDING,
-        "fixed by the same `_payload` hunk",
+        CANARY,
+        "the same redacted `_payload`",
     ),
     "app/services/hiring/drishti_conversation.py::_deepen._execute": Builder(
         "Phase 1", "the hiring team's own answer in the Drishti conversation", REVIEWED
@@ -125,6 +125,12 @@ PROMPT_BUILDERS: dict[str, Builder] = {
     "app/services/assessment_formats/generation.py::write_structured.execute": Builder(
         "Phase 3 / Phase 4", "JD markdown and skills for a structured question", PENDING,
         "Phase 3 redacts the JD with compensation_guard",
+    ),
+    "app/services/assessment_formats/coding_generation.py::write_coding_question.execute": Builder(
+        "Phase 4 WP-4B1",
+        "job title, grade, experience band, Sutra's role summary and one skill",
+        CANARY,
+        "build_messages is the one place the request is assembled; no compensation, JD or resume field",
     ),
     "app/services/ppi_interview.py::write_question.execute": Builder(
         "Phase 3", "JD markdown and resume for one question", PENDING,
@@ -512,10 +518,6 @@ def _job_namespace() -> SimpleNamespace:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PENDING HUNK (orchestrator, Phase 1 file): swot_analysis.build_context sends the JD markdown unredacted",
-)
 async def test_the_swot_prompt_carries_no_compensation(monkeypatch) -> None:
     from app.services import swot_analysis
 
@@ -529,16 +531,42 @@ async def test_the_swot_prompt_carries_no_compensation(monkeypatch) -> None:
     _assert_no_pay(router)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PENDING HUNK (orchestrator, Phase 1 file): sutra._payload sends the JD markdown unredacted",
-)
 def test_the_sutra_payload_carries_no_compensation() -> None:
     from app.services.hiring import sutra
 
     payload = sutra._payload(_job_namespace(), dict(fx.SWOT), [])
     router = CapturingRouter(lambda task, messages: "{}")
     router.sent.append([{"role": "user", "content": json.dumps(payload)}])
+    _assert_no_pay(router)
+
+
+def test_the_coding_question_request_carries_no_compensation() -> None:
+    """`write_coding_question.execute` sends exactly `build_messages`, which
+    is pure, so the canary runs the builder itself over a job whose
+    compensation and JD carry the sentinel. The role summary is Sutra's
+    output, written from the redacted `sutra._payload` canaried above."""
+    from app.services.assessment_contract import ContractSkill
+    from app.services.assessment_formats import coding_generation as gen
+    from app.services.code_execution import limits
+
+    languages = ["python"]
+    messages = gen.build_messages(
+        job=_job_namespace(),
+        skill=ContractSkill(
+            id=uuid.uuid4(),
+            name="Log analysis and incident triage",
+            bucket="must_have",
+            priority=1,
+            evidence_line="Has traced a production incident from logs to its root cause.",
+        ),
+        role_summary="Keeps the payments platform running and leads its incident response.",
+        grade="managerial",
+        languages=languages,
+        reference_language="python",
+        limits={key: limits.for_language(key) for key in languages},
+    )
+    router = CapturingRouter(lambda task, messages: "{}")
+    router.sent.append(messages)
     _assert_no_pay(router)
 
 

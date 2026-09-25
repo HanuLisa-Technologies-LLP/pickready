@@ -59,6 +59,7 @@ on a public page, neutral and precise in an internal report.
 | services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `swot_analysis.is_saved` (a saved SWOT) |
 | services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
 | assessment_formats/coding_generation | coding_question_generation.txt | coding_question_generation | candidate-facing | `code_execution.is_enabled()` and a skill name and evidence line |
+| services/yukti/judge          | yukti_matching_system.txt       | yukti_matching            | internal         | `grounding` over every tag and quote; a failure is `not_assessed`, never a default |
 | services/swot_analysis        | swot_analysis_system.txt        | swot_analysis             | internal         | `swot_input_state` |
 | services/outreach_content     | outreach_email_system.txt       | email_composition         | candidate-facing | `outreach_state` |
 | services/outreach_content     | email_generation.txt            | email_composition         | candidate-facing | `outreach_state` |
@@ -154,6 +155,8 @@ GATED_PROMPTS: tuple[str, ...] = (
     # would otherwise narrate its own uncertainty into what Vaada reads.
     "sutra_skills_draft",
     "sutra_assessment_context",
+    # Yukti (Vivekium release, Phase 2): its tags reach a recruiter.
+    "yukti_matching_system",
     "email_generation",
     # Phase 4 (Vivekium release): the executed coding question. Its statement
     # is candidate-facing, and a model narrating how thin the role summary was

@@ -59,7 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import llm_providers
 from app.models.job import Job
 from app.prompts import fragments, registry
-from app.services import agent_loop, llm_router, ppi
+from app.services import agent_loop, compensation_guard, llm_router, ppi
 from app.services.agent_loop import Defect
 from app.services.hiring import observable, pipeline_halt
 
@@ -307,22 +307,24 @@ def _payload(
     experience = _experience(job)
     if experience:
         payload["experience"] = experience
-    jd_document = str(job.jd_markdown or "").strip()[:JD_CHARS]
+    jd_document = compensation_guard.redact_text(job.jd_markdown).strip()[:JD_CHARS]
     if jd_document:
         payload["job_description"] = jd_document
     jd_skills = _jd_skills(job)
     if jd_skills:
         payload["jd_required_skills"] = jd_skills
-    sections = swot_sections(swot)
+    sections = swot_sections(
+        {name: compensation_guard.redact_text(text) for name, text in (swot or {}).items()}
+    )
     if sections:
         payload["swot"] = sections
     profile = {
-        key: _clean(value)[:PROFILE_SECTION_CHARS]
+        key: _clean(compensation_guard.redact_text(value))[:PROFILE_SECTION_CHARS]
         for key, value in (
             ("about_company", job.about_company),
             ("work_life", job.work_life),
         )
-        if _clean(value)
+        if _clean(compensation_guard.redact_text(value))
     }
     if profile:
         payload["company_profile_context"] = profile
