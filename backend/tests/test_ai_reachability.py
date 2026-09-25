@@ -84,8 +84,7 @@ LIVE: dict[str, str] = {
         "api/assessments.py directly, and miti.tiering underneath the scorer"
     ),
     "app.services.agents": (
-        "identity, artifacts and gates, through ppi / matching "
-        "and functional_assessment"
+        "identity, artifacts and gates, through ppi and functional_assessment"
     ),
     "app.services.proctoring": "api/proctoring.py and the assessment gate",
     "app.services.assessment_formats": "the six question formats on the live turn",
@@ -108,6 +107,14 @@ LIVE: dict[str, str] = {
         "-> assessment_pipeline.evidence, the one per-answer ledger writer, run "
         "as the scoring backfill. The conversation's per-answer call is wired by "
         "the assessment phase."
+    ),
+    "app.services.yukti": (
+        "Vivekium release, Phase 2. api/jobs.py's ranked table -> "
+        "job_candidates -> yukti.ranking (the one rank key and its words), and "
+        "workers/tasks.py pickready.run_matching / pickready.yukti_score_profile "
+        "-> matching -> yukti.scoring.score_links (the resume reading). It "
+        "replaced the retired matcher, hiring.prescreen and services.longevity, "
+        "which are deleted rather than left unreachable."
     ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
@@ -228,6 +235,22 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     ("app/services/skills.py", "request_draft"): (
         "app/workers/tasks.py, pickready.reconcile_job_setup. The repair path "
         "for a draft that never landed."
+    ),
+    # Vivekium release, Phase 2. The two doors to the ranked table: without a
+    # caller of `score_links` no link is ever read and every row stays "Not
+    # checked yet"; without a caller of `order_by_sql` the page is ordered by
+    # something other than the one key the dashboard and the ranked table
+    # share, which is the drift the derived rank exists to prevent.
+    ("app/services/yukti/scoring.py", "score_links"): (
+        "app/services/matching.py, from run_matching and score_profile "
+        "(pickready.run_matching and pickready.yukti_score_profile)."
+    ),
+    ("app/services/yukti/ranking.py", "order_by_sql"): (
+        "app/services/job_candidates.py, the ranked table's ORDER BY."
+    ),
+    ("app/services/yukti/ranking.py", "rank_score_sql"): (
+        "app/services/job_candidates.py and app/services/dashboard.py: the "
+        "ranked table and the Candidate Dashboard read one key."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "

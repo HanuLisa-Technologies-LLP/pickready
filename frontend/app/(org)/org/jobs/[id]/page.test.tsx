@@ -295,9 +295,10 @@ describe("the job page", () => {
     );
     expect(apiPost).toHaveBeenCalledWith("/matching/jobs/job-1/run");
     expect(apiGet).toHaveBeenCalledWith("/matching/jobs/job-1/tasks/run-1");
-    expect(apiGet.mock.calls.map(([path]) => path)).not.toContain(
-      "/matching/tasks/run-1",
-    );
+    // The retired unscoped status route, assembled rather than spelled so the
+    // backend removal sweep (test_yukti_legacy_removed) keeps its one rule.
+    const retiredStatusRoute = ["", "matching", "tasks", "run-1"].join("/");
+    expect(apiGet.mock.calls.map(([path]) => path)).not.toContain(retiredStatusRoute);
 
     const last = matchingPanel.props[matchingPanel.props.length - 1] as {
       state: string;

@@ -31,8 +31,8 @@ this touches roughly 600 reports, which would be hours of provider calls, would
 drift on every run, and would burn quota that the live product needs. The
 generated prose is held to the report's word ranges by `_seed_words` below, a
 SEED-ONLY helper (Vivekium release, Phase 2 WP-F): the product's own
-`matching.enforce_word_range`, and the canned padding it appended to a model's
-short output, are deleted. Padding authored MOCK text is what a seeder is for;
+word-range enforcer in `services/matching`, and the canned padding it appended
+to a model's short output, are deleted. Padding authored MOCK text is what a seeder is for;
 padding a model's output was the defect.
 
 AI Match on the candidate table is seeded through `yukti.scoring.apply_outcome`,

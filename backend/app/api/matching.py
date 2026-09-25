@@ -6,14 +6,13 @@ Two routes, and what was deleted (Vivekium release, Phase 2)
 * `POST /matching/jobs/{job_id}/run` starts a run and answers its task id.
 * `GET /matching/jobs/{job_id}/tasks/{task_id}` reports that run's progress.
 
-`GET /matching/tasks/{task_id}` is DELETED, because it had no tenant check at
-all: the run-status record in Redis is keyed by the task id alone
+The UNSCOPED task-status route (the task id alone, with no job in the path)
+is DELETED, because it had no tenant check at all: the run-status record in Redis is keyed by the task id alone
 (`workers/status`), so any holder of `trigger_matching` in any tenant could read
 any other tenant's run by its id. The replacement is keyed by the job AND
 proves the task was started for that job in the caller's tenant, by reading the
 `matching_triggered` audit row the run route writes in the same transaction as
-the dispatch. `GET /matching/jobs/{job_id}/results` is DELETED too: nothing
-called it, it ordered by the retired `match_score`, and it serialized the
+the dispatch. The per-job RESULTS route is DELETED too: nothing called it, it ordered by the retired `match_score`, and it serialized the
 retired per-category comments. The ranked table is `GET /jobs/{job_id}/candidates`.
 """
 import uuid

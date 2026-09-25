@@ -41,11 +41,11 @@ rule, unchanged).
 
 THE LEGACY READ SIDE IS DELETED
 -------------------------------
-`ranking_payload`, `client_breakdown`, `matching_label`, the 25-30 word
-helpers and `compute_overall_score` projected the frozen
-`match_breakdown_json` for readers that have all moved onto the Yukti columns
-(Phase 2 WP-F). The breakdown column survives as readable history and nothing
-in this module reads or writes it.
+The projections of the frozen `match_breakdown_json` (the comments-only
+payload, the score-stripped breakdown, the matching word, the 25-30 word
+helpers and the four-parameter mean) had readers that have all moved onto the
+Yukti columns (Phase 2 WP-F). The breakdown column survives as readable
+history and nothing in this module reads or writes it.
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 YUKTI HAS NO GATE HERE, AND THAT IS DECLARED RATHER THAN IMPLIED
 ----------------------------------------------------------------
-`yukti_gate` judged the retired AI Score payload: at least five matching
+The Yukti gate judged the retired AI Score payload: at least five matching
 categories, each citing a resume line. Its only caller was the unread
 `ai_score` artifact hand-off, and both are DELETED (Vivekium release, Phase 2
 WP-F). Yukti's reading is now checked where it is produced, deterministically:

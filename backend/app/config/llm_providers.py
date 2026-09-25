@@ -203,13 +203,13 @@ TaskType = Literal[
 #: it would be a boundary violation. `dimension_evaluation` and
 #: `yukti_matching` are Terra because they grade.
 #:
-#: SIX TASK TYPES WERE DELETED in the Vivekium release (Phase 2 WP-F):
-#: `rerank` (its last caller, the retired matcher, now runs as
-#: `yukti_matching`), and `competency_transformation`,
-#: `situation_classification`, `claim_extraction`, `evidence_tiering` and
-#: `technical_questions`, which no call site had used. A task type with no
-#: caller is a routing row nothing exercises, and `test_yukti_legacy_removed`
-#: keeps them gone.
+#: SIX TASK TYPES WERE DELETED in the Vivekium release (Phase 2 WP-F): the
+#: `rerank` hint (its last caller, the retired matcher, now runs as
+#: `yukti_matching`) and five job-setup and scoring types no call site had
+#: used. A task type with no caller is a routing row nothing exercises.
+#: `tests/test_llm_task_routing.DELETED_TASK_TYPES` names all six and keeps
+#: them out of every table, and `test_yukti_legacy_removed` refuses a call
+#: site that passes one.
 #:
 #: What is NOT here: the aggregator. spec-doc5 §B.3 assigns it "No model.
 #: Deterministic code only", so it has no task type at all, and
