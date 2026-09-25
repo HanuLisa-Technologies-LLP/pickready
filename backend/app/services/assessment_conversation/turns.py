@@ -846,6 +846,39 @@ async def submit_turn(
         elif not timed_out:
             raise HTTPException(status_code=422, detail=STRUCTURED_NEEDS_PAYLOAD_DETAIL)
 
+        # An EXECUTED (v2) coding question whose time ran out with no valid
+        # answer in hand submits the code of the candidate's latest Run, the
+        # only server-side copy of what they had typed (p4-4c hunk 1, stage 2
+        # integration). No Run at all is an evidence gap like any other
+        # timed-out turn, and no submission row is written for it.
+        from app.services.coding_assessment import final_answer as coding_final_answer  # noqa: PLC0415
+        from app.services.coding_assessment import payload as coding_payload  # noqa: PLC0415
+        from app.services.coding_assessment import submissions as coding_submissions  # noqa: PLC0415
+
+        executed_coding = row.question_type == question_types.CODING and coding_payload.is_v2(
+            row.payload_json
+        )
+        if parsed_json is None and timed_out and executed_coding:
+            draft = await coding_submissions.latest_draft(
+                session, conversation_id=conversation.id, question_id=row.id
+            )
+            if draft is not None and draft.source.strip():
+                try:
+                    parsed_json = question_types.parse_answer(
+                        row.question_type, row.payload_json,
+                        {"language": draft.language, "code": draft.source},
+                    ).model_dump()
+                except ValueError as exc:
+                    # A Run the question no longer accepts (a language it does
+                    # not offer, code over the ceiling) is not an answer; the
+                    # turn is an evidence gap, and the refusal is logged by
+                    # class so the gap is explained rather than silent.
+                    logger.warning(
+                        "assessment_turn.coding_draft_refused conversation_id=%s "
+                        "question_id=%s error=%s",
+                        conversation.id, row.id, type(exc).__name__,
+                    )
+
         if parsed_json is None:
             message = await _write_timed_out(ctx, agent_message, row, key, domain, now, spent)
         else:
@@ -872,6 +905,13 @@ async def submit_turn(
                 ctx, row.id, message, answer_json=parsed_json, auto_score=auto_score,
                 evaluation=evaluation, now=now, spent_seconds=spent,
                 question_type=row.question_type,
+            )
+            # A final v2 coding answer is handed to execution here: the hook
+            # stores the submission and dispatches its hidden-test run AFTER
+            # the commit, and is a no-op for every other format (p4-4c hunk
+            # 1). `auto_submitted` records a turn the clock closed.
+            await coding_final_answer.accept_structured_answer(
+                session, conversation=conversation, question=row, auto_submitted=timed_out,
             )
             await _record_evidence(ctx, row, message, now=now)
         await _record_behaviour(ctx, row.id, submission.behaviour, final_length=len(message.content))

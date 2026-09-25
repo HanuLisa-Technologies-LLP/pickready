@@ -203,19 +203,13 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
     # package are in REQUIRED_CALLERS below.
     #
     # `accept_final` is reached through `final_answer.accept_structured_answer`
-    # (4C), which lives in the same package, so it still has no caller OUTSIDE
-    # the package until Phase 3's respond calls the hook.
-    ("app/services/coding_assessment/final_answer.py", "accept_structured_answer"): (
-        "Phase 3's respond structured branch, after the answer row is written: "
-        "the one line that hands a final v2 coding answer to execution. Until "
-        "it is called, a final coding answer is stored and never executed."
-    ),
+    # (4C), which lives in the same package, so it has no caller OUTSIDE the
+    # package BY DESIGN: the turn engine calls the hook, and the hook calls
+    # `accept_final`. The hook and `latest_draft` moved to REQUIRED_CALLERS at
+    # the stage 2 integration, when the turn engine started calling them.
     ("app/services/coding_assessment/submissions.py", "accept_final"): (
-        "the only writer of coding_submissions; Phase 3's respond calls it for "
-        "a v2 coding answer, after the answer row is flushed."
-    ),
-    ("app/services/coding_assessment/submissions.py", "latest_draft"): (
-        "Phase 3's auto-submit on timeout reads the latest Run's code."
+        "the only writer of coding_submissions, reached only through "
+        "final_answer.accept_structured_answer inside its own package."
     ),
     ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
         "Phase 5's scoring entry waits on it while coding work is open."
@@ -242,6 +236,17 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    # The one line that hands a final v2 coding answer to execution (p4-4c
+    # hunk 1, wired at the stage 2 integration). Without a caller a final
+    # coding answer is stored and never executed, and nothing fails.
+    ("app/services/coding_assessment/final_answer.py", "accept_structured_answer"): (
+        "app/services/assessment_conversation/turns.py, submit_turn's "
+        "structured branch, after the answer row is written."
+    ),
+    ("app/services/coding_assessment/submissions.py", "latest_draft"): (
+        "app/services/assessment_conversation/turns.py: an expired coding turn "
+        "with no answer in hand submits the latest Run's code."
+    ),
     # A spoken answer's audio whose first deletion could not be confirmed, or
     # whose transcription never reported back. Wired into the hourly
     # recording repair at the stage 2 integration (p3-w5 hunk 2); without it
