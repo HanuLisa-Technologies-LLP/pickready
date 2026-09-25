@@ -187,6 +187,7 @@ TaskType = Literal[
     "format_composition",
     "answer_evaluation",
     "fill_blank_equivalence",
+    "coding_question_generation",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
     # ── Web research (BD Portal AI Reach, Company Profile research) ──
@@ -268,6 +269,11 @@ MODEL_FOR_TASK: dict[str, str] = {
     # the reasoning tier's job by definition.
     "format_composition": MODEL_TERRA,
     "answer_evaluation": MODEL_TERRA,
+    # A coding question: the statement, a starter program per language, the
+    # visible and hidden tests AND a reference solution that must pass every
+    # one of them in the sandbox. Writing that is correct under execution is
+    # the hardest writing task in the product, so it is Terra.
+    "coding_question_generation": MODEL_TERRA,
     # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
     # 2026-09-08. That was the single reason AI Reach returned two or three
     # companies and a researched company profile read thin, and it is the same
@@ -455,6 +461,10 @@ TASK_TIMEOUTS: dict[str, float] = {
     "format_composition": 60.0,
     # Background: one evaluation with reasoning, inside the scoring task.
     "answer_evaluation": 60.0,
+    # Background, inside question generation. The longest single document the
+    # assessment asks for: four starter programs, up to thirteen tests and a
+    # reference solution in one JSON object.
+    "coding_question_generation": 90.0,
     # IMMEDIATE interactive. A candidate has just submitted a fill-blank
     # answer and is waiting for the next question; the equivalence check runs
     # only when the exact match failed. Same cap as `conversation_turn`, for
@@ -507,6 +517,10 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
     "fill_blank_equivalence": 24.0,
+    # Two attempts at the 90s cap. The generation loop around it re-asks with
+    # the sandbox's verdict, so a third router attempt would buy less than a
+    # second loop attempt does.
+    "coding_question_generation": 180.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -574,6 +588,8 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "project_evidence": 4096,
     "format_composition": 4096,
     "answer_evaluation": 4096,
+    # Four starter programs, a reference solution and up to thirteen tests.
+    "coding_question_generation": 8192,
     # A boolean and one sentence of reason.
     "fill_blank_equivalence": 256,
 }
@@ -633,6 +649,9 @@ TASK_TEMPERATURE: dict[str, float] = {
     # anchored evidence question. Same tier of creativity as the question
     # bank writer it sits beside; what is asked is fixed by the matrix.
     "format_composition": 0.4,
+    # Writes one coding problem and its tests. Same tier as the other question
+    # writers; correctness is enforced by the sandbox, not by the sampler.
+    "coding_question_generation": 0.4,
     "jd_generation": 0.5,
     "swot_analysis": 0.5,
     # Proposes a list a person edits. Low: the same JD and SWOT should not
@@ -700,6 +719,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "format_composition": 3,
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
+    "coding_question_generation": 2,
     # TWO, NOT THREE, and both are interactive. Measured on the live pilot
     # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
     # full attempt on it, and the retry alone consumed more than the remaining
@@ -1238,6 +1258,11 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "project_evidence": 0.25,
     "format_composition": 0.25,
     "answer_evaluation": 0.25,
+    # A fully budgeted call (the whole context plus 8192 output tokens on the
+    # reasoning tier) is about 0.17 USD, and every ceiling here sits at twice
+    # its task's worst case (`test_router_recovery`). The same row as the
+    # other 8192-token background writers.
+    "coding_question_generation": 0.40,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of

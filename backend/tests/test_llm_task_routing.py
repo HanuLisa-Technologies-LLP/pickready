@@ -149,6 +149,10 @@ SPEC_B3_ASSIGNMENT = {
     # candidate's own request path. Narrow, mechanical, must be fast: the
     # extraction tier, for the same reason `rerank` is.
     "fill_blank_equivalence": llm_providers.MODEL_LUNA,
+    # Phase 4 (Vivekium release): an executed coding question, its tests and a
+    # reference solution that must pass every one of them in the sandbox.
+    # WRITING, and the hardest writing task in the product: the reasoning tier.
+    "coding_question_generation": llm_providers.MODEL_TERRA,
     # Web research, both halves. BOTH WERE ON THE EXTRACTION TIER under the
     # `extraction` hint until 2026-09-08, which is the one place a task DID
     # silently sit on the wrong tier, and it cost the product a BD page that
