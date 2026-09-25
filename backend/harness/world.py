@@ -1210,6 +1210,25 @@ async def _coding_question_open(
     await _start_under_proctoring(
         session, world, conversation=conversation, link=link, candidate=candidate
     )
+    # The coding question is ON SCREEN: the server's turn clock has its turn
+    # open, with the coding allocation, as `respond` leaves it after opening a
+    # turn. The Run route reads that clock (p4-4c hunk 2, stage 2 integration)
+    # and refuses a Run on a turn with no clock, so a world without it would
+    # measure the clock refusal instead of the path under test. `now()` rather
+    # than the world's fixed anchor, because the clock is read against the
+    # real time of the request.
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    await session.execute(
+        sa.text(
+            "UPDATE assessment_conversations SET turn_seq = 1, prompt_shown_at = now(), "
+            "turn_allocation_seconds = :allocation WHERE id = :id"
+        ),
+        {
+            "allocation": get_settings().assessment_time_coding_seconds,
+            "id": str(conversation),
+        },
+    )
     world.ids["coding_question"] = question.id
     world.ids["coding_visible_stdins"] = [
         test["stdin"] for test in draft.payload["visible_tests"]

@@ -1,5 +1,5 @@
 id: adversarial.the_code_runner_is_unavailable
-version: 1
+version: 2
 tier: adversarial
 description: >
   The sandbox answers every request with a server error while a candidate is
@@ -42,10 +42,16 @@ expect:
     - coding_submissions.column:execution_attempts == 1
     - coding_submissions.column:last_error_class == ExecutionUnavailable
   dispatched:
-    # Handed to execution once, after the commit. Scoring was NOT dispatched:
-    # the answer is still owed, so there is nothing yet to grade it on.
+    # Handed to execution once, after the commit. Scoring IS dispatched once,
+    # by `respond` itself: the final answer now goes through the real turn
+    # engine (version 2, stage 2 integration), and answering the last base
+    # question completes the conversation, which dispatches scoring after the
+    # commit. The submission's own hand-over does not dispatch it again here,
+    # because the execution never completed. Holding scoring while a coding
+    # answer is still owed is Phase 5's `submissions.scoring_hold`, which has
+    # no caller yet (recorded in the stage 2 deferred hunks).
     pickready.execute_coding_submission: 1
-    pickready.run_functional_assessment: 0
+    pickready.run_functional_assessment: 1
   output:
     - status.run_the_coding_samples == 503
     - body.run_the_coding_samples.detail == "The code runner is not available right now. Your code is kept; you can keep working and submit when ready."

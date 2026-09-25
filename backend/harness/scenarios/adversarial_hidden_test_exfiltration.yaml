@@ -1,5 +1,5 @@
 id: adversarial.a_program_cannot_exfiltrate_the_hidden_tests
-version: 1
+version: 2
 tier: adversarial
 description: >
   A candidate submits the most hostile program there is against a hidden test:
@@ -26,6 +26,9 @@ workload:
   - read_the_coding_submission_state
   - execute_the_coding_submission_against_an_echoing_program
   - read_the_coding_submission_state
+  # The recruiter's view is swept too (version 2): the transcript carries the
+  # executed answer's outcome and the review beside the candidate's code.
+  - read_the_coding_transcript
 
 expect:
   state:
@@ -37,9 +40,14 @@ expect:
     - coding_submissions.column:execution_status == complete
     - coding_submissions.column:review_status == complete
   dispatched:
-    # Executed once, and handed to scoring once the last owed work was done.
+    # Executed once. Scoring is dispatched TWICE, both after a commit: once
+    # by `respond` completing the conversation (the final answer goes through
+    # the real turn engine since version 2, stage 2 integration) and once by
+    # the submission's hand-over when the last owed work is done. Scoring's
+    # per-application advisory lock makes the second run a no-op, so this is
+    # one scoring run with two requests for it, not two reports.
     pickready.execute_coding_submission: 1
-    pickready.run_functional_assessment: 1
+    pickready.run_functional_assessment: 2
   output:
     - statuses.run_the_coding_samples == [202]
     - body.run_the_coding_samples_poll.status == complete
@@ -48,12 +56,14 @@ expect:
     - facts.coding_execution_report.execution_status == complete
     - facts.coding_execution_report.review_status == complete
     - facts.coding_execution_report.scoring_dispatched == true
+    - status.read_the_coding_transcript == 200
   trajectory:
     - coding_run_polled
     - coding_answer_recorded
     - coding_submission_state_read
     - coding_submission_executed
     - coding_submission_state_read
+    - coding_transcript_read
   prohibited:
     - the_answer_key_reached_a_client
     - the_answer_key_reached_a_log_line

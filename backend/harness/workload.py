@@ -52,11 +52,10 @@ from app.api.deps import (
     get_tenant_db,
 )
 from app.core.db import superadmin_scope, tenant_scope
-from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_OWNER, AUDIENCE_ORG
+from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG, AUDIENCE_OWNER
 from app.main import app
 from app.models.enums import Role
 from app.services import application_validation
-
 from harness.context import CLIENT_GUARD, Observation, ScenarioContext
 from harness.world import World, session_factory
 
@@ -1294,93 +1293,75 @@ def _run_the_coding_samples_against_an_echoing_program(
 def _record_the_final_coding_answer(
     app_client: Application, ctx: ScenarioContext
 ) -> None:
-    """Record the final answer as the `respond` turn does, then hand it over.
+    """The candidate sends their final answer through the real `respond` route.
 
-    NOT THE `respond` ROUTE, AND THE REASON IS NAMED RATHER THAN HIDDEN. On
-    this branch `respond` cannot yet take a v2 coding answer: it parses the
-    answer against the legacy v1 payload until the Phase 4 WP-4B1 types hunk
-    lands, and it does not call the coding hand-over until the WP-4C respond
-    hook lands in Phase 3's `respond` body. So this step writes the two rows
-    that turn writes (the candidate's transcript line and the
-    `assessment_answers` row), marks the conversation completed as `respond`
-    does when the last base question is answered, and calls the product's own
-    hand-over, `coding_assessment.final_answer.accept_structured_answer`, in
-    the same transaction. Billing is NOT written here: the completion charge is
-    `integration.an_assessment_bills_once_and_scores_once`'s subject. Once both
-    hunks land, this body becomes one POST to `respond` (see the Phase 4 WP-4F
-    report), and the hand-over is idempotent, so nothing downstream changes.
+    ONE request over the product's own turn engine (p4-4f hunk 4, applied at
+    the stage 2 integration, once `respond` parsed a v2 coding answer and
+    called `coding_final_answer.accept_structured_answer` itself). Before that
+    this step wrote the rows `respond` would have written and called the
+    hand-over directly, which left the wiring between the turn and the
+    hand-over unexercised. The submission id is read afterwards from a fresh
+    session, the second-connection rule for committed state.
     """
     import asyncio  # noqa: PLC0415
-    from datetime import datetime, timezone  # noqa: PLC0415
+
+    from sqlalchemy import select  # noqa: PLC0415
 
     from app.core.db import superadmin_scope  # noqa: PLC0415
-    from app.models.assessment import (  # noqa: PLC0415
-        AssessmentAnswer,
-        AssessmentConversation,
-        AssessmentMessage,
-        CandidateQuestion,
-    )
-    from app.services.coding_assessment import final_answer  # noqa: PLC0415
+    from app.models.coding import CodingSubmission  # noqa: PLC0415
 
     conversation_id = ctx.world.id("conversation")
-    question_id = ctx.world.id("coding_question")
+    app_client.as_candidate()
+    with _capturing_coding_logs(ctx):
+        app_client.request(
+            ctx,
+            "record_the_final_coding_answer",
+            "POST",
+            f"{V2}/assessments/conversations/{conversation_id}/respond",
+            json={
+                "turn_seq": 1,
+                "answer": "",
+                "answer_payload": {"language": "python", "code": CODING_ECHO_PROGRAM},
+            },
+        )
+
     sessions = session_factory()
 
-    async def _record() -> Any:
+    async def _read() -> Any:
         async with sessions() as session:
             async with session.begin():
-                # The candidate audience's own scope: a candidate has no
-                # tenant, so `get_candidate_db` runs with RLS bypassed.
                 async with superadmin_scope(session):
-                    conversation = await session.get(AssessmentConversation, conversation_id)
-                    question = await session.get(CandidateQuestion, question_id)
-                    now = datetime.now(timezone.utc)
-                    agent = AssessmentMessage(
-                        tenant_id=conversation.tenant_id,
-                        conversation_id=conversation.id,
-                        ordinal=1,
-                        speaker="agent",
-                        domain="must_have",
-                        question_key=str(question.id),
-                        content=question.prompt,
-                    )
-                    candidate = AssessmentMessage(
-                        tenant_id=conversation.tenant_id,
-                        conversation_id=conversation.id,
-                        ordinal=2,
-                        speaker="candidate",
-                        domain="must_have",
-                        question_key=str(question.id),
-                        content=f"Language: python\n{CODING_ECHO_PROGRAM}",
-                        answer_label="substantive",
-                    )
-                    session.add_all([agent, candidate])
-                    await session.flush()
-                    session.add(
-                        AssessmentAnswer(
-                            tenant_id=conversation.tenant_id,
-                            conversation_id=conversation.id,
-                            question_id=question.id,
-                            message_id=candidate.id,
-                            question_type=question.question_type,
-                            answer_json={"language": "python", "code": CODING_ECHO_PROGRAM},
-                            submitted_at=now,
+                    return (
+                        await session.execute(
+                            select(CodingSubmission.id).where(
+                                CodingSubmission.conversation_id == conversation_id
+                            )
                         )
-                    )
-                    await session.flush()
-                    conversation.next_question_index += 1
-                    conversation.status = "completed"
-                    conversation.completed_at = now
-                    submission = await final_answer.accept_structured_answer(
-                        session, conversation=conversation, question=question
-                    )
-                    return None if submission is None else submission.id
+                    ).scalar_one_or_none()
 
-    with _capturing_coding_logs(ctx):
-        submission_id = asyncio.run(_record())
+    submission_id = asyncio.run(_read())
     ctx.facts["coding_submission_recorded"] = submission_id is not None
     ctx.facts["coding_submission_id"] = None if submission_id is None else str(submission_id)
     ctx.stage("coding_answer_recorded")
+
+
+def _read_the_coding_transcript(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """A recruiter reads the candidate's transcript, the view that shows an
+    executed coding answer beside what its tests showed. Added with p4-4f
+    hunk 4 at the stage 2 integration: before the v2 dispatch in
+    `types.candidate_view` this route answered 500 for a v2 row, so the
+    recruiter's view could not be swept for the answer key."""
+    app_client.as_staff()
+    with _capturing_coding_logs(ctx):
+        app_client.request(
+            ctx,
+            "read_the_coding_transcript",
+            "GET",
+            f"{V2}/assessments/transcripts/links/{ctx.world.id('link')}",
+        )
+    ctx.stage("coding_transcript_read")
 
 
 def _read_the_coding_submission_state(
@@ -1449,7 +1430,6 @@ def _execute(ctx: ScenarioContext) -> None:
     """
     from app.services.code_execution import ExecutionUnavailable  # noqa: PLC0415
     from app.workers import coding_tasks  # noqa: PLC0415
-
     from harness import faults  # noqa: PLC0415
 
     submission_id = ctx.facts.get("coding_submission_id")
@@ -1512,10 +1492,10 @@ def _weigh_the_coding_evidence_over_the_wait(
     import asyncio  # noqa: PLC0415
     from datetime import timedelta  # noqa: PLC0415
 
-    from app.core.config import get_settings  # noqa: PLC0415
-    from app.models.coding import CodingSubmission  # noqa: PLC0415
     from sqlalchemy import select  # noqa: PLC0415
 
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.models.coding import CodingSubmission  # noqa: PLC0415
     from app.services.coding_assessment import evidence, submissions  # noqa: PLC0415
 
     conversation_id = ctx.world.id("conversation")
@@ -1607,6 +1587,7 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     ),
     "record_the_final_coding_answer": _record_the_final_coding_answer,
     "read_the_coding_submission_state": _read_the_coding_submission_state,
+    "read_the_coding_transcript": _read_the_coding_transcript,
     "execute_the_coding_submission": _execute_the_coding_submission,
     "execute_the_coding_submission_against_an_echoing_program": (
         _execute_the_coding_submission_against_an_echoing_program
