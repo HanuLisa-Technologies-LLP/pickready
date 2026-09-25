@@ -92,12 +92,13 @@ SKILLS: tuple[tuple[str, str], ...] = (
 #: its only reader.
 STAGE_MODULES: dict[str, tuple[str, str]] = {
     provenance.STAGE_SWOT: (
-        "app.services.hiring.swot_quality",
-        "Bodha's SWOT session and its 18.5 quality-control rejection rules",
+        "app.services.swot_analysis",
+        "Bodha's Job SWOT document, drafted as dispatched work and owned by the team",
     ),
     provenance.STAGE_MATRIX: (
         "app.services.hiring.scorecard",
-        "Sutra's seven-stage transformation and the frozen scorecard (gate G1)",
+        "the frozen scorecard's read half (gate G1), which the grading phase "
+        "moves onto the saved skills contract",
     ),
     provenance.STAGE_PRESCREEN: (
         "app.services.hiring.prescreen",

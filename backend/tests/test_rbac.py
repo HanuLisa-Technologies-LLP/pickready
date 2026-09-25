@@ -250,6 +250,9 @@ def test_default_matrix_agrees_with_the_seed_migration() -> None:
         # permission. Company Profile (`edit_company_profile`) is the only
         # company-information capability that remains.
         expected.discard("create_company_page")
+        # Migration 0129 retires the approval chain's company half and the
+        # email-template editor, and deletes these three capabilities' rows.
+        expected -= {"approve_job", "configure_approval_levels", "manage_email_templates"}
         # Migration 0051 reverses this one flat-model grant: Hiring Manager is
         # the bottom hierarchy tier and has no subordinate staff to manage.
         if role_name == Role.hiring_manager.value:
