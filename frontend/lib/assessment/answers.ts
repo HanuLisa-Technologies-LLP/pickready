@@ -105,10 +105,10 @@ export function isAnswerEmpty(value: AnswerPayload | null, starterCode = ""): bo
 
 /**
  * The answer as one readable line, for the candidate's own transcript bubble
- * the moment they press Send. The server renders the authoritative line
- * (`ConversationTurn.answer_line`) and the bubble adopts it on arrival; this
- * one exists so the optimistic bubble is not blank for the seconds in
- * between. Chosen options are quoted by their TEXT, never by their id, for the
+ * the moment they press Send. The server renders the authoritative line (the
+ * `answer` of its `history` entry) and the screen shows that once the response
+ * arrives; this one exists so the pending bubble is not blank for the seconds
+ * in between. Chosen options are quoted by their TEXT, never by their id, for the
  * same reason the recruiter's view quotes them: an id is not evidence of what
  * somebody chose.
  */
@@ -208,17 +208,15 @@ export function starterCodeFor(
 
 /** The key under which a turn's answer is drafted and its behaviour captured.
  *
- *  A base question has an id. A follow-up or a re-ask is prose with no
- *  question row of its own, so its key is derived from where it sits in the
- *  conversation: at most one follow-up and one re-ask can be pending on one
- *  base question, so the answered count plus the re-ask flag names it. */
-export function turnKeyFor(
-  question: QuestionOut | null | undefined,
-  answeredQuestions: number,
-  isReask: boolean
-): string {
-  if (question) return question.id;
-  return `prose:${answeredQuestions}:${isReask ? "reask" : "follow-up"}`;
+ *  The server's `turn_seq` names every turn it opens, a base question, a
+ *  follow-up and a re-ask alike, and it only ever increases within one
+ *  conversation. Keying on it rather than on the question id means a re-ask
+ *  of the same question is a fresh draft and a fresh capture, which is what
+ *  the server measures it as, and a key can never be reused by a later turn.
+ *  The conversation id is part of the key because local drafts are stored
+ *  per application and a retaken conversation starts its sequence again. */
+export function turnKeyFor(conversationId: string, turnSeq: number): string {
+  return `${conversationId}:turn:${turnSeq}`;
 }
 
 /** Whether a turn is answered in prose: a text-type base question, or any
