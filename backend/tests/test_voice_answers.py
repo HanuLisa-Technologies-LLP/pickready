@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.db import superadmin_scope
-from app.services.assessment_conversation import turns
+from app.services.assessment_conversation import turns, voice_audio
 from app.services.video import transcribe, voice
 from app.workers import dispatch as dispatch_mod
 from tests import conversation_world as cw
@@ -358,9 +358,7 @@ async def test_a_transcription_that_never_reports_back_is_failed_on_read(
 # ── The audio goes, and a lost task is repaired ──────────────────────────────
 
 
-async def _repair(factory) -> "voice_audio.RepairResult":
-    from app.services.assessment_conversation import voice_audio
-
+async def _repair(factory) -> voice_audio.RepairResult:
     async with factory() as s:
         async with s.begin():
             async with superadmin_scope(s):
@@ -372,11 +370,9 @@ async def _repair(factory) -> "voice_audio.RepairResult":
 async def test_an_unconfirmed_audio_delete_is_counted_and_retried_until_it_is_gone(
     candidate, monkeypatch, media
 ) -> None:
-    """"Store transcript text only". A delete the HEAD could not confirm is
+    """Store transcript text only. A delete the HEAD could not confirm is
     COUNTED, the keys stay findable for a purge that must delete objects before
     rows, and the hourly repair pass deletes them; nothing gives up."""
-    from app.services.assessment_conversation import voice_audio
-
     cw.quiet_models(monkeypatch)
     _transcribes_to(monkeypatch, SPOKEN)
     factory = cw.sessions()
