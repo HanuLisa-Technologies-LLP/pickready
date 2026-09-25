@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -320,38 +319,33 @@ async def refresh_run(
     return locked
 
 
-@dataclass(frozen=True)
-class _Named:
-    key: str
-    name: str
-    stdin: str
-    expected_stdout: str
+def candidate_results(run: CodingRun, question: CandidateQuestion) -> list[dict[str, Any]]:
+    """What the candidate sees of a completed Run: per sample test, in the
+    question's order, the test's `key` (the payload's `visible_tests[].id`),
+    whether it passed, the result WORD, their program's output and the
+    expected output. Words and text only; no timing, no count.
 
-
-def candidate_results(run: CodingRun, question: CandidateQuestion) -> list[dict[str, str]]:
-    """What the candidate sees of a completed Run: per sample test, its name,
-    the result WORD, their program's output and the expected output. Words
-    and text only; no timing, no count."""
+    Keyed rather than named: the screen labels a result exactly as it labels
+    the sample in the problem, by position, so the server writes no second
+    name that could disagree with it (WP-4C, the frontend contract of 4D).
+    """
     if run.status != RUN_COMPLETE or not run.results_json:
         return []
     payload = coding_payload.parse(question.payload_json)
-    named = {
-        test.id: _Named(key=test.id, name=f"Example {phrasing.number_word(i).capitalize()}",
-                        stdin=test.stdin, expected_stdout=test.expected_stdout)
-        for i, test in enumerate(payload.visible_tests, start=1)
-    }
-    shown: list[dict[str, str]] = []
-    for row in run.results_json:
-        test = named.get(str(row.get("key")))
-        if test is None:
+    expected = {test.id: test.expected_stdout for test in payload.visible_tests}
+    by_key = {str(row.get("key")): row for row in run.results_json}
+    shown: list[dict[str, Any]] = []
+    for key, expected_stdout in expected.items():
+        row = by_key.get(key)
+        if row is None:
             continue
         shown.append(
             {
-                "name": test.name,
-                "result": phrasing.result_word(str(row.get("outcome"))),
-                "stdin": test.stdin,
+                "key": key,
+                "passed": bool(row.get("passed")),
+                "result_word": phrasing.result_word(str(row.get("outcome"))),
                 "stdout": str(row.get("stdout") or ""),
-                "expected_stdout": test.expected_stdout,
+                "expected_stdout": expected_stdout,
                 "stderr": str(row.get("stderr") or ""),
                 "compile_output": str(row.get("compile_output") or ""),
             }

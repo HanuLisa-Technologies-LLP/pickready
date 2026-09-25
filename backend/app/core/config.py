@@ -659,6 +659,15 @@ class Settings(BaseSettings):
     #: The Redis rate window fails open by design, so this count is the fence
     #: that holds when Redis is down.
     coding_run_max_per_question: int = 40
+    #: The Run routes' Redis rate windows, per candidate per minute (the API,
+    #: WP-4C). Abuse and cost control, not the fence: the window fails open
+    #: when Redis is down, and `coding_run_max_per_question` is what holds.
+    #: A poll is cheap but performs one bounded sandbox fetch, so it has a
+    #: window of its own sized for the editor's backoff (half a second rising
+    #: to two).
+    coding_run_rate_per_minute: int = 20
+    coding_run_poll_rate_per_minute: int = 120
+    coding_submission_state_rate_per_minute: int = 30
     #: A queued Run whose sandbox has not answered for this long is recorded
     #: as unavailable, so a poll that keeps failing cannot leave the Run
     #: button disabled for the rest of a twenty-minute question.

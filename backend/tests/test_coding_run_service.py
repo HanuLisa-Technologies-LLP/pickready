@@ -168,12 +168,14 @@ async def test_a_completed_run_reads_back_in_words(factory, world) -> None:
         async with superadmin_scope(session):
             question = await session.get(CandidateQuestion, question_id)
             shown = runs.candidate_results(refreshed, question)
-    assert [(row["name"], row["result"]) for row in shown] == [
-        ("Example One", "Passed"),
-        ("Example Two", "Wrong answer"),
+    assert [(row["key"], row["passed"], row["result_word"]) for row in shown] == [
+        ("v1", True, "Passed"),
+        ("v2", False, "Wrong answer"),
     ]
     assert shown[1]["stdout"] == "/b\n" and shown[1]["expected_stdout"] == "/a\n"
-    assert set(shown[0]) == {"name", "result", "stdin", "stdout", "expected_stdout", "stderr", "compile_output"}
+    assert set(shown[0]) == {
+        "key", "passed", "result_word", "stdout", "expected_stdout", "stderr", "compile_output",
+    }
     assert provider.discarded
 
 

@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.api import drishti as drishti_api
 from app.api import (
     bgv,
+    assessment_coding,
     assessment_conversation,
     assessment_recording,
     assessments,
@@ -299,6 +300,12 @@ app.include_router(
 )
 app.include_router(
     assessment_recording.router, prefix="/api/v2/assessments", tags=["assessments-v2"]
+)
+# The coding question's Run and final-answer state (Phase 4 WP-4C). Beside the
+# conversation it belongs to, on the candidate audience, v2 only: it is new in
+# this release and has no v1 client.
+app.include_router(
+    assessment_coding.router, prefix="/api/v2/assessments", tags=["assessments-v2"]
 )
 # Proctoring (proctoring-spec-doc.md). Mounted beside the assessment it
 # monitors, under v2 only: it is new in this release and has no v1 client.

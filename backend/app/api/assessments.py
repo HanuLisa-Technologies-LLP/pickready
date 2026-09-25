@@ -56,6 +56,8 @@ from app.services import (
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
+from app.services.coding_assessment import payload as coding_payload
+from app.services.coding_assessment import transcript as coding_transcript
 # PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
 # this module's only import-time dependency on the proctoring package; the
 # behaviour recorder and the report loader are reached inside the handlers
@@ -422,8 +424,14 @@ async def _criterion_labels(
 
 def _answer_key(row: CandidateQuestion) -> dict[str, Any]:
     """What the recruiter sees BESIDE the candidate's choice: the correct
-    option ids, the accepted answers per blank, the approach a coding answer
-    was read against. Prose and identifiers; never a score."""
+    option ids, the accepted answers per blank, the approach a LEGACY coding
+    answer was read against. Prose and identifiers; never a score.
+
+    An executed (v2) coding question has NO key here, deliberately: its hidden
+    tests, reference solution and approach notes live in the answer-key table
+    that no response reads, and what the recruiter reads instead is the
+    outcome sentence and the code review (`coding_transcript`, Phase 4 WP-4C).
+    """
     payload = dict(row.payload_json or {})
     if row.question_type == question_types.MCQ_SINGLE:
         return {"correct_option_id": payload.get("correct_option_id")}
@@ -437,12 +445,16 @@ def _answer_key(row: CandidateQuestion) -> dict[str, Any]:
             ]
         }
     if row.question_type == question_types.CODING:
+        if coding_payload.is_v2(payload):
+            return {}
         return {"expected_approach": payload.get("expected_approach")}
     return {}
 
 
 def _answer_detail(
-    row: CandidateQuestion, record: AssessmentAnswer | None
+    row: CandidateQuestion,
+    record: AssessmentAnswer | None,
+    coding: coding_transcript.RecruiterView | None = None,
 ) -> TranscriptAnswerDetailOut | None:
     """The per-format view of one answer (assessment-spec-doc 7).
 
@@ -450,6 +462,12 @@ def _answer_detail(
     its reasoning and citations. `auto_score`, the per-criterion numbers and
     the seconds all stay on the row. None for a pre-format short-answer row
     with no structured record, which is every exchange written before 0076.
+
+    `coding` is the executed coding answer's recruiter view: the outcome
+    SENTENCE (counts spelled out), the compiler's message when it did not
+    compile, and the code review's reasoning and citations. None for every
+    other answer, including a legacy coding answer that was read, not run,
+    whose `not_executed_note` still comes from its stored evaluation.
     """
     if record is None and row.question_type == question_types.SHORT_ANSWER:
         return None
@@ -472,6 +490,11 @@ def _answer_detail(
         detail.evaluation_reasoning = evaluation.get("reasoning") or None
         detail.evaluation_citations = [str(item) for item in evaluation.get("citations") or []]
         detail.not_executed_note = evaluation.get("not_executed_note") or None
+    if coding is not None:
+        detail.coding_outcome = coding.outcome
+        detail.compile_error = coding.compile_error
+        detail.review_reasoning = coding.review_reasoning
+        detail.review_citations = list(coding.review_citations)
     return detail
 
 
@@ -536,6 +559,7 @@ async def get_transcript(
     questions = await ppi_interview.load_for_link(session, link.id)
     labels = await _criterion_labels(session, link, questions)
     rows_by_key = {str(question.id): question for question in questions}
+    coding_views = await coding_transcript.recruiter_views(session, conversation.id)
     records = {
         str(record.question_id): record
         for record in (
@@ -583,7 +607,7 @@ async def get_transcript(
                 # follow-up is more evidence for the same question and shows
                 # the anchor, never a second copy of the detail.
                 detail=(
-                    _answer_detail(row, records.get(key))
+                    _answer_detail(row, records.get(key), coding_views.get(row.id))
                     if row is not None and not follow_up
                     else None
                 ),

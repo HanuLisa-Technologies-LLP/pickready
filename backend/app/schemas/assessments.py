@@ -468,8 +468,14 @@ class TranscriptAnswerDetailOut(BaseModel):
     Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
     `not_answered`, or None for a format that has none), never a score. The
     AI evaluation is its reasoning, never its number. `not_executed_note` is
-    present on every coding answer so a reader cannot mistake a read-only
-    judgement for a verified run.
+    present on every LEGACY coding answer so a reader cannot mistake a
+    read-only judgement for a verified run.
+
+    An EXECUTED coding answer (Phase 4) carries the four `coding_*` / review
+    fields instead, all prose: the outcome sentence with its counts spelled
+    out, the compiler's message when the code did not compile, and the
+    code-quality review's reasoning and verbatim citations. No hidden test,
+    no reference and no number crosses here.
     """
 
     #: The candidate view of the payload, so the recruiter sees the options
@@ -487,6 +493,10 @@ class TranscriptAnswerDetailOut(BaseModel):
     evaluation_reasoning: str | None = None
     evaluation_citations: list[str] = []
     not_executed_note: str | None = None
+    coding_outcome: str | None = None
+    compile_error: str | None = None
+    review_reasoning: str | None = None
+    review_citations: list[str] = []
     time_spent: str | None = None
 
 
