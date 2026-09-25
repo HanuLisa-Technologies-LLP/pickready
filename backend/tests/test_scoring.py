@@ -17,8 +17,6 @@ import pytest
 from app.models.enums import Tier
 from app.services.matching import (
     PARAMETERS,
-    _coerce_param_score,
-    _validate_entry,
     compute_overall_score,
 )
 from app.services.tiers import assign_tier
@@ -129,72 +127,6 @@ def test_tier_mapping_below_boundaries():
     assert assign_tier(round(compute_overall_score(scores(10, 10, 10, 10)) * 10, 1)) == Tier.highly_matching
 
 
-# ── LLM output validation (scores must be ints 1-10) ────────────────────────
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        (1, 1), (10, 10), (7, 7),
-        (8.0, 8),          # integral JSON float accepted
-        (0, None), (11, None), (-3, None),
-        (7.5, None),       # fractional rejected
-        (True, None), (False, None),  # bools are not scores
-        ("8", None), (None, None), ([8], None),
-    ],
-)
-def test_coerce_param_score(value, expected):
-    assert _coerce_param_score(value) == expected
-
-
-def _entry(**overrides):
-    entry = {
-        "profile_id": "3f0e8a34-1111-4222-8333-444455556666",
-        "skills_match": {"score": 8, "comment": "strong overlap"},
-        "experience_relevance": {"score": 7, "comment": "same function"},
-        "role_alignment": {"score": 9, "comment": "duties align"},
-        "education_fit": {"score": 6, "comment": "adjacent degree"},
-        "overall_comment": "A credible fit overall with minor education gaps.",
-    }
-    entry.update(overrides)
-    return entry
-
-
-def test_validate_entry_builds_breakdown_with_python_overall():
-    breakdown = _validate_entry(_entry())
-    assert breakdown is not None
-    assert breakdown["overall"]["score"] == compute_overall_score(
-        scores(8, 7, 9, 6)
-    ) == 7.5
-    assert breakdown["overall"]["comment"] == (
-        "A credible fit overall with minor education gaps."
-    )
-    for param in PARAMETERS:
-        assert breakdown[param]["score"] == _entry()[param]["score"]
-        assert isinstance(breakdown[param]["comment"], str)
-
-
-def test_validate_entry_ignores_llm_supplied_overall_score():
-    # Even if the LLM volunteers an overall block, the Python-computed mean
-    # wins — the LLM's number is never trusted.
-    breakdown = _validate_entry(_entry(overall={"score": 1, "comment": "lies"}))
-    assert breakdown is not None
-    assert breakdown["overall"]["score"] == 7.5
-    assert breakdown["overall"]["comment"] != "lies"
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        _entry(skills_match={"score": 0, "comment": "x"}),        # out of range
-        _entry(skills_match={"score": 7.5, "comment": "x"}),      # fractional
-        _entry(skills_match={"score": "8", "comment": "x"}),      # string score
-        _entry(education_fit="9"),                                # not an object
-        _entry(overall_comment=""),                               # empty holistic
-        _entry(overall_comment=None),                             # missing holistic
-        {k: v for k, v in _entry().items() if k != "role_alignment"},  # missing param
-        "not a dict",
-        None,
-    ],
-)
-def test_validate_entry_rejects_malformed(bad):
-    assert _validate_entry(bad) is None
+# The model-output validators (`_coerce_param_score`, `_validate_entry`) went
+# with the retired matcher's scoring half (Phase 2 WP-B): Yukti validates its
+# own output in `yukti/judge.py`, pinned by `tests/test_yukti_judge.py`.

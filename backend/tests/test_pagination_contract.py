@@ -122,17 +122,15 @@ def test_the_transcript_keeps_offset_pagination_on_purpose() -> None:
 def test_the_applications_list_keeps_its_own_empty_set_convention() -> None:
     """One documented divergence, and the reason it is allowed to stand.
 
-    `JobLinksOut` and `MatchResultsOut` already carried the derived fields and
-    report a MINIMUM of one page where `PageMeta` reports zero. Both readings
-    are defensible; these are already in a shipped client, and changing a
-    number an existing UI renders is a replacement, not an extension. Both
-    gained `has_previous`, so the vocabulary matches everywhere even where the
-    empty-set convention does not.
+    `MatchResultsOut` already carried the derived fields and reports a
+    MINIMUM of one page where `PageMeta` reports zero. Both readings are
+    defensible; it is already in a shipped client, and changing a number an
+    existing UI renders is a replacement, not an extension. It gained
+    `has_previous`, so the vocabulary matches everywhere even where the
+    empty-set convention does not. (`JobLinksOut` shared the convention and
+    went with `GET /candidates/jobs/{job_id}`, Phase 2 WP-B.)
     """
-    for model, collection in (
-        (candidates.JobLinksOut, "links"),
-        (matching.MatchResultsOut, "results"),
-    ):
+    for model, collection in ((matching.MatchResultsOut, "results"),):
         empty = model(job_id=uuid4(), **{collection: []})
         assert empty.total_pages == 1, model.__name__
         assert empty.has_next is False, model.__name__

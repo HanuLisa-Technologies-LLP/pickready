@@ -76,7 +76,6 @@ class Phrase:
 #: claude.md's no-numbers rule is about assessment output.
 COUNT_NOUNS: dict[str, tuple[str, str]] = {
     "candidate_count": ("candidate", "candidates"),
-    "category_count": ("matching category", "matching categories"),
     "criterion_count": ("saved criterion", "saved criteria"),
     "resume_count": ("resume", "resumes"),
     "answer_count": ("answer", "answers"),
@@ -101,18 +100,17 @@ _MATCHING = ev.TASK_JOB_CANDIDATE_MATCHING
 _REPORT = ev.TASK_ASSESSMENT_REPORT
 
 PHRASING: dict[tuple[str, str], Phrase] = {
-    # ── Ranking every candidate linked to a job against that job's own
-    #    matching categories (`pickready.run_matching`). The plain variants are
-    #    the sentences the job page already showed for each pipeline stage, so
-    #    this catalogue REPLACES that copy rather than adding a second set of
-    #    words for the same work.
+    # ── AI Matching: Yukti reads every candidate on a job against that job's
+    #    SAVED skills (`pickready.run_matching`). The plain variants are the
+    #    sentences the job page shows for each pipeline stage, so this
+    #    catalogue IS that copy rather than a second set of words for the
+    #    same work.
     (_MATCHING, ev.TASK_STARTED): Phrase(
-        plain="Reading the job description and the matching categories saved for this job.",
-        detailed="Reading the job description for {role_title} and the matching categories saved for it.",
+        plain="Reading the job description and the skills saved for this job.",
+        detailed="Reading the job description for {role_title} and the skills saved for it.",
     ),
     (_MATCHING, ev.REQUIREMENTS_IDENTIFIED): Phrase(
-        plain="Deciding which candidates to retrieve and what evidence each category needs.",
-        detailed="Deciding which candidates to retrieve and what evidence each of the {category_count} needs.",
+        plain="Deciding which candidates to look at for the skills this job needs.",
     ),
     (_MATCHING, ev.INPUT_PREPARED): Phrase(
         plain="Turning the job description into the semantic form used for retrieval.",
@@ -128,33 +126,33 @@ PHRASING: dict[tuple[str, str], Phrase] = {
         plain="Matching the role's named skills and technologies against resume text.",
     ),
     (_MATCHING, ev.CANDIDATE_POOL_ASSEMBLED): Phrase(
-        plain="Combining both searches, then adding every candidate linked to this job so retrieval never decides who gets scored.",
+        plain="Combining both searches, then adding every candidate linked to this job so retrieval never decides who gets checked.",
     ),
-    (_MATCHING, ev.EVIDENCE_READ): Phrase(
-        plain="Reading what each resume actually evidences, and how strongly, before any scoring happens.",
+    (_MATCHING, ev.VALIDATION_CHECKED): Phrase(
+        plain="Reading each candidate's application answers on pay, notice period and documents.",
     ),
     (_MATCHING, ev.SKILLS_COMPARED): Phrase(
-        plain="Assessing each candidate against this job's own matching categories.",
-        detailed="Assessing {candidate_count} against this job's own matching categories.",
+        plain="Checking each resume against the skills saved for this job.",
+        detailed="Checking {candidate_count} against the skills saved for this job.",
     ),
-    (_MATCHING, ev.RECOMMENDATIONS_GENERATED): Phrase(
-        plain="Writing the rated comment for each category.",
+    (_MATCHING, ev.EVIDENCE_GROUNDED): Phrase(
+        plain="Making sure every piece of evidence quoted really appears in the resume it came from.",
     ),
     (_MATCHING, ev.RESULTS_RECORDED): Phrase(
-        plain="Recording each rating against the candidate's application.",
+        plain="Recording each result against the candidate's application.",
     ),
     (_MATCHING, ev.STEP_UNAVAILABLE): Phrase(
         plain="One step of this run could not be completed, so the run continued without it.",
     ),
     (_MATCHING, ev.TASK_COMPLETED): Phrase(
-        plain="Every candidate linked to this job has been assessed against its matching categories.",
-        detailed="All {candidate_count} linked to this job have been assessed against its matching categories.",
+        plain="Every candidate linked to this job has been checked against its saved skills.",
+        detailed="All {candidate_count} linked to this job have been checked against its saved skills.",
     ),
     (_MATCHING, ev.TASK_FAILED): Phrase(
-        plain="Vivekium could not finish assessing the candidates for this job. Please try again.",
+        plain="Vivekium could not finish checking the candidates for this job. Please try again.",
     ),
     (_MATCHING, ev.TASK_CANCELLED): Phrase(
-        plain="This matching run was stopped before it finished.",
+        plain="This AI Matching run was stopped before it finished.",
     ),
     # ── Scoring one candidate's assessment and writing their PRISM Report
     #    (`pickready.run_functional_assessment`). Every shared event kind below

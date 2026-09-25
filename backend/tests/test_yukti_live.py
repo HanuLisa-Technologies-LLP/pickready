@@ -41,7 +41,6 @@ from typing import Any
 
 import pytest
 
-from app.services import matching, resume_parsing
 from app.services.hiring import prescreen, runbook_data
 
 
@@ -760,86 +759,10 @@ def _live_fixture(resume: str) -> tuple[_LiveSession, Any]:
     return _LiveSession(profile, job, [link], candidate), profile
 
 
-@pytest.mark.asyncio
-async def test_parsing_a_resume_writes_a_grade_onto_every_application(monkeypatch):
-    """THE LIVE ENTRY POINT.
-
-    `resume_parsing.parse_resume` is what every upload route in the product
-    enqueues, so hanging the grade off the parse is what makes it impossible for
-    a route to accept a resume and forget to grade it. The assertion is that the
-    row a recruiter reads carries an A / B / C / Hold, not that a function was
-    called.
-    """
-    session, profile = _live_fixture(f"Priya Raghunathan\n{CHECKABLE}")
-
-    async def _extract(*_args, **_kwargs):
-        return {"skills": ["Python"], "total_experience_years": 6, "education": [], "employment_history": []}
-
-    async def _embed(_texts):
-        return [[0.1] * 1024]
-
-    monkeypatch.setattr(resume_parsing, "extract_structured_fields", _extract)
-    monkeypatch.setattr(resume_parsing, "embed", _embed)
-
-    await resume_parsing.parse_resume(session, profile.id)
-
-    assert session.commits == 1
-    assert len(session.prescreen_writes) == 1
-    written = next(iter(session.prescreen_writes.values()))
-    assert written["grade"] in prescreen.GRADES
-    assert isinstance(written["score"], float)
-    assert '"requirement_source": "job_description"' in written["payload"]
-
-
-@pytest.mark.asyncio
-async def test_the_live_grade_is_the_same_under_a_different_candidate_name(monkeypatch):
-    """Name-blindness through the real path, not only through the pure
-    function. The name reaches `parse_resume` on the candidate row, which is the
-    one place it could have leaked back in."""
-    async def _extract(*_args, **_kwargs):
-        return {"skills": ["Python"], "total_experience_years": 6, "education": [], "employment_history": []}
-
-    async def _embed(_texts):
-        return [[0.1] * 1024]
-
-    monkeypatch.setattr(resume_parsing, "extract_structured_fields", _extract)
-    monkeypatch.setattr(resume_parsing, "embed", _embed)
-
-    seen = []
-    for name in NAMES:
-        session, profile = _live_fixture(f"{name}\n{name} is a data engineer.\n{CHECKABLE}")
-        session.candidate.full_name = name
-        await resume_parsing.parse_resume(session, profile.id)
-        written = next(iter(session.prescreen_writes.values()))
-        seen.append((written["grade"], written["score"]))
-    assert len(set(seen)) == 1, seen
-
-
-@pytest.mark.asyncio
-async def test_a_grading_failure_never_costs_the_candidate_their_parse(monkeypatch):
-    """Parsing is what makes a candidate searchable, matchable and assessable.
-    A grading failure costs one dashboard cell; taking the parse down with it
-    would cost the candidate their whole presence in the product."""
-    session, profile = _live_fixture(CHECKABLE)
-
-    async def _extract(*_args, **_kwargs):
-        return {"skills": [], "total_experience_years": None, "education": [], "employment_history": []}
-
-    async def _embed(_texts):
-        return [[0.1] * 1024]
-
-    async def _explode(*_args, **_kwargs):
-        raise RuntimeError("the grader fell over")
-
-    monkeypatch.setattr(resume_parsing, "extract_structured_fields", _extract)
-    monkeypatch.setattr(resume_parsing, "embed", _embed)
-    monkeypatch.setattr(prescreen, "grade_profile", _explode)
-
-    await resume_parsing.parse_resume(session, profile.id)
-
-    assert session.commits == 1
-    assert profile.embedding == [0.1] * 1024
-    assert session.prescreen_writes == {}
+# The parse no longer grades (Phase 2 WP-B): `resume_parsing` dispatches
+# `pickready.yukti_score_profile` after its commit instead, and the three tests
+# that pinned the grade the parse wrote went with it. The parse's own failure
+# posture is pinned by `tests/test_resume_parse_embedding_failure.py`.
 
 
 @pytest.mark.asyncio
@@ -852,29 +775,3 @@ async def test_an_application_submitted_with_a_different_resume_is_not_regraded(
     graded = await prescreen.grade_profile(session, profile)
     assert graded == 0
     assert session.prescreen_writes == {}
-
-
-# ── 9. ONE IMPLEMENTATION, SHARED (spec-doc6 §4.6, §10.1 rule 12) ───────────
-
-def test_matching_asks_this_module_for_its_deterministic_breakdown():
-    """The deletion half of spec-doc6 §4.1. There is one resume-stage grader,
-    and `matching` calls it rather than carrying a second reading of its own."""
-    assert matching.prescreen is prescreen
-    assert not hasattr(matching, "_fallback_breakdown")
-    source = pathlib.Path(inspect.getfile(matching)).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    functions = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert "prescreen_breakdown" in functions
-    assert not {f for f in functions if "fallback" in f}, functions
-
-
-def test_the_deterministic_breakdown_tracks_the_evidence_and_stops_below_the_top():
-    weak = matching.prescreen_breakdown(screen(ASSERTED))
-    strong = matching.prescreen_breakdown(screen(ARTEFACT))
-    assert strong["overall"]["score"] > weak["overall"]["score"]
-    assert strong["overall"]["score"] <= 8
-    assert strong["scoring_mode"] == matching.SCORING_MODE_PRESCREEN

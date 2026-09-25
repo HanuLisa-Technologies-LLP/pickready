@@ -129,16 +129,20 @@ STAGES: tuple[Stage, ...] = (
         activity_events.KEYWORD_SEARCH_COMPLETED,
     ),
     Stage("fusion", "Merging the results", activity_events.CANDIDATE_POOL_ASSEMBLED),
-    Stage("prescreen", "Reading the evidence", activity_events.EVIDENCE_READ),
+    Stage(
+        "validation_fit",
+        "Checking application answers",
+        activity_events.VALIDATION_CHECKED,
+    ),
     Stage(
         "scoring",
-        "Scoring against the categories",
+        "Checking resumes against the skills",
         activity_events.SKILLS_COMPARED,
     ),
     Stage(
-        "remarks",
-        "Writing the remarks",
-        activity_events.RECOMMENDATIONS_GENERATED,
+        "grounding",
+        "Checking every tag against the resume",
+        activity_events.EVIDENCE_GROUNDED,
     ),
     Stage("saving", "Saving the results", activity_events.RESULTS_RECORDED),
 )
@@ -181,6 +185,9 @@ class Progress:
     context: Mapping[str, int | str] | None = None
     _status: dict[str, str] = field(default_factory=dict)
     _note: dict[str, str] = field(default_factory=dict)
+    #: Why this run is not a full one, in the server's own words, in the
+    #: order the pipeline found out. A non-empty list IS the degraded flag.
+    _degraded: list[str] = field(default_factory=list)
     _activity: ActivityStream = field(init=False)
 
     def __post_init__(self) -> None:
@@ -256,6 +263,19 @@ class Progress:
         self._activity.fail()
         self._emit()
 
+    def degrade(self, reason: str) -> None:
+        """Record that the run as a WHOLE is not a full one, and why.
+
+        Separate from `skip`, which is about one stage: an embedding outage
+        skips a stage AND degrades the run, while a model failure on three
+        candidates skips no stage and still means three rows read "Not
+        assessed". The sentence is the pipeline's own, rendered verbatim by
+        the job page, and a repeated reason is recorded once.
+        """
+        if reason and reason not in self._degraded:
+            self._degraded.append(reason)
+            self._emit()
+
     def describe(self, **facts: int | str) -> None:
         """Record facts that hold for the whole run, such as the role title.
 
@@ -305,6 +325,8 @@ class Progress:
             ],
             "candidate_count": self.candidate_count,
             "scored_count": self.scored_count,
+            "degraded": bool(self._degraded),
+            "degraded_reasons": list(self._degraded),
             "activity": self._activity.payload(),
         }
 

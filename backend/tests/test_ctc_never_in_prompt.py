@@ -70,17 +70,10 @@ PROMPT_BUILDERS: dict[str, Builder] = {
     "app/services/yukti/judge.py::judge_batch": Builder(
         "Phase 2 WP-A", "saved skills, saved SWOT needs, JD, anonymised resumes", CANARY
     ),
-    "app/services/matching.py::_score_batch": Builder(
-        "Phase 2 WP-B",
-        "the RAW resume excerpt and parsed fields (PLAN-p2 NF-4)",
-        PENDING,
-        "the legacy matcher; WP-B deletes it and routes matching through yukti.judge",
-    ),
     "app/services/resume_parsing.py::extract_structured_fields": Builder(
         "Phase 2 WP-B",
-        "the resume text, unredacted",
-        PENDING,
-        "HUNK: redact with compensation_guard.redact_text before the call",
+        "the resume text, through compensation_guard.redact_text",
+        CANARY,
     ),
     "app/services/swot_analysis.py::draft": Builder(
         "Phase 1 (orchestrator hunk)",
@@ -480,10 +473,6 @@ async def test_the_jd_description_prompt_carries_no_compensation_keys(monkeypatc
     _assert_no_pay(router)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PENDING HUNK (Phase 2 WP-B): resume_parsing.extract_structured_fields sends the resume unredacted",
-)
 async def test_resume_extraction_carries_no_compensation(monkeypatch) -> None:
     from app.services import resume_parsing
 

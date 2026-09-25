@@ -444,8 +444,17 @@ class JobApproval(Base, UUIDPKMixin):
 # stale vector, and `matching.run_matching` writes a fresh vector on its next
 # run.
 
-#: Every column `matching._jd_text` reads. Change one and the vector is stale.
-_EMBEDDING_SOURCE_FIELDS = ("title", "department", "level", "jd_json")
+#: Every column `yukti.inputs.jd_text` reads (the run's JD embedding text since
+#: Phase 2 WP-B). Change one and the vector is stale. `level` is no longer
+#: read: the grade and the experience band are what a job states now.
+_EMBEDDING_SOURCE_FIELDS = (
+    "title",
+    "department",
+    "assessment_grade",
+    "experience_min_years",
+    "experience_max_years",
+    "jd_json",
+)
 
 
 @event.listens_for(Job, "after_update")
