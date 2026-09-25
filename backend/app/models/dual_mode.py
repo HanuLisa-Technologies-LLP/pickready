@@ -232,6 +232,12 @@ class VideoRecording(Base, UUIDPKMixin, CreatedAtMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the processing pipeline last took the row out of `uploaded`
+    #: (migration 0126). What the repair sweep measures a stalled run by: a
+    #: Fargate task killed mid-transcode (out of memory, a deploy) leaves the
+    #: row in `compressing` or `storing` with nothing left to move it, and a
+    #: status alone cannot say how long it has been there.
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: When the COMPRESSED object was verified present in object storage. The
     #: retention clock runs from here and not from `created_at`, because a
     #: recording that failed before `storing` has no stored media to age out

@@ -138,8 +138,9 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         interval_minutes=60,
         why=(
             "Retries raw segment deletions that did not confirm, finalizes a "
-            "recording whose tab closed before it could, and re-hands a "
-            "finalized recording no processing run picked up. Before it, a "
+            "recording whose tab closed before it could, re-hands a "
+            "finalized recording no processing run picked up, and gives a run "
+            "whose task was killed the failure state of its step. Before it, a "
             "failed raw deletion was counted on the row and never looked at "
             "again."
         ),

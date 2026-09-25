@@ -30,7 +30,9 @@ duration, which is what the verify-before-delete comparison needs, and it is
 the same step whether there is one segment or five.
 
 Every failure advances the row to the failure state naming the step, commits
-it, and re-raises so the task's error metric moves.
+it, and re-raises so the task's error metric moves. A failure nothing inside
+the process can see (the Fargate task killed mid-transcode) is found by the
+hourly repair from `processing_started_at` and given the same honest state.
 
 NOTHING HERE IS IMPORTED BY A SCORER, and nothing here writes a transcript,
 an answer or a completion.
@@ -248,6 +250,33 @@ async def delete_raw_objects(session: AsyncSession, recording: VideoRecording) -
 
 # ── The pipeline ─────────────────────────────────────────────────────────────
 
+#: What a stalled run's row says, operator-facing like every `error_detail`.
+STALLED_DETAIL = (
+    "Processing stopped before this step finished and did not report a "
+    "failure: the worker running it was stopped from outside. Retry to run "
+    "the pipeline again."
+)
+
+
+def mark_stalled(recording: VideoRecording) -> str:
+    """Give a stalled run's row the failure state of the step it was on.
+
+    `compressing` becomes `compression_failed` and `storing` becomes
+    `storage_failed`, both retryable, so the staff retry and the task's own
+    re-entry reset it to `uploaded` exactly as they would after a failure
+    the process reported itself. Returns the new status. The caller owns the
+    flush and decides the row is stalled (`assessment_media_retention.
+    stalled_recordings`); this only names the state.
+    """
+    target = (
+        lifecycle.STORAGE_FAILED
+        if recording.status == lifecycle.STORING
+        else lifecycle.COMPRESSION_FAILED
+    )
+    lifecycle.advance(recording, target, error_detail=STALLED_DETAIL)
+    return target
+
+
 
 async def _fail(
     session: AsyncSession,
@@ -298,6 +327,10 @@ async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> N
     sources = await raw_keys(session, recording)
 
     lifecycle.advance(recording, lifecycle.COMPRESSING)
+    # What the repair sweep measures a stalled run by (`stalled_recordings`):
+    # a task killed from outside commits nothing more, so this is the last
+    # truthful statement it leaves behind.
+    recording.processing_started_at = datetime.now(timezone.utc)
     await session.flush()
     await session.commit()
 

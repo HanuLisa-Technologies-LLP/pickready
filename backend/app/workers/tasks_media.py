@@ -82,7 +82,7 @@ def purge_assessment_media():
     route=Route.LAMBDA,
 )
 def reconcile_assessment_recordings():
-    """Hourly repair of the recording pipeline. Three passes, each asking the
+    """Hourly repair of the recording pipeline. Four passes, each asking the
     TABLE rather than trusting that an earlier step happened:
 
     1. RAW DELETIONS THAT DID NOT CONFIRM. A stored (`ready`) recording whose
@@ -98,6 +98,12 @@ def reconcile_assessment_recordings():
     3. FINALIZED RECORDINGS NO RUN PICKED UP. A finalize dispatches after its
        commit and a lost invoke is logged rather than raised; this re-hands
        a recording still `uploaded` after the grace.
+    4. RUNS THAT DIED WITHOUT SAYING SO. A processing task killed from
+       outside leaves its row in `compressing` or `storing` for ever. Past
+       every bound the pipeline runs under (`processing_stall_after`), the
+       row is given the failure state of its step, logged at ERROR, and
+       becomes retryable by the hiring team, instead of waiting silently
+       while the bucket's raw rule deletes the only copy.
 
     Dispatches happen AFTER the commit that makes the rows they read durable.
 
@@ -129,7 +135,7 @@ def reconcile_assessment_recordings():
 
     async def _task():
         to_process: list[str] = []
-        retried = cleared = finalized = failed = 0
+        retried = cleared = finalized = failed = stalled = 0
         async with _worker_session() as session:
             raw_ids = [
                 row.id for row in await media_retention.raw_retry_recordings(session)
@@ -176,12 +182,29 @@ def reconcile_assessment_recordings():
             for recording in await media_retention.stuck_uploaded_recordings(session):
                 to_process.append(str(recording.id))
             await session.commit()
+
+            stalled_ids = [
+                row.id for row in await media_retention.stalled_recordings(session)
+            ]
+            for recording_id in stalled_ids:
+                recording = await _row(session, recording_id)
+                if recording is None:
+                    continue
+                was = recording.status
+                now_status = processing.mark_stalled(recording)
+                await session.commit()
+                stalled += 1
+                logger.error(
+                    "assessment_media.processing_stalled recording_id=%s "
+                    "status_was=%s status=%s",
+                    recording_id, was, now_status,
+                )
         for recording_id in dict.fromkeys(to_process):
             dispatch("pickready.process_assessment_video", args=[recording_id])
         logger.info(
             "assessment_media.reconciled raw_retried=%d raw_cleared=%d "
-            "orphans_finalized=%d orphans_failed=%d dispatched=%d",
-            retried, cleared, finalized, failed, len(set(to_process)),
+            "orphans_finalized=%d orphans_failed=%d stalled=%d dispatched=%d",
+            retried, cleared, finalized, failed, stalled, len(set(to_process)),
         )
     _run(_task())
 

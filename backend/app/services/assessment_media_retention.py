@@ -395,3 +395,62 @@ async def stuck_uploaded_recordings(
             )
         ).scalars().all()
     )
+
+
+def processing_stall_after() -> timedelta:
+    """How long a run may sit in `compressing` or `storing` before it is
+    treated as dead rather than slow.
+
+    DERIVED from the ceilings the pipeline already enforces, never a new
+    knob: four media tool calls each bounded by `video_ffmpeg_timeout_seconds`
+    (assembly, the assembled probe, compression, the compressed probe), plus
+    `video_orphan_grace_minutes` for the transfers either side. A run still
+    going past that has outlived every bound it runs under, so the only thing
+    that can be true of it is that its task is gone.
+    """
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    return timedelta(
+        seconds=4 * settings.video_ffmpeg_timeout_seconds,
+        minutes=settings.video_orphan_grace_minutes,
+    )
+
+
+async def stalled_recordings(
+    session: AsyncSession, *, now: datetime | None = None, limit: int = 200
+) -> list[VideoRecording]:
+    """Recordings a processing run took out of `uploaded` and never finished.
+
+    A Fargate task killed from outside (out of memory on a long recording, a
+    deploy, a host failure) commits nothing more, so the row would say
+    `compressing` or `storing` for ever while the bucket's seven-day raw rule
+    quietly deleted the only copy. The repair gives such a row the failure
+    state its step names, which is what makes it visible and retryable.
+    A row written before `processing_started_at` existed is measured from
+    the session's end instead, the latest moment it can have started.
+    """
+    from app.services.video import lifecycle  # noqa: PLC0415
+
+    moment = now or datetime.now(timezone.utc)
+    started = func.coalesce(
+        VideoRecording.processing_started_at,
+        VideoRecording.ended_at,
+        VideoRecording.created_at,
+    )
+    return list(
+        (
+            await session.execute(
+                select(VideoRecording)
+                .where(
+                    VideoRecording.status.in_(
+                        (lifecycle.COMPRESSING, lifecycle.STORING)
+                    ),
+                    VideoRecording.media_deleted_at.is_(None),
+                    started < moment - processing_stall_after(),
+                )
+                .order_by(VideoRecording.created_at)
+                .limit(limit)
+            )
+        ).scalars().all()
+    )

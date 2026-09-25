@@ -39,6 +39,10 @@ closure date into account for a job that is already closed. Pilot held zero
 recordings on 2026-09-24 (CONTRACT v3), so this is correctness for the
 environments that have not been applied yet rather than a data move.
 
+`processing_started_at` is stamped when the pipeline takes a recording out
+of `uploaded`, so the hourly repair can tell a run that is slow from one whose
+Fargate task was killed and will never move the row again.
+
 `ix_video_recordings_retention` (on `stored_at`) is replaced by the index the
 sweep's query actually reads. The kind's server default becomes
 `proctored_session`, the only kind a new row can be now that the video
@@ -105,6 +109,12 @@ def upgrade() -> None:
           AND r.media_purge_due_at IS NULL
           AND COALESCE(r.ended_at, r.stored_at) IS NOT NULL
         """
+    )
+    # When processing last took the row out of `uploaded`, so the repair
+    # sweep can tell a stalled run (a killed Fargate task) from a slow one.
+    op.add_column(
+        "video_recordings",
+        sa.Column("processing_started_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.drop_index("ix_video_recordings_retention", table_name="video_recordings")
     op.create_index(
@@ -204,4 +214,5 @@ def downgrade() -> None:
         ["stored_at"],
         postgresql_where=sa.text("media_deleted_at IS NULL"),
     )
+    op.drop_column("video_recordings", "processing_started_at")
     op.drop_column("video_recordings", "media_purge_due_at")

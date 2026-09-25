@@ -1022,8 +1022,9 @@ module "scheduler" {
       rate_expression = "rate(60 minutes)"
     }
     # The recording pipeline's repair: raw segment deletions that did not
-    # confirm, recordings whose tab closed before finalize, and finalized
-    # recordings no processing run picked up. The Terraform half of the entry
+    # confirm, recordings whose tab closed before finalize, finalized
+    # recordings no processing run picked up, and runs whose task was killed
+    # mid-transcode. The Terraform half of the entry
     # in app/workers/schedule.py; tests/test_schedule_parity.py fails on drift.
     "readypick-reconcile-assessment-recordings" = {
       task            = "pickready.reconcile_assessment_recordings"
