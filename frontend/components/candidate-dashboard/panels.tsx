@@ -294,7 +294,7 @@ export function TeamReviewSheet({
         { verdict, remarks }
       );
       setPanel(result);
-      // NO NUDGE. A verdict that differs from the Vivekium Score gets exactly
+      // NO NUDGE. A verdict that differs from the Vivekium Grade gets exactly
       // this toast and nothing else: no warning, no confirmation step, no
       // "are you sure", no colour change. spec-doc6 8.2 and PRODUCT.md.
       toast({ title: "Team Review saved" });

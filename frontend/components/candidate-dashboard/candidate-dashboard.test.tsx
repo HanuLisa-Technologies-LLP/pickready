@@ -20,7 +20,7 @@ vi.mock("@/lib/api", () => ({
   apiPut: vi.fn(),
 }));
 
-import { BAND_STRONG, BAND_UNDER_REVIEW } from "./band";
+import { STATE_HIGHLY, STATE_NOT_CHECKED, STATE_UNDER_REVIEW } from "./grade";
 import { CandidateDashboard } from "./candidate-dashboard";
 import { controls, row } from "./test-fixtures";
 import type { DashboardPage } from "./types";
@@ -30,8 +30,8 @@ function page(overrides: Partial<DashboardPage> = {}): DashboardPage {
     columns: [
       "candidate",
       "source",
-      "pre_screen_grade",
-      "ready_pick_score",
+      "ai_match",
+      "ready_pick_grade",
       "ready_pick_note",
       "ready_pick_profile",
       "team_review",
@@ -40,8 +40,8 @@ function page(overrides: Partial<DashboardPage> = {}): DashboardPage {
     column_labels: {
       candidate: "Candidate Code Name",
       source: "Source",
-      pre_screen_grade: "Pre-Screen Grade, early signal",
-      ready_pick_score: "Vivekium Score",
+      ai_match: "AI Match, from the resume only",
+      ready_pick_grade: "Vivekium Grade",
       ready_pick_note: "Vivekium Note",
       ready_pick_profile: "Vivekium Profile",
       team_review: "Team Review",
@@ -58,9 +58,14 @@ function page(overrides: Partial<DashboardPage> = {}): DashboardPage {
       sourced: "Sourced",
       databank: "Databank",
     },
-    pre_screen_grades: ["A", "B", "C", "Hold"],
+    ai_match_grades: [
+      "Highly Matching",
+      "Matching",
+      "Moderately Matching",
+      "Not Matching",
+    ],
     stages: ["Applied", "Screening", "Shortlisted", "Interview", "Offer", "Closed"],
-    sort_keys: ["score", "name", "added", "source", "pre_screen", "stage"],
+    sort_keys: ["grade", "name", "added", "source", "ai_match", "stage"],
     ...overrides,
   };
 }
@@ -84,8 +89,8 @@ describe("the candidate dashboard table", () => {
     expect(headers.map((h) => h.textContent)).toEqual([
       "CandidateCandidate Code Name",
       "SourceSource",
-      "Pre-ScreenPre-Screen Grade, early signal",
-      "Vivekium ScoreVivekium Score",
+      "AI MatchAI Match, from the resume only",
+      "Vivekium GradeVivekium Grade",
       "Vivekium NoteVivekium Note",
       "ProfileVivekium Profile",
       "Team ReviewTeam Review",
@@ -108,9 +113,9 @@ describe("the candidate dashboard table", () => {
         rows: [
           row({
             under_integrity_review: true,
-            band: BAND_UNDER_REVIEW,
-            band_label: "Under Review",
-            band_screen_reader_label:
+            ranking_state: STATE_UNDER_REVIEW,
+            ranking_label: "Under Review",
+            ranking_screen_reader_label:
               "Status: Under Review, awaiting integrity disposition",
           }),
         ],
@@ -149,11 +154,11 @@ describe("the candidate dashboard table", () => {
 
   it("asks the server to sort, and never sorts a fetched page itself", async () => {
     // Re-sorting one page in the browser lets a candidate appear on two pages,
-    // or on none, as scores change. The request carries the sort.
+    // or on none, as grades change. The request carries the sort.
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
-    expect(apiGet.mock.calls[0][0]).toContain("sort=score");
+    expect(apiGet.mock.calls[0][0]).toContain("sort=grade");
     expect(apiGet.mock.calls[0][0]).toContain("direction=desc");
   });
 
@@ -212,15 +217,35 @@ describe("the candidate dashboard table", () => {
     );
   });
 
-  it("shows a decisive band for an assessed candidate and a pending one otherwise", async () => {
+  it("filters AI Match by the four words the server serves", async () => {
+    // The retired A / B / C / Hold letters are nowhere on the page: the
+    // options are the server's grade words, and the request names the word.
+    apiGet.mockResolvedValue(page());
+    render(<CandidateDashboard />);
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    for (const label of ["Highly Matching", "Matching", "Moderately Matching", "Not Matching"]) {
+      expect(screen.getByRole("option", { name: label })).toBeTruthy();
+    }
+    expect(screen.queryByRole("option", { name: "Hold" })).toBeNull();
+
+    const select = screen.getByLabelText(/AI Match/i) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Matching" } });
+    await waitFor(() =>
+      expect(apiGet.mock.calls.at(-1)?.[0]).toContain("ai_match=Matching")
+    );
+  });
+
+  it("shows a decisive grade for an assessed candidate and a status word otherwise", async () => {
     apiGet.mockResolvedValue(
       page({
         rows: [
           row({
-            ready_pick_score: 88,
-            band: BAND_STRONG,
-            band_label: "Ready to Pick, Strong",
+            ai_match_state: STATE_HIGHLY,
+            ai_match_label: "Highly Matching",
+            ranking_state: STATE_HIGHLY,
+            ranking_label: "Highly Matching",
             confidence_indicator: "filled",
+            confidence_label: "High confidence",
             profile: { artifact: "ready_pick_profile", evaluation_id: "e1" },
             profile_pending_reason: null,
           }),
@@ -233,9 +258,38 @@ describe("the candidate dashboard table", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("dashboard-row")).toHaveLength(2)
     );
-    const bands = screen
-      .getAllByTestId("ready-pick-score")
-      .map((cell) => cell.getAttribute("data-band"));
-    expect(bands).toEqual([BAND_STRONG, "pending_ready_pick_profile"]);
+    const states = screen
+      .getAllByTestId("ready-pick-grade")
+      .map((cell) => cell.getAttribute("data-state"));
+    expect(states).toEqual([STATE_HIGHLY, STATE_NOT_CHECKED]);
+  });
+
+  it("renders no digit in any grade cell of any row (D3)", async () => {
+    // The no-numbers rule on what a recruiter actually sees. Counts live in
+    // the footer ("2 candidates", "Page 1 of 1"), never inside a row's
+    // grade columns.
+    apiGet.mockResolvedValue(
+      page({
+        rows: [
+          row({
+            ai_match_state: STATE_HIGHLY,
+            ai_match_label: "Highly Matching",
+            ranking_state: STATE_HIGHLY,
+            ranking_label: "Highly Matching",
+          }),
+          row({ link_id: "second" }),
+        ],
+        total: 2,
+      })
+    );
+    render(<CandidateDashboard />);
+    await waitFor(() =>
+      expect(screen.getAllByTestId("dashboard-row")).toHaveLength(2)
+    );
+    for (const id of ["ai-match", "ready-pick-grade"]) {
+      for (const cell of screen.getAllByTestId(id)) {
+        expect(cell.textContent ?? "").not.toMatch(/\d/);
+      }
+    }
   });
 });
