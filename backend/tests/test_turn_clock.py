@@ -134,3 +134,24 @@ def test_time_spent_is_elapsed_minus_paused_and_never_more_than_the_allocation()
 def test_a_non_positive_allocation_is_refused() -> None:
     with pytest.raises(ValueError):
         _clock(10, allocation=0)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"assessment_time_prose_seconds": 0},
+        {"assessment_time_follow_up_seconds": -1},
+        {"assessment_submit_grace_seconds": -1},
+        {"assessment_voice_transcribe_poll_seconds": 120},
+    ],
+)
+def test_a_clock_that_cannot_work_is_refused_at_boot(overrides) -> None:
+    """A zero allocation would expire every question the moment it opened; a
+    poll as long as its timeout never polls twice. Both are refused when the
+    settings load, never discovered on a candidate's turn."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(**overrides)

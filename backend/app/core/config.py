@@ -1090,6 +1090,42 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_turn_clock(self) -> "Settings":
+        """Refuse a turn clock or a spoken-answer bound that cannot work, at
+        boot rather than on a candidate's turn: a zero allocation would expire
+        every question the moment it opened, and a poll no shorter than its
+        timeout would never poll twice."""
+        positive = {
+            "ASSESSMENT_TIME_PROSE_SECONDS": self.assessment_time_prose_seconds,
+            "ASSESSMENT_TIME_OBJECTIVE_SECONDS": self.assessment_time_objective_seconds,
+            "ASSESSMENT_TIME_FOLLOW_UP_SECONDS": self.assessment_time_follow_up_seconds,
+            "ASSESSMENT_TIME_CODING_SECONDS": self.assessment_time_coding_seconds,
+            "ASSESSMENT_QUESTION_REDISPATCH_SECONDS": self.assessment_question_redispatch_seconds,
+            "ASSESSMENT_VOICE_MAX_BYTES": self.assessment_voice_max_bytes,
+            "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS": (
+                self.assessment_voice_transcribe_timeout_seconds
+            ),
+            "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS": (
+                self.assessment_voice_transcribe_poll_seconds
+            ),
+            "ASSESSMENT_VOICE_FAILURE_PAUSE_SECONDS": self.assessment_voice_failure_pause_seconds,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.assessment_submit_grace_seconds < 0:
+            raise ValueError("ASSESSMENT_SUBMIT_GRACE_SECONDS must not be negative")
+        if (
+            self.assessment_voice_transcribe_poll_seconds
+            >= self.assessment_voice_transcribe_timeout_seconds
+        ):
+            raise ValueError(
+                "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS must be shorter than "
+                "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_code_execution(self) -> "Settings":
         """Refuse a malformed code-execution configuration at boot.
 
