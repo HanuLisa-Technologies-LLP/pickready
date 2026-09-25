@@ -1,18 +1,20 @@
-"""D8, from both directions: the number belongs here and nowhere else.
+"""D3 on the Candidate Dashboard: no number, and no letter, reaches a client.
 
-spec-doc6 D8 rules two things at once, and a test that checks only one of them
-is checking the easy half:
+SUPERSEDES the D8 version of this file. spec-doc6 D8 licensed ONE number here,
+the Vivekium Score in column 4, and this file used to defend it as loudly as it
+defended the rule. The Vivekium brief (D3, CONTRACT C8) removed that exception
+with no replacement, and spec v4 had already forbidden letter grades, so the
+file now defends the rule from both directions it can be broken:
 
-  * the Vivekium Score renders NUMERICALLY on the dashboard, in column 4 and
-    its hover. The product's oldest rule is "no numbers reach a client", so
-    this is a deliberate, bounded exception and it needs a test saying the
-    number IS there, or a well-meaning sweep deletes it;
-  * "it must be technically impossible for it to enter a delivered report".
+  * by TYPE: no response model in `schemas/dashboard.py` carries a numeric
+    field that is not a count, except the calibration view's two schemas,
+    whose fate is Phase 7's (they are named, and the allow-list is asserted to
+    shrink, never grow);
+  * by NAME: the row carries no field that reads as a score, a percent or a
+    band, and no field holding the old letter grade.
 
-The second is enforced by CONSTRUCTION rather than by filtering: the two
-artefacts are different types over different tables (spec-doc6 C10), and the
-one that reaches a delivered document has no numeric field to lose. This file
-asserts that the construction is still what it claims to be.
+The HTTP half (the JSON a browser actually receives) is walked in
+`test_dashboard_workflows.py`, over real rows with real scores behind them.
 """
 from __future__ import annotations
 
@@ -48,13 +50,21 @@ COUNT_FIELDS = frozenset(
     }
 )
 
-#: The two schemas D8 licenses to carry an assessment number, and what each
-#: one is. Anything else with a numeric field is a leak.
+#: The only schemas still allowed a raw number: the audited calibration view
+#: (Super Admin / HR Manager, every read audited). Phase 7 decides whether it
+#: survives; when it goes, this set empties and the parametrised existence
+#: test below fails until the entry is removed. `DashboardRowOut` is NOT here
+#: and must never be again.
 NUMERIC_SCHEMAS = {
-    "DashboardRowOut": "column 4, the Vivekium Score (D8)",
-    "CalibrationDimensionOut": "the audited Super Admin / HR Manager view (D8)",
-    "CalibrationInternalsOut": "the audited Super Admin / HR Manager view (D8)",
+    "CalibrationDimensionOut": "the audited Super Admin / HR Manager view (Phase 7)",
+    "CalibrationInternalsOut": "the audited Super Admin / HR Manager view (Phase 7)",
 }
+
+#: Substrings a row field name may not carry. A word column needs none of
+#: them, and each one is how a number, or the letter scale, comes back.
+#: "rank" is deliberately absent: `ranking_label` is the WORD for the rank,
+#: and the numeric-type walk above is what keeps a rank number out.
+FORBIDDEN_NAME_PARTS = ("score", "percent", "band", "pre_screen", "range")
 
 
 def _models():
@@ -82,13 +92,10 @@ def _numeric_fields(model: type[BaseModel]) -> set[str]:
     return found
 
 
-def test_only_the_licensed_schemas_carry_an_assessment_number():
-    """One field, in one place, for one documented reason.
-
-    Walks every response model in the module rather than naming the ones to
+def test_no_dashboard_schema_carries_an_assessment_number():
+    """Walks every response model in the module rather than naming the ones to
     check: a schema added next month is covered without anybody remembering
-    to add it here.
-    """
+    to add it here."""
     offenders = {
         name: fields
         for name, model in _models()
@@ -97,16 +104,30 @@ def test_only_the_licensed_schemas_carry_an_assessment_number():
     assert not offenders, f"an assessment number reached {offenders}"
 
 
-def test_the_ready_pick_score_is_actually_there():
-    """The other half of D8, and the half a well-meaning sweep would delete.
+def test_the_row_has_no_numeric_field_at_all():
+    """The row is the surface a recruiter scans. D8's one licence lived here;
+    D3 took it, and the assertion is absolute rather than via the allow-list."""
+    assert not _numeric_fields(schemas.DashboardRowOut)
+    assert "DashboardRowOut" not in NUMERIC_SCHEMAS
 
-    "No numbers reach a client" was the rule for a year before D8 carved out
-    this one exception, so the exception needs a test defending it as loudly as
-    the rule has tests defending it.
-    """
-    assert "ready_pick_score" in schemas.DashboardRowOut.model_fields
-    annotation = schemas.DashboardRowOut.model_fields["ready_pick_score"].annotation
-    assert int in typing.get_args(annotation)
+
+@pytest.mark.parametrize("model", [schemas.DashboardRowOut, schemas.DashboardPageOut])
+def test_no_row_or_page_field_is_named_like_a_score(model: type[BaseModel]):
+    offenders = sorted(
+        name
+        for name in model.model_fields
+        if any(part in name for part in FORBIDDEN_NAME_PARTS)
+    )
+    assert not offenders, f"{model.__name__} carries {offenders}"
+
+
+def test_the_grade_columns_are_words_from_the_one_scale():
+    """The two grade columns' filter domain is the four `rating` words, served
+    to the browser; nothing else is offered to filter by."""
+    served = schemas.DashboardPageOut.model_fields["ai_match_grades"]
+    assert served.default_factory() == list(service.AI_MATCH_GRADES)
+    for grade in served.default_factory():
+        assert not any(character.isdigit() for character in grade)
 
 
 def test_the_evidence_panel_carries_no_number():
@@ -140,11 +161,12 @@ def test_the_two_artefacts_are_distinguishable_in_the_payload_itself():
     assert profile.annotation != calibration.annotation
 
 
-def test_the_dashboard_service_type_for_a_delivered_report_cannot_hold_a_score():
-    """The construction D8 leans on: `PrismReportRef` has no score field, so a
-    serialiser building a delivered payload from it has nothing to leak."""
+def test_neither_artefact_reference_can_hold_a_score():
+    """The construction C10 leans on: a serialiser building either reference
+    has nothing numeric to leak. The profile reference lost its `score` with
+    D3; asserted by field set so a renamed field cannot slip through."""
     assert set(service.PrismReportRef.__dataclass_fields__) == {"report_id"}
-    assert "score" in service.ReadyPickProfileRef.__dataclass_fields__
+    assert set(service.ReadyPickProfileRef.__dataclass_fields__) == {"evaluation_id"}
 
 
 @pytest.mark.parametrize("name", sorted(NUMERIC_SCHEMAS))

@@ -27,6 +27,7 @@ from typing import Iterator
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -59,19 +60,33 @@ def sessions():
 async def schema_is_current() -> bool:
     """Whether the test database has been migrated far enough to run these.
 
-    Probes the two columns this surface reads that arrived in migrations 0065
-    and 0069, rather than reading `alembic_version`: a revision string tells
-    you what ran, and these tests care about what EXISTS.
+    Probes columns this surface reads rather than reading `alembic_version`: a
+    revision string tells you what ran, and these tests care about what EXISTS.
+    The Yukti columns (Phase 2) are what the two grade columns are chosen from,
+    and `calibration_records.source` (0069) is what the calibration view reads.
+
+    Narrowed to the two failures that mean "not here": the database refusing
+    the statement, and the connection itself failing. Anything else is a
+    defect and propagates.
     """
     eng = engine()
     try:
         async with eng.connect() as conn:
             await conn.execute(
-                sa.text("SELECT prescreen_grade FROM job_candidate_links LIMIT 0")
+                sa.text(
+                    "SELECT yukti_status, yukti_pre_score, yukti_failure_reason "
+                    "FROM job_candidate_links LIMIT 0"
+                )
+            )
+            await conn.execute(
+                sa.text("SELECT yukti_assessment_weight_pct FROM tenants LIMIT 0")
+            )
+            await conn.execute(
+                sa.text("SELECT must_have_failed FROM functional_skills_reports LIMIT 0")
             )
             await conn.execute(sa.text("SELECT source FROM calibration_records LIMIT 0"))
         return True
-    except Exception:  # noqa: BLE001 - the reason is reported by the skip message
+    except (SQLAlchemyError, OSError):
         return False
     finally:
         await eng.dispose()
