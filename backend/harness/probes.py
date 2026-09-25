@@ -328,6 +328,29 @@ async def _conversations_for_link(
     )
 
 
+async def _conversations_for_job(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Every conversation on the job, whoever wrote it. For a world where the
+    application is the thing under test, so there is no seeded link to key on:
+    the row an apply might wrongly create has an id the world never saw."""
+    return await reader.scalar(
+        "SELECT count(*) FROM assessment_conversations WHERE job_id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _questions_for_job(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    return await reader.scalar(
+        "SELECT count(*) FROM candidate_questions q "
+        "JOIN job_candidate_links l ON l.id = q.job_candidate_link_id "
+        "WHERE l.job_id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
 async def _conversation_status(
     reader: StateReader, world: World, arg: str | None
 ) -> Any:
@@ -450,6 +473,8 @@ _STATE: dict[str, StateProbe] = {
     "profiles.count_for_candidate": _profiles_for_candidate,
     "telemetry_events.count_for_link": _telemetry_for_link,
     "assessment_conversations.count_for_link": _conversations_for_link,
+    "assessment_conversations.count_for_job": _conversations_for_job,
+    "candidate_questions.count_for_job": _questions_for_job,
     "assessment_conversations.status": _conversation_status,
     "assessment_conversations.credit_event": _conversation_credit_event,
     "confidence_vocabulary.refused_values": _confidence_values_the_column_refuses,
