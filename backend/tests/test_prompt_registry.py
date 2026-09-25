@@ -97,7 +97,11 @@ def test_the_snapshot_covers_every_agent_prompt() -> None:
     # single-pass matrix generator it drove (spec-doc6 D1, "delete on
     # activation"); Sutra's replacement asks for two stages rather than a
     # whole matrix and is a different prompt, not an edit of that one.
-    assert len(SNAPSHOTS) == 8, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    # SEVEN since 2026-09-25: `ppi_candidate_questions_system` became
+    # `assessment_question_generation` when generation moved onto the skills
+    # contract. A renamed prompt with new inputs is a new prompt, not a moved
+    # one, so it is gated by `generation_sufficiency.GATED_PROMPTS` instead.
+    assert len(SNAPSHOTS) == 7, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 
@@ -111,7 +115,7 @@ def test_a_missing_prompt_fails_loudly_and_says_what_exists() -> None:
         registry.load("no_such_prompt_at_all")
     assert "no_such_prompt_at_all" in str(caught.value)
     # The message has to be actionable, so it lists what IS there.
-    assert "ppi_candidate_questions_system" in str(caught.value)
+    assert "interview_challenge" in str(caught.value)
 
 
 def test_a_missing_placeholder_value_raises_rather_than_being_sent() -> None:
