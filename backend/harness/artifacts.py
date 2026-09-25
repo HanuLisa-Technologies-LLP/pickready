@@ -239,7 +239,7 @@ class ArtifactStore:
             )
         # Newest first by the manifest's own timestamp; the run id breaks a tie
         # so the order is TOTAL. An unstable order paginates and diffs badly,
-        # the same argument `job_candidates.order_by_clause` already makes.
+        # the same argument `yukti.ranking.order_by_sql` already makes.
         return tuple(
             sorted(entries, key=lambda item: (item.started_at, item.run_id), reverse=True)
         )

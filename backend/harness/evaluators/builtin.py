@@ -26,7 +26,7 @@ Provenance: docs/spec/HARNESS.md sections 4 and 7.
 from __future__ import annotations
 
 import statistics
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Awaitable, Callable, Mapping
 
 from app.evaluation.metrics import InsufficientData, mean_interval
 
@@ -204,32 +204,11 @@ async def no_numbers_to_client(data: EvaluationInput) -> EvaluationOutcome:
     occurred, detail = read_prohibited("a_number_reached_a_client", data.ctx)
     if occurred:
         return failed(name, f"a number reached a client: {detail}", detail=detail)
-    sanctioned = [
-        item.path
-        for item in data.ctx.observations
-        if isinstance(item.body, Mapping) and _carries_match_percent(item.body)
-    ]
     return passed(
         name,
-        f"{len(data.ctx.observations)} payload(s) swept clean"
-        + (
-            f"; the one sanctioned number (`match_percent`) appeared in "
-            f"{len(sanctioned)} of them"
-            if sanctioned
-            else ""
-        ),
-        sanctioned_paths=sanctioned,
+        f"{len(data.ctx.observations)} payload(s) swept clean, with no "
+        "sanctioned exception (D3)",
     )
-
-
-def _carries_match_percent(body: Any) -> bool:
-    if isinstance(body, Mapping):
-        return "match_percent" in body or any(
-            _carries_match_percent(child) for child in body.values()
-        )
-    if isinstance(body, list):
-        return any(_carries_match_percent(child) for child in body)
-    return False
 
 
 async def safety_and_policy(data: EvaluationInput) -> EvaluationOutcome:

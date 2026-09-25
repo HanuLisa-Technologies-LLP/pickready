@@ -86,42 +86,14 @@ def test_account_level_failures_are_distinguished_from_rate_limits() -> None:
     assert llm_router.is_account_level_failure(ValueError("not http")) is False
 
 
-# ── Grade-driven candidate sort (spec §2.3) ──────────────────────────────────
+# ── The candidate table's pager (spec section 2.4) ──────────────────────────
+#
+# The grade-driven sort this section pinned (skills, experience, behavioural,
+# reordered by grade) is DELETED by the Vivekium release: the table is ordered
+# by ONE derived Yukti key, pinned in `test_yukti_rank_expression.py` and
+# `test_ranked_candidates_api.py`, including its total order.
 
 from app.services import job_candidates as jc
-
-
-def test_non_managerial_sorts_experience_above_behavioural() -> None:
-    assert jc.sort_keys_for_grade("non_managerial") == (
-        "skills", "experience", "behavioural",
-    )
-
-
-@pytest.mark.parametrize("grade", ["managerial", "leadership", "cxo"])
-def test_managerial_and_above_sort_behavioural_above_experience(grade: str) -> None:
-    assert jc.sort_keys_for_grade(grade) == ("skills", "behavioural", "experience")
-
-
-def test_unknown_or_missing_grade_falls_back_without_raising() -> None:
-    assert jc.sort_keys_for_grade(None) == jc.sort_keys_for_grade("non_managerial")
-    assert jc.sort_keys_for_grade("archduke") == jc.sort_keys_for_grade("managerial")
-
-
-def test_order_by_is_a_total_order() -> None:
-    """Without the id tiebreak, two equally-scored candidates could swap places
-    between page 1 and page 2 and one of them would vanish from the results."""
-    clause = jc.order_by_clause("non_managerial")
-    assert clause.endswith("l.created_at ASC, l.id ASC")
-    # Every score key sinks NULLs, so an unscored candidate never floats up:
-    # the assessment score plus the grade's three resume keys.
-    assert clause.count("DESC NULLS LAST") == 4
-
-
-def test_order_by_reflects_the_grade() -> None:
-    non_mgr = jc.order_by_clause("non_managerial")
-    mgr = jc.order_by_clause("cxo")
-    assert non_mgr.index("experience_relevance") < non_mgr.index("pfi.pfi_score")
-    assert mgr.index("pfi.pfi_score") < mgr.index("experience_relevance")
 
 
 def test_normalize_page_clamps_instead_of_rejecting() -> None:

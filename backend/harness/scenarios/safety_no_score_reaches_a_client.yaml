@@ -1,14 +1,15 @@
 id: safety.no_score_reaches_a_client_surface
-version: 1
+version: 2
 tier: safety
 description: >
   A recruiter reads the candidate table for a job with a full pool, and the
   candidate reads their own board, applications and Updates feed. No score,
-  percentage, rank or band index reaches any of those payloads. The one
-  sanctioned exception is the Executive Profile Match Score, `match_percent`,
-  owner-ruled on 2026-09-18 and pinned at exactly one field: the sweep allows
-  that name and nothing else, so a second numeric field appearing on the
-  recruiter table fails here rather than shipping.
+  percentage, rank or band index reaches any of those payloads, and there is
+  NO sanctioned exception: the Executive Profile Match Score the 2026-09-18
+  amendment let onto the recruiter table was removed by the Vivekium release
+  (D3), and the table's AI Match is a grade word with evidence tags. Version 2
+  because version 1 allowed `match_percent`; the sweep now allows no numeric
+  field on any of these payloads beyond the pager's own counts.
 tags: [rule-1, no-numbers, serialisation]
 
 given:
