@@ -155,6 +155,34 @@ def test_nothing_writes_a_mode_outside_the_pending_files() -> None:
     assert not offenders, offenders
 
 
+def test_no_assessment_route_accepts_a_mode() -> None:
+    """The other half of "nothing writes a mode": no assessment route takes a
+    request body carrying a `mode` field, so a client cannot ask for the
+    deleted mode either. Read from the mounted application rather than from
+    source text, so a route added under any name is covered. The outreach
+    compose `mode` (email versus message) is a different word and is not an
+    assessment route. The one route still carrying it lives in a file on the
+    pending list, and its entry goes when that package deletes it."""
+    import inspect
+    import pathlib
+
+    from fastapi.routing import APIRoute
+
+    from app.main import app
+
+    offenders: list[str] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or "/assessments" not in route.path:
+            continue
+        source = pathlib.Path(inspect.getsourcefile(route.endpoint)).resolve()
+        rel = source.relative_to(REPO).as_posix()
+        for param in route.dependant.body_params:
+            fields = getattr(param.field_info.annotation, "model_fields", {})
+            if "mode" in fields and rel not in PENDING_IN_OTHER_PACKAGES:
+                offenders.append(f"{sorted(route.methods)} {route.path} ({rel})")
+    assert not offenders, offenders
+
+
 def test_the_old_rows_still_have_their_vocabulary() -> None:
     """Deleting the WRITERS must not delete the READ vocabulary: a row written
     before the removal carries `video_interview` and must still load and be
