@@ -201,21 +201,35 @@ async def _seed(session, w: _World) -> None:
     # here to pin the foreign key that decides the purge ORDER: this row is
     # the only thing in the database naming the S3 object, so a caller that
     # deleted rows before objects would orphan the media permanently.
+    #
+    # Since migration 0126 the recording also has SEGMENT rows, one per S3
+    # multipart upload, and they cascade from the recording: the same order
+    # rule, one table further down.
     for conversation, link in (
         (w.subject_conversation, w.subject_link),
         (w.control_conversation, w.control_link),
     ):
+        recording_id = uuid.uuid4()
         await session.execute(
             text(
                 "INSERT INTO video_recordings (id, tenant_id, conversation_id, "
                 "candidate_id, job_candidate_link_id, status, kind, "
                 "s3_compressed_key, stored_at) "
-                "VALUES (:i, :t, :conv, :c, :l, 'ready', 'video_interview', "
+                "VALUES (:i, :t, :conv, :c, :l, 'ready', 'proctored_session', "
                 ":key, now())"
             ),
-            {"i": str(uuid.uuid4()), "t": str(w.tenant),
+            {"i": str(recording_id), "t": str(w.tenant),
              "conv": str(conversation), "c": str(w.candidate),
              "l": str(link), "key": f"assessments/{link}.mp4"},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO video_recording_segments (id, tenant_id, "
+                "recording_id, ordinal, s3_key, multipart_upload_id, status) "
+                "VALUES (:i, :t, :r, 0, :key, 'upload-1', 'completed')"
+            ),
+            {"i": str(uuid.uuid4()), "t": str(w.tenant), "r": str(recording_id),
+             "key": f"assessment-raw/{conversation}/{recording_id}/seg-0000.webm"},
         )
 
 
@@ -265,6 +279,12 @@ async def _counts(session, w: _World) -> dict[str, tuple[int, int]]:
         "recordings": await _pair(
             "SELECT COUNT(*) FROM video_recordings "
             "WHERE job_candidate_link_id = :x",
+            w.subject_link, w.control_link,
+        ),
+        "segments": await _pair(
+            "SELECT COUNT(*) FROM video_recording_segments s "
+            "JOIN video_recordings r ON r.id = s.recording_id "
+            "WHERE r.job_candidate_link_id = :x",
             w.subject_link, w.control_link,
         ),
     }
@@ -341,6 +361,10 @@ def test_closure_erasure_deletes_the_subject_and_only_the_subject() -> None:
     # The CONTROL job's recording row survives, which is what makes the line
     # above a statement about the cascade's scope rather than about nothing.
     assert after["recordings"] == (0, 1)
+    # The segment rows go with their recording, for the same reason and with
+    # the same consequence: `assessment_media_retention.object_keys_for_job`
+    # reads them BEFORE this function runs (tests/test_media_retention_d4.py).
+    assert after["segments"] == (0, 1)
     # The receipt counts what happened, honestly.
     assert receipt.reports_deleted == 1
     assert receipt.conversations_deleted == 1

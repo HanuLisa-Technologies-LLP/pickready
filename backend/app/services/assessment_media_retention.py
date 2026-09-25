@@ -32,6 +32,25 @@ that did not confirm is RETURNED as remaining and the row's
 rather than a clean-looking log. That is the project-intake contract and the
 same one `services/deletion_requests` applies to resumes.
 
+SEGMENTS ARE OBJECTS TOO (migration 0126)
+-------------------------------------------
+A recording now arrives as segments, one S3 object each, named only by
+`video_recording_segments` rows that CASCADE with the recording. Every
+enumerator here therefore reads the segment rows for the recordings it
+returns, so the objects-before-rows order holds for the new table exactly as
+it holds for `video_recordings`. A segment whose multipart upload is still
+open carries its upload id, and the deletion aborts the upload before it
+HEADs the key, so no billed part outlives a purge.
+
+RETENTION IS A STORED DATE, NOT A WINDOW OVER A TIMESTAMP (owner decision D4)
+------------------------------------------------------------------------------
+`due_recordings` asks for recordings whose EARLIER of two stored dates has
+passed: the recording's own `media_purge_due_at` (the session end plus the
+retention setting, stamped once at finalize) and its job's
+`assessment_purge_due_at` (the closure purge). Nothing is computed from a
+module constant at sweep time, so neither a settings change nor a late sweep
+can move a deadline a candidate was promised.
+
 THIS MODULE SCORES NOTHING AND IMPORTS NO SCORER. It also imports nothing from
 `services/proctoring`: a proctored-session recording is deleted because of its
 age, its candidate or its job, never because of anything proctoring observed.
@@ -43,10 +62,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.dual_mode import VideoRecording
+from app.models.dual_mode import (
+    SEGMENT_ABORTED,
+    SEGMENT_OPEN,
+    VideoRecording,
+    VideoRecordingSegment,
+)
 from app.services import object_storage
 from app.services.video import storage as video_storage
 
@@ -85,15 +109,22 @@ class MediaDeletion:
         return not self.remaining
 
 
-def object_keys_for_recording(recording: VideoRecording) -> list[dict[str, str]]:
-    """Every object key this recording owns, compressed first.
+def object_keys_for_recording(
+    recording: VideoRecording,
+    segments: tuple[VideoRecordingSegment, ...] | list[VideoRecordingSegment] = (),
+) -> list[dict[str, str]]:
+    """Every object key this recording owns, compressed first, then the
+    single raw object of a pre-0126 row, then each segment in order.
 
-    The raw key is included even when `raw_deleted` is set, and that is
-    deliberate: `raw_deleted` records that a HEAD confirmed the object gone
-    once, and a deletion pass that re-HEADs a key already absent costs one
-    call and answers the same thing. Trusting the flag instead would mean a
-    raw object left behind by a failed deletion is never looked at again by
-    the very sweep that exists to finish it.
+    Raw keys are included even when `raw_deleted` (or a segment's
+    `raw_deleted_at`) is set, and that is deliberate: those stamps record
+    that a HEAD confirmed the object gone once, and a deletion pass that
+    re-HEADs a key already absent costs one call and answers the same thing.
+    Trusting the stamp instead would mean an object left behind is never
+    looked at again by the very sweep that exists to finish it.
+
+    An OPEN segment's entry carries its `upload_id`, so `delete_objects`
+    aborts the multipart upload (and its billed parts) before the HEAD.
     """
     entries: list[dict[str, str]] = []
     if recording.s3_compressed_key:
@@ -102,6 +133,42 @@ def object_keys_for_recording(recording: VideoRecording) -> list[dict[str, str]]
         )
     if recording.s3_raw_key:
         entries.append({"key": recording.s3_raw_key, "kind": OBJECT_KIND_RAW})
+    for segment in sorted(segments, key=lambda row: row.ordinal):
+        entry = {"key": segment.s3_key, "kind": OBJECT_KIND_RAW}
+        if segment.status == SEGMENT_OPEN and segment.multipart_upload_id:
+            entry["upload_id"] = segment.multipart_upload_id
+        entries.append(entry)
+    return entries
+
+
+async def segments_by_recording(
+    session: AsyncSession, recording_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[VideoRecordingSegment]]:
+    """The segment rows of several recordings in one query."""
+    grouped: dict[uuid.UUID, list[VideoRecordingSegment]] = {
+        recording_id: [] for recording_id in recording_ids
+    }
+    if not recording_ids:
+        return grouped
+    rows = (
+        await session.execute(
+            select(VideoRecordingSegment)
+            .where(VideoRecordingSegment.recording_id.in_(recording_ids))
+            .order_by(VideoRecordingSegment.recording_id, VideoRecordingSegment.ordinal)
+        )
+    ).scalars().all()
+    for row in rows:
+        grouped[row.recording_id].append(row)
+    return grouped
+
+
+async def _keys_for(
+    session: AsyncSession, recordings: list[VideoRecording]
+) -> list[dict[str, str]]:
+    segments = await segments_by_recording(session, [row.id for row in recordings])
+    entries: list[dict[str, str]] = []
+    for recording in recordings:
+        entries.extend(object_keys_for_recording(recording, segments[recording.id]))
     return entries
 
 
@@ -124,10 +191,7 @@ async def object_keys_for_candidate(
             select(VideoRecording).where(VideoRecording.candidate_id == candidate_id)
         )
     ).scalars().all()
-    entries: list[dict[str, str]] = []
-    for recording in rows:
-        entries.extend(object_keys_for_recording(recording))
-    return entries
+    return await _keys_for(session, list(rows))
 
 
 async def object_keys_for_job(
@@ -152,10 +216,7 @@ async def object_keys_for_job(
             .where(JobCandidateLink.job_id == job_id)
         )
     ).scalars().all()
-    entries: list[dict[str, str]] = []
-    for recording in rows:
-        entries.extend(object_keys_for_recording(recording))
-    return entries
+    return await _keys_for(session, list(rows))
 
 
 def delete_objects(entries: list[dict[str, str]]) -> MediaDeletion:
@@ -175,6 +236,9 @@ def delete_objects(entries: list[dict[str, str]]) -> MediaDeletion:
         if not key:
             continue
         try:
+            upload_id = entry.get("upload_id")
+            if upload_id:
+                video_storage.abort_multipart(key=key, upload_id=upload_id)
             if video_storage.delete_verified(key):
                 deleted += 1
             else:
@@ -200,12 +264,22 @@ async def delete_media_for_recording(
     """
     from fastapi.concurrency import run_in_threadpool  # noqa: PLC0415
 
+    segments = (await segments_by_recording(session, [recording.id]))[recording.id]
     outcome = await run_in_threadpool(
-        delete_objects, object_keys_for_recording(recording)
+        delete_objects, object_keys_for_recording(recording, segments)
     )
     if outcome.finished and outcome.failure is None:
-        recording.media_deleted_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        recording.media_deleted_at = now
         recording.raw_deleted = True
+        for segment in segments:
+            segment.raw_deleted_at = segment.raw_deleted_at or now
+            # The deletion aborted this segment's multipart upload, so the
+            # row must stop saying it is open: an `open` segment is one the
+            # repair sweep would try to complete from parts that are gone.
+            if segment.status == SEGMENT_OPEN:
+                segment.status = SEGMENT_ABORTED
+                segment.completed_at = now
     else:
         recording.media_delete_failures += 1
         logger.warning(
@@ -219,31 +293,164 @@ async def delete_media_for_recording(
     return outcome
 
 
-async def expired_recordings(
-    session: AsyncSession, *, retention_days: int, now: datetime | None = None
+async def due_recordings(
+    session: AsyncSession, *, now: datetime | None = None, limit: int = 200
 ) -> list[VideoRecording]:
-    """Recordings whose stored media is older than the retention setting.
+    """Recordings whose media is due for deletion under owner decision D4.
 
-    Reads the TABLE, never a timestamp on something else (rule 8). A
-    retention of zero or less returns nothing at all and the caller says so in
-    its log, rather than the sweep silently deleting everything or silently
-    deleting nothing: zero means "the platform's cascade policy applies", and
-    that is a policy an operator should be able to read off the worker log.
-
-    `media_deleted_at IS NULL` is what makes the sweep converge: a recording
-    whose objects are already gone is never enumerated again.
+    Due means the EARLIER of the recording's stored `media_purge_due_at` and
+    its job's stored `assessment_purge_due_at` has passed. `LEAST` ignores a
+    NULL, so an open job contributes nothing and a recording not yet
+    finalized is due only if its job's closure purge is. Reads the TABLE,
+    never a module constant, and `media_deleted_at IS NULL` is what makes the
+    sweep converge: a recording whose objects are gone is never enumerated
+    again. Bounded per pass so one hour's backlog cannot hold a worker past
+    its timeout; the next hour takes the rest.
     """
-    if retention_days <= 0:
-        return []
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    from app.models.candidate import JobCandidateLink  # noqa: PLC0415
+    from app.models.job import Job  # noqa: PLC0415
+
+    moment = now or datetime.now(timezone.utc)
+    effective_due = func.least(
+        VideoRecording.media_purge_due_at, Job.assessment_purge_due_at
+    )
     return list(
         (
             await session.execute(
-                select(VideoRecording).where(
-                    VideoRecording.stored_at.is_not(None),
-                    VideoRecording.stored_at < cutoff,
+                select(VideoRecording)
+                .join(
+                    JobCandidateLink,
+                    JobCandidateLink.id == VideoRecording.job_candidate_link_id,
+                )
+                .join(Job, Job.id == JobCandidateLink.job_id)
+                .where(
+                    VideoRecording.media_deleted_at.is_(None),
+                    effective_due.is_not(None),
+                    effective_due <= moment,
+                )
+                .order_by(effective_due)
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+
+
+async def raw_retry_recordings(
+    session: AsyncSession, *, limit: int = 200
+) -> list[VideoRecording]:
+    """Stored recordings whose raw objects did not all confirm deleted.
+
+    `ready` means the compressed object was verified present, which is the
+    only state in which deleting the raw is allowed; a failed recording keeps
+    its raw bytes for the staff retry, and the bucket's seven-day raw rule is
+    what bounds that. Media already purged is excluded: that pass deleted
+    every key the recording owns.
+    """
+    from app.services.video import lifecycle  # noqa: PLC0415
+
+    return list(
+        (
+            await session.execute(
+                select(VideoRecording)
+                .where(
+                    VideoRecording.status == lifecycle.READY,
+                    VideoRecording.raw_deleted.is_(False),
                     VideoRecording.media_deleted_at.is_(None),
                 )
+                .order_by(VideoRecording.created_at)
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+
+
+async def stuck_uploaded_recordings(
+    session: AsyncSession, *, now: datetime | None = None, limit: int = 200
+) -> list[VideoRecording]:
+    """Finalized recordings that no processing run has picked up.
+
+    A finalize hands the processing task off after its commit, and a lost
+    invoke is logged rather than raised; this is the repair. The grace
+    (`video_orphan_grace_minutes`) is longer than any cold start, so a run
+    that is merely slow to begin is not dispatched twice, and
+    `process_recording` locks the row before it moves, so a second run that
+    does arrive finds the recording already past `uploaded` and stops.
+    """
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.services.video import lifecycle  # noqa: PLC0415
+
+    moment = now or datetime.now(timezone.utc)
+    grace = timedelta(minutes=get_settings().video_orphan_grace_minutes)
+    return list(
+        (
+            await session.execute(
+                select(VideoRecording)
+                .where(
+                    VideoRecording.status == lifecycle.UPLOADED,
+                    func.coalesce(VideoRecording.ended_at, VideoRecording.created_at)
+                    < moment - grace,
+                )
+                .order_by(VideoRecording.created_at)
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+
+
+def processing_stall_after() -> timedelta:
+    """How long a run may sit in `compressing` or `storing` before it is
+    treated as dead rather than slow.
+
+    DERIVED from the ceilings the pipeline already enforces, never a new
+    knob: four media tool calls each bounded by `video_ffmpeg_timeout_seconds`
+    (assembly, the assembled probe, compression, the compressed probe), plus
+    `video_orphan_grace_minutes` for the transfers either side. A run still
+    going past that has outlived every bound it runs under, so the only thing
+    that can be true of it is that its task is gone.
+    """
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    return timedelta(
+        seconds=4 * settings.video_ffmpeg_timeout_seconds,
+        minutes=settings.video_orphan_grace_minutes,
+    )
+
+
+async def stalled_recordings(
+    session: AsyncSession, *, now: datetime | None = None, limit: int = 200
+) -> list[VideoRecording]:
+    """Recordings a processing run took out of `uploaded` and never finished.
+
+    A Fargate task killed from outside (out of memory on a long recording, a
+    deploy, a host failure) commits nothing more, so the row would say
+    `compressing` or `storing` for ever while the bucket's seven-day raw rule
+    quietly deleted the only copy. The repair gives such a row the failure
+    state its step names, which is what makes it visible and retryable.
+    A row written before `processing_started_at` existed is measured from
+    the session's end instead, the latest moment it can have started.
+    """
+    from app.services.video import lifecycle  # noqa: PLC0415
+
+    moment = now or datetime.now(timezone.utc)
+    started = func.coalesce(
+        VideoRecording.processing_started_at,
+        VideoRecording.ended_at,
+        VideoRecording.created_at,
+    )
+    return list(
+        (
+            await session.execute(
+                select(VideoRecording)
+                .where(
+                    VideoRecording.status.in_(
+                        (lifecycle.COMPRESSING, lifecycle.STORING)
+                    ),
+                    VideoRecording.media_deleted_at.is_(None),
+                    started < moment - processing_stall_after(),
+                )
+                .order_by(VideoRecording.created_at)
+                .limit(limit)
             )
         ).scalars().all()
     )

@@ -229,6 +229,42 @@ async def latest_conversation_facts(
     return row[0], row[1]
 
 
+# ── Who may reach a recording (Vivekium release, 2026-09-24) ─────────────────
+
+
+async def require_hiring_team(session: AsyncSession, user: Any, job_id: uuid.UUID) -> None:
+    """A recording is viewable only by the job's HIRING TEAM.
+
+    `view_review_screen` is SCOPED for the Recruiter, the Hiring Manager and
+    the Interview Manager (RBAC 24), and `require_capability` alone answers
+    only "may this role do this at all", so before this every Recruiter in a
+    tenant could mint a presigned URL for the recording of any job in it. The
+    answer here is `rbac.authorize` over the job's resource facts: tenant
+    (404 across a boundary), the 24 ceiling, the grant, and the per-job
+    assignment for the scoped roles (403 inside the tenant). The Client Super
+    Admin and the HR Manager reach every job in their own tenant, as they do
+    for the report and the transcript.
+
+    The ONE definition, called by every recruiter-facing recording route
+    (`api/videos.py`) and by the staff retry (`api/assessment_recording.py`).
+    """
+    from app.services import capabilities as caps  # noqa: PLC0415
+    from app.services import rbac  # noqa: PLC0415
+
+    resource = await rbac.load_job_resource(session, job_id)
+    if resource is None:
+        from fastapi import HTTPException  # noqa: PLC0415
+
+        raise HTTPException(status_code=404, detail="Not found")
+    principal = rbac.Principal(
+        user_id=user.user_id, tenant_id=user.tenant_id, role=user.role
+    )
+    decision = await rbac.authorize(
+        session, principal, caps.VIEW_REVIEW_SCREEN, resource
+    )
+    rbac.raise_for(decision, caps.VIEW_REVIEW_SCREEN)
+
+
 # ── Delivery (spec sections 15, 16, 18) ──────────────────────────────────────
 
 

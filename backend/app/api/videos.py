@@ -2,17 +2,20 @@
 
 Provenance: the 2026-09-05 Client Candidate Dashboard, Executive Profile &
 Proctored Video Specification, sections 15-19 and 30-36. The recording
-pipeline (upload, processing, compression, storage) lives behind
-`api/assessments.py` and `services/video/`; these routes are the CLIENT side:
+pipeline (segmented upload, compression, storage) lives behind
+`api/assessment_recording.py` and `services/video/`; these routes are the CLIENT side:
 what a recruiter's dashboard and the Executive Profile ask about a finished
 recording, and the two delivery URLs.
 
-EVERY route here follows the same four-part contract the transcript and the
-proctoring report already follow:
+EVERY route here follows the same contract:
 
   * `require_capability(view_review_screen)` -- the capability that opens this
     candidate's transcript and PRISM Report. Someone who may read the
     assessment evidence may watch it; someone who may not certainly may not.
+  * THE JOB'S HIRING TEAM ONLY (2026-09-24): the same capability resolved by
+    `rbac.authorize` over the job (`video_access.require_hiring_team`), so
+    the per-job assignment scope RBAC 24 gives the Recruiter, the Hiring
+    Manager and the Interview Manager binds here too.
   * The RLS-aware tenant session (`get_tenant_db`).
   * The link-in-tenant gate answers 404, never 403: a cross-tenant id must be
     indistinguishable from a nonexistent one (spec section 17).
@@ -28,14 +31,10 @@ DOWNLOAD is additionally gated on the candidate's own retention consent
 (`retention_consent.video_download_allowed`): an explicit False or a
 never-asked NULL keeps the record preview-only in the client portal.
 
-BOTH RECORDING KINDS ARE SERVED HERE, and that is the point of storing the
-proctored session's media on the same row (owner ruling, 2026-09-22). A
-recruiter reviewing a conversational assessment and one reviewing a video
-interview reach the media through the same capability, the same tenant gate,
-the same audit row, the same consent rule and the same presigned URL. A second
-delivery path for the second kind would have been four of those five rules
-written again, and the copy that drifted would have been the one nobody was
-reading.
+ONE RECORDING KIND IS WRITTEN NOW, the proctored session's, and a row of the
+deleted video-interview kind is served by exactly the same rules. A recruiter
+reaches both through the same capability, the same scope, the same tenant
+gate, the same audit row, the same consent rule and the same presigned URL.
 
 A recording whose media has been DELETED (erasure, job closure, or the
 retention sweep) is not servable and says so in its own sentence. It is not a
@@ -93,6 +92,11 @@ async def _link_or_404(
     job = await session.get(Job, link.job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Application not found")
+    # THE HIRING TEAM, NOT THE TENANT (Vivekium release, 2026-09-24). The
+    # route dependency answers "may this role review at all"; this answers
+    # "on THIS job", which is where a scoped Recruiter, Hiring Manager or
+    # Interview Manager stops at the jobs they are assigned to.
+    await video_access.require_hiring_team(session, user, job.id)
     await job_assessment_retention.require_readable(session, user, job)
     return link
 

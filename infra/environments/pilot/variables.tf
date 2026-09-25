@@ -182,10 +182,12 @@ variable "transcribe_enabled" {
   description = <<-EOT
     Whether this environment calls Amazon Transcribe at all.
 
-    OFF is a real answer, not a broken one: with it false a recording lands in
-    `transcription_failed` with a message saying speech to text is not
-    configured, and the staff retry endpoint re-runs it once it is. Never a
-    fabricated transcript.
+    It transcribes SPOKEN ANSWERS only, from the task worker Lambda (the
+    session recording is never transcribed; the video-interview mode that
+    transcribed whole recordings is deleted). OFF is a real answer, not a
+    broken one: the product does not offer the microphone and every answer is
+    typed. Never a fabricated transcript. Turning it on costs roughly USD
+    0.024 per audio minute in ap-south-1.
   EOT
   type        = bool
   default     = false

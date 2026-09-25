@@ -1,47 +1,41 @@
-"""The assessment media pipeline (dual-mode spec section 6, video spec 8-10,
-and the 2026-09-22 owner ruling that assessment media is stored).
+"""The session recording pipeline: assemble, compress, store, delete raw.
 
-TWO KINDS, ONE PIPELINE, AND THE KIND DECIDES WHICH HALF RUNS. A
-`video_interview` recording IS the candidate's answer and takes every step
-below. A `proctored_session` recording is the monitoring record of a proctored
-assessment and takes ONLY the compression and storage half, through
-`process_proctored_session_recording`: no audio extraction, no transcription,
-no transcript or answer record, no completion. The steps it does not take are
-the steps that reach a scorer, so principle P3 is kept structurally rather
-than by a flag somebody has to remember to check.
+ONE KIND, ONE PATH. The video-interview mode, whose recording WAS the answer
+and was transcribed, segmented by question marks and written into the scoring
+records, is deleted (Vivekium release, 2026-09-24), and so is every step that
+served it: audio extraction, Amazon Transcribe over the recording, transcript
+segmentation, the transcript writer and the completion it triggered. What is
+left is the proctored session recording, and the steps it takes are the steps
+that reach NO scorer, so principle P3 holds by construction rather than by a
+branch somebody has to remember to take.
 
-One interview recording in, one ready recording out, in five verified steps:
-
-    uploaded -> processing    download the raw object, extract the audio with
-                              ffmpeg, measure the real duration with ffprobe
-              (transcribe)    Amazon Transcribe over the extracted audio,
-                              bounded by explicit timeouts; DISABLED unless
-                              `transcribe_enabled` is set, and disabled means
-                              `transcription_failed` with an honest retryable
-                              message, NEVER a fake transcript
-              (structure)     segment the transcript by the SERVER-stamped
-                              question marks and write the SAME transcript and
-                              answer records the conversational mode writes,
-                              then run the same completion: charge, scoring
-                              dispatch (spec 21: one intelligence pipeline)
-    -> compressing            ffmpeg transcode to a browser-playable H.264/AAC
-                              mp4, every knob a `video_*` setting
-    -> storing                upload the compressed object and VERIFY it
-                              (HEAD, non-zero size, ffprobe duration within
-                              tolerance) before the raw is touched
-    -> ready                  delete the raw artifacts with HEAD-confirmed
+    uploaded -> compressing   download every completed segment to DISK, join
+                              them in recording order with ffmpeg's concat
+                              demuxer (a stream copy, so it is fast and exact),
+                              measure the joined duration, transcode to the
+                              browser-playable H.264/AAC mp4
+             -> storing       upload the compressed file FROM DISK and VERIFY
+                              it (HEAD size equals the file, ffprobe duration
+                              within tolerance of the joined recording)
+             -> ready         delete every raw segment with HEAD-confirmed
                               deletion (the project-intake contract); a failed
-                              deletion increments `raw_delete_failures` and
-                              never blocks `ready`
+                              deletion is counted, never blocks `ready`, and is
+                              retried hourly by
+                              `pickready.reconcile_assessment_recordings`
+
+WHY THE SEGMENTS ARE JOINED BY A REMUX FIRST. A browser MediaRecorder writes
+WebM without a duration in its header, so ffprobe on a raw segment answers
+"N/A". The concat step writes a Matroska file whose header carries the real
+duration, which is what the verify-before-delete comparison needs, and it is
+the same step whether there is one segment or five.
 
 Every failure advances the row to the failure state naming the step, commits
-it, and re-raises so the task's error metric moves -- except the
-configuration-off transcription case, which returns without raising because no
-retry supplies an AWS account.
+it, and re-raises so the task's error metric moves. A failure nothing inside
+the process can see (the Fargate task killed mid-transcode) is found by the
+hourly repair from `processing_started_at` and given the same honest state.
 
-NOTHING HERE IS IMPORTED BY A SCORER. The pipeline's whole output is the same
-`assessment_messages` / `assessment_answers` rows the conversational mode
-writes; the scorers read those without knowing which mode produced them.
+NOTHING HERE IS IMPORTED BY A SCORER, and nothing here writes a transcript,
+an answer or a completion.
 """
 from __future__ import annotations
 
@@ -50,42 +44,18 @@ import logging
 import shutil
 import subprocess
 import tempfile
-import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.assessment import (
-    AssessmentAnswer,
-    AssessmentConversation,
-    AssessmentMessage,
-    CandidateQuestion,
-    JobCompetency,
-)
-from app.models.candidate import JobCandidateLink
-from app.models.dual_mode import RECORDING_PROCTORED_SESSION, VideoRecording
-from app.models.job import Job
-from app.services.video import keys, lifecycle, storage
-from app.workers.dispatch import dispatch
+from app.models.dual_mode import SEGMENT_COMPLETED, VideoRecording
+from app.services.video import keys, lifecycle, recordings, storage
 
 logger = logging.getLogger(__name__)
-
-#: What the candidate transcript records when a question's segment carried no
-#: recognisable speech. An honest empty answer, labelled as the classifier
-#: labels one, so the scorers treat it exactly as a typed empty answer.
-NO_SPOKEN_ANSWER = "(No spoken answer was captured for this question.)"
-
-TRANSCRIBE_DISABLED_DETAIL = (
-    "Speech to text is not configured in this environment "
-    "(transcribe_enabled is off). The recording is stored and this step can "
-    "be retried once Amazon Transcribe is enabled for the deployment."
-)
 
 
 class FfmpegUnavailable(RuntimeError):
@@ -94,10 +64,6 @@ class FfmpegUnavailable(RuntimeError):
 
 class MediaProcessingError(RuntimeError):
     """A media step ran and failed; the message names the step."""
-
-
-class TranscriptionError(RuntimeError):
-    """Amazon Transcribe failed or timed out; the message says how."""
 
 
 # ── ffmpeg / ffprobe ─────────────────────────────────────────────────────────
@@ -154,15 +120,32 @@ def probe_duration(path: Path, *, timeout_seconds: int) -> float:
         ) from exc
 
 
-def extract_audio(src: Path, dst: Path, *, timeout_seconds: int) -> None:
-    """Mono 16kHz WAV, which is what Transcribe consumes most reliably."""
+def concat_list(paths: list[Path]) -> str:
+    """The concat demuxer's input list, one quoted path per line in order.
+
+    Pure, so the quoting is testable: a path is written between single
+    quotes and any single quote inside it is escaped the way the demuxer
+    reads it, so a working-directory name can never split an entry.
+    """
+    lines = []
+    for path in paths:
+        escaped = str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+    return "\n".join(lines) + "\n"
+
+
+def assemble(sources: list[Path], dst: Path, *, workdir: Path) -> None:
+    """Join the segments, in order, into one Matroska file with a real
+    duration header. A stream copy: nothing is re-encoded here."""
+    listing = workdir / "segments.txt"
+    listing.write_text(concat_list(sources), encoding="utf-8")
     _run_tool(
         [
-            "ffmpeg", "-y", "-i", str(src), "-vn",
-            "-ac", "1", "-ar", "16000", "-f", "wav", str(dst),
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+            "-c", "copy", str(dst),
         ],
-        timeout_seconds=timeout_seconds,
-        step="audio extraction",
+        timeout_seconds=get_settings().video_ffmpeg_timeout_seconds,
+        step="segment assembly",
     )
 
 
@@ -170,7 +153,7 @@ def compress(src: Path, dst: Path) -> None:
     """Transcode to the long-term browser-playable mp4 (H.264 + AAC).
 
     Every knob is a `video_compression_*` setting; storage optimisation, not
-    destructive compression (video spec section 8)."""
+    destructive compression."""
     settings = get_settings()
     _run_tool(
         [
@@ -189,390 +172,110 @@ def compress(src: Path, dst: Path) -> None:
     )
 
 
-# ── Amazon Transcribe ────────────────────────────────────────────────────────
+# ── Raw objects ──────────────────────────────────────────────────────────────
 
 
-def _boto_config() -> Any:
-    """Explicit timeouts and bounded retries, the same lesson every boto3
-    client here carries: an unreachable endpoint that HANGS defeats every
-    try/except around the call."""
-    from botocore.config import Config  # noqa: PLC0415
-
-    return Config(
-        connect_timeout=10,
-        read_timeout=30,
-        retries={"max_attempts": 2, "mode": "standard"},
-    )
-
-
-def _transcribe_client() -> Any:
-    """A Transcribe client in the TRANSCRIBE region, which is not necessarily
-    the deployment region: ap-south-2 has no Transcribe endpoint at all, so a
-    pilot deployed there calls ap-south-1."""
-    import boto3  # noqa: PLC0415 -- optional at import time
-
-    return boto3.client(
-        "transcribe",
-        region_name=get_settings().effective_transcribe_region or None,
-        config=_boto_config(),
-    )
+async def raw_keys(session: AsyncSession, recording: VideoRecording) -> list[str]:
+    """Every raw object this recording's processing reads, in order: the
+    completed segments, or the single raw object of a pre-0126 row."""
+    segments = await recordings.segments_for(session, recording.id)
+    keys_in_order = [
+        segment.s3_key for segment in segments if segment.status == SEGMENT_COMPLETED
+    ]
+    if not keys_in_order and recording.s3_raw_key:
+        keys_in_order = [recording.s3_raw_key]
+    return keys_in_order
 
 
-def _transcribe_s3_client() -> Any:
-    """An S3 client bound to the TRANSCRIBE region, for the working bucket.
+async def delete_raw_objects(session: AsyncSession, recording: VideoRecording) -> bool:
+    """Delete every raw object still standing, HEAD-confirmed, per segment.
 
-    Deliberately separate from `object_storage.client()`: that one is the
-    single transport for this product's own bucket and must stay pointed at
-    the deployment region. This one exists only for the working objects a
-    cross-region Transcribe job needs, and touches nothing else.
+    Shared by the pipeline's tail and the hourly retry sweep, so "is the raw
+    really gone" has one answer. Each confirmed segment is stamped
+    `raw_deleted_at` so the next pass re-deletes only what is left; a
+    confirmed legacy raw key is simply absent next time. Returns True when
+    nothing raw remains, and then sets `raw_deleted`.
+
+    A failure is COUNTED on the row and never raised: an undeleted processing
+    artifact is a cleanup job, and the recording it belongs to is already
+    stored and watchable.
     """
-    import boto3  # noqa: PLC0415 -- optional at import time
+    from fastapi.concurrency import run_in_threadpool  # noqa: PLC0415
 
-    return boto3.client(
-        "s3",
-        region_name=get_settings().effective_transcribe_region or None,
-        config=_boto_config(),
-    )
+    from app.services import object_storage  # noqa: PLC0415
 
-
-def run_transcription(
-    *, audio_key: str, output_key: str, job_name: str
-) -> list[dict[str, Any]]:
-    """Run one Transcribe job over `audio_key` and return its word items.
-
-    Blocks, polling at `video_transcribe_poll_seconds`, for at most
-    `video_transcribe_timeout_seconds`. Output lands in our own bucket at
-    `output_key` so the result is fetched over the S3 transport this codebase
-    already trusts, never a vendor-hosted presigned URI.
-    """
-    settings = get_settings()
-    if not settings.transcribe_enabled:
-        raise TranscriptionError(TRANSCRIBE_DISABLED_DETAIL)
-    home_bucket = (settings.s3_bucket or "").strip()
-    work_bucket = settings.effective_transcribe_bucket
-    # A Transcribe job is region-local over S3: it reads and writes a bucket in
-    # its OWN region. Where Transcribe runs in a region the product's bucket
-    # does not live in, the audio makes a bounded round trip through a working
-    # bucket there and both working objects are deleted below, so the only
-    # lasting copy stays in `s3_bucket` exactly as it did before.
-    remote = bool(work_bucket) and work_bucket != home_bucket
-    client = _transcribe_client()
-    try:
-        if remote:
-            # A server-side copy: the bytes never pass through this process,
-            # which is what keeps a two-hour recording's audio off the heap.
-            _transcribe_s3_client().copy_object(
-                Bucket=work_bucket,
-                Key=audio_key,
-                CopySource={"Bucket": home_bucket, "Key": audio_key},
-                ServerSideEncryption="AES256",
-            )
-        client.start_transcription_job(
-            TranscriptionJobName=job_name,
-            LanguageCode=settings.transcribe_language_code,
-            Media={"MediaFileUri": f"s3://{work_bucket}/{audio_key}"},
-            MediaFormat="wav",
-            OutputBucketName=work_bucket,
-            OutputKey=output_key,
-        )
-        deadline = time.monotonic() + settings.video_transcribe_timeout_seconds
-        while True:
-            job = client.get_transcription_job(TranscriptionJobName=job_name)[
-                "TranscriptionJob"
-            ]
-            job_status = job["TranscriptionJobStatus"]
-            if job_status == "COMPLETED":
-                break
-            if job_status == "FAILED":
-                raise TranscriptionError(
-                    "Amazon Transcribe reported the job failed: "
-                    + str(job.get("FailureReason") or "no reason given")
-                )
-            if time.monotonic() >= deadline:
-                raise TranscriptionError(
-                    "Amazon Transcribe did not finish within "
-                    f"video_transcribe_timeout_seconds "
-                    f"({settings.video_transcribe_timeout_seconds}s)."
-                )
-            time.sleep(settings.video_transcribe_poll_seconds)
-        if remote:
-            # Bring the transcript home, so the caller's HEAD-confirmed
-            # deletion of `output_key` still has an object to confirm and
-            # every reader downstream stays on the one transport.
-            raw = (
-                _transcribe_s3_client()
-                .get_object(Bucket=work_bucket, Key=output_key)["Body"]
-                .read()
-            )
-            storage.put(key=output_key, data=raw, content_type="application/json")
-        else:
-            raw = storage.get_bytes(output_key)
-    finally:
-        if remote:
-            _delete_transcribe_working_objects(
-                work_bucket, (audio_key, output_key), job_name
-            )
-    payload = json.loads(raw.decode("utf-8"))
-    items = payload.get("results", {}).get("items", [])
-    if not isinstance(items, list):
-        raise TranscriptionError(
-            "Amazon Transcribe returned a transcript with no item list."
-        )
-    return items
-
-
-def _delete_transcribe_working_objects(
-    bucket: str, object_keys: tuple[str, ...], job_name: str
-) -> None:
-    """Clear the working copies out of the Transcribe region.
-
-    A failure here is LOGGED, never raised: it must not turn a transcription
-    that succeeded into one that failed. The working bucket's own expiry rule
-    is the backstop for exactly this case.
-    """
-    client = _transcribe_s3_client()
-    for key in object_keys:
+    remaining = False
+    #: The store's own error CLASS, never its message: a message can quote a
+    #: key, and this line is read wherever the logs are.
+    failure = "ObjectStillPresent"
+    now = datetime.now(timezone.utc)
+    for segment in await recordings.segments_for(session, recording.id):
+        if segment.raw_deleted_at is not None:
+            continue
+        if segment.status != SEGMENT_COMPLETED:
+            # An aborted segment has no object; an open one is not a raw
+            # artifact of a processed recording and is left to the sweep that
+            # completes it.
+            continue
         try:
-            client.delete_object(Bucket=bucket, Key=key)
-        except Exception:  # noqa: BLE001 -- logged, never fails the transcript
-            logger.warning(
-                "video_processing.transcribe_working_delete_failed job=%s key=%s",
-                job_name, key,
+            confirmed = await run_in_threadpool(storage.delete_verified, segment.s3_key)
+        except object_storage.ObjectStorageError as exc:
+            failure = type(exc).__name__
+            confirmed = False
+        if confirmed:
+            segment.raw_deleted_at = now
+        else:
+            remaining = True
+    if recording.s3_raw_key:
+        try:
+            confirmed = await run_in_threadpool(
+                storage.delete_verified, recording.s3_raw_key
             )
-
-
-# ── Transcript structuring (spec section 7) ──────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Segment:
-    """One question's spoken answer, cut from the transcript by the marks."""
-
-    question_id: str
-    text: str
-    start_time: float
-    end_time: float
-
-
-def segment_transcript(
-    items: list[dict[str, Any]],
-    marks: list[dict[str, Any]],
-    total_duration: float,
-) -> list[Segment]:
-    """Cut the word stream into per-question answers by the question marks.
-
-    The marks are the SERVER-stamped display times
-    (`video_recordings.question_marks_json`); a word belongs to the question
-    that was on screen when it was spoken. Punctuation items carry no
-    timestamps in Transcribe output and attach to the preceding word. Pure and
-    deterministic, so the alignment is testable without AWS.
-    """
-    boundaries: list[tuple[str, float, float]] = []
-    for index, mark in enumerate(marks):
-        start = float(mark.get("offset_seconds") or 0.0)
-        end = (
-            float(marks[index + 1].get("offset_seconds") or total_duration)
-            if index + 1 < len(marks)
-            else max(total_duration, start)
+        except object_storage.ObjectStorageError as exc:
+            failure = type(exc).__name__
+            confirmed = False
+        remaining = remaining or not confirmed
+    if remaining:
+        recording.raw_delete_failures += 1
+        logger.warning(
+            "video_processing.raw_delete_failed recording_id=%s failures=%d "
+            "failure=%s",
+            recording.id, recording.raw_delete_failures, failure,
         )
-        boundaries.append((str(mark.get("question_id")), start, end))
-
-    segments: list[Segment] = []
-    for question_id, start, end in boundaries:
-        words: list[str] = []
-        first: float | None = None
-        last: float | None = None
-        in_window = False
-        for item in items:
-            content = (item.get("alternatives") or [{}])[0].get("content", "")
-            if item.get("type") == "punctuation":
-                if in_window and words:
-                    words[-1] = words[-1] + content
-                continue
-            raw_start = item.get("start_time")
-            if raw_start is None:
-                continue
-            at = float(raw_start)
-            in_window = start <= at < end
-            if not in_window:
-                continue
-            words.append(content)
-            if first is None:
-                first = at
-            last = float(item.get("end_time") or at)
-        segments.append(
-            Segment(
-                question_id=question_id,
-                text=" ".join(words).strip(),
-                start_time=first if first is not None else start,
-                end_time=last if last is not None else start,
-            )
-        )
-    return segments
-
-
-async def write_transcript_records(
-    session: AsyncSession,
-    *,
-    conversation: AssessmentConversation,
-    recording: VideoRecording,
-    segments: list[Segment],
-) -> int:
-    """Write the SAME records the conversational mode writes, one pair per
-    served question: an agent `assessment_messages` row carrying the prompt,
-    a candidate row carrying the transcribed answer under the question's key,
-    and one `assessment_answers` row.
-
-    IDEMPOTENT PER QUESTION: a question that already has an answer row is
-    skipped, so a pipeline re-run after a late failure never doubles the
-    transcript. Returns how many questions were newly written.
-
-    ASSUMPTION (dual-mode spec section 7): a structured question served in
-    video mode is answered in speech like any other; its transcribed answer is
-    recorded as prose and evaluated from the transcript rather than through
-    the deterministic objective scorer, which has no spoken input to parse.
-    """
-    by_question = {segment.question_id: segment for segment in segments}
-    rows = (
-        await session.execute(
-            select(CandidateQuestion, JobCompetency)
-            .join(JobCompetency, JobCompetency.id == CandidateQuestion.competency_id)
-            .where(
-                CandidateQuestion.job_candidate_link_id
-                == conversation.job_candidate_link_id
-            )
-            .order_by(CandidateQuestion.ordinal)
-        )
-    ).all()
-    answered_ids = set(
-        (
-            await session.execute(
-                select(AssessmentAnswer.question_id).where(
-                    AssessmentAnswer.conversation_id == conversation.id
-                )
-            )
-        ).scalars().all()
-    )
-    ordinal = (
-        await session.execute(
-            select(func.coalesce(func.max(AssessmentMessage.ordinal), 0)).where(
-                AssessmentMessage.conversation_id == conversation.id
-            )
-        )
-    ).scalar_one()
-    served_ids = {str(mark.get("question_id")) for mark in (recording.question_marks_json or [])}
-    written = 0
-    base = recording.started_at or datetime.now(timezone.utc)
-    for question, competency in rows:
-        if question.id in answered_ids:
-            continue
-        if str(question.id) not in served_ids:
-            # Never shown on screen (the interview ended early), so there is
-            # no window of speech to attribute to it. An unserved question is
-            # honestly absent, exactly as an unreached conversational one is.
-            continue
-        segment = by_question.get(str(question.id))
-        text = segment.text if segment is not None and segment.text else ""
-        content = text or NO_SPOKEN_ANSWER
-        label = "substantive" if text else "empty"
-        agent_message = AssessmentMessage(
-            tenant_id=conversation.tenant_id,
-            conversation_id=conversation.id,
-            ordinal=ordinal + 1,
-            speaker="agent",
-            domain=competency.category,
-            question_key=str(question.id),
-            content=question.prompt,
-        )
-        candidate_message = AssessmentMessage(
-            tenant_id=conversation.tenant_id,
-            conversation_id=conversation.id,
-            ordinal=ordinal + 2,
-            speaker="candidate",
-            domain=competency.category,
-            question_key=str(question.id),
-            content=content,
-            answer_label=label,
-        )
-        session.add_all([agent_message, candidate_message])
-        await session.flush()
-        started = None
-        submitted = datetime.now(timezone.utc)
-        spent = None
-        if segment is not None:
-            from datetime import timedelta  # noqa: PLC0415
-
-            started = base + timedelta(seconds=segment.start_time)
-            submitted = base + timedelta(seconds=segment.end_time)
-            spent = max(0, int(segment.end_time - segment.start_time))
-        session.add(
-            AssessmentAnswer(
-                tenant_id=conversation.tenant_id,
-                conversation_id=conversation.id,
-                question_id=question.id,
-                message_id=candidate_message.id,
-                question_type=question.question_type,
-                answer_json={
-                    "transcribed_text": text,
-                    "start_time": segment.start_time if segment else None,
-                    "end_time": segment.end_time if segment else None,
-                    "source": "video_interview_transcript",
-                },
-                started_at=started,
-                submitted_at=submitted,
-                time_spent_seconds=spent,
-            )
-        )
-        await session.flush()
-        written += 1
-        ordinal += 2
-    return written
-
-
-async def complete_assessment(
-    session: AsyncSession,
-    *,
-    conversation: AssessmentConversation,
-    job: Job,
-    link: JobCandidateLink,
-) -> bool:
-    """The SAME completion the conversational `respond` runs when the last
-    answer lands: stamp `completed_at`, emit the telemetry event, charge the
-    completed-assessment credit, and dispatch the scoring task.
-
-    Idempotent twice over: guarded on `completed_at` here, and
-    `charge_completed` is idempotent by ledger key underneath, so a pipeline
-    re-run can never double-charge (the study the dual-mode brief asked for:
-    the ledger key is derived from the conversation id and the event type, and
-    a second consume with the same key is a no-op).
-    """
-    if conversation.completed_at is not None:
-        return False
-    from app.services import credit_reconciliation, telemetry_events  # noqa: PLC0415
-
-    conversation.status = "completed"
-    conversation.completed_at = datetime.now(timezone.utc)
-    await telemetry_events.emit(
-        session,
-        tenant_id=job.tenant_id,
-        event_code=telemetry_events.EV_INT_COMPLETED,
-        job_id=job.id,
-        candidate_id=link.candidate_id,
-        job_candidate_link_id=link.id,
-        correlation_id=job.correlation_id,
-        payload={"conversation_id": str(conversation.id), "mode": conversation.mode},
-    )
-    await credit_reconciliation.charge_completed(
-        session,
-        conversation_id=conversation.id,
-        tenant_id=job.tenant_id,
-        job_candidate_link_id=link.id,
-    )
-    dispatch("pickready.run_functional_assessment", args=[str(link.id)])
-    return True
+    else:
+        recording.raw_deleted = True
+    await session.flush()
+    return not remaining
 
 
 # ── The pipeline ─────────────────────────────────────────────────────────────
+
+#: What a stalled run's row says, operator-facing like every `error_detail`.
+STALLED_DETAIL = (
+    "Processing stopped before this step finished and did not report a "
+    "failure: the worker running it was stopped from outside. Retry to run "
+    "the pipeline again."
+)
+
+
+def mark_stalled(recording: VideoRecording) -> str:
+    """Give a stalled run's row the failure state of the step it was on.
+
+    `compressing` becomes `compression_failed` and `storing` becomes
+    `storage_failed`, both retryable, so the staff retry and the task's own
+    re-entry reset it to `uploaded` exactly as they would after a failure
+    the process reported itself. Returns the new status. The caller owns the
+    flush and decides the row is stalled (`assessment_media_retention.
+    stalled_recordings`); this only names the state.
+    """
+    target = (
+        lifecycle.STORAGE_FAILED
+        if recording.status == lifecycle.STORING
+        else lifecycle.COMPRESSION_FAILED
+    )
+    lifecycle.advance(recording, target, error_detail=STALLED_DETAIL)
+    return target
+
 
 
 async def _fail(
@@ -588,158 +291,27 @@ async def _fail(
     await session.commit()
 
 
-async def compress_store_and_finish(
-    session: AsyncSession,
-    recording: VideoRecording,
-    *,
-    conversation_id: uuid.UUID,
-    raw_path: Path,
-    compressed_path: Path,
-    raw_duration: float,
-    working_keys: tuple[str | None, ...] = (),
-) -> None:
-    """Compress, store, VERIFY, delete the raw artifacts, land on `ready`.
-
-    THE ONE PLACE assessment media becomes a long-term object, for both
-    recording kinds (owner ruling, 2026-09-22). A second copy of this tail
-    would be a second answer to "is the compressed object really there", and
-    the whole raw-deletion contract rests on that answer.
-
-    The order is the project-intake order and it is not negotiable: the raw
-    object is deleted only after the compressed one is HEAD-confirmed present,
-    at the right size, with a duration within tolerance of the raw. A failed
-    deletion is COUNTED and never blocks `ready`, because an undeleted
-    processing artifact is a cleanup job and a recording stuck out of `ready`
-    is a hiring team who cannot watch an assessment that exists.
-    """
-    settings = get_settings()
-
-    lifecycle.advance(recording, lifecycle.COMPRESSING)
-    await session.flush()
-    await session.commit()
-    try:
-        compress(raw_path, compressed_path)
-    except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-        await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
-        raise
-
-    lifecycle.advance(recording, lifecycle.STORING)
-    await session.flush()
-    await session.commit()
-    try:
-        compressed_bytes = compressed_path.read_bytes()
-        compressed_key = recording.s3_compressed_key or keys.compressed_key(
-            conversation_id, recording.id
-        )
-        storage.put(
-            key=compressed_key, data=compressed_bytes, content_type="video/mp4"
-        )
-        stored_size = storage.head_size(compressed_key)
-        if not stored_size or stored_size != len(compressed_bytes):
-            raise MediaProcessingError(
-                "The compressed object's stored size does not match what "
-                "was uploaded; refusing to delete the raw recording."
-            )
-        compressed_duration = probe_duration(
-            compressed_path,
-            timeout_seconds=settings.video_ffmpeg_timeout_seconds,
-        )
-        if abs(compressed_duration - raw_duration) > settings.video_duration_tolerance_seconds:
-            raise MediaProcessingError(
-                "The compressed recording's duration differs from the raw "
-                "recording by more than video_duration_tolerance_seconds; "
-                "refusing to delete the raw recording."
-            )
-        recording.s3_compressed_key = compressed_key
-        recording.compressed_size_bytes = len(compressed_bytes)
-        recording.stored_format = "mp4"
-        # The retention clock starts at the VERIFIED store and nowhere else.
-        recording.stored_at = datetime.now(timezone.utc)
-    except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-        await _fail(session, recording, lifecycle.STORAGE_FAILED, str(exc))
-        raise
-
-    # ── Raw deletion, HEAD-confirmed (project-intake contract) ──────────────
-    deleted = True
-    for key in (recording.s3_raw_key, *working_keys):
-        if not key:
-            continue
-        try:
-            if not storage.delete_verified(key):
-                deleted = False
-        except Exception:  # noqa: BLE001 -- counted, never blocks ready
-            deleted = False
-    if deleted:
-        recording.raw_deleted = True
-    else:
-        recording.raw_delete_failures += 1
-        logger.warning(
-            "video_processing.raw_delete_failed recording_id=%s failures=%d",
-            recording.id, recording.raw_delete_failures,
-        )
-
-    lifecycle.advance(recording, lifecycle.READY)
-    recording.processed_at = datetime.now(timezone.utc)
-    await session.flush()
-    await session.commit()
-    logger.info("video_processing.ready recording_id=%s", recording.id)
-
-
-async def process_proctored_session_recording(
-    session: AsyncSession, recording: VideoRecording
-) -> None:
-    """Store one proctored-session recording. Compression and storage ONLY.
-
-    This function is the whole of what a monitoring recording gets, and the
-    absence is the design (owner ruling, 2026-09-22 re-affirms P3): no audio
-    is extracted, no transcription runs, no transcript or answer record is
-    written, and `complete_assessment` is never called. A proctored recording
-    therefore cannot reach any code that computes a grade, and it cannot
-    reach it later either, because the `uploaded -> processing` edge is the
-    only door into that half and this path does not take it.
-    """
-    settings = get_settings()
-    with tempfile.TemporaryDirectory(prefix="readypick-session-media-") as workdir:
-        raw_path = Path(workdir) / Path(recording.s3_raw_key or "raw.webm").name
-        compressed_path = Path(workdir) / "assessment.mp4"
-        try:
-            raw_path.write_bytes(storage.get_bytes(recording.s3_raw_key or ""))
-            duration = probe_duration(
-                raw_path, timeout_seconds=settings.video_ffmpeg_timeout_seconds
-            )
-            if duration > settings.video_max_duration_seconds:
-                raise MediaProcessingError(
-                    "The recording is longer than video_max_duration_seconds "
-                    f"({settings.video_max_duration_seconds}s) allows."
-                )
-            recording.duration_seconds = duration
-        except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-            await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
-            raise
-        await compress_store_and_finish(
-            session,
-            recording,
-            conversation_id=recording.conversation_id,
-            raw_path=raw_path,
-            compressed_path=compressed_path,
-            raw_duration=duration,
-        )
-
-
 async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> None:
     """Drive one uploaded recording to `ready`. The worker task's whole body.
 
-    ONE task and ONE entry point for both recording kinds; the kind decides
-    which half of the pipeline runs, and it is read from the row rather than
-    passed in, so a dispatch cannot disagree with the record about what it is
-    processing.
-
-    The session is a WORKER session (RLS bypassed); tenant scoping is explicit
-    per query. Commits at each state transition so a kill mid-pipeline leaves
-    a truthful status rather than a rolled-back lie.
+    The session is a WORKER session (RLS bypassed); tenant scoping is by the
+    recording's own id. Commits at each state transition so a kill
+    mid-pipeline leaves a truthful status rather than a rolled-back lie.
+    Recordings of the deleted interview kind take the same path: storing a
+    recording has never been the step that reaches a scorer.
     """
     settings = get_settings()
-    recording = await session.get(VideoRecording, recording_id)
+    # LOCKED until the first commit below: a redelivered dispatch or the
+    # stuck-upload sweep arriving together with this run waits here, then
+    # finds the recording already past `uploaded` and stops, so one
+    # recording is never compressed twice at once.
+    recording = (
+        await session.execute(
+            select(VideoRecording)
+            .where(VideoRecording.id == recording_id)
+            .with_for_update()
+        )
+    ).scalars().first()
     if recording is None:
         raise ValueError(f"Video recording {recording_id} not found")
     if recording.status in lifecycle.RETRYABLE_FAILURES:
@@ -750,34 +322,35 @@ async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> N
             "video_processing.skipped recording_id=%s status=%s",
             recording_id, recording.status,
         )
+        await session.commit()
         return
-    if recording.kind == RECORDING_PROCTORED_SESSION:
-        await process_proctored_session_recording(session, recording)
-        return
-    conversation = await session.get(AssessmentConversation, recording.conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {recording.conversation_id} not found")
-    job = await session.get(Job, conversation.job_id)
-    link = await session.get(JobCandidateLink, conversation.job_candidate_link_id)
-    if job is None or link is None:
-        raise ValueError(f"Recording {recording_id} has no job or link")
+    sources = await raw_keys(session, recording)
 
-    lifecycle.advance(recording, lifecycle.PROCESSING)
+    lifecycle.advance(recording, lifecycle.COMPRESSING)
+    # What the repair sweep measures a stalled run by (`stalled_recordings`):
+    # a task killed from outside commits nothing more, so this is the last
+    # truthful statement it leaves behind.
+    recording.processing_started_at = datetime.now(timezone.utc)
     await session.flush()
     await session.commit()
 
-    with tempfile.TemporaryDirectory(prefix="readypick-video-") as workdir:
-        raw_path = Path(workdir) / Path(recording.s3_raw_key or "raw.webm").name
-        audio_path = Path(workdir) / "audio.wav"
-        compressed_path = Path(workdir) / "assessment.mp4"
-        transcript_key = f"{keys.RAW_PREFIX}/{conversation.id}/{recording.id}/transcript.json"
-        audio_object_key = keys.audio_key(conversation.id, recording.id)
-
-        # ── Download + audio extraction + real duration ─────────────────────
+    with tempfile.TemporaryDirectory(prefix="readypick-session-media-") as tmp:
+        workdir = Path(tmp)
+        assembled = workdir / "assembled.mkv"
+        compressed = workdir / "assessment.mp4"
         try:
-            raw_path.write_bytes(storage.get_bytes(recording.s3_raw_key or ""))
+            if not sources:
+                raise MediaProcessingError(
+                    "No completed segment exists for this recording."
+                )
+            local: list[Path] = []
+            for index, key in enumerate(sources):
+                target = workdir / f"part-{index:04d}{Path(key).suffix or '.webm'}"
+                storage.download_to(key, target)
+                local.append(target)
+            assemble(local, assembled, workdir=workdir)
             duration = probe_duration(
-                raw_path, timeout_seconds=settings.video_ffmpeg_timeout_seconds
+                assembled, timeout_seconds=settings.video_ffmpeg_timeout_seconds
             )
             if duration > settings.video_max_duration_seconds:
                 raise MediaProcessingError(
@@ -785,76 +358,52 @@ async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> N
                     f"({settings.video_max_duration_seconds}s) allows."
                 )
             recording.duration_seconds = duration
-            extract_audio(
-                raw_path, audio_path,
-                timeout_seconds=settings.video_ffmpeg_timeout_seconds,
-            )
-            storage.put(
-                key=audio_object_key,
-                data=audio_path.read_bytes(),
-                content_type="audio/wav",
-            )
+            compress(assembled, compressed)
         except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-            await _fail(session, recording, lifecycle.PROCESSING_FAILED, str(exc))
+            await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
             raise
 
-        # ── Speech to text ──────────────────────────────────────────────────
-        if not settings.transcribe_enabled:
-            # Honest and retryable, never a fake transcript. Returns rather
-            # than raises: a platform retry cannot supply an AWS account, and
-            # the staff retry endpoint re-dispatches once it is configured.
-            await _fail(
-                session, recording, lifecycle.TRANSCRIPTION_FAILED,
-                TRANSCRIBE_DISABLED_DETAIL,
-            )
-            logger.warning(
-                "video_processing.transcription_unconfigured recording_id=%s",
-                recording_id,
-            )
-            return
+        lifecycle.advance(recording, lifecycle.STORING)
+        await session.flush()
+        await session.commit()
         try:
-            items = run_transcription(
-                audio_key=audio_object_key,
-                output_key=transcript_key,
-                job_name=f"readypick-{recording.id}",
+            compressed_key = recording.s3_compressed_key or keys.compressed_key(
+                recording.conversation_id, recording.id
             )
-        except TranscriptionError as exc:
-            await _fail(session, recording, lifecycle.TRANSCRIPTION_FAILED, str(exc))
-            raise
-
-        # ── Structure + the shared completion ───────────────────────────────
-        try:
-            segments = segment_transcript(
-                items, list(recording.question_marks_json or []), duration
+            size = storage.upload_path(
+                key=compressed_key, path=compressed, content_type="video/mp4"
             )
-            written = await write_transcript_records(
-                session,
-                conversation=conversation,
-                recording=recording,
-                segments=segments,
+            stored_size = storage.head_size(compressed_key)
+            if not stored_size or stored_size != size:
+                raise MediaProcessingError(
+                    "The compressed object's stored size does not match what "
+                    "was uploaded; refusing to delete the raw recording."
+                )
+            compressed_duration = probe_duration(
+                compressed, timeout_seconds=settings.video_ffmpeg_timeout_seconds
             )
-            await complete_assessment(
-                session, conversation=conversation, job=job, link=link
-            )
-            await session.flush()
-            await session.commit()
-            logger.info(
-                "video_processing.structured recording_id=%s questions_written=%d",
-                recording_id, written,
-            )
+            if abs(compressed_duration - duration) > settings.video_duration_tolerance_seconds:
+                raise MediaProcessingError(
+                    "The compressed recording's duration differs from the raw "
+                    "recording by more than video_duration_tolerance_seconds; "
+                    "refusing to delete the raw recording."
+                )
+            recording.s3_compressed_key = compressed_key
+            recording.compressed_size_bytes = size
+            recording.stored_format = "mp4"
+            recording.stored_at = datetime.now(timezone.utc)
         except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-            await session.rollback()
-            recording = await session.get(VideoRecording, recording_id)
-            if recording is not None:
-                await _fail(session, recording, lifecycle.PROCESSING_FAILED, str(exc))
+            await _fail(session, recording, lifecycle.STORAGE_FAILED, str(exc))
             raise
 
-        await compress_store_and_finish(
-            session,
-            recording,
-            conversation_id=conversation.id,
-            raw_path=raw_path,
-            compressed_path=compressed_path,
-            raw_duration=duration,
-            working_keys=(audio_object_key, transcript_key),
-        )
+    # Raw deletion only AFTER the compressed object is verified present: the
+    # project-intake order, and it is not negotiable.
+    await delete_raw_objects(session, recording)
+    # A row finalized before migration 0126 has no stored purge date yet; the
+    # store is the last point it can be given one from its own facts.
+    await recordings.stamp_purge_due(session, recording)
+    lifecycle.advance(recording, lifecycle.READY)
+    recording.processed_at = datetime.now(timezone.utc)
+    await session.flush()
+    await session.commit()
+    logger.info("video_processing.ready recording_id=%s", recording.id)

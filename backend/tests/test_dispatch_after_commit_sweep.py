@@ -53,12 +53,11 @@ SCOPE = (
 LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/admin.py", "create_tenant"): (1, "P7 proposed"),
     ("api/admin.py", "invite_staff"): (1, "P6 proposed"),
-    # KEPT ONLY for `assessment_recording.start_video_interview`, its last
-    # caller; both go with the video interview mode (PLAN-p3 WP5). The
-    # conversation's own start returns `preparing` and dispatches after commit.
+    # KEPT ONLY for its last caller; the conversation's own start returns
+    # `preparing` and dispatches after commit. `respond` (WP3), the two video
+    # routes (WP5), `enqueue_assessment` (WP4) and `complete_assessment` (WP5)
+    # were converted and left this list at the stage 2 integration.
     ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3 WP5"),
-    ("api/assessment_recording.py", "finalize_video_interview"): (1, "P3"),
-    ("api/assessment_recording.py", "retry_video_processing"): (1, "P3"),
     ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
     ("api/bgv.py", "append_employer_route"): (1, "P6 proposed"),
     ("api/bgv.py", "send"): (1, "P6 proposed"),
@@ -72,7 +71,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
     ("api/support.py", "_notify"): (1, "P6"),
-    ("services/video/processing.py", "complete_assessment"): (1, "P3"),
 }
 
 #: (file relative to app/, the alias) -> proposed owner phase. The same

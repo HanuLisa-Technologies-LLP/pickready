@@ -1,14 +1,22 @@
-"""S3 object keys for assessment videos. IDS ONLY, NEVER PII.
+"""S3 object keys for the session recording. IDS ONLY, NEVER PII.
 
-Dual-mode spec section 5 and video spec section 9: the object key must not
-expose candidate PII, so every key is built from the conversation id and the
-recording id and nothing else. This module is the ONLY key builder, so the
-rule cannot be broken at a call site, and `tests/test_dual_mode_assessment.py`
-asserts no email or name shape survives in a generated key.
+The object key must not expose candidate PII, so every key is built from the
+conversation id and the recording id and nothing else. This module is the
+ONLY key builder, so the rule cannot be broken at a call site, and
+`tests/test_session_recording.py` asserts no email or name shape survives in
+a generated key.
 
-    assessment-raw/{conversation_id}/{recording_id}/raw.<ext>
-    assessment-raw/{conversation_id}/{recording_id}/audio.wav
+    assessment-raw/{conversation_id}/{recording_id}/seg-{ordinal:04d}.<ext>
     assessment-compressed/{conversation_id}/{recording_id}/assessment.mp4
+
+A row written before migration 0126 names its single raw object in
+`video_recordings.s3_raw_key` (`.../raw.<ext>`); that stored key is what the
+pipeline and every deletion path read, so no builder for it survives here.
+
+The two prefixes are also the unit of everything infrastructure decides about
+these objects: the application's IAM grant and the lifecycle rules in
+`infra/modules/s3` name them, so a key outside them is a key the product can
+neither write nor expire.
 """
 from __future__ import annotations
 
@@ -31,14 +39,20 @@ def _extension(source_format: str | None) -> str:
     return subtype if subtype in _SOURCE_EXTENSIONS else "webm"
 
 
-def raw_key(
-    conversation_id: uuid.UUID, recording_id: uuid.UUID, source_format: str | None
+def segment_key(
+    conversation_id: uuid.UUID,
+    recording_id: uuid.UUID,
+    ordinal: int,
+    source_format: str | None,
 ) -> str:
-    return f"{RAW_PREFIX}/{conversation_id}/{recording_id}/raw.{_extension(source_format)}"
-
-
-def audio_key(conversation_id: uuid.UUID, recording_id: uuid.UUID) -> str:
-    return f"{RAW_PREFIX}/{conversation_id}/{recording_id}/audio.wav"
+    """One segment's object. The ordinal is zero-padded so a listing sorts
+    in recording order, which is the order the segments are joined in."""
+    if ordinal < 0:
+        raise ValueError("a segment ordinal is never negative")
+    return (
+        f"{RAW_PREFIX}/{conversation_id}/{recording_id}/"
+        f"seg-{ordinal:04d}.{_extension(source_format)}"
+    )
 
 
 def compressed_key(conversation_id: uuid.UUID, recording_id: uuid.UUID) -> str:

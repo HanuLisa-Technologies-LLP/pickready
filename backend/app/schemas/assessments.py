@@ -517,51 +517,6 @@ class TranscriptOut(BaseModel):
 # mode (Appendix B section 1).
 
 
-class VideoQuestionOut(BaseModel):
-    """One question of the video interview, in served order."""
-
-    ordinal: int
-    #: The text the candidate reads aloud and answers in speech.
-    prompt: str
-    #: The format detail (candidate view only; the answer key never crosses).
-    question: QuestionOut
-
-
-class VideoStartOut(BaseModel):
-    """The video interview, opened: the recording session and the questions."""
-
-    conversation_id: uuid.UUID
-    recording_id: uuid.UUID
-    status: str
-    questions: list[VideoQuestionOut]
-    #: Ceilings the recorder must respect, served so the client and server
-    #: never disagree about a number (the proctoring config rule, applied here).
-    max_upload_bytes: int
-    max_duration_seconds: int
-
-
-class VideoMarkIn(BaseModel):
-    """The next-question control: the question now on screen."""
-
-    question_id: uuid.UUID
-
-
-class VideoRecordingStatusOut(BaseModel):
-    """The candidate's honest view of their recording (spec 16).
-
-    `status` is the lifecycle state, `message` is the plain-language account
-    of it. No score, no grade, no internal identifier beyond the recording's
-    own id, and the message never pretends a failed step ran.
-    """
-
-    recording_id: uuid.UUID
-    status: str
-    message: str
-    #: True only for `upload_failed`, where the fix is the candidate's own
-    #: re-upload; every other failure is retried server-side by staff.
-    can_retry_upload: bool = False
-
-
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ───
 
 class SwotAnalysisSectionsIn(BaseModel):

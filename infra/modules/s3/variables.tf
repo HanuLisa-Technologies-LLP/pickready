@@ -35,7 +35,67 @@ variable "application_prefixes" {
   # third was missing until 2026-09-05, so every candidate project upload would
   # have been refused with AccessDenied in a feature that ships. It was never
   # found because no environment had ever been applied.
-  default = ["resumes", "compliance", "project-intake"]
+  #
+  # THE SAME DEFECT, AGAIN, FOR ASSESSMENT MEDIA (2026-09-24). The session
+  # recording has been written under `assessment-raw/` and
+  # `assessment-compressed/` (`services/video/keys.py`) since 2026-09-22, and
+  # neither prefix was here, so every recording upload would have been refused
+  # at the IAM grant as well as at the bucket policy's encryption header.
+  # Pilot held zero recordings when it was found. `voice-answers/` is the
+  # spoken-answer audio, held only until Amazon Transcribe has read it.
+  default = [
+    "resumes",
+    "compliance",
+    "project-intake",
+    "assessment-raw",
+    "assessment-compressed",
+    "voice-answers",
+  ]
+}
+
+variable "assessment_media_retention_days" {
+  description = <<-EOT
+    Owner decision D4, the BACKSTOP half. A stored session recording under
+    `assessment-compressed/` expires this many days after the object was
+    written.
+
+    The DATABASE is what purges on time: `media_purge_due_at` is stamped on
+    each recording at the session's end and the hourly
+    `pickready.purge_assessment_media` deletes it HEAD-confirmed, earlier
+    still when the job closes. The compressed object is always written after
+    the session ended, so this rule can never fire before the stored date,
+    only after it, which is what makes it a backstop for a sweep that did not
+    run rather than a second clock. Must equal the application's
+    `assessment_media_retention_days`; `tests/test_media_retention_d4.py`
+    compares the two.
+  EOT
+  type        = number
+  default     = 90
+}
+
+variable "assessment_raw_backstop_days" {
+  description = <<-EOT
+    How long a raw recording segment may survive under `assessment-raw/`.
+
+    Raw segments are a processing artifact: deleted, HEAD-confirmed, as soon
+    as the compressed recording is verified, and retried hourly by
+    `pickready.reconcile_assessment_recordings` when a deletion did not
+    confirm. Seven days also bounds how long a recording whose processing
+    failed can wait for the staff retry, which is the trade: a candidate's raw
+    video does not sit in the bucket because a pipeline stalled.
+  EOT
+  type        = number
+  default     = 7
+}
+
+variable "voice_answer_backstop_days" {
+  description = <<-EOT
+    How long spoken-answer audio may survive under `voice-answers/`. The
+    transcript is the stored answer; the audio exists only until Amazon
+    Transcribe has read it and is deleted HEAD-confirmed right after.
+  EOT
+  type        = number
+  default     = 1
 }
 
 variable "project_intake_backstop_days" {
