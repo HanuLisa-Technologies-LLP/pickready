@@ -172,21 +172,25 @@ IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
 #: shape the next dead entry point needs and rebuilding it would cost more than
 #: the lines it occupies.
 ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
-    # The skills contract landed (migration 0118) ahead of its two callers, on
-    # purpose: the assessment phase stamps `started_at` and must call
-    # `lock_contract` in the same transaction, and Vaada and Miti read the
-    # bound contract. Until then `job_skill_snapshots` is written only by the
-    # migration. The owning directory is `app/services`, so this asks about
-    # callers in routes, workers and scripts, which is where the start lives.
-    ("app/services/assessment_contract.py", "lock_contract"): (
-        "the only writer of job_skill_snapshots after migration 0118; the "
-        "assessment phase calls it where assessment_conversations.started_at "
-        "is stamped. When it does, move this entry to REQUIRED_CALLERS."
-    ),
+    # The skills contract landed (migration 0118) ahead of its callers, on
+    # purpose. `lock_contract` moved to REQUIRED_CALLERS on 2026-09-24 when the
+    # conversation start began calling it; the bound read below is reached
+    # from `services/vaada_context` (not a route) and from Miti at grading.
+    # The owning directory is `app/services`, so this asks about callers in
+    # routes, workers and scripts.
     ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
         "Vaada (conversation start) and Miti (grading) both read the contract "
         "bound to the conversation and log its digest; both are wired by the "
         "assessment and grading phases."
+    ),
+    # A spoken answer's audio whose first deletion could not be confirmed, or
+    # whose transcription never reported back, is repaired by the hourly
+    # media sweep (`tasks_media.purge_assessment_media`), which belongs to the
+    # recording work package. Until that hunk lands nothing retries it, and
+    # the S3 lifecycle rule on `voice-answers/` is the only backstop.
+    ("app/services/assessment_conversation/voice_audio.py", "repair_pending_audio"): (
+        "the hourly media sweep calls it once PLAN-p3 WP5's tasks_media hunk "
+        "lands. When it does, move this entry to REQUIRED_CALLERS."
     ),
 }
 
@@ -198,6 +202,12 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    ("app/services/assessment_contract.py", "lock_contract"): (
+        "app/api/assessment_conversation.py, the first start. The only writer "
+        "of job_skill_snapshots after migration 0118, in the transaction that "
+        "stamps started_at; without it no skill ever locks (D5) and Miti has "
+        "no snapshot to grade against."
+    ),
     ("app/services/rag/index.py", "index_document"): (
         "app/workers/tasks.py, from pickready.index_document. Without a caller "
         "the index is never written, and retrieval over an empty table returns "
