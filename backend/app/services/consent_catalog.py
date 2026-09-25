@@ -1,9 +1,10 @@
 """The two-stage, per-item consent catalogue (vivekium feature 6).
 
-THE ITEMS ARE DATA, AND THE SERVER IS THEIR ONLY AUTHOR. Eight items: the
-brief's six, feature 4's statutory-identifier tick (PAN / PF / ESI: consent
-only, NO numbers collected, NO numbers stored), and change request 23's
-optional cross-employer evidence reuse. Each is recorded
+THE ITEMS ARE DATA, AND THE SERVER IS THEIR ONLY AUTHOR. Seven items: the
+brief's six and feature 4's statutory-identifier tick (PAN / PF / ESI: consent
+only, NO numbers collected, NO numbers stored). Change request 23's optional
+cross-employer evidence reuse was RETIRED on 2026-09-25 with the feature it
+authorised (`RETIRED_KEYS`). Each is recorded
 individually with its own timestamp in `candidate_consents` (migration 0101),
 which is the ONE table behind the brief's "three destinations": the candidate
 record (portal), the BGV record (the recruiter's BGV response) and the
@@ -127,42 +128,6 @@ CONSENT_ITEMS: tuple[ConsentItem, ...] = (
             "decisions."
         ),
     ),
-    # Change request 23 (portable evidence). NOT a widening of
-    # `profile_retention`, which says a profile "may be considered by employer
-    # clients registered on the platform": being CONSIDERED by an employer is
-    # not the same act as evidence gathered while hiring for one employer
-    # being reused to GRADE the candidate for another. Stretching an existing
-    # sentence over a new purpose is precisely the failure a per-item
-    # catalogue exists to prevent, so the new purpose gets its own item, its
-    # own tick and its own timestamp.
-    #
-    # STAGE A, because the evidence is the candidate's own and spans their
-    # whole account rather than any one assessment, which is the same family
-    # the other two registration items belong to. OPTIONAL, because a
-    # candidate who declines simply has their criteria established from what
-    # they submit for that job; refusing it costs them convenience, not
-    # access, and a mandatory version would be consent extracted rather than
-    # given.
-    #
-    # THE OPERATIONAL SWITCH IS ELSEWHERE AND STAYS THERE. The reuse path
-    # asks `retention_consent.reuse_across_jobs_allowed`, which reads
-    # `candidates.retain_assessment_consent` and refuses on NULL. This row is
-    # the record of WHICH PURPOSE was agreed to and under what words; that
-    # flag is what the code checks. They must be reconciled by whoever owns
-    # the flag, and until they are the standing behaviour is the safe one:
-    # absent consent refuses on both sides.
-    ConsentItem(
-        key="cross_employer_evidence_reuse",
-        stage=STAGE_REGISTRATION,
-        required=False,
-        text=(
-            "My verified career history, education, employment confirmations "
-            "and the core skills drawn from my resume may be reused to "
-            "establish the criteria for later roles with other employer "
-            "clients registered on the platform. If I do not agree, each "
-            "role is assessed only on what I submit for it."
-        ),
-    ),
     ConsentItem(
         key="job_scoped_assessment_data",
         stage=STAGE_ASSESSMENT,
@@ -210,6 +175,21 @@ CONSENT_ITEMS: tuple[ConsentItem, ...] = (
 )
 
 ITEMS_BY_KEY: dict[str, ConsentItem] = {item.key: item for item in CONSENT_ITEMS}
+
+#: Items that were once asked and are no longer, with the date they retired.
+#: A retired key is never offered and never recorded again (`record_items`
+#: raises on it, the registration route answers 422), but the acts already
+#: given under it stay readable: `candidate_consent_events` carries the
+#: verbatim sentence, so `history_for` still answers what was agreed to.
+#:
+#: `cross_employer_evidence_reuse` (change request 23) authorised reusing
+#: portable evidence to establish another employer's criteria. Nothing reuses
+#: evidence any more: every item of every assessment is asked (Phase 3,
+#: 2026-09-25), so asking for the consent would be asking permission for
+#: something the product does not do.
+RETIRED_KEYS: dict[str, str] = {
+    "cross_employer_evidence_reuse": "2026-09-25",
+}
 
 STAGE_A_KEYS: tuple[str, ...] = tuple(
     item.key for item in CONSENT_ITEMS if item.stage == STAGE_REGISTRATION
@@ -421,44 +401,3 @@ async def stage_a_missing(
         ).all()
     }
     return [key for key in STAGE_A_REQUIRED_KEYS if key not in held]
-
-
-CROSS_EMPLOYER_EVIDENCE_REUSE = "cross_employer_evidence_reuse"
-
-
-async def cross_employer_reuse_allowed(
-    session: AsyncSession, candidate_id: uuid.UUID
-) -> bool:
-    """May this candidate's portable evidence establish criteria for ANOTHER employer?
-
-    THIS IS THE ONE AUTHORITY, and it reads the catalogue row rather than
-    `candidates.retain_assessment_consent`. The two were briefly both in play
-    and that was a defect, not a belt and braces: two records for one
-    permission is the shape rule 5 forbids, and the one that must win is the
-    one whose WORDING actually says what is being permitted.
-
-    `retain_assessment_consent` says "retain the completed assessment for
-    future jobs, or for this job only". That is a statement about RETENTION,
-    and the product had it wired to the narrower DOWNLOAD verb. It nowhere
-    tells a candidate that evidence gathered while employer A assessed them
-    may be reused to establish what employer B grades them against. Reading it
-    here would have been a consent stretched to cover a purpose it does not
-    name, which is precisely the failure the per item catalogue exists to
-    prevent.
-
-    A missing row refuses. Absence of consent is never consent, and because
-    the item is OPTIONAL a candidate who was offered it and declined is
-    indistinguishable here from one who has not been asked yet: both get every
-    criterion assessed fresh, which is the product's behaviour from before
-    portable evidence existed and is never wrong, only slower.
-    """
-    row = (
-        await session.execute(
-            text(
-                "SELECT 1 FROM candidate_consents "
-                "WHERE candidate_id = :cid AND item_key = :key"
-            ),
-            {"cid": str(candidate_id), "key": CROSS_EMPLOYER_EVIDENCE_REUSE},
-        )
-    ).first()
-    return row is not None
