@@ -66,7 +66,7 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
         "PROCTORING_AI_TEXT_MIN_CHARS", "PROCTORING_AI_TEXT_THRESHOLD",
         "PROCTORING_ANALYSIS_TIMEOUT_SECONDS", "PROCTORING_AUDIO_CHUNK_SECONDS",
         "PROCTORING_AUDIO_MAX_CHUNK_BYTES", "PROCTORING_BASELINE_ANSWERS",
-        "PROCTORING_BURST_WINDOW_SECONDS", "PROCTORING_CAMERA_RECOVERY_SECONDS",
+        "PROCTORING_BURST_WINDOW_SECONDS",
         "PROCTORING_CONFIRMING_WINDOW_SECONDS", "PROCTORING_DISPLAY_CHECK_INTERVAL_SECONDS",
         "PROCTORING_EVENT_BATCH_MAX", "PROCTORING_FACE_ABSENT_EXTENDED_SECONDS",
         "PROCTORING_FACE_ABSENT_MODERATE_COOLDOWN_SECONDS", "PROCTORING_FACE_ABSENT_MODERATE_SECONDS",
@@ -89,16 +89,16 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
     # What a candidate is asked, for how long and at what weight. A value that
     # differed between deployments would make two candidates for one job sit
     # different assessments depending on where they were served.
+    # The turn clock itself (ASSESSMENT_TIME_PROSE_SECONDS and its siblings) is
+    # documented in `.env.example` by the Phase 3 conversation engine, which
+    # snapshots each allocation onto the turn it opens.
     "the assessment's shape: composition, timing, weights and ceilings": frozenset({
         "ASSESSMENT_ANCHOR_MIN_CHARS", "ASSESSMENT_COMPOSITION_ATTEMPTS",
-        "ASSESSMENT_DURATION_MINUTES_CXO", "ASSESSMENT_DURATION_MINUTES_LEADERSHIP",
-        "ASSESSMENT_DURATION_MINUTES_MANAGERIAL", "ASSESSMENT_DURATION_MINUTES_NON_MANAGERIAL",
-        "ASSESSMENT_EVALUATION_MIN_REASONING_WORDS", "ASSESSMENT_EVIDENCE_MIN_SHARE",
-        "ASSESSMENT_MISCONCEPTION_MIN_WORDS", "ASSESSMENT_QUESTION_CEILING",
-        "ASSESSMENT_SUPPORTING_MAX_SHARE", "ASSESSMENT_SUPPORTING_MAX_SHARE_SENIOR",
-        "ASSESSMENT_TIME_CODING_SECONDS", "ASSESSMENT_TIME_EVIDENCE_SECONDS",
-        "ASSESSMENT_TIME_FILL_BLANK_SECONDS", "ASSESSMENT_TIME_MCQ_MULTI_SECONDS",
-        "ASSESSMENT_TIME_MCQ_SINGLE_SECONDS", "ASSESSMENT_TIME_SHORT_ANSWER_SECONDS",
+        "ASSESSMENT_EVALUATION_MIN_REASONING_WORDS",
+        "ASSESSMENT_MISCONCEPTION_MIN_WORDS",
+        "ASSESSMENT_QUESTION_FLOOR_CXO", "ASSESSMENT_QUESTION_FLOOR_LEADERSHIP",
+        "ASSESSMENT_QUESTION_FLOOR_MANAGERIAL", "ASSESSMENT_QUESTION_FLOOR_NON_MANAGERIAL",
+        "ASSESSMENT_SHARE_CODING", "ASSESSMENT_SHARE_OBJECTIVE", "ASSESSMENT_SHARE_PROSE",
         "ASSESSMENT_WEIGHT_CODING", "ASSESSMENT_WEIGHT_EVIDENCE",
         "ASSESSMENT_WEIGHT_FILL_BLANK", "ASSESSMENT_WEIGHT_MCQ_MULTI",
         "ASSESSMENT_WEIGHT_MCQ_SINGLE", "ASSESSMENT_WEIGHT_SHORT_ANSWER",
@@ -108,8 +108,7 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
     # stored in `candidate_consent_events`, which is the provenance the consent
     # record exists to keep.
     "consent wording and its recorded versions": frozenset({
-        "ASSESSMENT_CONSENT_TEXT_CONVERSATIONAL", "ASSESSMENT_CONSENT_TEXT_VIDEO",
-        "ASSESSMENT_CONSENT_VERSION", "ASSESSMENT_PRIVACY_POLICY_VERSION",
+        "ASSESSMENT_CONSENT_TEXT", "ASSESSMENT_CONSENT_VERSION", "ASSESSMENT_PRIVACY_POLICY_VERSION",
         "ASSESSMENT_TERMS_VERSION",
     }),
     # Windows promised to candidates. Each moves with an owner decision in a
@@ -129,7 +128,8 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
         "PROJECT_MAX_PROJECTS_PER_CANDIDATE", "PROJECT_MAX_TEXT_CHARS_PER_FILE",
         "PROJECT_MAX_TOTAL_BYTES", "PROJECT_REPO_MAX_FILES", "PROJECT_REPO_MAX_FILE_BYTES",
         "BGV_DOCUMENT_MAX_BYTES", "BGV_DOCUMENTS_MAX_PER_TYPE",
-        "VIDEO_MAX_UPLOAD_BYTES", "VIDEO_MAX_DURATION_SECONDS",
+        # VIDEO_MAX_UPLOAD_BYTES and VIDEO_MAX_DURATION_SECONDS are documented
+        # with the rest of the segmented recording's limits in `.env.example`.
     }),
     # The recording pipeline's own knobs, sized against the Fargate task that
     # runs it rather than against anything a deployment chooses.
@@ -137,8 +137,7 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
         "VIDEO_COMPRESSION_AUDIO_BITRATE_KBPS", "VIDEO_COMPRESSION_CRF",
         "VIDEO_COMPRESSION_PRESET", "VIDEO_DOWNLOAD_URL_TTL_SECONDS",
         "VIDEO_DURATION_TOLERANCE_SECONDS", "VIDEO_FFMPEG_TIMEOUT_SECONDS",
-        "VIDEO_PREVIEW_URL_TTL_SECONDS", "VIDEO_TRANSCRIBE_POLL_SECONDS",
-        "VIDEO_TRANSCRIBE_TIMEOUT_SECONDS",
+        "VIDEO_PREVIEW_URL_TTL_SECONDS",
     }),
     # Sized against the RDS instance class and the ECS autoscaler ceiling; the
     # arithmetic is written beside the fields in config.py and moves with the

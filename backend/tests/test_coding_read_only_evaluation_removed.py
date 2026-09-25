@@ -39,7 +39,8 @@ a stated reason, and it is not expected to shrink.
 
 WHITESPACE IS NORMALISED FIRST
 ------------------------------
-For the reason recorded on 2026-09-23 in `test_company_dna_removed.py`: a
+For the reason CLAUDE.md records on 2026-09-23 ("the removal sweep had a
+blind spot"): a
 sweep that reads one line at a time never matches a phrase wrapped across a
 newline, and a sweep with a blind spot is worse than none, because the green
 result is what stops anybody looking. Offsets are mapped back, so a hit still
