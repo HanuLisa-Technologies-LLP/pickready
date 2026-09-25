@@ -46,7 +46,6 @@ from app.services.assessment_formats import types
 from app.services.code_execution import ExecutionOutcome
 from app.services.code_execution.fake import FakeProvider, ScriptedRun
 from app.services.coding_assessment import final_answer, submissions
-from app.services.coding_assessment import payload as coding_payload
 from app.workers import dispatch
 from app.workers.runtime import worker_session
 from tests.coding_api_fixtures import (  # noqa: F401  (fixtures)
@@ -86,25 +85,6 @@ async def _persist_with_sentinels(factory, w) -> uuid.UUID:
             return question.id
 
 
-def _v2_candidate_view(monkeypatch) -> None:
-    """ASSUMPTION, test-only, until 4B1's pending hunk is merged
-    (`docs/release/2026-09-vivekium/hunks/p4-4b1-types-v2-dispatch.patch`):
-    `types.candidate_view` on this branch still reads every coding payload
-    as the legacy v1 shape, so it raises on a v2 row, and the recruiter
-    transcript serialises the candidate view of every structured answer.
-    This installs exactly the dispatch that hunk adds and nothing more: a v2
-    payload is projected by `coding_assessment.payload.candidate_projection`.
-    Once the hunk lands this is a no-op wrapper around the same call."""
-    original = types.candidate_view
-
-    def view(question_id, question_type, payload):
-        if question_type == types.CODING and coding_payload.is_v2(payload):
-            return coding_payload.candidate_projection(payload)
-        return original(question_id, question_type, payload)
-
-    monkeypatch.setattr(types, "candidate_view", view)
-
-
 def _script(provider: FakeProvider) -> None:
     for stdin, expected in VISIBLE.values():
         provider.script(CODE, stdin, ScriptedRun(stdout=expected))
@@ -123,7 +103,6 @@ def _script(provider: FakeProvider) -> None:
 
 async def test_the_answer_key_reaches_no_response_no_log_and_no_prompt(factory, candidate, monkeypatch, caplog) -> None:
     caplog.set_level(logging.DEBUG)
-    _v2_candidate_view(monkeypatch)
     router = Router()
     monkeypatch.setattr(llm_router, "invoke_llm", router)
     world = candidate.world

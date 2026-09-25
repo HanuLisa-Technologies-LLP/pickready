@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -75,6 +76,7 @@ from app.schemas.coding import (
     CodingRunTestOut,
     CodingSubmissionStateOut,
 )
+from app.services.assessment_conversation import turns
 from app.services.coding_assessment import runs, submissions
 from app.services.proctoring import gate as proctoring_gate
 from app.services.rate_limit import rate_limit
@@ -183,6 +185,16 @@ async def _require_open(session: AsyncSession, owned: _Owned, question: Candidat
     index = conversation.next_question_index
     if index >= len(prompts) or prompts[index][3].id != question.id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=QUESTION_NOT_OPEN_DETAIL)
+    # The SERVER's turn clock (p4-4c hunk 2, applied at the stage 2
+    # integration): a Run is refused while the turn is paused and once its
+    # time, plus the grace, has run out. The same clock `respond` reads, so a
+    # candidate cannot keep running samples on a question the server has
+    # already closed.
+    clock = await turns.turn_clock(session, conversation, now=datetime.now(timezone.utc))
+    if clock is None or clock.expired:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=QUESTION_NOT_OPEN_DETAIL)
+    if clock.paused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=proctoring_gate.PAUSED_DETAIL)
 
 
 def _run_out(run: CodingRun, question: CandidateQuestion) -> CodingRunOut:

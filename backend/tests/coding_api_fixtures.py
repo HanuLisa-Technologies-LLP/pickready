@@ -29,6 +29,7 @@ from app.api.deps import (
     get_current_user,
     get_tenant_db,
 )
+from app.core.config import get_settings
 from app.core.db import superadmin_scope, tenant_scope
 from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG
 from app.main import app
@@ -101,6 +102,17 @@ async def candidate(factory, world) -> AsyncIterator[Candidate]:
     # `world` writes the link with a source the ORM enum does not carry; the
     # candidate routes LOAD the link, so it gets a real one.
     await _exec(factory, "UPDATE job_candidate_links SET source = 'fresh' WHERE id = :l", l=world.link)
+    # The coding question is ON SCREEN: the server's turn clock has a turn open
+    # on it with the coding allocation, the state `respond` itself leaves after
+    # opening a turn. A Run is refused on a turn with no clock (p4-4c hunk 2),
+    # so a world with no open turn could not exercise the Run routes at all.
+    await _exec(
+        factory,
+        "UPDATE assessment_conversations SET turn_seq = 1, prompt_shown_at = now(), "
+        "turn_allocation_seconds = :a WHERE id = :c",
+        a=get_settings().assessment_time_coding_seconds,
+        c=world.conversation,
+    )
     user_id = await sign_in(factory, world.candidate)
     proctoring_id = uuid.uuid4()
     await _exec(

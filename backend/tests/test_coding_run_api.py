@@ -211,6 +211,49 @@ async def test_a_question_not_yet_reached_cannot_run(factory, candidate) -> None
     assert refused.status_code == 409
 
 
+async def test_a_run_follows_the_servers_turn_clock(factory, candidate) -> None:
+    """The Run routes read the same turn clock `respond` does (p4-4c hunk 2,
+    stage 2 integration): a turn past its time and grace, or paused by a lost
+    device, runs nothing and reaches no sandbox.
+
+    Mutation-checked: removing the clock check from `_require_open` lets both
+    presses through (202) and fails this test."""
+    from app.services.proctoring import gate as proctoring_gate
+
+    question_id = await _persist(factory, candidate.world)
+    provider = FakeProvider()
+    _script(provider)
+    await _exec(
+        factory,
+        "UPDATE assessment_conversations SET prompt_shown_at = now() - interval '2 days' "
+        "WHERE id = :c",
+        c=candidate.world.conversation,
+    )
+    with code_execution.override_provider(provider):
+        async with candidate_client(factory, {"principal": candidate.principal}) as client:
+            expired = await client.post(_runs_path(candidate, question_id), json=_body())
+    assert (expired.status_code, expired.json()["detail"]) == (
+        409, assessment_coding.QUESTION_NOT_OPEN_DETAIL
+    )
+
+    await _exec(
+        factory,
+        "UPDATE assessment_conversations SET prompt_shown_at = now() WHERE id = :c",
+        c=candidate.world.conversation,
+    )
+    await _exec(
+        factory,
+        "INSERT INTO assessment_pauses (id, tenant_id, conversation_id, reason, started_at) "
+        "VALUES (:id, :t, :c, 'device_loss', now())",
+        id=uuid.uuid4(), t=candidate.world.tenant, c=candidate.world.conversation,
+    )
+    with code_execution.override_provider(provider):
+        async with candidate_client(factory, {"principal": candidate.principal}) as client:
+            paused = await client.post(_runs_path(candidate, question_id), json=_body())
+    assert (paused.status_code, paused.json()["detail"]) == (409, proctoring_gate.PAUSED_DETAIL)
+    assert provider.submissions == []
+
+
 # ── Refusals: status and the server's own sentence ──────────────────────────
 
 
