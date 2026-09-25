@@ -151,6 +151,30 @@ async def test_matching_task_status_reports_completion(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_finished_run_keeps_its_final_stages_and_degraded_flag(monkeypatch):
+    """`pickready.run_matching` returns its final stage payload, so SUCCESS
+    carries it. Reading only PROGRESS redrew every finished run as an
+    all-pending plan and lost a degraded flag the last poll had not seen."""
+    from app.services import matching_progress
+    from app.workers import status as task_status
+
+    payload = matching_progress.empty_payload(operation_id="task-123")
+    payload["stages"][0]["status"] = "done"
+    payload["degraded"] = True
+    payload["degraded_reasons"] = ["Some candidates could not be assessed this run."]
+    out = await _status(
+        monkeypatch,
+        task_status.RunStatus(
+            run_id="task-123", state=task_status.STATE_SUCCESS, payload=payload
+        ),
+    )
+    assert out.done is True
+    assert out.stages[0].status == "done"
+    assert out.degraded is True
+    assert out.degraded_reasons == payload["degraded_reasons"]
+
+
+@pytest.mark.asyncio
 async def test_matching_task_status_never_renders_a_failure_as_stages(monkeypatch):
     """A failed run draws the empty plan, not whatever the failure left behind:
     on failure the record holds the exception CLASS NAME, and the stage list is

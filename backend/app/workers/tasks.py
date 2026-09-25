@@ -891,7 +891,13 @@ def run_matching(ctx: TaskContext, job_id: str):
             # NF-5), a side effect of ranking that duplicated
             # `pickready.release_held_assessments`, the scheduled sweep that
             # owns exactly that repair. One owner per repair.
-    _run(_task())
+            #
+            # The FINAL stage payload is the return value, so the run-status
+            # record's SUCCESS payload carries the finished stages and the
+            # degraded flag. Returning nothing left SUCCESS holding None and
+            # the job page redrew every finished run as an all-pending plan.
+            return progress.payload()
+    return _run(_task())
 
 
 @task(

@@ -159,19 +159,24 @@ async def matching_task_status(
     that confirmed the id exists would itself tell one tenant about another's
     run.
 
-    `result.payload` is what the run last published. It is only a stage
-    payload while the run is in the PROGRESS state; on SUCCESS it is the
-    return value, and on FAILURE it is empty with the exception CLASS NAME
-    recorded beside it, because rendering an exception as stages would put a
-    traceback on a recruiter's screen. A run nothing has picked up yet returns
-    the full list in `pending`, so the page draws the plan immediately.
+    `result.payload` is what the run last published. While the run is in the
+    PROGRESS state it is the live stage payload; on SUCCESS it is the task's
+    return value, which `pickready.run_matching` makes its FINAL stage payload
+    so a finished run keeps its stages and its degraded flag rather than
+    redrawing as an all-pending plan. On FAILURE it is empty with the
+    exception CLASS NAME recorded beside it, because rendering an exception as
+    stages would put a traceback on a recruiter's screen. A run nothing has
+    picked up yet returns the full list in `pending`, so the page draws the
+    plan immediately.
     """
     await _get_job(session, user, job_id)
     if not await _task_was_started_for(session, user, job_id, task_id):
         raise HTTPException(status_code=404, detail=DETAIL_TASK_NOT_FOUND)
     result = await task_status.read(task_id)
     info = (
-        result.payload if result.state == matching_progress.STATE_PROGRESS else None
+        result.payload
+        if result.state in (task_status.STATE_PROGRESS, task_status.STATE_SUCCESS)
+        else None
     )
     payload = (
         info

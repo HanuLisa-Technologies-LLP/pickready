@@ -1,4 +1,4 @@
-"""Vocabulary must not decide a pre-screen grade (spec-doc6 §4.4, Runbook §58).
+"""Vocabulary must not decide whether a resume evidences a skill (Runbook §58).
 
 WHAT IS BEING ASSERTED, AND WHY IT IS A FAIRNESS TEST RATHER THAN A QUALITY ONE
 --------------------------------------------------------------------------------
@@ -10,32 +10,31 @@ one group: the person who learnt the craft at an Indian services firm, in
 academia, in a regional business or outside English, and who calls the work by
 the name they were taught.
 
-So the assertion here is not "the two words score similarly". It is that the
-candidate using the NON-STANDARD word is never scored BELOW the candidate using
-the job description's own word for the same work. A regression that hurt both
-equally would be a bug; a regression that hurt only one of them is the thing
-§58 is about, and only the directional assertion catches it.
+WHAT IT IS ASSERTED AGAINST NOW (Vivekium release, Phase 2 WP-F)
+-----------------------------------------------------------------
+This file used to grade the corpus through the deterministic pre-screen, which
+is DELETED with the A/B/C/Hold grade. The deterministic step that decides
+evidence on the live path is Yukti's grounding (`yukti/grounding.py`):
+`skill_term_line` is what upgrades an unquoted model verdict to "some" when
+the resume literally names the skill, and `skill_mentioned` is what stops a
+"Not evidenced" tag being shown to a recruiter about a skill the resume
+names. Both read `hiring.ontology`. So the directional assertion is now: the
+candidate using the NON-STANDARD word is found to evidence the skill exactly
+when the candidate using the job description's own word is, and is never
+told they lack it.
 
 HOW THE CORPUS ISOLATES THE VARIABLE
 --------------------------------------
 Every pair is substituted into ONE identical sentence template, so the two
-gradings differ in exactly one word. Hand-written sentence pairs would have let
-sentence quality vary alongside the vocabulary, and the test would then have
-been measuring prose while reporting on fairness.
-
-Both directions are run. Equivalence is symmetric, and a table that resolved
-"semantic technologies" toward "graph database" but not back would have picked a
-winning vocabulary rather than stopped vocabulary deciding, which is the failure
-this module's own docstring warns about.
+readings differ in exactly one word. Both directions are run: equivalence is
+symmetric, and a table that resolved one way only would have picked a winning
+vocabulary rather than stopped vocabulary deciding.
 
 THE PHRASING HALF
 ------------------
-spec-doc6 §4.4 also asks for "candidates whose resumes are written in
-non-standard English". No ontology entry can help with that, because it is
-grammar and not vocabulary. What is asserted instead is that the claim reader
-finds the mechanism, the number and the act of ownership in a sentence whatever
-construction carries them, so a resume written in Indian business English is
-tiered identically to the same claim in standard English.
+Grammar is not vocabulary. What is asserted is that a claim written in Indian
+business English is found to evidence its skill exactly as the same claim in
+standard English is.
 """
 from __future__ import annotations
 
@@ -44,7 +43,8 @@ import pathlib
 
 import pytest
 
-from app.services.hiring import ontology, prescreen
+from app.services.hiring import ontology
+from app.services.yukti import grounding
 
 CORPUS = (
     pathlib.Path(__file__).resolve().parent / "fixtures" / "vocabulary" / "mismatch_pairs.json"
@@ -63,14 +63,15 @@ def _corpus() -> dict:
     return json.loads(CORPUS.read_text(encoding="utf-8"))
 
 
-def _grade(requirement: str, resume: str) -> prescreen.PreScreenResult:
-    return prescreen.grade(
-        prescreen.PreScreenInput(
-            requirements=(requirement,),
-            requirement_source=prescreen.REQUIREMENTS_FROM_JD,
-            claims=prescreen.claims_from_resume(resume),
-        )
-    )
+def _evidenced(requirement: str, resume: str) -> bool:
+    """Yukti's deterministic verdict: does this resume name the skill on a line
+    that can serve as the quote?"""
+    return grounding.skill_term_line(requirement, grounding.ResumeIndex.of(resume)) is not None
+
+
+def _mentioned(requirement: str, resume: str) -> bool:
+    """Would Yukti suppress a "Not evidenced" tag for this skill?"""
+    return grounding.skill_mentioned(requirement, grounding.ResumeIndex.of(resume))
 
 
 PAIRS = _corpus()["pairs"]
@@ -135,16 +136,15 @@ def test_the_non_standard_word_is_never_penalised(row):
     """The corpus assertion, in the direction §58 states.
 
     Same requirement, same sentence, one word different. The candidate who used
-    the other name for the work must not score lower, must not grade lower, and
-    must not be recorded as having left the requirement unassessed.
+    the other name for the work must be found to evidence it, and must never
+    be told they lack it.
     """
-    standard = _grade(row["requirement"], TEMPLATE.format(term=row["requirement"]))
-    variant = _grade(row["requirement"], TEMPLATE.format(term=row["variant"]))
+    standard = TEMPLATE.format(term=row["requirement"])
+    variant = TEMPLATE.format(term=row["variant"])
 
-    assert variant.internal.assessed_requirements == 1, row
-    assert variant.internal.value >= standard.internal.value, row
-    assert variant.named.grade == standard.named.grade, row
-    assert variant.internal.confidence >= standard.internal.confidence, row
+    assert _evidenced(row["requirement"], standard), row
+    assert _evidenced(row["requirement"], variant), row
+    assert _mentioned(row["requirement"], variant), row
 
 
 @pytest.mark.parametrize("row", PAIRS, ids=lambda r: f"{r['variant']}|{r['requirement']}")
@@ -152,41 +152,21 @@ def test_equivalence_resolves_in_both_directions(row):
     """The mirror case: the JOB uses the non-standard word and the candidate
     uses the standard one. A table that only resolved one way would have picked
     a winning vocabulary rather than stopped vocabulary from deciding."""
-    standard = _grade(row["variant"], TEMPLATE.format(term=row["variant"]))
-    crossed = _grade(row["variant"], TEMPLATE.format(term=row["requirement"]))
+    crossed = TEMPLATE.format(term=row["requirement"])
 
-    assert crossed.internal.assessed_requirements == 1, row
-    assert crossed.internal.value >= standard.internal.value, row
-    assert crossed.named.grade == standard.named.grade, row
-
-
-def test_the_whole_corpus_is_scored_identically_not_merely_no_worse():
-    """The stronger statement, measured over the corpus rather than per row.
-
-    `>=` is the assertion that matters because it is the direction §58 names,
-    but a change that quietly started scoring the non-standard word HIGHER would
-    also be a vocabulary preference, just an easier one to feel good about. The
-    template holds every other input constant, so the correct number of
-    non-identical scores is zero.
-    """
-    differing = []
-    for row in PAIRS:
-        standard = _grade(row["requirement"], TEMPLATE.format(term=row["requirement"]))
-        variant = _grade(row["requirement"], TEMPLATE.format(term=row["variant"]))
-        if variant.internal.value != standard.internal.value:
-            differing.append((row, standard.internal.value, variant.internal.value))
-    assert not differing, differing
+    assert _evidenced(row["variant"], TEMPLATE.format(term=row["variant"])), row
+    assert _evidenced(row["variant"], crossed), row
+    assert _mentioned(row["variant"], crossed), row
 
 
 def test_a_word_the_ontology_has_never_heard_of_still_matches_itself():
     """Expansion is ADDITIVE. An unknown term must stand on its own rather than
     vanish, or adding a group to the table could remove a match that used to
     work."""
-    result = _grade(
+    assert _evidenced(
         "zermatt reconciliation",
         TEMPLATE.format(term="zermatt reconciliation"),
     )
-    assert result.internal.assessed_requirements == 1
 
 
 def test_expansion_never_manufactures_a_match_out_of_nothing():
@@ -197,12 +177,9 @@ def test_expansion_never_manufactures_a_match_out_of_nothing():
     everything. A resume about supply chain does not evidence a graph database
     requirement however generously the table is read.
     """
-    result = _grade(
-        "graph database",
-        TEMPLATE.format(term="supply chain and materials management"),
-    )
-    assert result.internal.assessed_requirements == 0
-    assert result.named.grade == prescreen.GRADE_HOLD
+    resume = TEMPLATE.format(term="supply chain and materials management")
+    assert not _evidenced("graph database", resume)
+    assert not _mentioned("graph database", resume)
 
 
 # ── Non-standard English ────────────────────────────────────────────────────
@@ -210,36 +187,23 @@ def test_expansion_never_manufactures_a_match_out_of_nothing():
 @pytest.mark.parametrize(
     "row", PHRASINGS, ids=lambda r: r["requirement"].replace(" ", "_")
 )
-def test_non_standard_english_is_read_at_the_same_evidence_tier(row):
+def test_non_standard_english_is_read_as_the_same_evidence(row):
     """Grammar is not evidence.
 
-    The same claim, to the same depth, written once in standard English and once
-    in the Indian business English a great many resumes in this market are
-    written in. The mechanism, the numbers and the ownership are present in
-    both, so RPN-PHIL-001 §6.1's tier and §6.4's modifiers must read them the
-    same way. A grader that scored the second one lower would be scoring
-    fluency, which §52.4's proxy audit names as a common exclusion mechanism.
+    The same claim, written once in standard English and once in the Indian
+    business English a great many resumes in this market are written in. A
+    reader that found the skill in the first and not the second would be
+    scoring fluency, which §52.4's proxy audit names as a common exclusion
+    mechanism.
     """
-    standard = _grade(row["requirement"], row["standard"])
-    variant = _grade(row["requirement"], row["variant"])
-
-    assert variant.internal.best_tier == standard.internal.best_tier, row
-    assert variant.named.grade == standard.named.grade, row
-    assert variant.internal.value >= standard.internal.value, row
-
-
-def test_the_phrasing_corpus_carries_real_evidence_on_both_sides():
-    """Guards the guard. If both sentences of a phrasing pair tiered at E0 the
-    parity assertion above would pass while measuring nothing at all."""
-    for row in PHRASINGS:
-        for key in ("standard", "variant"):
-            result = _grade(row["requirement"], row[key])
-            assert result.internal.best_tier == prescreen.TIER_SPECIFIC, (row, key)
+    assert _evidenced(row["requirement"], row["standard"]), row
+    assert _evidenced(row["requirement"], row["variant"]), row
+    assert _mentioned(row["requirement"], row["variant"]), row
 
 
 # ── One ontology, not two (spec-doc6 §4.6, §10.1 rule 12) ───────────────────
 
-def test_matching_job_relevance_and_the_pre_screen_share_one_ontology():
+def test_matching_job_relevance_and_yukti_share_one_ontology():
     """Three surfaces read the same table, and none of them carries a copy.
 
     A second equivalence table would drift from the first, and a fairness
@@ -251,7 +215,7 @@ def test_matching_job_relevance_and_the_pre_screen_share_one_ontology():
 
     assert matching.ontology is ontology
     assert job_relevance.ontology is ontology
-    assert prescreen.ontology is ontology
+    assert grounding.ontology is ontology
 
 
 def test_no_second_equivalence_table_exists_anywhere_in_the_source():

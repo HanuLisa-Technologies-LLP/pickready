@@ -1,4 +1,15 @@
-"""One quality gate per named agent (spec 31), and all six are arithmetic.
+"""One quality gate per named agent (spec 31), and every one is arithmetic.
+
+YUKTI HAS NO GATE HERE, AND THAT IS DECLARED RATHER THAN IMPLIED
+----------------------------------------------------------------
+`yukti_gate` judged the retired AI Score payload: at least five matching
+categories, each citing a resume line. Its only caller was the unread
+`ai_score` artifact hand-off, and both are DELETED (Vivekium release, Phase 2
+WP-F). Yukti's reading is now checked where it is produced, deterministically:
+`yukti/grounding.py` drops any quote the resume does not contain and any tag
+naming a protected trait BEFORE a row is written, which is the boundary this
+module's own argument asks for. `UNGATED` names the agent and the reason, so
+the gate table still accounts for every agent.
 
 WHY A GATE PER AGENT RATHER THAN ONE AT THE END
 ------------------------------------------------
@@ -42,11 +53,11 @@ from app.services.verification import base as verification
 __all__ = [
     "bodha_gate",
     "sutra_gate",
-    "yukti_gate",
     "vaada_gate",
     "miti_gate",
     "siddhi_gate",
     "GATES",
+    "UNGATED",
     "run_gate",
 ]
 
@@ -67,29 +78,6 @@ _SWOT_QUADRANTS: tuple[str, ...] = ("strengths", "weaknesses", "opportunities", 
 #: matrix, it is one that cannot distinguish two candidates.
 MIN_MATRIX_ITEMS = 5
 MATRIX_CATEGORIES: tuple[str, ...] = ("must_have", "nice_to_have", "behavioural")
-
-# ── Yukti ────────────────────────────────────────────────────────────────────
-#: The Matching Agent proposes at least five coarse, resume-only categories.
-MIN_MATCHING_CATEGORIES = 5
-#: Attributes a resume must never be reasoned from. Not a style preference: an
-#: inference on any of these is unlawful in hiring and would be stated in a
-#: document a client keeps. Checked by NAME because the value is prose.
-FORBIDDEN_INFERENCE_FIELDS: frozenset[str] = frozenset(
-    {
-        "age",
-        "date_of_birth",
-        "gender",
-        "sex",
-        "religion",
-        "caste",
-        "marital_status",
-        "nationality",
-        "race",
-        "disability",
-        "pregnancy",
-        "sexual_orientation",
-    }
-)
 
 # ── Miti ─────────────────────────────────────────────────────────────────────
 #: Answers behind a grade before it counts as evidenced. Two, because one answer
@@ -282,66 +270,6 @@ def sutra_gate(matrix: Mapping[str, Any]) -> verification.Verdict:
         )
 
     return verification.verdict("gate:sutra", findings)
-
-
-def yukti_gate(match: Mapping[str, Any]) -> verification.Verdict:
-    """Yukti, the resume-only matching pass.
-
-    Expects: `resume_parsed`, `categories` as records with `name`, `grade` and
-    `evidence`, and `inferred_fields` naming anything the pass concluded about
-    the person beyond the resume's own content.
-    """
-    findings: list[verification.Finding] = []
-
-    if not match.get("resume_parsed"):
-        findings.append(
-            verification.high(
-                "resume_not_parsed",
-                "match.resume_parsed",
-                "no parsed resume reached the matching pass",
-                "Reparse the resume; do not grade against an unparsed file.",
-            )
-        )
-
-    categories = _items(match, "categories")
-    if len(categories) < MIN_MATCHING_CATEGORIES:
-        findings.append(
-            verification.high(
-                "matching_incomplete",
-                "match.categories",
-                f"{len(categories)} categories, below the required minimum",
-                f"Propose at least {MIN_MATCHING_CATEGORIES} coarse, resume-only "
-                "matching categories.",
-            )
-        )
-
-    for category in categories:
-        if not isinstance(category, Mapping):
-            continue
-        name = str(category.get("name", "unnamed"))
-        grade = str(category.get("grade", "")).strip()
-        if grade and not _items(category, "evidence"):
-            findings.append(
-                verification.medium(
-                    "conclusion_without_evidence",
-                    f"match.categories.{name}",
-                    "a graded category cites nothing from the resume",
-                    f"Cite the resume lines that support the {name} conclusion.",
-                )
-            )
-
-    for inferred in _items(match, "inferred_fields"):
-        if str(inferred).strip().casefold() in FORBIDDEN_INFERENCE_FIELDS:
-            findings.append(
-                verification.high(
-                    "forbidden_inference",
-                    f"match.inferred_fields.{inferred}",
-                    "the pass inferred a protected attribute from the resume",
-                    "Drop the inference; grade only on stated skills and experience.",
-                )
-            )
-
-    return verification.verdict("gate:yukti", findings)
 
 
 def vaada_gate(conversation: Mapping[str, Any]) -> verification.Verdict:
@@ -630,10 +558,20 @@ def siddhi_gate(report: Mapping[str, Any]) -> verification.Verdict:
 GATES = {
     "bodha": bodha_gate,
     "sutra": sutra_gate,
-    "yukti": yukti_gate,
     "vaada": vaada_gate,
     "miti": miti_gate,
     "siddhi": siddhi_gate,
+}
+
+
+#: Agents with no gate in this table, each with the reason. `GATES` and this
+#: mapping together must name every agent in `identity.AGENTS`, so an agent
+#: added without a gate is still visibly absent rather than silently unchecked.
+UNGATED: dict[str, str] = {
+    "yukti": (
+        "Yukti's evidence is grounded deterministically in yukti/grounding.py "
+        "before any row is written; it publishes no artifact for a gate to read."
+    ),
 }
 
 

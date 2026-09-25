@@ -95,10 +95,13 @@ STAGE_MODULES: dict[str, StageModule] = {
         "the frozen scorecard's read half (gate G1), which the grading phase "
         "moves onto the saved skills contract",
     ),
+    #: The stage KEY stays `prescreen` because stored traces carry it (the
+    #: `dna` correlation-kind precedent); what supplies the stage is Yukti's
+    #: reading since the pre-screen grade was retired (Phase 2 WP-F).
     provenance.STAGE_PRESCREEN: StageModule(
-        "app.services.hiring.prescreen",
-        ("PreScreenResult",),
-        "Yukti's resume-stage pre-screen grade",
+        "app.services.yukti.scoring",
+        ("score_links",),
+        "Yukti's resume-stage reading (AI Match)",
     ),
     provenance.STAGE_SCORING: StageModule(
         "app.services.miti.pipeline",

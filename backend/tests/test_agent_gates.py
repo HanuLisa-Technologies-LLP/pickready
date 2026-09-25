@@ -124,49 +124,6 @@ def test_a_criterion_with_no_rubric_is_flagged() -> None:
     assert "unusable_rubric" in {f.issue for f in gates.sutra_gate(matrix).findings}
 
 
-# ── Yukti ────────────────────────────────────────────────────────────────────
-
-GOOD_MATCH = {
-    "resume_parsed": True,
-    "categories": [
-        {"name": f"category-{n}", "grade": rating.GRADE_MATCHING, "evidence": ["line 4"]}
-        for n in range(gates.MIN_MATCHING_CATEGORIES)
-    ],
-    "inferred_fields": ["years_of_experience"],
-}
-
-
-def test_a_complete_matching_pass_passes() -> None:
-    assert gates.yukti_gate(GOOD_MATCH).passed
-
-
-def test_an_unparsed_resume_fails() -> None:
-    """Grading against a file nothing parsed produces a grade about nothing."""
-    assert not gates.yukti_gate(dict(GOOD_MATCH, resume_parsed=False)).passed
-
-
-def test_an_inference_about_a_protected_attribute_fails() -> None:
-    """An inference on age or gender is unlawful in hiring and would be stated
-    in a document a client keeps."""
-    match = dict(GOOD_MATCH, inferred_fields=["age"])
-    verdict = gates.yukti_gate(match)
-    assert not verdict.passed
-    assert "forbidden_inference" in {f.issue for f in verdict.findings}
-
-
-def test_a_graded_category_citing_nothing_is_flagged() -> None:
-    """A conclusion with no resume line behind it is the AI Score claiming to
-    have read something it did not."""
-    match = dict(
-        GOOD_MATCH,
-        categories=[
-            {"name": "skills", "grade": rating.GRADE_HIGHLY, "evidence": []},
-            *GOOD_MATCH["categories"],
-        ],
-    )
-    assert "conclusion_without_evidence" in {f.issue for f in gates.yukti_gate(match).findings}
-
-
 # ── Vaada ────────────────────────────────────────────────────────────────────
 
 GOOD_CONVERSATION = {
@@ -396,10 +353,21 @@ def test_an_ungrounded_claim_is_flagged() -> None:
 # ── the gate table ───────────────────────────────────────────────────────────
 
 
-def test_every_named_agent_has_a_gate() -> None:
+def test_every_named_agent_has_a_gate_or_a_stated_reason() -> None:
     """An agent added without a gate should be visibly absent from a mapping,
-    not silently unchecked."""
-    assert set(gates.GATES) == set(identity.AGENTS)
+    not silently unchecked. Yukti's resume reading is grounded where it is
+    produced (`yukti/grounding.py`) and publishes nothing for a gate to read,
+    so it is named in `UNGATED` with that reason rather than dropped."""
+    assert set(gates.GATES) | set(gates.UNGATED) == set(identity.AGENTS)
+    assert not set(gates.GATES) & set(gates.UNGATED)
+    assert all(reason.strip() for reason in gates.UNGATED.values())
+
+
+def test_an_ungated_agent_has_no_default_pass() -> None:
+    """Being declared ungated is not a pass: `run_gate` still refuses it."""
+    for agent_id in gates.UNGATED:
+        with pytest.raises(gates.NoGate):
+            gates.run_gate(agent_id, {})
 
 
 def test_an_unknown_agent_has_no_default_pass() -> None:
