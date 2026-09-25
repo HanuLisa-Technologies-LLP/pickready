@@ -193,11 +193,21 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
         "assessment phase calls it where assessment_conversations.started_at "
         "is stamped. When it does, move this entry to REQUIRED_CALLERS."
     ),
-    # Phase 4 WP-4B2 lands the coding services ahead of their three callers,
+    # Phase 4 WP-4B2 landed the coding services ahead of their three callers,
     # each owned by another package: the candidate's submit (Phase 3's respond
-    # structured branch), the Run and submission-state routes (Phase 4 WP-4C)
-    # and the grader (Phase 5's Miti coding sub-stage and scoring hold). The
-    # tasks that DO call into the package are in REQUIRED_CALLERS below.
+    # structured branch), the Run and submission-state routes (Phase 4 WP-4C,
+    # now wired and moved to REQUIRED_CALLERS) and the grader (Phase 5's Miti
+    # coding sub-stage and scoring hold). The tasks that DO call into the
+    # package are in REQUIRED_CALLERS below.
+    #
+    # `accept_final` is reached through `final_answer.accept_structured_answer`
+    # (4C), which lives in the same package, so it still has no caller OUTSIDE
+    # the package until Phase 3's respond calls the hook.
+    ("app/services/coding_assessment/final_answer.py", "accept_structured_answer"): (
+        "Phase 3's respond structured branch, after the answer row is written: "
+        "the one line that hands a final v2 coding answer to execution. Until "
+        "it is called, a final coding answer is stored and never executed."
+    ),
     ("app/services/coding_assessment/submissions.py", "accept_final"): (
         "the only writer of coding_submissions; Phase 3's respond calls it for "
         "a v2 coding answer, after the answer row is flushed."
@@ -208,23 +218,12 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
     ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
         "Phase 5's scoring entry waits on it while coding work is open."
     ),
-    ("app/services/coding_assessment/submissions.py", "candidate_state_word"): (
-        "Phase 4 WP-4C's submission-state route."
-    ),
-    ("app/services/coding_assessment/runs.py", "start_run"): (
-        "Phase 4 WP-4C's Run route; the only writer of coding_runs."
-    ),
-    ("app/services/coding_assessment/runs.py", "refresh_run"): (
-        "Phase 4 WP-4C's Run poll route."
-    ),
-    ("app/services/coding_assessment/runs.py", "candidate_results"): (
-        "Phase 4 WP-4C's Run poll route."
-    ),
     ("app/services/coding_assessment/evidence.py", "evidence_for_answer"): (
         "Phase 5's Miti coding sub-stage, the one grading authority."
     ),
     ("app/services/coding_assessment/evidence.py", "for_conversation"): (
-        "Phase 5's Miti coding sub-stage and the recruiter transcript (4C)."
+        "Phase 5's Miti coding sub-stage. The recruiter transcript (4C) reads "
+        "it through `coding_assessment.transcript`, inside the package."
     ),
     ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
         "Vaada (conversation start) and Miti (grading) both read the contract "
@@ -283,6 +282,27 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     ),
     ("app/services/coding_assessment/sweeps.py", "verify_sandbox"): (
         "app/workers/coding_tasks.py, pickready.verify_code_execution_sandbox."
+    ),
+    # Phase 4 WP-4C: the candidate's Run button and the final answer's state.
+    # Without the first two the editor can only fail; without the third the
+    # candidate cannot tell a stored final answer from a lost one.
+    ("app/services/coding_assessment/runs.py", "start_run"): (
+        "app/api/assessment_coding.py, POST .../coding/{qid}/runs. The only "
+        "writer of coding_runs."
+    ),
+    ("app/services/coding_assessment/runs.py", "refresh_run"): (
+        "app/api/assessment_coding.py, GET .../runs/{run_id}. Without it a "
+        "queued run is never collected and the button spins until its deadline."
+    ),
+    ("app/services/coding_assessment/runs.py", "candidate_results"): (
+        "app/api/assessment_coding.py, the Run poll route's response."
+    ),
+    ("app/services/coding_assessment/submissions.py", "candidate_state_word"): (
+        "app/api/assessment_coding.py, GET .../coding/{qid}/submission."
+    ),
+    ("app/services/coding_assessment/transcript.py", "recruiter_views"): (
+        "app/api/assessments.py, the recruiter transcript. Without it an "
+        "executed coding answer reads as nothing beside the candidate's code."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "
