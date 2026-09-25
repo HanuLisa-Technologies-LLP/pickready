@@ -283,6 +283,20 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     ("app/services/coding_assessment/sweeps.py", "verify_sandbox"): (
         "app/workers/coding_tasks.py, pickready.verify_code_execution_sandbox."
     ),
+    # Phase 4 WP-4F: the code-execution port's two doors. Every program that
+    # reaches the sandbox asks `get_provider` for it, and every answer is
+    # judged by `outputs_match` in the application, never by the sandbox.
+    # Without a caller of the first, the package is importable and runs
+    # nothing; without the second, a hidden test is graded somewhere else.
+    ("app/services/code_execution/provider.py", "get_provider"): (
+        "app/services/coding_assessment/runs.py (Run) and submissions.py "
+        "(the final answer), both reached from app/api/assessment_coding.py "
+        "and app/workers/coding_tasks.py."
+    ),
+    ("app/services/code_execution/provider.py", "outputs_match"): (
+        "app/services/coding_assessment/execution.py and keys.py, the only "
+        "places a program's output is compared with an expected one."
+    ),
     # Phase 4 WP-4C: the candidate's Run button and the final answer's state.
     # Without the first two the editor can only fail; without the third the
     # candidate cannot tell a stored final answer from a lost one.
