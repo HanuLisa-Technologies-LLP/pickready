@@ -252,97 +252,115 @@ async def test_a_probe_that_repeats_the_original_question_is_re_asked(
 # a rejection is fed back verbatim and re-asked, and an outage invents nothing.
 
 
-# ── The interviewer: a rejection that used to be indistinguishable from an outage ──
+# ── The question writer: a rejection is a defect the model is told about ─────
+
+
+def _question(prompt: str = "Describe a system you designed end to end."):
+    """One question row, its skill and the Vaada context, with no session."""
+    import uuid
+
+    from app.models.assessment import CandidateQuestion, JobCompetency
+    from app.models.job import Job
+    from app.services import assessment_contract
+    from app.services.vaada_context import VaadaContext
+
+    job = Job(id=uuid.uuid4(), title="Senior Backend Engineer", jd_markdown="Kafka ingest.")
+    competency = JobCompetency(
+        id=uuid.uuid4(), name="Kafka", category="must_have", description="Kafka."
+    )
+    row = CandidateQuestion(
+        id=uuid.uuid4(), job_candidate_link_id=uuid.uuid4(), competency_id=competency.id,
+        ordinal=0, prompt=prompt, rubric_json=None, question_type="short_answer",
+    )
+    skill = assessment_contract.ContractSkill(
+        id=competency.id, name="Kafka", bucket="must_have", priority=1,
+        evidence_line="Has run Kafka consumers under real load.",
+    )
+    contract = assessment_contract.AssessmentContract(
+        job_id=job.id, version=1, locked=True, skills=(skill,), role_summary="Ingest.",
+        digest="0" * 64, grade="non_managerial", locked_at=None,
+    )
+    return job, row, competency, VaadaContext(
+        contract=contract, skill=skill, role_summary=contract.role_summary
+    )
+
+
+_RUBRIC = {
+    "0_39": "No partitioning decision.",
+    "40_59": "Names partitions only.",
+    "60_74": "One real sizing decision.",
+    "75_89": "Sized from measured lag.",
+    "90_100": "Trades ordering and rebalancing with outcomes.",
+}
 
 
 @pytest.mark.asyncio
-async def test_a_reword_that_dropped_a_named_technology_is_re_asked(monkeypatch) -> None:
-    """`_substance_preserved` has always rejected this, and the rejection fell
-    straight through to the stored text -- so "the model said 'a message queue'
-    instead of 'Kafka'" and "every provider is down" had the same outcome, and
-    the candidate read a scripted line either way."""
+async def test_a_repeated_question_is_re_asked_then_nothing_is_persisted(monkeypatch) -> None:
+    """A repeat is a criterion of the writer's own loop: the model is told, and
+    a result that still repeats is DEGRADED and writes nothing. Before
+    2026-09-24 the repeat was persisted with a new rubric and then hidden, so
+    the candidate was graded against a question they never read."""
+    from app.services import ppi_interview
+
+    asked = "How did you size the Kafka partitions when consumer lag grew?"
     calls: list[list[dict]] = []
-    stored = "Walk me through how you tuned Kafka consumer lag."
 
     async def _invoke(task_type, messages, **k):
         calls.append(messages)
-        if len(calls) == 1:
-            return json.dumps({"question": "How did you tune the message queue?"})
-        return json.dumps(
-            {"question": "You mentioned ingestion earlier, so how did you tune Kafka consumer lag?"}
-        )
+        return json.dumps({"question": asked, "rubric": _RUBRIC})
 
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own the ingestion platform."}],
-        mode=interviewer.MODE_REWORD,
-    )
-
-    assert len(calls) == 2
-    assert "kafka" in calls[1][-1]["content"].lower()
-    assert "Kafka" in out
-    assert out != stored
-
-
-@pytest.mark.asyncio
-async def test_a_reword_that_stays_wrong_still_falls_back_to_the_stored_text(monkeypatch) -> None:
-    """The loop adds a second chance, not a lower bar. A question that would be
-    graded against a rubric it no longer matches must never be asked."""
-    stored = "Walk me through how you tuned Kafka consumer lag."
-
-    async def _invoke(*a, **k):
-        return json.dumps({"question": "How did you tune the message queue?"})
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own the ingestion platform."}],
-        mode=interviewer.MODE_REWORD,
-    )
-    assert out == stored
-
-
-@pytest.mark.asyncio
-async def test_a_generated_repeat_is_re_asked_then_falls_back(monkeypatch) -> None:
-    # Deliberately carries specific terms. `_is_repeat` compares on the tokens
-    # `interviewer._tokens` protects -- digits, internal punctuation and
-    # mid-sentence capitals -- so a question of entirely ordinary words has
-    # nothing to compare and is correctly never called a repeat.
-    asked = "Tell me about the PagerDuty rotation you ran for the Kafka ingest incident."
-    calls = {"n": 0}
-
-    async def _invoke(*a, **k):
-        calls["n"] += 1
-        return json.dumps({"question": asked})
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question="stored fallback question",
-        transcript=[{"speaker": "agent", "content": asked}],
-        mode=interviewer.MODE_GENERATE,
-        competency="Incident response",
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _invoke)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
         asked_before=[asked],
     )
-    assert calls["n"] == 2
-    assert out == "stored fallback question"
+    assert len(calls) == 2, "the repeat was not fed back for a second attempt"
+    assert "already been asked" in calls[1][-1]["content"]
+    assert result.degraded
+    assert row.prompt == "Describe a system you designed end to end."
+    assert row.rubric_json is None and row.generated_at is None
 
 
 @pytest.mark.asyncio
-async def test_an_outage_costs_the_delivery_and_nothing_else(monkeypatch) -> None:
-    stored = "Walk me through how you tuned Kafka consumer lag."
+async def test_a_second_attempt_that_fixes_the_repeat_is_persisted_with_its_rubric(
+    monkeypatch,
+) -> None:
+    from app.services import ppi_interview
+
+    asked = "How did you size the Kafka partitions when consumer lag grew?"
+    # Two specific terms, so it shares only half of them with the question
+    # already asked (`interviewer.is_semantic_repeat` reads a single shared
+    # term as the same question).
+    fixed = "Which Grafana panel first showed the Kafka backlog, and what did you change?"
+    answers = iter([asked, fixed])
+
+    async def _invoke(*a, **k):
+        return json.dumps({"question": next(answers), "rubric": _RUBRIC})
+
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _invoke)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
+        asked_before=[asked],
+    )
+    assert not result.degraded
+    assert row.prompt == fixed and row.rubric_json == _RUBRIC
+    assert row.generated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_an_outage_costs_the_question_and_nothing_else(monkeypatch) -> None:
+    from app.services import ppi_interview
 
     async def _boom(*a, **k):
         raise RuntimeError("every provider down")
 
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _boom)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own ingestion."}],
-        mode=interviewer.MODE_REWORD,
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _boom)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
     )
-    assert out == stored
+    assert result.degraded
+    assert row.prompt == "Describe a system you designed end to end."
+    assert row.generated_at is None

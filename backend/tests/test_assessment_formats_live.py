@@ -17,8 +17,8 @@ Three properties get most of the attention:
   * THE ANSWER KEY NEVER CROSSES THE BOUNDARY. Asserted on the payload the
     endpoint actually returns, not on `candidate_view` in isolation.
   * THE SERVER MEASURES THE TIME. `time_spent_seconds` comes from
-    `prompt_shown_at`, so a client that reports a pause longer than the
-    question was on screen cannot drive it below zero.
+    `prompt_shown_at` and the server's own pause rows, capped by the turn's
+    allocation; the client reports no duration at all (2026-09-24).
   * PROCTORING IS MANDATORY. Both routes refuse without a consented session,
     and a terminated conversation takes no further answer.
 """
@@ -31,7 +31,9 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select, text
 
+from app.services import interviewer
 from app.services.assessment_formats import types
+from app.workers import dispatch as dispatch_mod
 
 
 async def _factory_or_skip():
@@ -251,13 +253,8 @@ def _staff(fx: _Fx):
 @pytest.fixture
 def wired(monkeypatch):
     """Everything the conversation reaches that is not the subject here."""
-    from app.api import assessment_conversation as mod
     from app.services import agent_loop, answer_classification, ppi_interview
     from app.services.assessment_formats import scoring as format_scoring
-
-    dispatched: list[str] = []
-    monkeypatch.setattr(mod, "dispatch",
-                        lambda name, *a, **k: dispatched.append(name))
 
     async def _substantive(**kwargs):
         return answer_classification.Classification(
@@ -278,14 +275,13 @@ def wired(monkeypatch):
     async def _no_follow_up(**kwargs):
         return None
 
-    monkeypatch.setattr(mod.interviewer, "next_follow_up", _no_follow_up)
+    monkeypatch.setattr(interviewer, "next_follow_up", _no_follow_up)
 
     # A wrong blank must not reach a provider from a test.
     async def _not_equivalent(session, **kwargs):
         return False
 
     monkeypatch.setattr(format_scoring, "semantically_equivalent", _not_equivalent)
-    return dispatched
 
 
 def _patch_link(monkeypatch, fx: _Fx) -> None:
@@ -306,13 +302,22 @@ async def _start(mod, fx, s):
     return await mod.start_conversation(fx.link_id, user=_candidate(fx), session=s)
 
 
-async def _respond(mod, fx, s, *, answer="", payload=None, paused_ms=0, behaviour=None):
-    from app.schemas.assessments import ConversationMessageIn
+async def _respond(mod, fx, s, *, answer="", payload=None, behaviour=None):
+    """Answer the turn on screen, naming it as the client does.
 
+    A conversation nobody could open has no turn yet (`turn_seq` 0); a client
+    still names turn one, the first it could ever have been shown, so the
+    request is well formed and it is the GATE that refuses it.
+    """
+    from app.models.assessment import AssessmentConversation
+    from app.schemas.assessment_conversation import ConversationMessageIn
+
+    conversation = await s.get(AssessmentConversation, fx.conv_id)
     return await mod.respond(
         fx.conv_id,
         ConversationMessageIn(
-            answer=answer, answer_payload=payload, paused_ms=paused_ms, behaviour=behaviour
+            turn_seq=max(1, conversation.turn_seq), answer=answer, answer_payload=payload,
+            behaviour=behaviour,
         ),
         user=_candidate(fx),
         session=s,
@@ -414,7 +419,7 @@ async def test_every_format_is_delivered_answered_scored_and_recorded(monkeypatc
 
         assert conversation.next_question_index == len(FORMATS)
         assert conversation.status == "completed"
-        assert "pickready.run_functional_assessment" in wired
+        assert "pickready.run_functional_assessment" in dispatch_mod.recorded_names()
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -466,12 +471,13 @@ async def test_a_structured_answer_becomes_a_readable_transcript_line(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_the_server_measures_the_time_and_a_long_pause_cannot_go_negative(
+async def test_the_server_measures_the_time_and_caps_it_at_the_allocation(
     monkeypatch, wired
 ) -> None:
-    """`time_spent_seconds` is measured from `prompt_shown_at`, less a pause
-    BOUNDED by the elapsed time. A client-reported duration would be a number
-    the client chose."""
+    """`time_spent_seconds` is measured from `prompt_shown_at` on the server,
+    less the pauses the server recorded, and never more than the turn's
+    allocation. The client reports no duration: a number the client chose
+    would be what the recruiter read."""
     from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer, AssessmentConversation
@@ -487,18 +493,18 @@ async def test_the_server_measures_the_time_and_a_long_pause_cannot_go_negative(
                     await _start(mod, fx, s)
                     conversation = await s.get(AssessmentConversation, fx.conv_id)
                     assert conversation.prompt_shown_at is not None
-                    # Wind the clock back: the question has been on screen for
-                    # two minutes.
+                    # Wind the clock back: the prose question has been on
+                    # screen for two minutes of its three.
                     conversation.prompt_shown_at = datetime.now(timezone.utc) - timedelta(minutes=2)
                     await s.flush()
                     await _respond(mod, fx, s, answer=TEXT_ANSWER)
-                    # And now a client claims an implausible pause.
+                    # The multiple-choice question has been up for thirty
+                    # seconds of its sixty.
                     conversation = await s.get(AssessmentConversation, fx.conv_id)
+                    assert conversation.turn_allocation_seconds == 60
                     conversation.prompt_shown_at = datetime.now(timezone.utc) - timedelta(seconds=30)
                     await s.flush()
-                    # Ten minutes of "pause" against thirty seconds on screen.
-                    await _respond(mod, fx, s, payload={"selected_option_id": "a"},
-                                   paused_ms=600_000)
+                    await _respond(mod, fx, s, payload={"selected_option_id": "a"})
 
         async with factory() as s:
             async with superadmin_scope(s):
@@ -513,8 +519,7 @@ async def test_the_server_measures_the_time_and_a_long_pause_cannot_go_negative(
                     ).scalars().all()
                 }
         assert 110 <= records[str(fx.q_ids[0])].time_spent_seconds <= 130
-        # The pause is clamped to the time the question was actually shown.
-        assert records[str(fx.q_ids[1])].time_spent_seconds == 0
+        assert 25 <= records[str(fx.q_ids[1])].time_spent_seconds <= 35
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -573,7 +578,7 @@ async def test_a_follow_up_revises_the_base_answer_rather_than_adding_a_row(
         async def _probe(**kwargs):
             return probes.pop() if probes else None
 
-        monkeypatch.setattr(mod.interviewer, "next_follow_up", _probe)
+        monkeypatch.setattr(interviewer, "next_follow_up", _probe)
 
         async with factory() as s:
             async with s.begin():
@@ -602,43 +607,8 @@ async def test_a_follow_up_revises_the_base_answer_rather_than_adding_a_row(
         await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_editing_the_latest_answer_counts_as_a_revision(monkeypatch, wired) -> None:
-    from app.api import assessment_conversation as mod
-    from app.core.db import superadmin_scope
-    from app.models.assessment import AssessmentAnswer
-    from app.schemas.assessments import ConversationAnswerEditIn
-
-    engine, factory = await _factory_or_skip()
-    fx = _Fx()
-    try:
-        await _seed(factory, fx)
-        _patch_link(monkeypatch, fx)
-        async with factory() as s:
-            async with s.begin():
-                async with superadmin_scope(s):
-                    await _start(mod, fx, s)
-                    out = await _respond(mod, fx, s, answer=TEXT_ANSWER)
-                    await mod.edit_latest_answer(
-                        fx.conv_id, out.answer_message_id,
-                        ConversationAnswerEditIn(answer=TEXT_ANSWER + " I also wrote the runbook."),
-                        user=_candidate(fx), session=s,
-                    )
-
-        async with factory() as s:
-            async with superadmin_scope(s):
-                record = (
-                    await s.execute(
-                        select(AssessmentAnswer).where(
-                            AssessmentAnswer.conversation_id == fx.conv_id
-                        )
-                    )
-                ).scalars().one()
-        assert record.revision_count == 1
-        assert "runbook" in record.answer_json["text"]
-    finally:
-        await _cleanup(factory, fx)
-        await engine.dispose()
+# REMOVED 2026-09-24 with the route it drove: a past answer is final
+# (Appendix B section 3); `tests/test_fixed_order.py` pins that no route edits one.
 
 
 # ── Proctoring is mandatory (proctoring spec, principle P4) ──────────────────

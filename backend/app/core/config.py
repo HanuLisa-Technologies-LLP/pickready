@@ -701,17 +701,16 @@ class Settings(BaseSettings):
     #: candidate's acknowledgement, or here, whichever is first
     #: (`services/assessment_conversation/pauses`).
     assessment_warning_pause_max_seconds: int = 30
-    #: The longest spoken answer a candidate can record (master prompt, Phase
-    #: 3). Proctoring reads it to bound how long an unfinished capture can
-    #: excuse speech in the audio monitoring.
-    assessment_voice_max_seconds: int = 180
     #: Suggested time per question, by format, in seconds.
     assessment_time_evidence_seconds: int = 240
     assessment_time_short_answer_seconds: int = 180
     assessment_time_mcq_single_seconds: int = 60
     assessment_time_mcq_multi_seconds: int = 90
     assessment_time_fill_blank_seconds: int = 60
-    assessment_time_coding_seconds: int = 600
+    #: 20 minutes, Appendix B section 3. It is the ENFORCED turn clock for a
+    #: coding question now (`services/assessment_conversation/timers`), not a
+    #: suggestion, so it reads the owner's table rather than a composition fit.
+    assessment_time_coding_seconds: int = 1200
     #: INTERNAL weight per format, within a matrix item. What makes evidence
     #: dominance structural rather than stated.
     assessment_weight_evidence: float = 1.0
@@ -734,39 +733,83 @@ class Settings(BaseSettings):
     #: before the option counts as a real misconception rather than filler.
     assessment_misconception_min_words: int = 4
 
-    # ── Dual-mode assessment: consent + video interview (2026-09-05 spec) ───
+    # ── The server's turn clock (Appendix B section 3, PLAN-p3 WP3) ─────────
     #
-    # CONSENT IS A HARD PREREQUISITE FOR BOTH MODES (spec section 3). The
-    # wording is CONFIGURABLE, never hardcoded in a handler (spec 3.2: "the
-    # exact legal wording should be configurable"), and the versions below are
-    # stamped onto every consent row so a dispute is settled by which wording
-    # was accepted. The defaults are complete and honest: they state
-    # collection, storage, processing, speech-to-text, AI analysis and the
-    # PRISM Report destination in plain language, with no em dash.
-    assessment_consent_version: str = "2026-09-05"
+    # ENFORCED, not suggested: a turn that runs past its allocation plus the
+    # grace is submitted by the server with whatever draft it holds, and an
+    # empty one is an evidence gap. Each turn SNAPSHOTS its allocation when it
+    # opens (`assessment_conversations.turn_allocation_seconds`), so changing
+    # one of these never moves the deadline of a question somebody is
+    # answering. Paused time (device loss, transcription, a warning on screen)
+    # is excluded by the server from rows it wrote; nothing the client reports
+    # enters the clock.
+    #: Prose (evidence-based and short-answer), typed or spoken.
+    assessment_time_prose_seconds: int = 180
+    #: Multiple choice and fill-in-the-blank.
+    assessment_time_objective_seconds: int = 60
+    #: A follow-up or a re-ask on a prose answer.
+    assessment_time_follow_up_seconds: int = 100
+    #: How late an answer may arrive and still be the candidate's own. Covers
+    #: the request in flight at the moment the countdown reaches zero.
+    assessment_submit_grace_seconds: int = 5
+    #: How long a START waits before dispatching question generation again for
+    #: a conversation whose questions are still missing. Generation runs on its
+    #: own Fargate task, and a start polled every few seconds must not start
+    #: one each time.
+    assessment_question_redispatch_seconds: int = 600
+
+    # ── Spoken answers (Appendix B section 3) ────────────────────────────────
+    #: The longest spoken answer the recorder captures. The client stops at it;
+    #: the byte ceiling below is the server's half of the same bound. ONE
+    #: setting (WP3 and WP4 each declared it; merged at the stage 2
+    #: integration): proctoring also reads it to bound how long an unfinished
+    #: capture can excuse speech in the audio monitoring.
+    assessment_voice_max_seconds: int = 180
+    #: Upper bound on one uploaded answer, sized for three minutes of browser
+    #: audio with headroom. Refused above it, never truncated.
+    assessment_voice_max_bytes: int = 6 * 1024 * 1024
+    #: Amazon Transcribe for ONE answer: seconds to wait, and the poll interval.
+    #: The candidate's clock is paused for the whole wait.
+    assessment_voice_transcribe_timeout_seconds: int = 120
+    assessment_voice_transcribe_poll_seconds: int = 3
+    #: How long the clock stays paused after a transcription FAILED, so the
+    #: candidate can read what happened before typing. Acknowledging ends it
+    #: sooner; it never needs a sweep to end.
+    assessment_voice_failure_pause_seconds: int = 30
+
+    # ── Assessment consent (2026-09-05 spec, one mode since 2026-09-24) ─────
+    #
+    # CONSENT IS A HARD PREREQUISITE FOR STARTING (spec section 3). The
+    # wording is CONFIGURABLE, never hardcoded in a handler (spec 3.2), and the
+    # versions below are stamped onto every consent row so a dispute is
+    # settled by which wording was accepted. The default is complete and
+    # honest, in plain language, with no em dash.
+    assessment_consent_version: str = "2026-09-24"
     assessment_privacy_policy_version: str = "2026-09-05"
     assessment_terms_version: str = "2026-09-05"
-    assessment_consent_text_video: str = (
-        "Before you begin the video interview, please understand and agree to "
-        "the following. Your interview will be recorded: both your video and "
-        "your audio are captured for the full session. The recording is "
-        "stored securely and is processed for assessment purposes. Your "
-        "speech is converted into text, and the resulting information is "
-        "analyzed by AI as part of your evaluation. Information derived from "
-        "this assessment may be included in the report the hiring team "
-        "receives about your candidacy. If you do not agree, you will not be "
-        "able to take the video interview; you may choose the conversational "
-        "assessment instead, which has its own consent terms."
-    )
-    assessment_consent_text_conversational: str = (
+    #: ONE text since 2026-09-24: there is one assessment mode (Appendix B
+    #: section 1). It states every collection the session makes, the
+    #: retention both clocks impose (D4), the transcription of spoken answers
+    #: with only the text kept, and the paste rule, because a candidate must be
+    #: told the rules before they start. No storage vendor is named
+    #: (claude.md 2026-07-26); the transcription service is, because it is a
+    #: processor of the candidate's voice.
+    assessment_consent_text: str = (
         "Before you begin the assessment, please understand and agree to the "
-        "following. Vivekium collects and processes what you submit during "
-        "the assessment: your written answers, your questions, your responses "
-        "to multiple-choice and coding questions, and session data such as "
-        "timings and interaction records. This information is stored, is "
-        "analyzed by AI as part of your evaluation, and may be included in "
-        "the report the hiring team receives about your candidacy. If you do "
-        "not agree, you will not be able to take the assessment."
+        "following. Your camera and microphone record the whole session, audio "
+        "and video, while you answer. The recording is compressed and stored "
+        "securely, and only the hiring team for this role can view it. It is "
+        "deleted 90 days after your session, or 30 days after the job closes if "
+        "that comes first. If you choose to speak an answer, your speech is "
+        "converted to text by an automated speech-to-text service (Amazon "
+        "Transcribe); only the text is kept, and that text is your final answer. "
+        "Vivekium collects what you submit during the assessment: your written "
+        "and spoken answers, your responses to multiple-choice, fill-in-the-blank "
+        "and coding questions, and session data such as timings and interaction "
+        "records. Copying and pasting are blocked, and every attempt is recorded. "
+        "Your answers are analyzed by AI as part of your evaluation and may be "
+        "included in the report the hiring team receives about your candidacy. "
+        "If you do not agree, you will not be able to take the assessment."
     )
     # ── Video interview ceilings and processing knobs ───────────────────────
     # Every ceiling is a setting, never a literal in the pipeline (same rule
@@ -1129,6 +1172,42 @@ class Settings(BaseSettings):
             raise ValueError("ASSESSMENT_WARNING_PAUSE_MAX_SECONDS must be positive")
         if self.assessment_voice_max_seconds <= 0:
             raise ValueError("ASSESSMENT_VOICE_MAX_SECONDS must be positive")
+        return self
+
+    @model_validator(mode="after")
+    def validate_turn_clock(self) -> "Settings":
+        """Refuse a turn clock or a spoken-answer bound that cannot work, at
+        boot rather than on a candidate's turn: a zero allocation would expire
+        every question the moment it opened, and a poll no shorter than its
+        timeout would never poll twice."""
+        positive = {
+            "ASSESSMENT_TIME_PROSE_SECONDS": self.assessment_time_prose_seconds,
+            "ASSESSMENT_TIME_OBJECTIVE_SECONDS": self.assessment_time_objective_seconds,
+            "ASSESSMENT_TIME_FOLLOW_UP_SECONDS": self.assessment_time_follow_up_seconds,
+            "ASSESSMENT_TIME_CODING_SECONDS": self.assessment_time_coding_seconds,
+            "ASSESSMENT_QUESTION_REDISPATCH_SECONDS": self.assessment_question_redispatch_seconds,
+            "ASSESSMENT_VOICE_MAX_BYTES": self.assessment_voice_max_bytes,
+            "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS": (
+                self.assessment_voice_transcribe_timeout_seconds
+            ),
+            "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS": (
+                self.assessment_voice_transcribe_poll_seconds
+            ),
+            "ASSESSMENT_VOICE_FAILURE_PAUSE_SECONDS": self.assessment_voice_failure_pause_seconds,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.assessment_submit_grace_seconds < 0:
+            raise ValueError("ASSESSMENT_SUBMIT_GRACE_SECONDS must not be negative")
+        if (
+            self.assessment_voice_transcribe_poll_seconds
+            >= self.assessment_voice_transcribe_timeout_seconds
+        ):
+            raise ValueError(
+                "ASSESSMENT_VOICE_TRANSCRIBE_POLL_SECONDS must be shorter than "
+                "ASSESSMENT_VOICE_TRANSCRIBE_TIMEOUT_SECONDS"
+            )
         return self
 
     @model_validator(mode="after")

@@ -55,9 +55,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.job import Job
 from app.prompts import fragments, registry
-from app.services import agent_loop, llm_router, ppi
+from app.services import (
+    agent_loop,
+    conversation_guardrails,
+    interviewer,
+    llm_router,
+    ppi,
+)
 from app.services.assessment_formats import types as question_types
 from app.services.hiring import evidence_graph
+from app.services.vaada_context import VaadaContext
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +79,7 @@ __all__ = [
     "department_hints",
     "is_rubric_scored",
     "load_for_link",
+    "request_payload",
     "write_question",
 ]
 
@@ -200,28 +208,6 @@ def _terms(text: str) -> set[str]:
             "describe", "explain", "walk", "through", "give", "tell",
         }
     }
-
-
-def _is_repeat(text: str, asked_before: list[str] | None) -> bool:
-    """Whether this question covers ground already covered.
-
-    Compared on content words rather than exact strings, because a model told
-    not to repeat itself will happily reword the same question. The threshold is
-    high (0.8) on purpose: several questions about one item SHOULD overlap
-    heavily in vocabulary, and a low threshold would reject the legitimate
-    second and third probes of an item the plan deliberately covers more than
-    once.
-    """
-    terms = _terms(text)
-    if not terms:
-        return False
-    for previous in asked_before or []:
-        earlier = _terms(previous)
-        if not earlier:
-            continue
-        if len(terms & earlier) / max(len(terms | earlier), 1) > 0.8:
-            return True
-    return False
 
 
 def _normalise(payload: Any, *, rubric_required: bool) -> dict[str, Any] | None:
@@ -357,10 +343,26 @@ def _evaluate(
                 "ask exactly one thing; the previous attempt stacked a second "
                 "question or sub-part onto the first"
             )
-        if _is_repeat(question, asked_before):
+        # THE SAME REPEAT DETECTOR THE CONVERSATION HAS ALWAYS USED, and it is
+        # a criterion of THIS loop rather than a check the caller ran after
+        # persistence. Until 2026-09-24 the caller rejected a repeat AFTER this
+        # function had written the new prompt and rubric onto the row, then
+        # showed the old text: the candidate read one question and was graded
+        # against the rubric of another (audit P1 3.10). A repeat is now a
+        # defect the model is told about, and a result that still repeats is a
+        # DEGRADED one, which persists nothing.
+        if interviewer.is_semantic_repeat(question, asked_before):
             reasons.append(
                 "this is a question the candidate has already been asked; ask "
                 "about a different aspect of the item"
+            )
+        # The outbound guard would alter this text before the candidate read
+        # it. An altered question is not the one the rubric was written for,
+        # so it is refused here rather than edited on the way out.
+        if conversation_guardrails.inspect_agent_output(question) != question:
+            reasons.append(
+                "do not mention scores, grades, levels, percentages or how the "
+                "answer will be assessed; ask only the question"
             )
 
         if rubric_required:
@@ -398,8 +400,8 @@ def _evaluate(
 
 # -- The department evidence graph, as this question's brief ------------------
 #
-# THE LIVE ENTRY POINT. `api/assessments._write_next_question_inner` calls
-# `write_question` for every base question a candidate reads, and this is where
+# THE LIVE ENTRY POINT. `assessment_conversation.turns.write_next_question`
+# calls `write_question` for every base question a candidate reads, and this is where
 # Part VI enters that call. Before this, the question was written from the item
 # name, the item description, the JD and the resume: nothing in the prompt knew
 # what department the role was in, what evidence would actually establish the
@@ -816,12 +818,37 @@ def _recent_turns(transcript: list[dict[str, Any]] | None, turns: int = 6) -> li
     return rows
 
 
+#: What the prompt says when Sutra wrote no role summary. A fixed sentence to
+#: the MODEL, never shown to anybody, and honest about the record: an empty
+#: summary is a job saved before the hidden context existed (migration 0118
+#: stamped those with an empty summary rather than inventing one).
+NO_ROLE_SUMMARY = "No role summary was written for this job; rely on the job description."
+
+
+def request_payload(
+    *,
+    job: Job,
+    resume_excerpt: str,
+    recent: list[dict[str, str]],
+    asked_before: Sequence[str] | None,
+) -> dict[str, Any]:
+    """The user-turn payload the question writer sends. A pure function of its
+    inputs, so a sweep over prompt builders can call it without a model."""
+    return {
+        "job_description": (job.jd_markdown or "")[:2500],
+        "candidate_resume": (resume_excerpt or "")[:2500],
+        "conversation_so_far": recent,
+        "already_asked": list(asked_before or [])[-20:],
+    }
+
+
 async def write_question(
     *,
     session: AsyncSession | None,
     job: Job,
     row: CandidateQuestion,
     competency: JobCompetency,
+    context: VaadaContext,
     resume_excerpt: str = "",
     transcript: list[dict[str, Any]] | None = None,
     asked_before: list[str] | None = None,
@@ -829,22 +856,34 @@ async def write_question(
 ) -> agent_loop.LoopResult[dict[str, Any]]:
     """Write this question (and its rubric, where one applies) onto `row`.
 
-    Persists only on success. A degraded result leaves the row exactly as
-    `ppi.generate_candidate_questions` created it, with `generated_at` still
-    NULL -- that NULL is the record that this candidate read the pre-generated
-    question rather than one written against the live conversation, and it is
-    what makes a silent degradation countable.
+    WRITTEN FROM THE CONTRACT. `context` is the conversation's bound contract
+    (`services/vaada_context`): the skill's name, its bucket (which decides
+    rubric versus judgement) and its hidden evidence line, plus the hidden
+    role summary. `competency` is the same skill's row, read for the
+    department evidence graph's lookup by name and nothing else.
 
-    Returns the `LoopResult` rather than a bare string so the caller can log the
-    degradation and stamp telemetry. Never raises.
+    `conflicting` is whether Miti's ledger already holds two readings of this
+    skill that disagree (read per answer during the conversation since
+    2026-09-24); it turns the question into a contradiction probe.
+
+    PERSISTS ONLY ON SUCCESS, AND SUCCESS MEANS WHAT THE CANDIDATE WILL READ.
+    A result the loop could not make acceptable (a repeat, a question the
+    outbound guard would alter, a provider outage) is DEGRADED and writes
+    nothing: the row keeps the prompt, the rubric and the NULL `generated_at`
+    it had, and the caller shows that prompt. So after every call the text on
+    screen, the stored prompt and the stored rubric belong to one question.
+
+    Returns the `LoopResult` so the caller can log the degradation and stamp
+    telemetry. Never raises.
     """
-    rubric_required = is_rubric_scored(competency.category)
+    skill = context.skill
+    rubric_required = is_rubric_scored(skill.bucket)
     recent = _recent_turns(transcript)
     anchor = _evidence_anchor(row)
     # THE DEPARTMENT EVIDENCE GRAPH ENTERS HERE, on the live path, for every
     # base question every candidate reads. None means no Part VI department
-    # covers this role; the prompt then falls back to the item's own
-    # observable-evidence statement, never to a bank.
+    # covers this role; the prompt then falls back to the skill's own evidence
+    # line, never to a bank.
     brief = await build_evidence_brief(
         session=session,
         job=job,
@@ -855,9 +894,10 @@ async def write_question(
     )
     system = registry.render(
         "ppi_write_question",
-        item_name=competency.name,
-        aspect=ppi.CATEGORY_LABELS.get(competency.category, competency.category),
-        item_measures=competency.description or competency.name,
+        item_name=skill.name,
+        aspect=ppi.CATEGORY_LABELS.get(skill.bucket, skill.bucket),
+        item_measures=(skill.evidence_line or "").strip() or skill.name,
+        role_summary=(context.role_summary or "").strip() or NO_ROLE_SUMMARY,
         one_question=fragments.ONE_QUESTION,
         no_evaluation=fragments.NO_EVALUATION,
         candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
@@ -872,14 +912,11 @@ async def write_question(
         rubric_instruction=_RUBRIC_INSTRUCTION if rubric_required else _NO_RUBRIC_INSTRUCTION,
         return_shape=_RUBRIC_SHAPE if rubric_required else _PLAIN_SHAPE,
     )
+    payload = request_payload(
+        job=job, resume_excerpt=resume_excerpt, recent=recent, asked_before=asked_before
+    )
 
     async def execute(reflection: str) -> dict[str, Any]:
-        payload = {
-            "job_description": (job.jd_markdown or "")[:2500],
-            "candidate_resume": (resume_excerpt or "")[:2500],
-            "conversation_so_far": recent,
-            "already_asked": list(asked_before or [])[-20:],
-        }
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(payload)},
@@ -958,10 +995,10 @@ async def write_question(
     # `interview_telemetry` established for this channel. A department key, a
     # class name and a gradient level are engineering metadata: they say WHICH
     # graph shaped this turn, which is the only way to tell a role probed
-    # against Part VI from one that fell through to the item description.
+    # against Part VI from one that fell through to the skill's evidence line.
     logger.info(
         "ppi_interview.evidence_graph link_id=%s ordinal=%d department=%s "
-        "matched=%s class=%s level=%d routed=%s",
+        "matched=%s class=%s level=%d routed=%s contract_digest=%s",
         row.job_candidate_link_id,
         row.ordinal,
         brief.department if brief is not None else "unmapped",
@@ -969,6 +1006,7 @@ async def write_question(
         brief.question_class if brief is not None else "none",
         brief.specificity.level if brief is not None else 0,
         bool(brief is not None and brief.required_sources),
+        context.digest,
     )
     return result
 

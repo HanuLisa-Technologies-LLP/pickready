@@ -921,23 +921,71 @@ _ASSESSMENT_ANSWER = (
 _MAX_TURNS = 40
 
 
+def _open_the_assessment(app_client: Application, ctx: ScenarioContext) -> int:
+    """Accept the consent and open the assessment the way the page does, and
+    return the turn on screen.
+
+    Since 2026-09-24 every answer names the TURN it answers (Appendix B
+    section 3), and the turn is opened by the START, never by an answer. The
+    consent is accepted through its own route with exactly the Stage B keys
+    the server serves, so the scenario walks the path a real candidate walks
+    instead of seeding a row the consent screen would have written.
+    """
+    app_client.as_candidate()
+    link = ctx.world.id("link")
+    terms = app_client.request(
+        ctx,
+        "read_the_assessment_consent",
+        "GET",
+        f"{V2}/assessments/conversations/links/{link}/consent",
+    )
+    items = (
+        terms.body.get("consent", {}).get("items", [])
+        if isinstance(terms.body, Mapping)
+        else []
+    )
+    app_client.request(
+        ctx,
+        "accept_the_assessment_consent",
+        "POST",
+        f"{V2}/assessments/conversations/links/{link}/consent",
+        json={"consent_keys": [str(item.get("key")) for item in items]},
+    )
+    opened = app_client.request(
+        ctx,
+        "open_the_assessment",
+        "POST",
+        f"{V2}/assessments/conversations/links/{link}/start",
+    )
+    if opened.status != 200 or not isinstance(opened.body, Mapping):
+        ctx.facts["assessment_opened_with"] = opened.status
+        ctx.stage("assessment_open_refused")
+        return 0
+    ctx.stage("assessment_opened")
+    return int(opened.body.get("turn_seq") or 0)
+
+
 def _answer_every_question(app_client: Application, ctx: ScenarioContext) -> None:
     """Drive the real conversation to completion, one HTTP turn at a time.
 
     The loop stops on the status the SERVER reports rather than on a turn
     count, because a follow-up or a re-ask legitimately adds turns without
     advancing `next_question_index`, and a fixed count would either stop short
-    of completion or walk past it into a 409.
+    of completion or walk past it into a 409. Each answer names the turn the
+    previous response put on screen, exactly as the client does.
     """
-    app_client.as_candidate()
+    turn_seq = _open_the_assessment(app_client, ctx)
+    if turn_seq < 1:
+        return
     conversation = ctx.world.id("conversation")
     for turn in range(_MAX_TURNS):
+        ctx.facts["assessment_last_turn"] = turn_seq
         observed = app_client.request(
             ctx,
             "answer_every_question",
             "POST",
             f"{V2}/assessments/conversations/{conversation}/respond",
-            json={"answer": _ASSESSMENT_ANSWER},
+            json={"turn_seq": turn_seq, "answer": _ASSESSMENT_ANSWER},
             note=f"turn {turn + 1}",
         )
         if observed.status != 200 or not isinstance(observed.body, Mapping):
@@ -949,6 +997,7 @@ def _answer_every_question(app_client: Application, ctx: ScenarioContext) -> Non
             ctx.facts["assessment_turns"] = turn + 1
             ctx.stage("assessment_completed")
             return
+        turn_seq = int(observed.body.get("turn_seq") or 0)
     ctx.facts["assessment_turns"] = _MAX_TURNS
     ctx.stage("assessment_did_not_complete")
 
@@ -959,10 +1008,12 @@ def _answer_the_last_question_again(
     """The retry, which is the whole of the idempotency question.
 
     A completed conversation answering this a second time must not charge a
-    second credit and must not dispatch scoring twice. The response status is
-    deliberately NOT asserted here: whether the product refuses the turn or
-    answers it as already finished is its own decision, and what the scenario
-    judges is the ledger and the dispatch record.
+    second credit and must not dispatch scoring twice. It names the turn the
+    last answer was sent for, which is exactly what a client retrying after a
+    lost response sends. The response status is deliberately NOT asserted
+    here: whether the product refuses the turn or answers it as already
+    finished is its own decision, and what the scenario judges is the ledger
+    and the dispatch record.
     """
     app_client.as_candidate()
     conversation = ctx.world.id("conversation")
@@ -971,7 +1022,10 @@ def _answer_the_last_question_again(
         "answer_the_last_question_again",
         "POST",
         f"{V2}/assessments/conversations/{conversation}/respond",
-        json={"answer": _ASSESSMENT_ANSWER},
+        json={
+            "turn_seq": max(1, int(ctx.facts.get("assessment_last_turn") or 1)),
+            "answer": _ASSESSMENT_ANSWER,
+        },
     )
     ctx.stage("assessment_completion_retried")
 

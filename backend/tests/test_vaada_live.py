@@ -22,18 +22,17 @@ every one of the fifteen graphs appears in Part VI at the section that node
 cites. A hand-written node cannot pass that, so the test is the deletion: there
 is no way to reintroduce a bank here without failing it.
 
-THE THREE INVARIANTS THIS MUST NOT BREAK
------------------------------------------
+THE INVARIANTS THIS MUST NOT BREAK
+----------------------------------
 `tests/test_conversation_flow.py` drives `respond` end to end and pins them
-against the real endpoint. This file pins them at Vaada's own layer, by name,
-because the extension added here is the first thing since 2026-08-05 that can
-lengthen a conversation:
+against the real endpoint. This file pins them at Vaada's own layer, by name:
 
-  * an extension probe is answered under an EXISTING matrix item's question key,
-    so `answers_by_key` files it with that item's other answers;
   * nothing Vaada writes advances `next_question_index`, so `charge_completed`
     fires after exactly the same set of base questions as before;
   * an outstanding probe holds completion open.
+
+The bounded EXTENSION this file used to pin (probes Vaada added past the plan)
+was deleted on 2026-09-24 with the early close: every item is asked.
 """
 from __future__ import annotations
 
@@ -46,8 +45,15 @@ from pathlib import Path
 import pytest
 
 from app.prompts import registry
-from app.services import agent_loop, interviewer, llm_router, ppi_interview
+from app.services import (
+    agent_loop,
+    assessment_contract,
+    interviewer,
+    llm_router,
+    ppi_interview,
+)
 from app.services.hiring import evidence_graph
+from app.services.vaada_context import VaadaContext
 
 #: The Runbook moved from the repository root into `docs/product/` on
 #: 2026-09-01 with the rest of the documentation.
@@ -409,6 +415,42 @@ class _Row:
         self.competency_id = uuid.uuid4()
 
 
+def _context(competency: _Competency) -> VaadaContext:
+    """The contract a started conversation is bound to, holding this one skill.
+
+    Since 2026-09-24 the writer is briefed from the CONTRACT
+    (`services/vaada_context`), never from a live row, so a test of the live
+    path hands it the same shape the start binds: the skill's hidden evidence
+    line here is what the hiring manager's row used to carry.
+    """
+    skill = assessment_contract.ContractSkill(
+        id=competency.id,
+        name=competency.name,
+        bucket=competency.category,
+        priority=1,
+        evidence_line=competency.description,
+    )
+    contract = assessment_contract.AssessmentContract(
+        job_id=uuid.uuid4(),
+        version=1,
+        locked=True,
+        skills=(skill,),
+        role_summary="A backend role owning production services.",
+        digest="0" * 64,
+        grade="non_managerial",
+        locked_at=None,
+    )
+    return VaadaContext(
+        contract=contract, skill=skill, role_summary=contract.role_summary
+    )
+
+
+async def _write_question(**kwargs):
+    """`ppi_interview.write_question`, briefed from `_context` of the skill."""
+    kwargs.setdefault("context", _context(kwargs["competency"]))
+    return await ppi_interview.write_question(**kwargs)
+
+
 def _capture(monkeypatch, question: str) -> list[list[dict]]:
     """Record what actually reaches the model, and answer with a valid shape.
 
@@ -437,8 +479,8 @@ def _capture(monkeypatch, question: str) -> list[list[dict]]:
 async def test_the_written_question_is_briefed_from_the_department_graph(
     monkeypatch,
 ) -> None:
-    """THE LIVE ENTRY POINT. `api/assessments._write_next_question_inner` calls
-    `write_question` for every base question a candidate reads."""
+    """THE LIVE ENTRY POINT. `assessment_conversation.turns.write_next_question`
+    calls `write_question` for every base question a candidate reads."""
     seen = _capture(
         monkeypatch,
         "On the system design you described, what did that architecture make "
@@ -450,7 +492,7 @@ async def test_the_written_question_is_briefed_from_the_department_graph(
         jd="production services, incidents, rollbacks and on-call",
     )
     competency = _Competency("System design & architecture")
-    result = await ppi_interview.write_question(
+    result = await _write_question(
         session=None, job=job, row=_Row(), competency=competency
     )
     assert not result.degraded
@@ -484,7 +526,7 @@ async def test_the_hollow_tells_are_withheld_when_the_matrix_does_not_match(
     )
     job = _Job("Senior Backend Engineer", department="Engineering")
     competency = _Competency("Conversational Japanese")
-    await ppi_interview.write_question(
+    await _write_question(
         session=None, job=job, row=_Row(), competency=competency
     )
     system = seen[0][0]["content"]
@@ -507,7 +549,7 @@ async def test_an_unmapped_department_falls_back_to_the_item_and_never_a_bank(
     )
     job = _Job("Staff Nurse")
     competency = _Competency("Ward handover discipline")
-    result = await ppi_interview.write_question(
+    result = await _write_question(
         session=None, job=job, row=_Row(), competency=competency
     )
     assert not result.degraded
@@ -526,7 +568,7 @@ async def test_a_silent_profile_is_asked_what_it_has_and_not_what_it_lacks(
         "profile would not show me, and what went wrong with it?",
     )
     job = _Job("Senior Backend Engineer", department="Engineering")
-    await ppi_interview.write_question(
+    await _write_question(
         session=None,
         job=job,
         row=_Row(),
@@ -549,7 +591,7 @@ async def test_a_claim_on_the_resume_is_asked_for_the_missing_evidence(
         "the worst incident and what did it cost?",
     )
     job = _Job("Senior Backend Engineer", department="Engineering")
-    await ppi_interview.write_question(
+    await _write_question(
         session=None,
         job=job,
         row=_Row(),
@@ -621,7 +663,7 @@ async def test_part_vis_own_probes_are_calibration_and_never_the_question(
         )
 
     monkeypatch.setattr(llm_router, "invoke_llm", _invoke)
-    result = await ppi_interview.write_question(
+    result = await _write_question(
         session=None,
         job=_Job("Mechanical Design Engineer", department="Manufacturing"),
         row=_Row(),
@@ -666,8 +708,8 @@ def test_sufficiency_is_a_stop_condition_of_its_own() -> None:
     """spec-doc6 4.4: "Ends when Sutra's question-count range AND evidence
     sufficiency are both satisfied"."""
     covered = [
-        _item("A", answers=1, substantive=1, must_have=True, question_key="k1"),
-        _item("B", answers=1, substantive=1, must_have=True, question_key="k2"),
+        _item("A", answers=1, substantive=1, must_have=True),
+        _item("B", answers=1, substantive=1, must_have=True),
     ]
     assert interviewer.STOP_EVIDENCE_SUFFICIENT in _state(
         dimensions=covered
@@ -676,8 +718,8 @@ def test_sufficiency_is_a_stop_condition_of_its_own() -> None:
 
 def test_an_unevidenced_must_have_withholds_sufficiency() -> None:
     dimensions = [
-        _item("A", answers=1, substantive=1, must_have=True, question_key="k1"),
-        _item("B", answers=0, must_have=True, question_key="k2"),
+        _item("A", answers=1, substantive=1, must_have=True),
+        _item("B", answers=0, must_have=True),
         _item("C", answers=1, substantive=1),
     ]
     state = _state(dimensions=dimensions)
@@ -689,7 +731,7 @@ def test_an_evasive_answer_does_not_establish_a_must_have() -> None:
     """Treating a non-answer as coverage would let a candidate shorten their own
     assessment by not answering."""
     state = _state(
-        dimensions=[_item("A", answers=3, substantive=0, must_have=True, question_key="k")]
+        dimensions=[_item("A", answers=3, substantive=0, must_have=True)]
     )
     assert interviewer.STOP_EVIDENCE_SUFFICIENT not in state.stop_conditions
 
@@ -705,60 +747,20 @@ def test_with_no_must_have_marked_every_dimension_is_critical() -> None:
 def test_the_floor_is_never_lowered_by_sufficiency() -> None:
     """The per-grade minimum is what keeps two candidates on one job
     comparable. Sufficiency can only ever be an ADDITIONAL condition."""
-    covered = [_item("A", answers=1, substantive=1, must_have=True, question_key="k")]
+    covered = [_item("A", answers=1, substantive=1, must_have=True)]
     early = _state(dimensions=covered, asked=3, floor=20, total_written=20)
     assert interviewer.STOP_EVIDENCE_SUFFICIENT in early.stop_conditions
     assert interviewer.STOP_FLOOR_REACHED not in early.stop_conditions
 
 
-def test_the_extension_ceiling_comes_from_the_runbook_and_not_from_a_literal(
-    monkeypatch,
-) -> None:
-    """A number restated in a module is a number nobody can trace. Moving the
-    data must move the ceiling, in both directions."""
-    assert evidence_graph.extension_ceiling() == len(
-        evidence_graph.specificity_levels()
-    )
-    levels = evidence_graph.specificity_levels()[:3]
-    monkeypatch.setattr(evidence_graph, "specificity_levels", lambda: levels)
-    assert evidence_graph.extension_ceiling() == 3
-    assert interviewer.extension_ceiling() == 3
-
-
-def test_the_extension_is_bounded_by_the_gradient() -> None:
-    """Section 38.3 bounds how far one claim can be probed: five rungs, then
-    "the probe exhausts". A conversation that still lacks evidence after
-    climbing an entire gradient has established that the evidence is not there,
-    and reporting that is never a rejection."""
-    ceiling = interviewer.extension_ceiling()
-    dimensions = [
-        _item("D%d" % n, answers=0, must_have=True, question_key="k%d" % n)
-        for n in range(ceiling + 4)
-    ]
-    state = _state(dimensions=dimensions)
-    assert len(state.extension_targets(ceiling)) == ceiling
-    spent = _state(dimensions=dimensions, extensions_used=ceiling)
-    assert spent.extension_targets(ceiling) == ()
-
-
-# THE THREE INVARIANTS, BY NAME. `tests/test_conversation_flow.py` drives them
-# through `respond`; these pin the same three at Vaada's own layer, because the
-# bounded extension is the first thing since 2026-08-05 that can lengthen a
-# conversation.
-
-
-def test_invariant_an_extension_is_answered_under_an_existing_question_key() -> None:
-    """A follow-up is filed under the SAME `question_key`, so `answers_by_key`
-    hands the scorer one richer answer rather than an unknown key every scorer
-    silently DROPS. An item with no existing row cannot be extended at all."""
-    ceiling = interviewer.extension_ceiling()
-    dimensions = [
-        _item("has a row", answers=0, must_have=True, question_key="row-1"),
-        _item("has no row", answers=0, must_have=True, question_key=""),
-    ]
-    targets = _state(dimensions=dimensions).extension_targets(ceiling)
-    assert [item.dimension for item in targets] == ["has a row"]
-    assert all(item.question_key for item in targets)
+# THE INVARIANTS, BY NAME. `tests/test_conversation_flow.py` drives them
+# through `respond`; these pin them at Vaada's own layer.
+#
+# REMOVED 2026-09-24 with the early close: the bounded EXTENSION (Vaada adding
+# probes past the plan, bounded by a ceiling read from the gradient) and its
+# three tests. Every item is asked, so nothing lengthens or shortens a
+# conversation but the plan itself; `tests/test_dead_interviewer_modes_removed`
+# keeps the names gone.
 
 
 def test_invariant_nothing_vaada_writes_advances_the_question_index() -> None:
@@ -777,7 +779,7 @@ def test_invariant_an_outstanding_probe_holds_completion_open() -> None:
     """A probe outstanding on the LAST base question holds completion open, or
     the customer is charged and scoring dispatched while the candidate is still
     typing."""
-    covered = [_item("A", answers=1, substantive=1, must_have=True, question_key="k")]
+    covered = [_item("A", answers=1, substantive=1, must_have=True)]
     quiet = _state(dimensions=covered, probe_outstanding=False)
     busy = _state(dimensions=covered, probe_outstanding=True)
     assert interviewer.STOP_NO_PROBE_OUTSTANDING in quiet.stop_conditions
@@ -789,7 +791,7 @@ def test_the_candidate_never_sees_a_remaining_count() -> None:
     data: it is a dict of counts and it must not be reachable from a prompt."""
     state = _state(dimensions=[_item("A", answers=1, substantive=1)])
     log = state.as_log()
-    assert set(log) >= {"unevidenced", "extensions_used", "stop_conditions"}
+    assert set(log) >= {"unevidenced", "stop_conditions"}
     for prompt in ("ppi_write_question", "interview_follow_up_decision"):
         text = registry.load(prompt).text.lower()
         assert "how many" not in text
@@ -859,20 +861,6 @@ async def test_an_unreadable_gradient_costs_the_posture_and_not_the_turn(
     assert "probe_at_specificity" not in seen[0]
 
 
-def test_an_unreadable_ceiling_falls_back_to_the_modules_own_floor(
-    monkeypatch,
-) -> None:
-    """Refusing the turn over a data file would END a candidate's assessment
-    rather than shorten it, so the ceiling degrades to the floor this module
-    already uses for a caller that passes no budget."""
-
-    def _raise() -> int:
-        raise RuntimeError("data package unreadable")
-
-    monkeypatch.setattr(evidence_graph, "extension_ceiling", _raise)
-    assert interviewer.extension_ceiling() == interviewer.MAX_FOLLOW_UPS
-
-
 @pytest.mark.asyncio
 async def test_a_provider_failure_still_means_ask_the_next_scripted_question(
     monkeypatch,
@@ -905,7 +893,7 @@ async def test_a_degraded_writer_leaves_the_candidates_own_question(
 
     monkeypatch.setattr(llm_router, "invoke_llm", _down)
     row = _Row()
-    result = await ppi_interview.write_question(
+    result = await _write_question(
         session=None,
         job=_Job("Senior Backend Engineer", department="Engineering"),
         row=row,

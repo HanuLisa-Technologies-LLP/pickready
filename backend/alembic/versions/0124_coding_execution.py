@@ -1,7 +1,7 @@
 """Coding execution: the answer key, the Run history, the final submission.
 
 Revision ID: 0124_coding_execution
-Revises: 0121_candidate_comms
+Revises: 0123_assessment_conversation
 
 Phase 4 WP-4B1 (Vivekium release). Additive only. `models/coding.py` is the
 reading guide; this is the schema it describes.
@@ -51,7 +51,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0124_coding_execution"
-down_revision = "0121_candidate_comms"
+down_revision = "0123_assessment_conversation"
 branch_labels = None
 depends_on = None
 
