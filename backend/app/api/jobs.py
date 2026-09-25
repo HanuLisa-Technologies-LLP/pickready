@@ -69,7 +69,6 @@ from app.schemas.jobs import (
     ReviewProfileOut,
     jd_body_is_empty,
 )
-from app.schemas.matching import RunMatchingOut
 from uuid import uuid4 as _uuid4
 
 from app.services import approval_fsm as fsm
@@ -89,7 +88,7 @@ from app.services import swot_analysis
 from app.services import telemetry_events
 from app.services.audit import audit, record_action
 from app.workers import agent_client
-from app.workers.dispatch import dispatch, dispatch_after_commit
+from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -1458,28 +1457,6 @@ async def review_profile(
     )
 
 
-@router.post(
-    "/{job_id}/run-matching",
-    response_model=RunMatchingOut,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def run_job_matching(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.TRIGGER_MATCHING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> RunMatchingOut:
-    """"RUN AI MATCHING" on the job page (spec §7).
-
-    Job-scoped alias for POST /matching/jobs/{job_id}/run, so the job page does
-    not have to reach into a second router for its own primary action. Both
-    paths share one implementation — there is no second copy of the eligibility
-    rules to drift.
-    """
-    from app.api.matching import run_matching as _run_matching
-
-    return await _run_matching(job_id=job_id, user=user, session=session)
-
-
 @router.put("/{job_id}/compensation", response_model=JobDetailOut)
 async def set_compensation(
     job_id: uuid.UUID,
@@ -1708,18 +1685,20 @@ async def _store_one_databank_resume(
         # procurement tag the job page renders. Both say databank here.
         source=LinkSource.databank,
         source_type=SOURCE_TYPE_DATABANK,
-        # Gate 5. NOT `applied`: the recruiter moved a file out of their own
-        # databank, and the person has not read this job, wanted it, or
-        # answered a single question about their notice period. `sourced` has
-        # exactly one forward edge, `applied`, which the candidate takes
-        # themselves in the portal -- so nothing here can invite them to an
-        # assessment or shortlist them by mistake.
-        status=hiring_pipeline.SOURCED,
-        status_updated_at=datetime.now(timezone.utc),
-        current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.SOURCED],
     )
-    session.add(link)
-    await session.flush()
+    # Gate 5. NOT `applied`: the recruiter moved a file out of their own
+    # databank, and the person has not read this job, wanted it, or answered a
+    # single question about their notice period. `sourced` has exactly one
+    # forward edge, `applied`, which the candidate takes themselves in the
+    # portal, so nothing here can invite them to an assessment or shortlist
+    # them by mistake. `start_sourced` also writes the history row this path
+    # used to skip (audit Part 1 #5).
+    await hiring_pipeline.start_sourced(
+        session,
+        link,
+        actor_user_id=user.user_id,
+        remarks="Uploaded to the job from the recruitment team's databank",
+    )
     # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT for a profile
     # entering the pipeline via the databank upload path.
     await telemetry_events.emit(
@@ -1760,12 +1739,16 @@ async def upload_databank_candidates(
 ) -> DatabankUploadOut:
     """Upload Candidate Data Bank: up to 25 resumes in one request.
 
-    PARTIAL SUCCESS IS THE CONTRACT. Each file is handled on its own and every
-    file gets a result row, so one corrupt PDF costs the recruiter that one
-    file and not the other 24. Nothing here parses a resume inline: each
-    accepted file enqueues the existing `parse_resume` task, and one
-    `run_matching` is enqueued for the job at the end rather than once per file
-    (claude.md rule 4).
+    PARTIAL SUCCESS IS THE CONTRACT. Each file is handled on its own, inside
+    its own savepoint, and every file gets a result row, so one corrupt PDF
+    costs the recruiter that one file and not the other 24: a file that fails
+    after writing a row rolls back its own rows and leaves the others and the
+    request transaction intact. Nothing here parses a resume inline: each
+    accepted file enqueues the existing `parse_resume` task AFTER the commit,
+    so no parse can start on a row the request then rolls back. The parse
+    dispatches `pickready.yukti_score_profile`, which reads that one link
+    against the job's saved skills; a job-wide AI Matching run here would
+    re-read every other candidate on the job to rank the new ones.
 
     Databank candidates go through IDENTICAL AI parsing, embedding, matching
     and assessment to applied and sourced candidates. `source_type` is a tag
@@ -1800,8 +1783,11 @@ async def upload_databank_candidates(
     results: list[DatabankUploadResultOut] = []
     for upload in files:
         try:
-            results.append(await _store_one_databank_resume(session, user, job, upload))
-        except Exception as exc:  # noqa: BLE001 — one bad file, not a failed batch
+            async with session.begin_nested():
+                results.append(
+                    await _store_one_databank_resume(session, user, job, upload)
+                )
+        except Exception as exc:  # noqa: BLE001 -- one bad file, not a failed batch
             logger.warning(
                 "databank.file_failed job_id=%s file=%s error=%s",
                 job_id, upload.filename, type(exc).__name__,
@@ -1816,12 +1802,9 @@ async def upload_databank_candidates(
 
     created = [r for r in results if r.ok]
     for result in created:
-        dispatch("pickready.parse_resume", args=[str(result.profile_id)])
-    if created:
-        # One matching run for the batch. Twenty-five is the same job scored
-        # twenty-five times otherwise, and matching already scores every
-        # non-archived link on the job.
-        dispatch("pickready.run_matching", args=[str(job.id)])
+        dispatch_after_commit(
+            session, "pickready.parse_resume", args=[str(result.profile_id)]
+        )
 
     await audit(
         session,

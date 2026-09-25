@@ -6,19 +6,28 @@ into a fixed structured schema -> profiles.parsed_fields_json. Also sets
 profiles.resume_text and the voyage-4 embedding used by the semantic
 matching stage.
 
-THIS IS ALSO WHERE YUKTI'S PRE-SCREEN GRADE IS PRODUCED (spec-doc6 §4.4).
-`parse_resume` ends by calling `hiring.prescreen.grade_profile`, which writes an
-A / B / C / Hold onto every application this profile is attached to. It is here
-and not on each upload route on purpose: five routes accept a resume (a
-candidate applying, a candidate replacing their main resume, the databank bulk
-upload, the provider-side upload, the seeding path) and all five already enqueue
-`pickready.parse_resume`, so hanging the grade off the parse means no route had
-to learn about grading and no future route can forget to.
+AN EMBEDDING OUTAGE NEVER COSTS THE PARSE (audit Part 1 #14). The embedding
+used to be computed before the commit and an `EmbeddingError` propagated out of
+the function, so nothing committed and the task retried the PAID extraction.
+Now the text and the parsed fields commit with `embedding = NULL`, logged with
+its traceback. Two things repair the vector: the matching run embeds every
+linked profile whose text is stored and whose vector is not, and the retrieval
+index sweep reads the committed text. Yukti needs no vector at all: it reads
+the resume text, and retrieval never decides who is read.
 
-It runs even when nothing could be extracted. A scanned image resume produces
-`Hold`, which is a graded outcome meaning a person should look, and that is a
-better dashboard cell than an empty one: an empty cell is indistinguishable from
-a candidate nobody has got to yet.
+The parse NO LONGER GRADES. It used to end in `hiring.prescreen.grade_profile`,
+a deterministic A / B / C / Hold letter that reached the dashboard. The live
+reading of a resume is Yukti's, and `pickready.parse_resume` dispatches
+`pickready.yukti_score_profile` AFTER this commit, so every application this
+profile is attached to is read against its job's saved skills with no recruiter
+re-running AI Matching. Five routes accept a resume and all five already
+enqueue the parse, so hanging the reading off the parse still means no route
+has to learn about it.
+
+COMPENSATION NEVER REACHES THE EXTRACTION MODEL. The resume is passed through
+`compensation_guard.redact_text` before the call: a "Current CTC" line is not
+a skill, a qualification or an employment record, and the extraction schema
+has no field it could land in.
 """
 from __future__ import annotations
 
@@ -32,8 +41,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Profile
-from app.services import llm_router
-from app.services.embeddings import embed
+from app.services import compensation_guard, llm_router
+from app.services.embeddings import EmbeddingError, embed
 from app.services.projects import invisible_text
 from app.services.resume_storage import ResumeStorageError, fetch_resume_bytes, profile_has_resume
 from app.prompts import registry
@@ -68,7 +77,7 @@ class ResumeParsingError(RuntimeError):
 # Extraction is defensive: a corrupt, empty, image-only, or wrong-format file
 # yields "" rather than raising, so the `parse_resume` task never
 # crash-loops on unparseable content (a genuinely transient failure  -  e.g. the
-# Cloudinary download  -  still propagates from `parse_resume` and is retried).
+# stored-file download  -  still propagates from `parse_resume` and is retried).
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -85,7 +94,7 @@ def extract_text(data: bytes, filename: str) -> str:
         return _extract_pdf(data)
     if lowered.endswith(".docx"):
         return _extract_docx(data)
-    # ASSUMPTION: unknown extensions (Cloudinary raw URLs may drop the original
+    # ASSUMPTION: unknown extensions (a stored raw file may lose the original
     # extension)  -  sniff the magic bytes: PDFs start with "%PDF", DOCX is a ZIP
     # ("PK"). Fall back to trying both.
     if data[:4] == b"%PDF":
@@ -244,7 +253,10 @@ async def extract_structured_fields(
         "extraction",
         [
             {"role": "system", "content": _EXTRACTION_SYSTEM},
-            {"role": "user", "content": resume_text[:24000]},
+            {
+                "role": "user",
+                "content": compensation_guard.redact_text(resume_text)[:24000],
+            },
         ],
         response_format_json=True,
         session=session,
@@ -287,7 +299,7 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
     if not resume_text:
         if not profile_has_resume(profile):
             raise ResumeParsingError(
-                f"Profile {profile_id} has no complete Cloudinary resume metadata"
+                f"Profile {profile_id} has no stored resume file to parse"
             )
         # Download failures (network/5xx) propagate so the task retries  -  only
         # *content* problems (below) are swallowed.
@@ -322,7 +334,6 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
         profile.parsed_fields_json = dict(_EMPTY_PARSED_FIELDS)
         if intake_scan is not None:
             profile.intake_scan_json = intake_scan.as_json()
-        await _prescreen(session, profile)
         await session.commit()
         return
 
@@ -343,40 +354,18 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
     profile.parsed_fields_json = parsed
     if intake_scan is not None:
         profile.intake_scan_json = intake_scan.as_json()
-    profile.embedding = (await embed([resume_text]))[0]
-    # Before the commit, so the grade and the parse it was written from land in
-    # ONE transaction. A grade committed separately could survive a rolled-back
-    # parse and would then describe a resume the row no longer holds, which is
-    # the same shape of defect as a `framework_generated_at` stamp with no
-    # competency rows behind it.
-    await _prescreen(session, profile)
-    await session.commit()
-
-
-async def _prescreen(session: AsyncSession, profile: Profile) -> None:
-    """Grade this resume against every job the candidate is linked to.
-
-    Never fatal to the parse. Parsing a resume is what makes the candidate
-    searchable, matchable and assessable; a grading failure costs one dashboard
-    cell, and taking the parse down with it would cost the candidate their whole
-    presence in the product. The failure is logged with the profile it happened
-    on rather than swallowed, and the cell stays NULL, which the dashboard
-    renders as "not pre-screened" and never as a grade.
-    """
-    from app.services.hiring import prescreen  # noqa: PLC0415
-
-    # `getattr` on the identifier and not `profile.id`: this whole function is
-    # the path that must not raise, and a log line that reaches for an attribute
-    # is one AttributeError away from turning a grading failure into a parsing
-    # failure, which is the exact outcome the guard exists to prevent.
-    profile_id = getattr(profile, "id", None)
     try:
-        graded = await prescreen.grade_profile(session, profile)
-    except Exception:  # noqa: BLE001 - logged with its subject, never silent
+        profile.embedding = (await embed([resume_text]))[0]
+    except EmbeddingError:
+        # The parse is KEPT. A NULL vector hides this profile from the semantic
+        # retrieval stage only; the keyword stage, Yukti's reading and the
+        # candidate's application all work from the text committed here, and
+        # the matching run embeds it on its next pass.
+        profile.embedding = None
         logger.warning(
-            "resume_parsing.prescreen_failed profile_id=%s", profile_id, exc_info=True
+            "resume_parsing.embedding_unavailable profile_id=%s, parse kept "
+            "without a vector",
+            profile_id,
+            exc_info=True,
         )
-        return
-    logger.info(
-        "resume_parsing.prescreened profile_id=%s applications=%d", profile_id, graded
-    )
+    await session.commit()
