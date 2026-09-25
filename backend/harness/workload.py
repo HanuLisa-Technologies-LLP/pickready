@@ -1100,6 +1100,407 @@ def _read_the_job_board(app_client: Application, ctx: ScenarioContext) -> None:
     ctx.stage("job_board_read")
 
 
+
+# ── The coding question (Phase 4) ───────────────────────────────────────────
+#
+# Five steps over one executed coding question: press Run, record the final
+# answer, read its state, run the task that executes it, and read what the
+# grader would be handed once the wait window has passed. The sandbox a step
+# meets is whatever the scenario configured: a `code_execution_failure` fault,
+# or, for the two steps that say so in their name, the echoing program from
+# `harness.doubles.code_execution`, which is the product's own fake installed
+# through the product's own `override_provider`.
+
+#: The candidate's program. It ECHOES its input, which is the most hostile
+#: program a candidate can write against a hidden test: whatever input the
+#: product hands the sandbox comes straight back as output. The echoing double
+#: answers for this exact source; nothing executes it.
+CODING_ECHO_PROGRAM = "import sys\nsys.stdout.write(sys.stdin.read())\n"
+
+#: A fragment of the program, verbatim, for the scripted review to cite. The
+#: review's own evaluator refuses a citation that is not copied from the code.
+_CODING_CITATION = "sys.stdout.write(sys.stdin.read())"
+
+#: How many polls a Run step makes before it stops asking. A ceiling rather
+#: than a loop on the status, for the reason `_MAX_TURNS` gives.
+_MAX_RUN_POLLS = 5
+
+
+def _coding_path(ctx: ScenarioContext, suffix: str = "") -> str:
+    conversation = ctx.world.id("conversation")
+    question = ctx.world.id("coding_question")
+    return f"{V2}/assessments/conversations/{conversation}/coding/{question}{suffix}"
+
+
+@contextmanager
+def _capturing_coding_logs(ctx: ScenarioContext) -> Iterator[None]:
+    """Keep every log line the product writes while a coding step runs.
+
+    At DEBUG, on the root logger, because the rule under test is that NO log
+    line carries a hidden test, and a capture at INFO would miss exactly the
+    line somebody added for debugging. The lines are kept in `facts` so the
+    prohibited probe can sweep them after the run and a reader can open them in
+    the trajectory artifact. The root level is put back on the way out.
+    """
+    import logging  # noqa: PLC0415
+
+    capture = ctx.facts.setdefault(
+        "coding_capture", {"log_lines": [], "prompts": []}
+    )
+
+    class _Keep(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            capture["log_lines"].append(f"{record.name}: {record.getMessage()}")
+
+    handler = _Keep(level=logging.DEBUG)
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        yield
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+
+def _press_run(app_client: Application, ctx: ScenarioContext, step: str) -> None:
+    """Press Run over HTTP, then poll the run while it is queued.
+
+    A 503 is the product SAYING the code runner is unavailable, and it is
+    recorded as a degradation with the server's own sentence: a fault the run
+    admits nothing about is silent survival (HARNESS.md section 4).
+    """
+    app_client.as_candidate()
+    with _capturing_coding_logs(ctx):
+        started = app_client.request(
+            ctx,
+            step,
+            "POST",
+            _coding_path(ctx, "/runs"),
+            json={
+                "language": "python",
+                "source": CODING_ECHO_PROGRAM,
+                "client_token": f"harness-{ctx.seed}",
+            },
+        )
+        ctx.stage("coding_run_pressed")
+        if started.status == 503:
+            detail = started.body.get("detail") if isinstance(started.body, Mapping) else None
+            ctx.degraded(
+                "code_runner_unavailable",
+                signal="HTTP 503 from the coding Run route",
+                detail=str(detail or ""),
+            )
+            ctx.stage("coding_run_refused_for_an_outage")
+            return
+        if started.status != 202 or not isinstance(started.body, Mapping):
+            ctx.stage("coding_run_refused")
+            return
+        run_id = started.body.get("run_id")
+        for poll in range(_MAX_RUN_POLLS):
+            polled = app_client.request(
+                ctx,
+                f"{step}_poll",
+                "GET",
+                _coding_path(ctx, f"/runs/{run_id}"),
+                note=f"poll {poll + 1}",
+            )
+            if not isinstance(polled.body, Mapping) or polled.body.get("status") != "queued":
+                break
+        ctx.stage("coding_run_polled")
+
+
+def _run_the_coding_samples(app_client: Application, ctx: ScenarioContext) -> None:
+    """Run against whatever sandbox the scenario configured."""
+    _press_run(app_client, ctx, "run_the_coding_samples")
+
+
+def _run_the_coding_samples_against_an_echoing_program(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """Run the visible samples through the echoing program."""
+    from harness.doubles.code_execution import echoing_program  # noqa: PLC0415
+
+    with echoing_program(CODING_ECHO_PROGRAM, ctx.world.id("coding_visible_stdins")):
+        _press_run(app_client, ctx, "run_the_coding_samples")
+
+
+def _record_the_final_coding_answer(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """Record the final answer as the `respond` turn does, then hand it over.
+
+    NOT THE `respond` ROUTE, AND THE REASON IS NAMED RATHER THAN HIDDEN. On
+    this branch `respond` cannot yet take a v2 coding answer: it parses the
+    answer against the legacy v1 payload until the Phase 4 WP-4B1 types hunk
+    lands, and it does not call the coding hand-over until the WP-4C respond
+    hook lands in Phase 3's `respond` body. So this step writes the two rows
+    that turn writes (the candidate's transcript line and the
+    `assessment_answers` row), marks the conversation completed as `respond`
+    does when the last base question is answered, and calls the product's own
+    hand-over, `coding_assessment.final_answer.accept_structured_answer`, in
+    the same transaction. Billing is NOT written here: the completion charge is
+    `integration.an_assessment_bills_once_and_scores_once`'s subject. Once both
+    hunks land, this body becomes one POST to `respond` (see the Phase 4 WP-4F
+    report), and the hand-over is idempotent, so nothing downstream changes.
+    """
+    import asyncio  # noqa: PLC0415
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    from app.core.db import superadmin_scope  # noqa: PLC0415
+    from app.models.assessment import (  # noqa: PLC0415
+        AssessmentAnswer,
+        AssessmentConversation,
+        AssessmentMessage,
+        CandidateQuestion,
+    )
+    from app.services.coding_assessment import final_answer  # noqa: PLC0415
+
+    conversation_id = ctx.world.id("conversation")
+    question_id = ctx.world.id("coding_question")
+    sessions = session_factory()
+
+    async def _record() -> Any:
+        async with sessions() as session:
+            async with session.begin():
+                # The candidate audience's own scope: a candidate has no
+                # tenant, so `get_candidate_db` runs with RLS bypassed.
+                async with superadmin_scope(session):
+                    conversation = await session.get(AssessmentConversation, conversation_id)
+                    question = await session.get(CandidateQuestion, question_id)
+                    now = datetime.now(timezone.utc)
+                    agent = AssessmentMessage(
+                        tenant_id=conversation.tenant_id,
+                        conversation_id=conversation.id,
+                        ordinal=1,
+                        speaker="agent",
+                        domain="must_have",
+                        question_key=str(question.id),
+                        content=question.prompt,
+                    )
+                    candidate = AssessmentMessage(
+                        tenant_id=conversation.tenant_id,
+                        conversation_id=conversation.id,
+                        ordinal=2,
+                        speaker="candidate",
+                        domain="must_have",
+                        question_key=str(question.id),
+                        content=f"Language: python\n{CODING_ECHO_PROGRAM}",
+                        answer_label="substantive",
+                    )
+                    session.add_all([agent, candidate])
+                    await session.flush()
+                    session.add(
+                        AssessmentAnswer(
+                            tenant_id=conversation.tenant_id,
+                            conversation_id=conversation.id,
+                            question_id=question.id,
+                            message_id=candidate.id,
+                            question_type=question.question_type,
+                            answer_json={"language": "python", "code": CODING_ECHO_PROGRAM},
+                            submitted_at=now,
+                        )
+                    )
+                    await session.flush()
+                    conversation.next_question_index += 1
+                    conversation.status = "completed"
+                    conversation.completed_at = now
+                    submission = await final_answer.accept_structured_answer(
+                        session, conversation=conversation, question=question
+                    )
+                    return None if submission is None else submission.id
+
+    with _capturing_coding_logs(ctx):
+        submission_id = asyncio.run(_record())
+    ctx.facts["coding_submission_recorded"] = submission_id is not None
+    ctx.facts["coding_submission_id"] = None if submission_id is None else str(submission_id)
+    ctx.stage("coding_answer_recorded")
+
+
+def _read_the_coding_submission_state(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """The candidate reads where their final answer stands: one of three words."""
+    app_client.as_candidate()
+    with _capturing_coding_logs(ctx):
+        app_client.request(
+            ctx,
+            "read_the_coding_submission_state",
+            "GET",
+            _coding_path(ctx, "/submission"),
+        )
+    ctx.stage("coding_submission_state_read")
+
+
+def _coding_review_answer(prompts: list[str]) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """What the code-quality reviewer is to have answered, and a record of what it was sent.
+
+    The answer satisfies the review's own deterministic evaluator (every
+    criterion, enough reasoning, a verbatim citation, no number), so the real
+    `agent_loop` accepts it on the first attempt. Every request the router
+    built is kept, whole, for the prompt sweep.
+    """
+    from harness.doubles.vendor import VendorFixtureError  # noqa: PLC0415
+
+    def answer(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise VendorFixtureError(
+                "the scripted reviewer was asked something other than the code "
+                "review: the request carries no messages"
+            )
+        prompts.append(json.dumps(messages, ensure_ascii=False))
+        return {
+            "score": 35,
+            "criteria": {
+                "code_quality": 0.4,
+                "edge_case_handling": 0.2,
+                "efficiency_awareness": 0.5,
+                "idiomatic_use": 0.5,
+            },
+            "reasoning": (
+                "The program copies standard input to standard output without "
+                "reading the log lines as paths and statuses, so it never counts "
+                "server errors per path and cannot answer the question that was "
+                "asked. The single line is idiomatic and cheap, but it handles no "
+                "edge case the problem names, including an empty log."
+            ),
+            "citations": [_CODING_CITATION],
+        }
+
+    return answer
+
+
+def _execute(ctx: ScenarioContext) -> None:
+    """Run the REAL `pickready.execute_coding_submission` body once.
+
+    The task function itself, as the Lambda entrypoint calls it, with the
+    reviewer answering at the vendor seam. One attempt: the platform's retry
+    loop lives in `runtime.run_task`, and a scenario about an outage wants to
+    read the state ONE failed attempt leaves, which is what the sweep and the
+    grader then read. `ExecutionUnavailable` is the task SAYING the sandbox was
+    unreachable, and is recorded as a degradation with the reason it carried.
+    """
+    from app.services.code_execution import ExecutionUnavailable  # noqa: PLC0415
+    from app.workers import coding_tasks  # noqa: PLC0415
+
+    from harness import faults  # noqa: PLC0415
+
+    submission_id = ctx.facts.get("coding_submission_id")
+    if submission_id is None:
+        raise WorkloadError(
+            "execute_the_coding_submission ran with no submission recorded; the "
+            "record step handed nothing over, so there is nothing to execute"
+        )
+    capture = ctx.facts.setdefault("coding_capture", {"log_lines": [], "prompts": []})
+    with _capturing_coding_logs(ctx), faults.model_answers(
+        _coding_review_answer(capture["prompts"])
+    ):
+        try:
+            report = coding_tasks.execute_coding_submission(submission_id)
+        except ExecutionUnavailable as exc:
+            ctx.facts["coding_execution_error"] = exc.reason
+            ctx.degraded(
+                "code_execution_unavailable",
+                signal="ExecutionUnavailable from pickready.execute_coding_submission",
+                detail=str(exc.reason),
+            )
+            ctx.stage("coding_execution_refused_for_an_outage")
+            return
+    ctx.facts["coding_execution_report"] = dict(report)
+    ctx.stage("coding_submission_executed")
+
+
+def _execute_the_coding_submission(app_client: Application, ctx: ScenarioContext) -> None:
+    """Execute against whatever sandbox the scenario configured."""
+    _execute(ctx)
+
+
+def _execute_the_coding_submission_against_an_echoing_program(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """Execute the visible AND hidden inputs through the echoing program."""
+    from harness.doubles.code_execution import echoing_program  # noqa: PLC0415
+
+    stdins = [*ctx.world.id("coding_visible_stdins"), *ctx.world.id("coding_hidden_stdins")]
+    with echoing_program(CODING_ECHO_PROGRAM, stdins):
+        _execute(ctx)
+
+
+def _weigh_the_coding_evidence_over_the_wait(
+    app_client: Application, ctx: ScenarioContext
+) -> None:
+    """Ask what scoring and the grader would be told, inside and after the wait.
+
+    `submissions.scoring_hold` is what the scoring task asks before it spends
+    anything, and `evidence.for_conversation` is what it hands Miti. Both take
+    `now` as an argument, so the step asks them at two instants measured from
+    the submission's own `created_at`: one minute inside
+    `coding_execution_max_wait_hours`, and exactly at its end, the boundary the
+    product treats as expired. Nothing is waited for and no clock is moved.
+
+    An answer the product declares not assessed is the product SAYING what it
+    did instead of grading, and is recorded as a degradation carrying the
+    sentence a report prints.
+    """
+    import asyncio  # noqa: PLC0415
+    from datetime import timedelta  # noqa: PLC0415
+
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.models.coding import CodingSubmission  # noqa: PLC0415
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.services.coding_assessment import evidence, submissions  # noqa: PLC0415
+
+    conversation_id = ctx.world.id("conversation")
+    question_id = ctx.world.id("coding_question")
+    window = timedelta(hours=get_settings().coding_execution_max_wait_hours)
+    sessions = session_factory()
+
+    async def _weigh() -> dict[str, Any]:
+        async with sessions() as session:
+            async with session.begin():
+                async with tenant_scope(session, ctx.world.id("tenant")):
+                    created = (
+                        await session.execute(
+                            select(CodingSubmission.created_at).where(
+                                CodingSubmission.conversation_id == conversation_id
+                            )
+                        )
+                    ).scalar_one()
+                    found: dict[str, Any] = {}
+                    for label, moment in (
+                        ("inside_the_wait", created + window - timedelta(minutes=1)),
+                        ("after_the_wait", created + window),
+                    ):
+                        hold = await submissions.scoring_hold(
+                            session, conversation_id=conversation_id, now=moment
+                        )
+                        weighed = (
+                            await evidence.for_conversation(session, conversation_id, now=moment)
+                        )[question_id]
+                        found[label] = {
+                            "scoring_held": hold.hold,
+                            "state": weighed.state,
+                            "phrase": weighed.phrase,
+                            "needs_human_review": weighed.needs_human_review,
+                            "score_withheld": weighed.score is None,
+                        }
+                    return found
+
+    weighed = asyncio.run(_weigh())
+    ctx.facts["coding_evidence"] = weighed
+    after = weighed["after_the_wait"]
+    if after["state"] == evidence.STATE_UNAVAILABLE:
+        ctx.degraded(
+            "coding_answer_not_assessed",
+            signal="coding_assessment.evidence state=unavailable",
+            detail=str(after["phrase"]),
+        )
+    ctx.stage("coding_evidence_weighed")
+
+
 _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     "probe_health": _probe_health,
     "create_job": _create_job,
@@ -1134,6 +1535,17 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     "read_applications": _read_applications,
     "open_an_uninvited_assessment": _open_an_uninvited_assessment,
     "read_the_job_board": _read_the_job_board,
+    "run_the_coding_samples": _run_the_coding_samples,
+    "run_the_coding_samples_against_an_echoing_program": (
+        _run_the_coding_samples_against_an_echoing_program
+    ),
+    "record_the_final_coding_answer": _record_the_final_coding_answer,
+    "read_the_coding_submission_state": _read_the_coding_submission_state,
+    "execute_the_coding_submission": _execute_the_coding_submission,
+    "execute_the_coding_submission_against_an_echoing_program": (
+        _execute_the_coding_submission_against_an_echoing_program
+    ),
+    "weigh_the_coding_evidence_over_the_wait": _weigh_the_coding_evidence_over_the_wait,
 }
 
 

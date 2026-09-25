@@ -1,0 +1,69 @@
+id: adversarial.a_program_cannot_exfiltrate_the_hidden_tests
+version: 1
+tier: adversarial
+description: >
+  A candidate submits the most hostile program there is against a hidden test:
+  one that ECHOES its input, so every input the product hands the sandbox comes
+  straight back as the program's output and in its error message. The answer
+  key of the world's coding question is made of sentinels that occur nowhere
+  else. The candidate presses Run, submits, reads the state of the answer
+  twice, and the real execution task runs every visible and hidden input
+  through the program and has the code reviewed. Afterwards no response the
+  client received, no log line the product wrote at DEBUG, no prompt the
+  reviewer was sent and no dispatched argument carries any part of the key,
+  and neither does any stored row outside the key's own table, read from a
+  second connection. The key really does hold the sentinels, so each absence
+  means something. The program is scripted, never executed: nothing in this
+  repository runs candidate code.
+tags: [coding, code-execution, answer-key, confidentiality, safety]
+
+given:
+  world: coding_question_open
+
+workload:
+  - run_the_coding_samples_against_an_echoing_program
+  - record_the_final_coding_answer
+  - read_the_coding_submission_state
+  - execute_the_coding_submission_against_an_echoing_program
+  - read_the_coding_submission_state
+
+expect:
+  state:
+    # The sweep, from the second connection: nothing outside the key holds it.
+    - coding.key_sentinel_hits == []
+    # And the key does hold it, so the absence above is not vacuous.
+    - coding.key_holds_the_sentinels == true
+    - coding_runs.statuses == [complete]
+    - coding_submissions.column:execution_status == complete
+    - coding_submissions.column:review_status == complete
+  dispatched:
+    # Executed once, and handed to scoring once the last owed work was done.
+    pickready.execute_coding_submission: 1
+    pickready.run_functional_assessment: 1
+  output:
+    - statuses.run_the_coding_samples == [202]
+    - body.run_the_coding_samples_poll.status == complete
+    - statuses.read_the_coding_submission_state == [200, 200]
+    - body.read_the_coding_submission_state.state_word == Checked
+    - facts.coding_execution_report.execution_status == complete
+    - facts.coding_execution_report.review_status == complete
+    - facts.coding_execution_report.scoring_dispatched == true
+  trajectory:
+    - coding_run_polled
+    - coding_answer_recorded
+    - coding_submission_state_read
+    - coding_submission_executed
+    - coding_submission_state_read
+  prohibited:
+    - the_answer_key_reached_a_client
+    - the_answer_key_reached_a_log_line
+    - the_answer_key_reached_a_prompt
+    - the_answer_key_reached_a_dispatch
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client
