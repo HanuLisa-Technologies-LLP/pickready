@@ -1,17 +1,17 @@
 """The eight columns, their vocabularies, and every documented pending state.
 
 Pure. No database, no HTTP, no model. `dashboard.assemble_row` takes a plain
-mapping precisely so the specification's two state tables (column 4's six
-states, and the four row states) can each be asserted directly rather than
-reached through a seeded fixture.
+mapping precisely so every state of the two grade columns (the four words,
+not checked, not assessed with each reason, under review) and the row states
+can each be asserted directly rather than reached through a seeded fixture.
 
 WHAT THIS FILE IS DEFENDING
 ---------------------------
 Four of the eight columns are filled by agents that were not on a live path
 when this surface was built. The failure that invites is not a crash: it is a
-plausible-looking default. A dashboard that renders `50 . Consider with
-Reservations` for a candidate nobody has assessed is worse than one that
-renders nothing, because a recruiter acts on it. Every test below that names a
+plausible-looking default. A dashboard that renders "Moderately Matching" for
+a candidate nobody has read is worse than one that renders nothing, because a
+recruiter acts on it. Every test below that names a
 "pending" state is defending exactly that.
 
 NO REAL NAMES ANYWHERE (spec-doc6 C14). The Dashboard Specification's sample
@@ -28,7 +28,9 @@ import pytest
 
 from app.services import dashboard, hiring_pipeline, rating
 from app.services.hiring import gates as hiring_gates
-from app.services.hiring import prescreen
+from app.services.miti import aggregation as miti_aggregation
+from app.services.yukti import config as yukti_config
+from app.services.yukti import ranking as yukti_ranking
 
 # Obviously synthetic. A reader must never wonder whether this is somebody.
 FIXTURE_NAME = "Test Candidate Zero"
@@ -43,8 +45,9 @@ def row(**overrides):
     """One queried row, with every column at its emptiest honest value.
 
     The DEFAULT is the state a candidate is in the moment they apply: a resume
-    ingested, nothing graded, nothing assessed. That is the common case for the
-    whole of this phase, so it is what a test has to opt OUT of.
+    ingested, nothing read by AI Matching, nothing assessed. That is the common
+    case, so it is what a test has to opt OUT of. The two scores in the mapping
+    are what `candidates_page` selects; they must come out as words.
     """
     base = {
         "link_id": LINK,
@@ -54,14 +57,18 @@ def row(**overrides):
         "candidate_id": CANDIDATE,
         "full_name": FIXTURE_NAME,
         "source_type": "applied",
-        "pre_screen_grade": None,
+        "ai_match_status": yukti_config.STATUS_PENDING,
+        "ai_match_score": None,
+        "ai_match_failure_reason": None,
+        "ready_pick_rank": None,
+        "has_assessment_grade": False,
+        "must_have_failed": False,
         "status": hiring_pipeline.APPLIED,
         "created_at": None,
         "archived_at": None,
         "evaluation_id": None,
         "confidence": None,
         "evaluated_at": None,
-        "ready_pick_score": None,
         "ready_pick_note": None,
         "under_integrity_review": False,
         "team_review_count": 0,
@@ -79,14 +86,14 @@ def test_the_eight_columns_are_in_the_specified_scanning_order():
     """Scanning order follows decision logic, not backend computation order.
 
     Pinned as a literal list rather than as a length, because the value being
-    protected is the ORDER: Vivekium Score sitting after Vivekium Note
+    protected is the ORDER: Vivekium Grade sitting after Vivekium Note
     would still be eight columns and would break the triage read.
     """
     assert dashboard.COLUMNS == (
         "candidate",
         "source",
-        "pre_screen_grade",
-        "ready_pick_score",
+        "ai_match",
+        "ready_pick_grade",
         "ready_pick_note",
         "ready_pick_profile",
         "team_review",
@@ -104,181 +111,224 @@ def test_every_column_has_a_spoken_label():
     )
 
 
-# ── Column 3: the Pre-Screen Grade ───────────────────────────────────────────
+# ── Column 3: AI Match, the resume-only reading ───────────────────────────
 
 
-def test_the_pre_screen_vocabulary_is_the_graders_own():
-    """One vocabulary, defined where it is written, imported where it is read.
+def _scored(score, status=yukti_config.STATUS_SCORED):
+    return {"ai_match_status": status, "ai_match_score": score}
+
+
+def test_the_grade_vocabulary_is_the_one_scale():
+    """One vocabulary, defined in `rating`, imported here.
 
     `services/tiers.py` is the reason this is a test: a rendering layer that
     keeps its own copy of a four-value scale is how the product ended up with
     two scales that disagreed for 69.5% of its rows.
     """
-    assert dashboard.PRE_SCREEN_GRADES is prescreen.GRADES
-    assert set(dashboard.PRE_SCREEN_LABELS) == set(prescreen.GRADES)
-
-
-def test_an_ungraded_application_is_not_rendered_as_hold():
-    """NULL means "not pre-screened". `Hold` means "graded, a person should
-    look". Rendering them the same way tells a recruiter an untriaged backlog
-    has been triaged."""
-    ungraded = dashboard.assemble_row(row())
-    held = dashboard.assemble_row(row(pre_screen_grade=prescreen.GRADE_HOLD))
-
-    assert ungraded.pre_screen_grade is None
-    assert held.pre_screen_grade == prescreen.GRADE_HOLD
-    assert ungraded.pre_screen_label != held.pre_screen_label
-    assert "not been graded" in ungraded.pre_screen_label
-
-
-def test_an_unknown_pre_screen_grade_raises_rather_than_rendering():
-    """The database CHECK already refuses one, so arriving here means the
-    vocabularies have diverged. A dashboard that quietly renders the unknown
-    value is how that goes unnoticed for a release."""
-    with pytest.raises(ValueError):
-        dashboard.pre_screen_label("A+")
-
-
-def test_the_pre_screen_vocabulary_contains_no_rejecting_value():
-    """No pre-screen has ever rejected anybody, and the weakest value says so.
-
-    Asserted on the words rather than on the count: a fifth value called
-    `Reject` would keep every other test in this file green.
-    """
-    assert not {"reject", "rejected", "fail", "failed"} & {
-        grade.lower() for grade in dashboard.PRE_SCREEN_GRADES
-    }
-
-
-# ── Column 4: the Vivekium Score ───────────────────────────────────────────
+    assert dashboard.AI_MATCH_GRADES is rating.GRADES
+    assert list(dashboard.GRADE_STATES) == list(rating.GRADES)
+    assert len(set(dashboard.GRADE_STATES.values())) == len(rating.GRADES)
 
 
 @pytest.mark.parametrize(
     "score,expected",
     [
-        (100, dashboard.BAND_STRONG),
-        (85, dashboard.BAND_STRONG),
-        (84, dashboard.BAND_READY),
-        (72, dashboard.BAND_READY),
-        (71, dashboard.BAND_RESERVATIONS),
-        (60, dashboard.BAND_RESERVATIONS),
-        (59, dashboard.BAND_NOT_RECOMMENDED),
-        (0, dashboard.BAND_NOT_RECOMMENDED),
+        (100, rating.GRADE_HIGHLY),
+        (90, rating.GRADE_HIGHLY),
+        (89.9, rating.GRADE_MATCHING),
+        (75, rating.GRADE_MATCHING),
+        (74.9, rating.GRADE_MODERATELY),
+        (60, rating.GRADE_MODERATELY),
+        (59.9, rating.GRADE_NOT),
+        (0, rating.GRADE_NOT),
     ],
 )
-def test_band_boundaries_are_inclusive_upward(score, expected):
-    """claude.md rule 8, and the same direction `rating.grade_for_percent` uses.
-
-    Each boundary is asserted from BOTH sides. A cut-point test that only
-    checks the value at the boundary passes for an off-by-one in either
-    direction.
-    """
-    assert dashboard.band_for_score(score) == expected
-
-
-def test_a_better_score_never_earns_a_worse_band():
-    """The `tiers.py` guard, applied to the new vocabulary.
-
-    Swept across the whole range rather than sampled: the defect that made this
-    test necessary was two adjacent bands SWAPPED, which every plausible sample
-    of three points misses.
-    """
-    ranks = {band: index for index, band in enumerate(dashboard.BAND_ORDER)}
-    previous = None
-    for score in range(0, 101):
-        rank = ranks[dashboard.band_for_score(score)]
-        if previous is not None:
-            assert rank <= previous, f"band got worse as the score rose, at {score}"
-        previous = rank
+def test_a_read_resume_is_one_of_the_four_words(score, expected):
+    """Boundaries are the scale's own, inclusive upward (claude.md rule 8),
+    asserted from BOTH sides of each cut-point."""
+    assembled = dashboard.assemble_row(row(**_scored(score)))
+    assert assembled.ai_match_label == expected
+    assert assembled.ai_match_state == dashboard.GRADE_STATES[expected]
+    assert "resume" in assembled.ai_match_screen_reader_label.lower()
 
 
-def test_the_band_never_inverts_against_the_assessment_grade():
-    """Two vocabularies over one number line must agree on DIRECTION.
-
-    They are allowed to disagree on where the lines fall -- the dashboard cuts
-    at 85/72/60 and `rating` at 90/75/60, and D8 makes them different artifacts
-    -- but a score that grades better must never band worse. That is exactly
-    the property `tiers.py` violated.
-    """
-    grade_rank = {grade: index for index, grade in enumerate(rating.GRADES)}
-    band_rank = {band: index for index, band in enumerate(dashboard.BAND_ORDER)}
-    pairs = [
-        (grade_rank[rating.grade_for_percent(score)],
-         band_rank[dashboard.band_for_score(score)])
-        for score in range(0, 101)
-    ]
-    for (grade_a, band_a), (grade_b, band_b) in zip(pairs, pairs[1:]):
-        if grade_b < grade_a:  # the grade improved
-            assert band_b <= band_a, "the grade improved while the band worsened"
-
-
-def test_the_two_vocabularies_share_no_word():
-    """A recruiter reading "Matching" must never have to ask which scale it is.
-
-    The dashboard band and the assessment grade are different artifacts (D8),
-    and the cheapest way to keep them distinguishable on screen is for them to
-    have no word in common.
-    """
-    assert dashboard.vocabularies_are_disjoint()
-
-
-def test_an_unassessed_candidate_is_pending_and_never_zero():
-    """The entire reason column 4 has a pending state.
-
-    "We have not assessed this person" and "we assessed this person and they
-    scored badly" are different sentences, and collapsing them slanders every
-    candidate still in the queue.
-    """
+def test_an_unread_resume_is_not_checked_and_never_a_grade():
+    """"AI Matching has not read this" and "it read this and it is weak" are
+    different sentences. Collapsing them slanders every candidate still in
+    the queue."""
     assembled = dashboard.assemble_row(row())
-    assert assembled.ready_pick_score is None
-    assert assembled.band == dashboard.BAND_PENDING
-    assert assembled.band_label == "Pending Vivekium Profile"
-    assert assembled.band != dashboard.BAND_NOT_RECOMMENDED
+    assert assembled.ai_match_state == dashboard.STATE_NOT_CHECKED
+    assert assembled.ai_match_label == dashboard.NOT_CHECKED_LABEL
+    assert assembled.ai_match_label not in rating.GRADES
 
 
-def test_the_pending_state_is_announced_with_its_meaning():
-    """A grey pill reading two words tells a screen-reader user nothing."""
-    assembled = dashboard.assemble_row(row())
-    assert "assessment in progress" in assembled.band_screen_reader_label.lower()
+@pytest.mark.parametrize("reason", yukti_config.FAILURE_REASONS)
+def test_every_failure_reason_has_a_sentence_and_no_grade(reason):
+    """A not-assessed resume says WHY in words, and carries no grade."""
+    assembled = dashboard.assemble_row(
+        row(
+            ai_match_status=yukti_config.STATUS_NOT_ASSESSED,
+            ai_match_failure_reason=reason,
+        )
+    )
+    assert assembled.ai_match_state == dashboard.STATE_NOT_ASSESSED
+    assert assembled.ai_match_label == dashboard.NOT_ASSESSED_LABEL
+    assert assembled.ai_match_note == dashboard.NOT_ASSESSED_NOTES[reason]
+
+
+def test_the_sentences_cover_exactly_the_reasons_yukti_stores():
+    """A reason added to Yukti with no sentence here would reach a row and
+    raise; a sentence for a reason Yukti no longer writes is dead copy."""
+    assert set(dashboard.NOT_ASSESSED_NOTES) == set(yukti_config.FAILURE_REASONS)
+
+
+def test_a_legacy_reading_says_it_predates_the_evidence_tags():
+    assembled = dashboard.assemble_row(
+        row(**_scored(81, status=yukti_config.STATUS_LEGACY))
+    )
+    assert assembled.ai_match_label == rating.GRADE_MATCHING
+    assert assembled.ai_match_note == dashboard.LEGACY_NOTE
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"ai_match_status": "graded"},
+        {"ai_match_status": None},
+        {
+            "ai_match_status": yukti_config.STATUS_NOT_ASSESSED,
+            "ai_match_failure_reason": "because",
+        },
+        {"ai_match_status": yukti_config.STATUS_SCORED, "ai_match_score": None},
+    ],
+)
+def test_a_diverged_vocabulary_raises_rather_than_rendering(overrides):
+    """The CHECK on `yukti_status` and Yukti's own writer refuse all of these,
+    so arriving here means the vocabularies have diverged. A dashboard that
+    quietly renders one is how that goes unnoticed for a release."""
+    with pytest.raises(ValueError):
+        dashboard.assemble_row(row(**overrides))
+
+
+# ── Column 4: the Vivekium Grade ─────────────────────────────────────────────
+
+
+def test_column_4_is_the_word_for_the_rank_the_ranked_table_sorts_by():
+    """ONE rank expression (`yukti.ranking`), so the dashboard and the job page
+    can never order one job's candidates two ways. The word is the scale's."""
+    assembled = dashboard.assemble_row(
+        row(**_scored(80), ready_pick_rank=91.0, has_assessment_grade=True)
+    )
+    assert assembled.ranking_label == rating.GRADE_HIGHLY
+    assert assembled.ranking_state == dashboard.STATE_HIGHLY
+    assert dashboard.BASIS_WITH_ASSESSMENT in assembled.ranking_note
+
+
+def test_a_resume_only_grade_says_so():
+    assembled = dashboard.assemble_row(row(**_scored(80), ready_pick_rank=80.0))
+    assert assembled.ranking_label == rating.GRADE_MATCHING
+    assert assembled.ranking_note.startswith(dashboard.BASIS_RESUME_ONLY)
+
+
+def test_an_assessment_over_an_unread_resume_says_the_assessment_alone_decided():
+    assembled = dashboard.assemble_row(
+        row(
+            ai_match_status=yukti_config.STATUS_NOT_ASSESSED,
+            ai_match_failure_reason=yukti_config.FAILURE_NO_RESUME_TEXT,
+            ready_pick_rank=66.0,
+            has_assessment_grade=True,
+        )
+    )
+    assert assembled.ranking_label == rating.GRADE_MODERATELY
+    assert assembled.ranking_note.startswith(dashboard.BASIS_ASSESSMENT_ONLY)
+
+
+def test_a_failed_must_have_is_named_beside_the_capped_grade():
+    assembled = dashboard.assemble_row(
+        row(
+            **_scored(100),
+            ready_pick_rank=float(yukti_ranking.must_have_cap()),
+            has_assessment_grade=True,
+            must_have_failed=True,
+        )
+    )
+    assert assembled.ranking_label == rating.GRADE_MODERATELY
+    assert dashboard.MUST_HAVE_CAPPED_NOTE in assembled.ranking_note
+
+
+def test_no_rank_repeats_column_3s_reason_rather_than_inventing_a_grade():
+    """With no reading and no graded assessment there is nothing to grade,
+    and the cell says which of the two absences it is."""
+    unread = dashboard.assemble_row(row())
+    assert unread.ranking_state == dashboard.STATE_NOT_CHECKED
+    assert unread.ranking_label == dashboard.NOT_CHECKED_LABEL
+
+    failed = dashboard.assemble_row(
+        row(
+            ai_match_status=yukti_config.STATUS_NOT_ASSESSED,
+            ai_match_failure_reason=yukti_config.FAILURE_MODEL_UNAVAILABLE,
+        )
+    )
+    assert failed.ranking_state == dashboard.STATE_NOT_ASSESSED
+    assert "retried" in failed.ranking_note
 
 
 def test_under_review_is_announced_with_its_meaning():
     """The specification names this one explicitly: announced as "Status: Under
     Review, awaiting integrity disposition", not as a visual red."""
     assembled = dashboard.assemble_row(row(under_integrity_review=True))
-    assert assembled.band == dashboard.BAND_UNDER_REVIEW
+    assert assembled.ranking_state == dashboard.STATE_UNDER_REVIEW
     assert (
-        assembled.band_screen_reader_label
+        assembled.ranking_screen_reader_label
         == "Status: Under Review, awaiting integrity disposition"
     )
 
 
-def test_under_review_withholds_the_number_even_when_one_exists():
-    """A score printed beside "Under Review" invites a recruiter to act on it,
+def test_under_review_withholds_the_grade_even_when_one_exists():
+    """A grade printed beside "Under Review" invites a recruiter to act on it,
     which is the one thing the lock exists to prevent."""
     assembled = dashboard.assemble_row(
         row(
+            **_scored(95),
             under_integrity_review=True,
-            ready_pick_score=88,
+            ready_pick_rank=95.0,
+            has_assessment_grade=True,
             evaluation_id=EVALUATION,
-            confidence="high",
+            confidence=miti_aggregation.CONFIDENCE_HIGH,
         )
     )
-    assert assembled.ready_pick_score is None
-    assert assembled.band == dashboard.BAND_UNDER_REVIEW
+    assert assembled.ranking_label == dashboard.UNDER_REVIEW_LABEL
+    assert assembled.ranking_label not in rating.GRADES
+    assert assembled.confidence_indicator == dashboard.CONFIDENCE_GRAYED
 
 
 @pytest.mark.parametrize(
     "confidence,expected",
     [
-        ("high", dashboard.CONFIDENCE_FILLED),
-        ("medium", dashboard.CONFIDENCE_FILLED),
-        ("low", dashboard.CONFIDENCE_OUTLINE),
+        (miti_aggregation.CONFIDENCE_HIGH, dashboard.CONFIDENCE_FILLED),
+        (miti_aggregation.CONFIDENCE_MODERATE, dashboard.CONFIDENCE_FILLED),
+        (miti_aggregation.CONFIDENCE_LOW, dashboard.CONFIDENCE_OUTLINE),
+        (miti_aggregation.CONFIDENCE_INSUFFICIENT, dashboard.CONFIDENCE_GRAYED),
         (None, dashboard.CONFIDENCE_GRAYED),
     ],
 )
 def test_the_confidence_dot_follows_the_aggregators_own_word(confidence, expected):
+    """`moderate` is the word the aggregator writes (0106 rewrote `medium`
+    out of the column). The dot keyed on `medium` rendered every moderate
+    assessment as grayed "Insufficient confidence"."""
     assert dashboard.confidence_indicator(confidence) == expected
+
+
+def test_an_unknown_confidence_word_raises():
+    with pytest.raises(ValueError):
+        dashboard.confidence_indicator("medium")
+
+
+def test_no_evaluation_is_not_called_insufficient_confidence():
+    """A resume check is not an assessment. Calling its confidence
+    "insufficient" would read as a verdict on evidence nobody has gathered."""
+    assembled = dashboard.assemble_row(row(**_scored(80), ready_pick_rank=80.0))
+    assert assembled.confidence_label == dashboard.CONFIDENCE_NOT_ASSESSED_LABEL
 
 
 def test_the_confidence_dot_is_always_accompanied_by_words():
@@ -287,20 +337,58 @@ def test_the_confidence_dot_is_always_accompanied_by_words():
         assert dashboard.CONFIDENCE_LABELS[indicator].strip()
 
 
-def test_no_score_range_is_invented():
-    """The specification asks for `82 [76 to 88]` and nothing in the engine
-    publishes an interval.
+# ── The AI Match filter and the scale's cut-points ───────────────────────────
 
-    A bracket computed from the confidence word would be a number with no
-    provenance printed beside one that has some. The row carries a null range
-    and a sentence saying why.
+
+def test_the_filter_ranges_agree_with_the_scale_everywhere():
+    """The filter's SQL ranges are read off `rating.grade_for_percent`, never
+    retyped. Swept on a fine grid so a cut-point moved off a whole number, or
+    a range that overlaps its neighbour, fails here rather than filtering one
+    candidate into two grades."""
+    for step in range(0, 10001, 5):
+        value = step / 100
+        inside = []
+        for grade in rating.GRADES:
+            floor, ceiling = dashboard.grade_range(grade)
+            if floor <= value and (ceiling is None or value < ceiling):
+                inside.append(grade)
+        assert inside == [rating.grade_for_percent(value)], value
+
+
+def test_the_filter_sql_carries_no_caller_text():
+    """Only bounds travel, as bound parameters; the word never reaches SQL."""
+    clause, params = dashboard._ai_match_clause([rating.GRADE_MATCHING])
+    assert rating.GRADE_MATCHING not in clause
+    floor, ceiling = dashboard.grade_range(rating.GRADE_MATCHING)
+    assert sorted(params.values()) == [floor, ceiling]
+
+
+# ── Nothing numeric leaves the row ───────────────────────────────────────────
+
+
+def test_the_assembled_row_carries_no_number_but_counts():
+    """The scores are consumed by `assemble_row`; the row it returns is words.
+
+    Asserted on the VALUES of a fully populated row rather than on field
+    names, because a field called `hint` holding 87.0 would pass a name check.
     """
     assembled = dashboard.assemble_row(
-        row(evaluation_id=EVALUATION, ready_pick_score=82, confidence="high")
+        row(
+            **_scored(87.4),
+            ready_pick_rank=88.2,
+            has_assessment_grade=True,
+            evaluation_id=EVALUATION,
+            confidence=miti_aggregation.CONFIDENCE_HIGH,
+            team_review_count=2,
+        )
     )
-    assert assembled.ready_pick_score == 82
-    assert assembled.score_range is None
-    assert "no uncertainty interval" in assembled.score_range_note.lower()
+    for name, value in vars(assembled).items():
+        if name == "team_review_count":
+            continue
+        if isinstance(value, bool) or value is None:
+            continue
+        assert not isinstance(value, (int, float)), name
+        assert "87" not in str(value) and "88" not in str(value), name
 
 
 # ── Column 5: the Vivekium Note ────────────────────────────────────────────
@@ -328,9 +416,9 @@ def test_the_note_key_is_the_one_siddhi_writes():
 def test_the_dashboard_never_imports_the_report_schemas():
     """The two artefacts stay apart at the module level too (spec-doc6 C10).
 
-    A report payload with a score field on it now refuses to construct, and the
-    dashboard's one permitted number must reach a client through the
-    dashboard's own schema rather than by borrowing the report's.
+    A report payload with a score field on it refuses to construct, and the
+    dashboard reaches a client through its own schema rather than by
+    borrowing the report's.
     """
     for module in ("app/schemas/dashboard.py", "app/services/dashboard.py",
                    "app/api/dashboard.py"):
@@ -348,7 +436,6 @@ def test_the_note_is_read_from_the_evaluation_not_from_the_report():
     assembled = dashboard.assemble_row(
         row(
             evaluation_id=EVALUATION,
-            ready_pick_score=78,
             ready_pick_note="Owns a comparable production migration end to end.",
         )
     )
@@ -359,7 +446,7 @@ def test_the_note_is_read_from_the_evaluation_not_from_the_report():
 def test_a_blank_note_is_pending_rather_than_an_empty_cell():
     """An empty string from a degraded run is not a note."""
     assembled = dashboard.assemble_row(
-        row(evaluation_id=EVALUATION, ready_pick_score=78, ready_pick_note="   ")
+        row(evaluation_id=EVALUATION, ready_pick_note="   ")
     )
     assert assembled.note_is_pending
 
@@ -378,16 +465,17 @@ def test_the_profile_button_is_disabled_with_a_reason_before_a_profile_exists():
 def test_the_profile_points_at_an_evaluation_and_the_report_type_carries_no_score():
     """spec-doc6 C10, enforced by the type rather than by convention.
 
-    `PrismReportRef` has no score field. Asserted on the FIELD SET rather than
-    by name, so a future field called `value` would not slip through.
+    Neither reference carries a score any more: D3 took the profile's licence
+    for one. Asserted on the FIELD SET rather than by name, so a future field
+    called `value` would not slip through.
     """
-    profile = dashboard.ReadyPickProfileRef(evaluation_id=EVALUATION, score=81)
+    profile = dashboard.ReadyPickProfileRef(evaluation_id=EVALUATION)
     report = dashboard.PrismReportRef(report_id=uuid.uuid4())
 
     assert profile.artifact == "ready_pick_profile"
     assert report.artifact == "prism_report"
     assert set(report.__dataclass_fields__) == {"report_id"}
-    assert "score" not in report.__dataclass_fields__
+    assert set(profile.__dataclass_fields__) == {"evaluation_id"}
 
 
 # ── Column 8: Stage ──────────────────────────────────────────────────────────
