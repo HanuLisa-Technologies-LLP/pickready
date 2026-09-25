@@ -384,11 +384,27 @@ async def _never_called(chunk, content_type, config):  # noqa: ANN001
 
 
 def _speakers(count: int):
+    """A poster that hears `count` speakers, each speaking long enough to be a
+    STRONG voice, so these tests exercise the consecutive-chunk rule and not
+    the strength rule (`tests/test_second_voice_strength.py` owns that)."""
+    strong = CONFIG.second_voice_min_seconds + 1.0
+
     async def _post(chunk, content_type, config):  # noqa: ANN001
         assert isinstance(chunk, bytes)
-        return count
+        return proctoring_audio.ChunkAnalysis(
+            speaker_count=count,
+            speaker_seconds=tuple(strong for _ in range(count)),
+            speech_seconds=strong * count,
+        )
 
     return _post
+
+
+async def _answering_by_voice(session, conversation_id, now, config):  # noqa: ANN001
+    """The voice-capture probe, answering "a spoken answer is being captured",
+    so the speech rule stays out of the second-voice tests. The speech rule
+    has its own file (`tests/test_speech_during_non_audio.py`)."""
+    return True
 
 
 @pytest.mark.asyncio
@@ -448,7 +464,7 @@ async def test_one_chunk_with_a_second_voice_is_not_enough(analysis_configured) 
                     ps = await _load(s, fx)
                     out = await proctoring_audio.analyse_chunk(
                         s, ps, POLICY_CONTINUE_AND_NOTE, b"bytes", "audio/webm",
-                        now=datetime.now(timezone.utc), post=_speakers(2),
+                        now=datetime.now(timezone.utc), post=_speakers(2), probe=_answering_by_voice,
                         enqueue=fx.enqueue,
                     )
                     assert out.analysed is True
@@ -479,7 +495,7 @@ async def test_consecutive_chunks_with_a_second_voice_take_a_warning(
                         out = await proctoring_audio.analyse_chunk(
                             s, ps, POLICY_CONTINUE_AND_NOTE, b"bytes", "audio/webm",
                             now=now + timedelta(seconds=15 * index),
-                            post=_speakers(2), enqueue=fx.enqueue,
+                            post=_speakers(2), probe=_answering_by_voice, enqueue=fx.enqueue,
                         )
                     assert out.warning is not None
                     assert out.warning.event_type == "SECOND_VOICE_DETECTED"
@@ -508,16 +524,16 @@ async def test_a_single_speaker_chunk_resets_the_run(analysis_configured) -> Non
                     ps = await _load(s, fx)
                     await proctoring_audio.analyse_chunk(
                         s, ps, POLICY_CONTINUE_AND_NOTE, b"a", "audio/webm",
-                        now=now, post=_speakers(2), enqueue=fx.enqueue,
+                        now=now, post=_speakers(2), probe=_answering_by_voice, enqueue=fx.enqueue,
                     )
                     await proctoring_audio.analyse_chunk(
                         s, ps, POLICY_CONTINUE_AND_NOTE, b"b", "audio/webm",
-                        now=now + timedelta(seconds=15), post=_speakers(1),
+                        now=now + timedelta(seconds=15), post=_speakers(1), probe=_answering_by_voice,
                         enqueue=fx.enqueue,
                     )
                     out = await proctoring_audio.analyse_chunk(
                         s, ps, POLICY_CONTINUE_AND_NOTE, b"c", "audio/webm",
-                        now=now + timedelta(seconds=30), post=_speakers(2),
+                        now=now + timedelta(seconds=30), post=_speakers(2), probe=_answering_by_voice,
                         enqueue=fx.enqueue,
                     )
                     assert out.warning is None

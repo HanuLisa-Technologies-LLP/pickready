@@ -119,6 +119,9 @@ from app.models.job_setup import (
     JobSwotAnalysis,
     JobSwotIntake,
 )
+# The pause record the turn timer subtracts (migration 0125). Written by
+# proctoring and the voice answer route; read by the conversation engine.
+from app.models.assessment_pause import AssessmentPause
 from app.models.proctoring import (
     ProctoringEvent,
     ProctoringReport,
@@ -260,6 +263,7 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
+    "AssessmentPause",
     "ProctoringEvent",
     "ProctoringReport",
     "ProctoringSession",

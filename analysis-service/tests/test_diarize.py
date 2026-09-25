@@ -1,7 +1,11 @@
 """The /diarize contract and the speaker-count mapping.
 
-The backend reads exactly two fields, `speaker_count` and `speech_seconds`,
-and decides "second voice" on `speaker_count >= 2`. Each status code below is
+The backend reads three fields: `speaker_count`, `speech_seconds` and
+`speaker_seconds` (each speaker's own total, longest first). It flags a second
+voice only when the SECOND entry of `speaker_seconds` is long enough to be a
+real voice, and it refuses an answer whose `speaker_seconds` does not have one
+entry per speaker (`backend/app/services/proctoring/audio.parse_analysis`), so
+this service must always send it. Each status code below is
 one the backend's audio handler has to distinguish: a 503 means audio
 monitoring is unavailable and is said so on the report; a 4xx means this chunk
 was bad and the session carries on.
@@ -27,7 +31,9 @@ from tests.conftest import (
 def test_one_speaker_maps_to_a_count_of_one(client, pipeline) -> None:
     response = client.post("/diarize", files=upload(b"\x1aE\xdf\xa3fake-webm"))
     assert response.status_code == 200, response.text
-    assert response.json() == {"speaker_count": 1, "speech_seconds": 9.5}
+    assert response.json() == {
+        "speaker_count": 1, "speech_seconds": 9.5, "speaker_seconds": [9.5],
+    }
     assert len(pipeline.calls) == 1
     assert pipeline.calls[0]["sample_rate"] == 16000
 
@@ -46,13 +52,52 @@ def test_speaker_count_is_the_number_of_distinct_labels(speakers, expected) -> N
     with make_client(components) as client:
         response = client.post("/diarize", files=upload(b"audio"))
     assert response.status_code == 200
-    assert response.json() == {"speaker_count": expected, "speech_seconds": 3.25}
+    body = response.json()
+    assert body["speaker_count"] == expected
+    assert body["speech_seconds"] == 3.25
+    assert len(body["speaker_seconds"]) == expected, "one entry per speaker, always"
 
 
 def test_summarise_reads_both_pyannote_return_shapes() -> None:
-    annotation = FakeAnnotation(["a", "b"], 4.0)
-    assert summarise(annotation) == DiarizationResult(speaker_count=2, speech_seconds=4.0)
-    assert summarise(FakeDiarizeOutput(annotation)) == DiarizationResult(2, 4.0)
+    annotation = FakeAnnotation(["a", "b"], 4.0, {"a": 1.0, "b": 3.0})
+    expected = DiarizationResult(speaker_count=2, speech_seconds=4.0, speaker_seconds=(3.0, 1.0))
+    assert summarise(annotation) == expected
+    assert summarise(FakeDiarizeOutput(annotation)) == expected
+
+
+def test_speaker_seconds_are_each_speakers_own_total_longest_first() -> None:
+    """The candidate is usually the longest speaker, so the backend reads the
+    SECOND entry. The order is the service's promise, not the label order
+    pyannote happened to return."""
+    pipeline = FakePipeline(
+        speakers=["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"],
+        speech_seconds=13.0,
+        durations={"SPEAKER_00": 0.8, "SPEAKER_01": 11.0, "SPEAKER_02": 4.5},
+    )
+    with make_client(make_components(pipeline=pipeline)) as client:
+        body = client.post("/diarize", files=upload(b"audio")).json()
+    assert body["speaker_seconds"] == [11.0, 4.5, 0.8]
+    assert body["speaker_count"] == 3
+
+
+def test_overlapping_speech_counts_in_full_for_each_speaker() -> None:
+    """Two people talking over each other: the union (`speech_seconds`) counts
+    the overlap once, each speaker's own entry counts it in full, so a voice
+    that only ever spoke over the candidate is still measured."""
+    pipeline = FakePipeline(
+        speakers=["A", "B"], speech_seconds=10.0, durations={"A": 10.0, "B": 6.0}
+    )
+    with make_client(make_components(pipeline=pipeline)) as client:
+        body = client.post("/diarize", files=upload(b"audio")).json()
+    assert body["speech_seconds"] == 10.0
+    assert body["speaker_seconds"] == [10.0, 6.0]
+
+
+def test_silence_is_zero_speakers_and_an_empty_list() -> None:
+    pipeline = FakePipeline(speakers=[], speech_seconds=0.0)
+    with make_client(make_components(pipeline=pipeline)) as client:
+        body = client.post("/diarize", files=upload(b"audio")).json()
+    assert body == {"speaker_count": 0, "speech_seconds": 0.0, "speaker_seconds": []}
 
 
 def test_wav_is_accepted_and_the_codec_parameter_is_ignored(client) -> None:

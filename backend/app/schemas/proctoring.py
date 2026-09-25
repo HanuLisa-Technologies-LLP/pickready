@@ -29,6 +29,8 @@ __all__ = [
     "SessionCreateIn",
     "SessionOut",
     "ProctoringConfigOut",
+    "PauseOut",
+    "WarningAckOut",
     "EventIn",
     "EventBatchIn",
     "WarningOut",
@@ -116,6 +118,30 @@ class SessionCreateIn(BaseModel):
         return value
 
 
+class PauseOut(BaseModel):
+    """The device pause, as the candidate's screen shows it.
+
+    While `paused` the assessment waits: answering is refused, the clock is
+    stopped, and `message` says which device to fix and by when. The two
+    counts are operational (how many of the allowed pauses are used), the same
+    kind of figure as the warning counter beside them; no assessment number
+    travels here.
+    """
+
+    paused: bool
+    message: str | None = None
+    grace_deadline_at: datetime | None = None
+    pauses_used: int
+    max_pauses: int
+
+
+class WarningAckOut(BaseModel):
+    """POST /proctoring/sessions/{id}/warnings/ack. `resumed` is true when a
+    warning pause was open and this acknowledgement closed it."""
+
+    resumed: bool
+
+
 class SessionOut(BaseModel):
     session_id: uuid.UUID
     conversation_id: uuid.UUID
@@ -131,6 +157,9 @@ class SessionOut(BaseModel):
     #: Whether a second voice can be detected in this deployment. When false
     #: the client does not upload audio, and the report says so.
     audio_analysis_available: bool
+    #: The device pause as it stands, so a page reloaded in the middle of a
+    #: pause shows the pause screen rather than the question.
+    pause: PauseOut
 
 
 class ProctoringConfigOut(BaseModel):
@@ -139,6 +168,10 @@ class ProctoringConfigOut(BaseModel):
     config: dict[str, Any]
     max_warnings: int
     audio_analysis_available: bool
+    #: The monitoring rules in plain language, composed by the server from
+    #: the same numbers it enforces (`phrasing.candidate_rules`). The consent
+    #: screen renders these; it never words a rule itself.
+    candidate_rules: list[str]
 
 
 class EventIn(BaseModel):
@@ -203,6 +236,8 @@ class IngestOut(BaseModel):
     status: str
     warning: WarningOut | None = None
     termination: TerminationOut | None = None
+    #: None only when the session has ended.
+    pause: PauseOut | None = None
 
 
 class MonitoringStateIn(BaseModel):
@@ -239,6 +274,8 @@ class HeartbeatOut(BaseModel):
     #: Seconds the client should wait before the next heartbeat.
     interval_seconds: int
     termination: TerminationOut | None = None
+    #: None only when the session has ended.
+    pause: PauseOut | None = None
 
 
 class AudioChunkOut(BaseModel):

@@ -106,19 +106,42 @@ def test_an_unrecovered_integrity_failure_terminates() -> None:
     assert result.path == catalog.PATH_A
 
 
-def test_a_camera_stream_that_recovered_in_time_is_an_interruption() -> None:
-    result = ingestion.classify(
-        _event("CAMERA_STREAM_FAILED", CONFIG.camera_recovery_seconds * MS - 1), CONFIG
-    )
-    assert result.event_type == "CAMERA_STREAM_INTERRUPTED"
+@pytest.mark.parametrize(
+    ("loss", "interruption"),
+    [
+        ("CAMERA_STREAM_FAILED", "CAMERA_STREAM_INTERRUPTED"),
+        ("CAMERA_PERMISSION_LOST", "CAMERA_STREAM_INTERRUPTED"),
+        ("MIC_STREAM_FAILED", "MIC_STREAM_INTERRUPTED"),
+        ("MIC_PERMISSION_LOST", "MIC_STREAM_INTERRUPTED"),
+    ],
+)
+def test_a_device_loss_under_the_glitch_window_is_an_interruption(
+    loss: str, interruption: str
+) -> None:
+    """A flicker is logged against the device that flickered and pauses
+    nothing; the report still says it happened."""
+    result = ingestion.classify(_event(loss, CONFIG.device_glitch_seconds * MS - 1), CONFIG)
+    assert result.event_type == interruption
     assert result.path == catalog.PATH_C
+    assert result.note == {ingestion.NOTE_DOWNGRADED_FROM: loss}
 
 
-def test_a_camera_stream_that_never_recovered_terminates() -> None:
-    result = ingestion.classify(
-        _event("CAMERA_STREAM_FAILED", CONFIG.camera_recovery_seconds * MS), CONFIG
-    )
-    assert result.path == catalog.PATH_A
+@pytest.mark.parametrize("loss", sorted(catalog.PAUSING))
+def test_a_device_loss_at_the_glitch_boundary_pauses(loss: str) -> None:
+    """The boundary belongs to the rule, and the rule is a PAUSE now, never
+    the immediate termination it was before 2026-09-24."""
+    result = ingestion.classify(_event(loss, CONFIG.device_glitch_seconds * MS), CONFIG)
+    assert result.event_type == loss
+    assert result.path == catalog.PATH_P
+
+
+@pytest.mark.parametrize("loss", sorted(catalog.PAUSING))
+def test_an_untimed_device_loss_pauses_rather_than_terminating(loss: str) -> None:
+    """A loss the browser reports while it is still happening carries no
+    duration. It pauses: no camera or microphone loss is Path A any more."""
+    result = ingestion.classify(_event(loss), CONFIG)
+    assert result.path == catalog.PATH_P
+    assert loss not in catalog.TERMINATING
 
 
 def test_an_obstruction_shorter_than_the_rule_is_not_an_obstruction() -> None:
@@ -165,7 +188,7 @@ def test_an_untimed_event_is_trusted_as_the_browser_sent_it() -> None:
     """The browser is the only party that saw the camera. Refusing every
     event that omits a duration would make the rules depend on a field the
     specification does not require, and the failure would be silent."""
-    for event_type in ("CAMERA_OBSTRUCTED", "FACE_ABSENT_EXTENDED", "CAMERA_STREAM_FAILED"):
+    for event_type in ("CAMERA_OBSTRUCTED", "FACE_ABSENT_EXTENDED"):
         assert ingestion.classify(_event(event_type), CONFIG).path == catalog.PATH_A
 
 
@@ -237,14 +260,16 @@ def test_a_warning_past_the_limit_is_still_final_rather_than_wrapping() -> None:
 # ── Which outcome a termination produces ─────────────────────────────────────
 
 
-def test_a_dead_camera_is_a_technical_failure_and_never_an_integrity_one() -> None:
+@pytest.mark.parametrize("reason", sorted(catalog.DEVICE_REASONS))
+def test_the_end_of_a_device_pause_is_a_technical_failure_and_never_an_integrity_one(
+    reason: str,
+) -> None:
     """Section 7.3: "A candidate whose laptop camera died must never be
-    presented as suspicious." Independent of the warning count: hardware does
-    not become misconduct because something else happened earlier."""
+    presented as suspicious." Both ways the pause path ends a session are a
+    technical failure, independent of the warning count: hardware does not
+    become misconduct because something else happened earlier."""
     for warnings in (0, 1, 3):
-        assert ingestion.outcome_for_termination("CAMERA_STREAM_FAILED", warnings) == (
-            OUTCOME_TECHNICAL_FAILURE
-        )
+        assert ingestion.outcome_for_termination(reason, warnings) == OUTCOME_TECHNICAL_FAILURE
 
 
 def test_an_integrity_failure_on_a_clean_session_reads_as_technical() -> None:
@@ -263,8 +288,7 @@ def test_an_integrity_failure_after_warnings_is_not_written_off_as_technical() -
 
 
 @pytest.mark.parametrize(
-    "reason", ["IDENTITY_MISMATCH", "CAMERA_OBSTRUCTED", "FACE_ABSENT_EXTENDED",
-               "CAMERA_PERMISSION_LOST", "MIC_PERMISSION_LOST"]
+    "reason", ["IDENTITY_MISMATCH", "CAMERA_OBSTRUCTED", "FACE_ABSENT_EXTENDED"]
 )
 def test_a_candidate_side_termination_is_an_integrity_outcome(reason: str) -> None:
     for warnings in (0, 2):
