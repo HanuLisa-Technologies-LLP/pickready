@@ -1,11 +1,12 @@
 """Proctoring pauses: the pause record, and a fourth consequence path.
 
 Revision ID: 0125_proctoring_pause
-Revises: 0121_candidate_comms
+Revises: 0124_coding_execution
 
-PLAN-p3 WP4 (proctoring). The orchestrator re-chains the stage 2 migrations
-0122 to 0126 at integration; this file is written against 0121, the head it
-was built on.
+PLAN-p3 WP4 (proctoring). Written against 0121, the head it was built on,
+and re-chained onto 0124 at the stage 2 integration so the history stays
+linear (0121 -> 0124 -> 0125); the orchestrator inserts 0122, 0123 and 0126
+from the remaining packages later.
 
 1. `assessment_pauses`, one row per stretch of time an assessment's clock was
    stopped: a camera or microphone loss (`device_loss`), a spoken answer being
@@ -48,7 +49,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0125_proctoring_pause"
-down_revision = "0121_candidate_comms"
+down_revision = "0124_coding_execution"
 branch_labels = None
 depends_on = None
 
