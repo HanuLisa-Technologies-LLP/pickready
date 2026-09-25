@@ -400,8 +400,8 @@ def _evaluate(
 
 # -- The department evidence graph, as this question's brief ------------------
 #
-# THE LIVE ENTRY POINT. `api/assessments._write_next_question_inner` calls
-# `write_question` for every base question a candidate reads, and this is where
+# THE LIVE ENTRY POINT. `assessment_conversation.turns.write_next_question`
+# calls `write_question` for every base question a candidate reads, and this is where
 # Part VI enters that call. Before this, the question was written from the item
 # name, the item description, the JD and the resume: nothing in the prompt knew
 # what department the role was in, what evidence would actually establish the

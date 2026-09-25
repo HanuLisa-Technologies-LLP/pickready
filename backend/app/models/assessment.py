@@ -478,9 +478,9 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     # CHECK values stay so a row written before that still reads. What follows
     # is the history of the column.
     #
-    # The assessment stopped early on evidence coverage from 2026-08-23:
-    # `ppi.conversation_may_close` decides it and the question ceiling is a
-    # ceiling rather than a target. What the product could not answer is WHICH
+    # The assessment stopped early on evidence coverage from 2026-08-23 to
+    # 2026-09-24: `conversation_may_close` decided it and the question ceiling
+    # was a ceiling rather than a target. What the product could not answer is WHICH
     # of the two endings a given session had, because the decision lived in a
     # log line and log lines are retained, not queried per candidate. Without
     # it "ended at 14 of 20" and "ended at 14 of 14" read identically in the
