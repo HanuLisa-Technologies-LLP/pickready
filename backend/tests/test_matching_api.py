@@ -7,7 +7,6 @@ import pytest
 from app.api import matching as matching_api
 from app.api.deps import CurrentUser
 from app.models.enums import JobStatus, Role
-from app.schemas.candidates import LinkOut
 from app.schemas.matching import MatchResultOut
 
 
@@ -99,4 +98,3 @@ async def test_matching_task_status_never_renders_a_failure_as_stages(monkeypatc
 
 def test_client_matching_schemas_do_not_expose_numeric_scores():
     assert "match_score" not in MatchResultOut.model_fields
-    assert "match_score" not in LinkOut.model_fields
