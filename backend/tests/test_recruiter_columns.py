@@ -175,31 +175,38 @@ def test_bgv_words_cover_every_derivable_status():
 # ── the row payload carries the columns ──────────────────────────────────────
 
 
-def test_the_row_payload_serves_the_seven_column_fields():
-    """`_row_payload` on a bare fixture row: every new field present, every
-    derived word None (nothing stated), and match_percent an int when the
-    score exists."""
+def test_the_row_payload_serves_the_recruiter_column_fields():
+    """`_row_payload` on a bare fixture row: every recruiter column present,
+    every derived word None (nothing stated), and NO number anywhere. The
+    Executive Profile Match Score (`match_percent`) that sat beside these
+    words is gone (Vivekium release, D3 with no exception)."""
     from app.services import job_candidates
+    from app.services.yukti.projection import JobSkillsView
 
     row = {
         "link_id": "l", "candidate_id": "c", "profile_id": None,
-        "source": None, "tier": None, "status": "applied",
+        "source": None, "status": "applied",
         "status_updated_at": None, "application_source": None,
-        "source_type": None, "archived_at": None, "breakdown": None,
+        "source_type": None, "archived_at": None,
         "validation": None, "tenant_id": "t", "full_name": "A", "email": "a@x",
         "profile_form": None, "resume_url": None, "resume_filename": None,
         "resume_mime_type": None, "report_id": None, "report_ready_at": None,
         "profile_age": "new_profile", "is_new_candidate": False,
-        "review_charged": False, "match_score": 87.4,
+        "review_charged": False, "yukti_status": "scored", "rank_score": 87.4,
+        "match_score": 87.4,
     }
-    payload = job_candidates._row_payload(row, "Non-managerial")
-    assert payload["match_percent"] == 87
+    view = JobSkillsView(names={}, digest="d")
+    payload = job_candidates._row_payload(row, view, weight_pct=70)
+    assert "match_percent" not in payload
+    assert payload["ai_match_label"] == "Matching"
     assert payload["ctc_match_label"] is None
     assert payload["notice_period_label"] is None
     assert payload["education_match_label"] is None
     # No employment declaration: verification is not required, honestly.
     assert payload["bgv_status"] == "not_required"
     assert payload["bgv_status_label"] == "Not Required"
-
-    row["match_score"] = None
-    assert job_candidates._row_payload(row, "Non-managerial")["match_percent"] is None
+    numbers = [
+        key for key, value in payload.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    assert numbers == [], numbers

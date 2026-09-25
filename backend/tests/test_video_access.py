@@ -603,9 +603,7 @@ async def test_the_job_table_row_carries_the_new_metadata_words() -> None:
         await _seed(factory, fx, recording_status=lifecycle.READY)
         async with factory() as s:
             async with superadmin_scope(s):
-                page = await job_candidates.ranked_candidates(
-                    s, fx.job_id, "non_managerial"
-                )
+                page = await job_candidates.ranked_candidates(s, fx.job_id)
         assert page.total == 1
         row = page.rows[0]
         assert row["assessment_mode_label"] == "Video interview"

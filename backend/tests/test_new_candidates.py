@@ -129,9 +129,7 @@ class _World:
         )
 
     async def page(self, **kwargs):
-        return await jc.ranked_candidates(
-            self.session, self.job_id, "non_managerial", **kwargs
-        )
+        return await jc.ranked_candidates(self.session, self.job_id, **kwargs)
 
 
 async def _run(body):

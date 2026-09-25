@@ -89,3 +89,13 @@ def _reset_provider_breaker():
     llm_router.clear_provider_breaker()
     yield
     llm_router.clear_provider_breaker()
+
+
+def pytest_sessionstart(session):
+    """TEMPORARY (Phase 2 WP-C): the Yukti columns until WP-B's migration and
+    models land. Idempotent and inert once they have; the orchestrator deletes
+    this hook and `tests/phase2_pending_schema.py` at integration."""
+    from tests import phase2_pending_schema
+
+    phase2_pending_schema.map_columns()
+    phase2_pending_schema.ensure_columns()
