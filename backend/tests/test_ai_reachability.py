@@ -109,6 +109,16 @@ LIVE: dict[str, str] = {
         "as the scoring backfill. The conversation's per-answer call is wired by "
         "the assessment phase."
     ),
+    "app.services.coding_assessment": (
+        "Phase 4 WP-4B2. workers/coding_tasks.py registers "
+        "pickready.execute_coding_submission, pickready.reconcile_coding_submissions, "
+        "pickready.probe_code_execution and pickready.verify_code_execution_sandbox, "
+        "which call submissions, sweeps and review."
+    ),
+    "app.services.code_execution": (
+        "Phase 4. Reached through coding_assessment from the coding tasks; the "
+        "port is the only way a program reaches the sandbox."
+    ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
@@ -183,6 +193,39 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
         "assessment phase calls it where assessment_conversations.started_at "
         "is stamped. When it does, move this entry to REQUIRED_CALLERS."
     ),
+    # Phase 4 WP-4B2 lands the coding services ahead of their three callers,
+    # each owned by another package: the candidate's submit (Phase 3's respond
+    # structured branch), the Run and submission-state routes (Phase 4 WP-4C)
+    # and the grader (Phase 5's Miti coding sub-stage and scoring hold). The
+    # tasks that DO call into the package are in REQUIRED_CALLERS below.
+    ("app/services/coding_assessment/submissions.py", "accept_final"): (
+        "the only writer of coding_submissions; Phase 3's respond calls it for "
+        "a v2 coding answer, after the answer row is flushed."
+    ),
+    ("app/services/coding_assessment/submissions.py", "latest_draft"): (
+        "Phase 3's auto-submit on timeout reads the latest Run's code."
+    ),
+    ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
+        "Phase 5's scoring entry waits on it while coding work is open."
+    ),
+    ("app/services/coding_assessment/submissions.py", "candidate_state_word"): (
+        "Phase 4 WP-4C's submission-state route."
+    ),
+    ("app/services/coding_assessment/runs.py", "start_run"): (
+        "Phase 4 WP-4C's Run route; the only writer of coding_runs."
+    ),
+    ("app/services/coding_assessment/runs.py", "refresh_run"): (
+        "Phase 4 WP-4C's Run poll route."
+    ),
+    ("app/services/coding_assessment/runs.py", "candidate_results"): (
+        "Phase 4 WP-4C's Run poll route."
+    ),
+    ("app/services/coding_assessment/evidence.py", "evidence_for_answer"): (
+        "Phase 5's Miti coding sub-stage, the one grading authority."
+    ),
+    ("app/services/coding_assessment/evidence.py", "for_conversation"): (
+        "Phase 5's Miti coding sub-stage and the recruiter transcript (4C)."
+    ),
     ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
         "Vaada (conversation start) and Miti (grading) both read the contract "
         "bound to the conversation and log its digest; both are wired by the "
@@ -228,6 +271,18 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     ("app/services/skills.py", "request_draft"): (
         "app/workers/tasks.py, pickready.reconcile_job_setup. The repair path "
         "for a draft that never landed."
+    ),
+    # Phase 4 WP-4B2: the coding tasks. Without the first, a final coding
+    # answer is stored and never executed; without the others, a lost
+    # dispatch is never repaired and a sandbox outage pages nobody.
+    ("app/services/coding_assessment/submissions.py", "execute_submission"): (
+        "app/workers/coding_tasks.py, pickready.execute_coding_submission."
+    ),
+    ("app/services/coding_assessment/sweeps.py", "probe"): (
+        "app/workers/coding_tasks.py, pickready.probe_code_execution."
+    ),
+    ("app/services/coding_assessment/sweeps.py", "verify_sandbox"): (
+        "app/workers/coding_tasks.py, pickready.verify_code_execution_sandbox."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "
