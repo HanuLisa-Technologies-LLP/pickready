@@ -588,12 +588,15 @@ def read_output(name: str, ctx: ScenarioContext) -> Any:
 # this happen", and the scenario asserts the absence.
 
 
-#: The ONE number sanctioned to reach a client, owner-ruled 2026-09-18: the
-#: Executive Profile Match Score on the recruiter candidate table. Pinned to
-#: exactly one field name here for the same reason `test_platform_audit.py`
-#: pins it at exactly one field: an exception that is not enumerated is an
-#: exception that widens.
-SANCTIONED_NUMERIC_FIELDS = frozenset({"match_percent"})
+#: EMPTY, and it is a record rather than a placeholder. It held
+#: `match_percent`, the Executive Profile Match Score the 2026-09-18 owner
+#: amendment let onto the recruiter candidate table. The Vivekium release
+#: removed that exception (D3, no number reaches a client with no exception):
+#: the AI Match is a grade word. `test_platform_audit.
+#: test_no_number_reaches_a_client_with_no_exception` asserts it stays empty,
+#: because an exception that is not enumerated is an exception that widens,
+#: and one that is enumerated is the first thing the next amendment reaches for.
+SANCTIONED_NUMERIC_FIELDS: frozenset[str] = frozenset()
 
 #: DELIBERATELY EMPTY, AND IT IS A RECORD RATHER THAN A PLACEHOLDER.
 #:

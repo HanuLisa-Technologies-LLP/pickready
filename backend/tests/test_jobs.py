@@ -98,21 +98,6 @@ def _funded_tenant(monkeypatch):
     monkeypatch.setattr(credits, "has_positive_balance", _funded)
 
 
-class _FakeSavepoint:
-    def __init__(self, session: "_FakeSession") -> None:
-        self.session = session
-        self.mark = 0
-
-    async def __aenter__(self) -> "_FakeSavepoint":
-        self.mark = len(self.session.added)
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
-        if exc_type is not None:
-            del self.session.added[self.mark:]
-        return False
-
-
 class _FakeSession:
     """Minimal async session: assigns ids on add/flush, records nothing else.
 
@@ -137,14 +122,6 @@ class _FakeSession:
 
     async def get(self, model, ident):
         return None
-
-    def begin_nested(self) -> "_FakeSavepoint":
-        """Model a SAVEPOINT: what was added inside it is discarded when the
-        block raises, and kept when it does not. The databank upload handles
-        each file in its own savepoint (Phase 2 WP-B), so a fake without one
-        fails every file and a fake that kept a failed file's rows would hide
-        the partial-failure contract."""
-        return _FakeSavepoint(self)
 
     async def refresh(self, obj, attribute_names=None) -> None:
         """Model the real session's refresh, which is what loads the GENERATED
@@ -225,8 +202,7 @@ def _stub_create_deps(monkeypatch) -> dict:
     monkeypatch.setattr(jobs_api, "record_action", _fake_record)
     monkeypatch.setattr(jobs_api.rbac, "assign_creator", _fake_assign)
     # Create dispatches NOTHING any more; any attempt is recorded and asserted.
-    # `dispatch_after_commit` is the module's only dispatcher since Phase 2
-    # WP-B (the bare `dispatch` import is gone), so it is the one patched.
+    # `dispatch_after_commit` is the only dispatcher the jobs router imports.
     monkeypatch.setattr(
         jobs_api, "dispatch_after_commit", lambda *a, **k: calls["dispatched"].append(a)
     )
@@ -956,8 +932,8 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     monkeypatch.setattr(resume_storage, "store_resume", _store)
     monkeypatch.setattr(resume_storage, "apply_resume_asset", lambda p, a: None)
     monkeypatch.setattr(resume_parsing, "extract_contact_identity", _identity)
-    # Each accepted file's parse is dispatched AFTER the commit (Phase 2
-    # WP-B), recorded here as (task name, args) like the publish test above.
+    # The upload hands each parse to `dispatch_after_commit`, so a rolled-back
+    # upload starts nothing (Phase 2 WP-B).
     monkeypatch.setattr(
         jobs_api, "dispatch_after_commit",
         lambda session, name, **k: calls["tasks"].append((name, k.get("args"))),
@@ -974,11 +950,25 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     return calls
 
 
+class _Savepoint:
+    """`session.begin_nested()` as the upload uses it: one savepoint per file,
+    so a failing file rolls back its own rows (Phase 2 WP-B)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _DatabankSession(_PublishSession):
     """Fake session where no candidate or link pre-exists."""
 
     async def execute(self, *a, **k):
         return _Result()
+
+    def begin_nested(self) -> _Savepoint:
+        return _Savepoint()
 
 
 @pytest.mark.asyncio
@@ -1001,9 +991,9 @@ async def test_databank_accepts_twenty_five_files(monkeypatch) -> None:
     # Every stored link is tagged as a databank procurement.
     assert all(link.source_type == SOURCE_TYPE_DATABANK for link in links)
 
-    # One parse task per file and NO job-wide matching run: since Phase 2
-    # WP-B each parse dispatches `pickready.yukti_score_profile` for its own
-    # link, so the upload never re-reads every other candidate on the job.
+    # One parse task per file and NO matching run: each parse dispatches
+    # `pickready.yukti_score_profile`, which reads the new link (Phase 2 WP-B
+    # superseded the one-run-per-batch rule of 2026-07-28).
     parse_tasks = [t for t in calls["tasks"] if t[0] == "pickready.parse_resume"]
     match_tasks = [t for t in calls["tasks"] if t[0] == "pickready.run_matching"]
     assert len(parse_tasks) == 25

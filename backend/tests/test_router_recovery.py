@@ -258,7 +258,7 @@ async def test_a_context_overflow_retries_compressed_rather_than_identically(
     ]
     messages = [{"role": "system", "content": "Grade the answer."}] + long_turns
 
-    result = await llm_router.invoke_llm("rerank", messages, total_budget=1000.0)
+    result = await llm_router.invoke_llm("extraction", messages, total_budget=1000.0)
 
     assert result == "recovered"
     assert len(sent) == 2, "the overflow must be retried exactly once here"
@@ -285,7 +285,7 @@ async def test_an_overflow_that_cannot_be_compressed_stops_rather_than_retrying(
     sent = _install_transport(monkeypatch, [(400, _overflow_error())])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "One indivisible ask."}],
+            "extraction", [{"role": "user", "content": "One indivisible ask."}],
             total_budget=1000.0,
         )
     assert len(sent) == 1
@@ -318,7 +318,7 @@ async def test_a_refusal_is_not_retried(monkeypatch) -> None:
     sent = _install_transport(monkeypatch, [(200, _refusal())])
     with pytest.raises(ModelRefusal) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert len(sent) == 1, "asking a model that declined to decline again is waste"
     assert excinfo.value.needs_human_review is True
@@ -335,7 +335,7 @@ async def test_a_refusal_still_degrades_for_a_caller_that_catches_the_base_class
     _install_transport(monkeypatch, [(200, _refusal("content_filter"))])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
 
 
@@ -347,7 +347,7 @@ async def test_a_refusal_does_not_trip_the_breaker(monkeypatch) -> None:
     _install_transport(monkeypatch, [(200, _refusal())])
     with pytest.raises(ModelRefusal):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert not llm_router._is_cooling_down(_RouterKey(api_key="k-test", fingerprint="fp1"))
 
@@ -369,12 +369,12 @@ async def test_a_truncated_response_is_retried_once_at_double_the_completion_bud
         ],
     )
     result = await llm_router.invoke_llm(
-        "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
     )
     assert result == '{"whole": "answer"}'
     assert len(sent) == 2
     first, second = (body["max_completion_tokens"] for body in sent)
-    assert first == llm_providers.max_tokens_for("rerank")
+    assert first == llm_providers.max_tokens_for("extraction")
     assert second == first * 2, "the retry must carry a LARGER budget, not the same one"
 
 
@@ -388,14 +388,14 @@ async def test_a_response_truncated_twice_raises_and_never_returns_the_cut_text(
     )
     with pytest.raises(llm_router.ResponseTruncated) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert len(sent) == 1 + llm_providers.MAX_TRUNCATION_RETRIES
     assert "truncated" in str(excinfo.value)
     assert "CUT-TEXT-FROM-THE-MODEL" not in str(excinfo.value)
     assert excinfo.value.needs_human_review is False
     assert excinfo.value.max_completion_tokens == 2 * llm_providers.max_tokens_for(
-        "rerank"
+        "extraction"
     )
     # The credential worked and the vendor answered: condemning the key would
     # take the whole tier off models for a sizing problem.
@@ -411,7 +411,7 @@ async def test_a_truncation_still_degrades_for_a_caller_that_catches_the_base_cl
     )
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
 
 
@@ -422,17 +422,17 @@ async def test_a_truncation_retry_that_cannot_fit_the_cost_ceiling_is_not_attemp
     """The doubled budget is priced BEFORE the retry starts. A ceiling that fits
     the first attempt and not a doubled one gets exactly one request."""
     first_worst_case = llm_providers.estimate_cost_usd(
-        llm_providers.MODEL_LUNA, 64, llm_providers.max_tokens_for("rerank")
+        llm_providers.MODEL_LUNA, 64, llm_providers.max_tokens_for("extraction")
     )
     monkeypatch.setitem(
-        llm_providers.TASK_COST_CEILING_USD, "rerank", first_worst_case * 1.5
+        llm_providers.TASK_COST_CEILING_USD, "extraction", first_worst_case * 1.5
     )
     sent = _install_transport(
         monkeypatch, [(200, _completion("cut", finish_reason="length"))]
     )
     with pytest.raises(llm_router.ResponseTruncated) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert len(sent) == 1
     assert "cost ceiling reached" in str(excinfo.value)
@@ -477,7 +477,7 @@ async def test_a_schema_violation_retries_with_the_validator_message_verbatim(
             raise ValueError(complaint)
 
     result = await llm_router.invoke_llm(
-        "rerank",
+        "extraction",
         [{"role": "user", "content": "list five things as json"}],
         response_format_json=True,
         total_budget=1000.0,
@@ -508,13 +508,13 @@ async def test_the_feedback_is_replaced_rather_than_accumulated(monkeypatch) -> 
 
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank",
+            "extraction",
             [{"role": "user", "content": "json please"}],
             response_format_json=True,
             total_budget=1000.0,
             validate=validate,
         )
-    assert len(sent) == llm_providers.retry_budget_for("rerank")
+    assert len(sent) == llm_providers.retry_budget_for("extraction")
     for body in sent:
         feedback_turns = [
             m for m in body["messages"] if "previous attempt was rejected" in m["content"]
@@ -537,7 +537,7 @@ async def test_the_validator_message_reaches_the_prompt_and_not_the_error(
 
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank",
+            "extraction",
             [{"role": "user", "content": "json please"}],
             response_format_json=True,
             total_budget=1000.0,
@@ -554,7 +554,7 @@ async def test_an_accepted_response_is_returned_without_a_second_call(
     """The negative direction: a validator that accepts must cost nothing."""
     sent = _install_transport(monkeypatch, [(200, _completion('{"n": 1}'))])
     result = await llm_router.invoke_llm(
-        "rerank",
+        "extraction",
         [{"role": "user", "content": "json please"}],
         response_format_json=True,
         total_budget=1000.0,
@@ -571,7 +571,7 @@ async def test_a_validator_without_json_mode_is_refused_at_the_signature() -> No
     call would send an instruction that does not describe what was asked for."""
     with pytest.raises(ValueError):
         await llm_router.invoke_llm(
-            "rerank",
+            "extraction",
             [{"role": "user", "content": "hi"}],
             validate=lambda text: None,
         )
@@ -587,7 +587,7 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
     sent = _install_transport(monkeypatch, [(401, {"error": {"code": "invalid_api_key"}})])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert len(sent) == 1
     assert llm_router._is_cooling_down(_RouterKey(api_key="k-test", fingerprint="fp1"))
@@ -602,7 +602,7 @@ async def test_a_provider_error_is_retried_and_does_not_trip_on_one_occurrence(
     )
     assert (
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
         == "ok"
     )
@@ -636,7 +636,7 @@ async def test_a_timeout_marks_the_outcome_unknown(monkeypatch) -> None:
     _install_transport(monkeypatch, [httpx.ReadTimeout("slow", request=request)])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert excinfo.value.unknown_outcome is True
     assert "timeout" in str(excinfo.value)
@@ -648,7 +648,7 @@ async def test_a_provider_failure_leaves_the_outcome_known(monkeypatch) -> None:
     _install_transport(monkeypatch, [(503, {"error": {"code": "server_error"}})])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert excinfo.value.unknown_outcome is False
 
@@ -681,7 +681,7 @@ async def test_a_retry_after_is_honoured_only_where_the_table_says_so(
         ],
     )
     await llm_router.invoke_llm(
-        "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
     )
     # Only the backoff curve, never a 600-second header the 5xx should not have
     # been allowed to impose.
@@ -741,7 +741,7 @@ async def test_a_prompt_far_over_budget_is_refused_before_the_transport(
     enormous = "word " * 4_000_000
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": enormous}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": enormous}], total_budget=1000.0
         )
     assert sent == [], "nothing may reach the vendor once the ceiling refuses"
     assert "ceiling" in str(excinfo.value)
@@ -754,14 +754,14 @@ async def test_every_cost_refusal_is_recorded(monkeypatch) -> None:
     _install_transport(monkeypatch, [(200, _completion("never reached"))])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank",
+            "extraction",
             [{"role": "user", "content": "word " * 4_000_000}],
             total_budget=1000.0,
         )
     refusals = llm_router.cost_refusals()
     assert len(refusals) == 1
     entry = refusals[0]
-    assert entry["task_type"] == "rerank"
+    assert entry["task_type"] == "extraction"
     assert entry["model"] == llm_providers.MODEL_LUNA
     assert entry["estimated_usd"] > entry["ceiling_usd"]
     assert entry["stage"] == "before the first attempt"
@@ -774,7 +774,7 @@ async def test_a_cost_refusal_records_no_prompt_content(monkeypatch) -> None:
     _install_transport(monkeypatch, [(200, _completion("never reached"))])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank",
+            "extraction",
             [{"role": "user", "content": "SECRET-ANSWER-TEXT " * 300_000}],
             total_budget=1000.0,
         )
@@ -805,7 +805,7 @@ def test_the_cost_refusal_log_is_bounded() -> None:
     that just fired, so the OLDEST is what goes."""
     for index in range(llm_router._COST_REFUSAL_LOG_LIMIT + 25):
         llm_router._record_cost_refusal(
-            task_type="rerank",
+            task_type="extraction",
             model=llm_providers.MODEL_LUNA,
             estimated_usd=float(index),
             ceiling_usd=0.06,

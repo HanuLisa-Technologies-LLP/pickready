@@ -38,8 +38,6 @@ _DECLARES = APP / "models" / "job.py"
 
 #: Readers other packages own, each deleted by its owner. Not permanent.
 PENDING_BACKEND = {
-    # `services/matching.py` (`_jd_text`) left at the stage 2 integration:
-    # Phase 2 WP-B moved matching onto Yukti, which reads no level.
     APP / "services" / "functional_assessment.py": "Phase 7 (`infer_grade`)",
 }
 

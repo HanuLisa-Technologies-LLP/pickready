@@ -130,10 +130,11 @@ def rejection_message(answer: str) -> str:
 #: Attributes a disqualifier may never rest on. Refused at capture, not at
 #: compilation, so the client is told at the moment they typed it.
 #:
-#: This is the same list `agents/gates.FORBIDDEN_INFERENCE_FIELDS` holds and it
-#: is checked here too rather than only there, for the reason enforcement is
-#: always checked at the boundary where the information exists: by the time a
-#: gate sees a compiled artifact, the sentence the client typed is gone.
+#: Checked here, at capture, for the reason enforcement is always checked at
+#: the boundary where the information exists: by the time a gate sees a
+#: compiled artifact, the sentence the client typed is gone. (The retired
+#: `agents/gates.FORBIDDEN_INFERENCE_FIELDS` carried the same list for the
+#: deleted Yukti gate; Yukti's tags are now refused against `prohibited_in`.)
 PROHIBITED_DISQUALIFIERS: tuple[str, ...] = (
     "age", "aged", "date of birth", "born in", "years old", "young", "old",
     "gender", "male", "female", "sex", "man", "men", "woman", "women",

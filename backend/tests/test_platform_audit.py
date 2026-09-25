@@ -453,41 +453,50 @@ def test_prompt_and_template_files_are_clean() -> None:
 
 # ── No number reaches a client ─────────────────────────────────────────────
 
-def test_client_facing_ranking_payload_carries_no_score() -> None:
-    from app.services.matching import client_breakdown, ranking_payload
+def test_no_number_reaches_a_client_with_no_exception() -> None:
+    """Rule 1, with NO exception since the Vivekium release (D3).
 
-    breakdown = {
-        "skills_match": {"score": 91, "comment": "x " * 27},
-        "experience_relevance": {"score": 74, "comment": "y " * 27},
-        "overall": {"score": 83, "comment": "z " * 47},
-    }
-    for payload in (ranking_payload(breakdown), client_breakdown(breakdown)):
-        flat = repr(payload)
-        for score in ("91", "74", "83"):
-            assert score not in flat, f"score {score} leaked in {flat[:200]}"
+    The 2026-09-18 amendment sanctioned one number, `match_percent` on the
+    recruiter candidate table. D3 removed it: the AI Match is a grade word.
+    Pinned three ways, because each catches what the others cannot:
 
-
-def test_match_percent_is_the_one_sanctioned_number() -> None:
-    """Rule 1's single amendment (owner-ruled 2026-09-18, vivekium brief).
-
-    The Executive Profile Match Score, `match_percent` on the recruiter
-    candidate table, is the ONE number that reaches a client. This pins the
-    exception at exactly that field: the serializer source names it once,
-    and the per-parameter breakdown projections still leak nothing (the
-    test above this one proves that with values).
+    * the ranked row and page schemas declare NO numeric field except the
+      pager's own counts, and forbid undeclared keys, so a number cannot ride
+      in unannounced;
+    * the row serializer's source does not name `match_percent` at all;
+    * the harness's allowlist of sanctioned numeric fields is EMPTY, so the
+      no-numbers scenario has no name left to excuse.
     """
     import inspect
 
+    from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
     from app.services import job_candidates
 
+    for name, field in RankedCandidateOut.model_fields.items():
+        annotation = str(field.annotation)
+        assert "int" not in annotation and "float" not in annotation, name
+    assert RankedCandidateOut.model_config.get("extra") == "forbid"
+    assert RankedCandidatesOut.model_config.get("extra") == "forbid"
+    pager = {
+        "total", "page", "page_size", "total_pages", "range_start",
+        "range_end", "new_candidate_count",
+    }
+    integers = {
+        name for name, field in RankedCandidatesOut.model_fields.items()
+        if field.annotation is int
+    }
+    assert integers == pager
+
     source = inspect.getsource(job_candidates._row_payload)
-    assert source.count('"match_percent"') == 1, (
-        "match_percent must be defined exactly once in the row serializer"
-    )
-    # The word-label fields stay words: the amendment did not widen.
+    assert "match_percent" not in source
+    # The word-label fields stay words, and are on the payload.
     for field in ("ctc_match_label", "notice_period_label",
                   "education_match_label", "bgv_status_label"):
         assert f'"{field}"' in source, f"{field} missing from the row payload"
+
+    from harness import probes
+
+    assert probes.SANCTIONED_NUMERIC_FIELDS == frozenset()
 
 
 def test_report_ratings_are_words_not_numbers() -> None:
@@ -500,24 +509,16 @@ def test_report_ratings_are_words_not_numbers() -> None:
         assert label in set(GRADES)
 
 
-def test_matching_labels_are_words_not_numbers() -> None:
-    from app.services.matching import matching_label
-
-    for score in (0, 3, 6, 8, 9.5):
-        label = matching_label(score)
-        assert not any(char.isdigit() for char in label), label
-
-
-def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
+def test_the_assessment_and_the_ai_match_share_one_scale() -> None:
     """Two parallel five-label scales used to be kept in step by hand. One
-    scale now, so "Matching" means the same thing wherever it appears."""
+    scale now, so "Matching" means the same thing wherever it appears: the
+    report's grade and the ranked table's AI Match word both read
+    `rating.grade_for_percent`."""
     from app.services.functional_assessment import rating_label
-    from app.services.matching import MATCHING_LABELS, matching_label
-    from app.services.rating import GRADES
+    from app.services.yukti import ranking
 
-    assert MATCHING_LABELS == GRADES
     for percent in range(0, 101):
-        assert rating_label(percent) == matching_label(percent / 10.0)
+        assert rating_label(percent) == ranking.grade_word(percent)
 
 
 # ── The LLM router bounds what a human waits for ───────────────────────────
@@ -527,9 +528,7 @@ def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
 #: reply slow, so the latency brief's 15s / 30s contract is unchanged for them.
 IMMEDIATE_INTERACTIVE_TASKS = (
     "conversation_turn",
-    "situation_classification",
     "email_composition",
-    "rerank",
 )
 
 #: A request handler is blocked and the output is a DOCUMENT.
@@ -629,9 +628,6 @@ def test_every_list_endpoint_is_bounded() -> None:
         "list_staff",
         "list_bd_users",
         "list_email_templates",
-        # A job is matched on at most MAXIMUM_CATEGORIES categories, refused at
-        # the POST route rather than trimmed on read, so this list cannot grow.
-        "list_matching_categories",
         "billing_config",
         # Returns fixed-size "recent" slices (25 ledger rows, 25 payments) as
         # part of one page payload. The FULL statement is GET /billing/ledger,

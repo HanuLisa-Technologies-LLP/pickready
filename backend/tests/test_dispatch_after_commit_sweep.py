@@ -66,7 +66,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/billing.py", "razorpay_webhook"): (1, "P7 proposed"),
     ("api/candidates.py", "schedule_interview"): (1, "P6 proposed"),
     ("api/companies.py", "_issue_invite"): (1, "P6 proposed"),
-    ("api/matching.py", "run_matching"): (1, "P2"),
     ("api/outreach.py", "send_outreach"): (1, "P6"),
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),

@@ -136,7 +136,9 @@ def test_the_inventory_is_not_empty_and_every_prompt_exists() -> None:
     # `sutra_skills_draft` and `sutra_assessment_context`, joined the gate.
     # The floor rises WITH them, so losing either later is a failure here
     # rather than a quieter sweep.
-    assert len(gs.GATED_PROMPTS) >= 21, gs.GATED_PROMPTS
+    #
+    # TWENTY-TWO since Phase 2 WP-F: Yukti's `yukti_matching_system` joined.
+    assert len(gs.GATED_PROMPTS) >= 22, gs.GATED_PROMPTS
     available = set(registry.names())
     for name in gs.GATED_PROMPTS:
         assert name in available, f"{name} is on the inventory with no prompt file"

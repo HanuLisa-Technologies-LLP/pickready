@@ -183,7 +183,7 @@ async def test_a_cooling_credential_fails_fast_rather_than_calling(monkeypatch) 
         llm_router._record_failure(key, terminal=False)
 
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert calls == []
 
 
@@ -191,7 +191,7 @@ async def test_a_cooling_credential_fails_fast_rather_than_calling(monkeypatch) 
 async def test_no_credential_configured_raises_the_typed_error(monkeypatch) -> None:
     monkeypatch.setattr(llm_router, "key_for_model", lambda model: None)
     with pytest.raises(LLMUnavailableError) as excinfo:
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     # It must name the variable AND the model. With two keys in play, "no
     # credential configured" leaves an operator checking the wrong one, and the
     # symptom is one tier of tasks degrading while the other looks healthy.
@@ -223,9 +223,9 @@ async def test_the_key_is_chosen_by_the_model_and_never_substituted(
     )
     calls = _stub_calls(monkeypatch, ["ok"])
 
-    # `rerank` routes to Luna, whose key is present.
+    # `extraction` routes to Luna, whose key is present.
     assert (
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
         == "ok"
     )
     assert calls[0]["key"] == "fp-luna"
@@ -257,9 +257,9 @@ async def test_an_operator_write_off_is_reversible(monkeypatch) -> None:
     _stub_calls(monkeypatch, ["ok"])
     llm_router.trip_provider()
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     llm_router.clear_provider_breaker()
-    assert await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}]) == "ok"
+    assert await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}]) == "ok"
 
 
 # ── Retries ──────────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ async def test_an_operator_write_off_is_reversible(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_a_transient_is_retried_and_can_succeed(monkeypatch) -> None:
     calls = _stub_calls(monkeypatch, [_http_error(503), "recovered"])
-    result = await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    result = await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert result == "recovered"
     assert len(calls) == 2
 
@@ -279,7 +279,7 @@ async def test_a_non_429_client_error_is_not_retried(monkeypatch) -> None:
     budget only delays the caller's fallback."""
     calls = _stub_calls(monkeypatch, [_http_error(400)])
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert len(calls) == 1
 
 
@@ -287,7 +287,7 @@ async def test_a_non_429_client_error_is_not_retried(monkeypatch) -> None:
 async def test_a_credential_failure_is_not_retried(monkeypatch) -> None:
     calls = _stub_calls(monkeypatch, [_http_error(401)])
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert len(calls) == 1
 
 
@@ -296,9 +296,9 @@ async def test_the_retry_budget_bounds_the_attempts(monkeypatch) -> None:
     calls = _stub_calls(monkeypatch, [_http_error(503)])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
-    assert len(calls) == llm_providers.retry_budget_for("rerank")
+    assert len(calls) == llm_providers.retry_budget_for("extraction")
 
 
 @pytest.mark.asyncio
@@ -308,7 +308,7 @@ async def test_the_error_message_never_quotes_a_response_body(monkeypatch) -> No
     _stub_calls(monkeypatch, [_http_error(503)])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "SECRET-ANSWER-TEXT"}]
+            "extraction", [{"role": "user", "content": "SECRET-ANSWER-TEXT"}]
         )
     assert "SECRET-ANSWER-TEXT" not in str(excinfo.value)
     assert "k-test" not in str(excinfo.value)
@@ -349,7 +349,7 @@ def test_a_failed_attempts_duration_counts_toward_the_prediction(monkeypatch) ->
     """A timeout is the slowest and most informative thing that can happen, so
     excluding failures from the estimate would exclude the worst case."""
     ctx = llm_router._RouteContext(
-        task_type="rerank",
+        task_type="extraction",
         model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp1"),
         messages=[],
@@ -371,7 +371,7 @@ def test_a_failed_attempts_duration_counts_toward_the_prediction(monkeypatch) ->
 
 def test_no_deadline_means_no_budget_check() -> None:
     ctx = llm_router._RouteContext(
-        task_type="rerank",
+        task_type="extraction",
         model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp1"),
         messages=[],
@@ -635,7 +635,7 @@ def test_a_bare_string_from_the_call_layer_is_accepted() -> None:
 @pytest.mark.asyncio
 async def test_stats_separate_the_model_from_the_credential(monkeypatch) -> None:
     _stub_calls(monkeypatch, ["ok"])
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "a"}])
     await llm_router.invoke_llm("report_synthesis", [{"role": "user", "content": "b"}])
 
     models = llm_router.model_stats()
@@ -648,7 +648,7 @@ async def test_stats_separate_the_model_from_the_credential(monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_no_key_material_reaches_the_stats_surface(monkeypatch) -> None:
     _stub_calls(monkeypatch, ["ok"])
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "a"}])
     rendered = repr(llm_router.key_stats())
     assert "k-test" not in rendered
     assert "fp1" in rendered
@@ -677,7 +677,7 @@ async def test_an_unknown_task_type_raises_before_any_call(monkeypatch) -> None:
 async def test_chat_completion_is_a_pure_alias(monkeypatch) -> None:
     calls = _stub_calls(monkeypatch, ["ok"])
     assert (
-        await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.chat_completion("extraction", [{"role": "user", "content": "hi"}])
         == "ok"
     )
     assert calls[0]["model"] == llm_providers.MODEL_LUNA

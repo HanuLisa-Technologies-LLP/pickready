@@ -84,8 +84,7 @@ sweep was complete: the live conversation (`services/interviewer`,
 `services/ppi_interview`), the PRISM remarks themselves
 (`services/siddhi`, `services/functional_assessment`), the six question formats
 (`services/assessment_formats`), project evidence (`services/projects`), BD
-reach (`services/web_research`), resume and reply extraction, and
-`services/matching_categories`. Each is owned elsewhere in this programme and
+reach (`services/web_research`), and resume and reply extraction. Each is owned elsewhere in this programme and
 gating a generator whose call site another change owns would be half a change.
 """
 from __future__ import annotations
@@ -156,7 +155,9 @@ GATED_PROMPTS: tuple[str, ...] = (
     # would otherwise narrate its own uncertainty into what Vaada reads.
     "sutra_skills_draft",
     "sutra_assessment_context",
-    # Yukti (Vivekium release, Phase 2): its tags reach a recruiter.
+    # Yukti (Vivekium release, Phase 2): the resume reading. Internal, and the
+    # tags it writes reach a recruiter's screen, so a model narrating its own
+    # uncertainty into a tag is exactly what this gate exists to stop.
     "yukti_matching_system",
     "email_generation",
     # Phase 4 (Vivekium release): the executed coding question. Its statement

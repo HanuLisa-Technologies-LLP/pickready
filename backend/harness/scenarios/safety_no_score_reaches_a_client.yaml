@@ -1,14 +1,18 @@
 id: safety.no_score_reaches_a_client_surface
-version: 1
+version: 3
 tier: safety
 description: >
   A recruiter reads the candidate table for a job with a full pool, and the
-  candidate reads their own board, applications and Updates feed. No score,
-  percentage, rank or band index reaches any of those payloads. The one
-  sanctioned exception is the Executive Profile Match Score, `match_percent`,
-  owner-ruled on 2026-09-18 and pinned at exactly one field: the sweep allows
-  that name and nothing else, so a second numeric field appearing on the
-  recruiter table fails here rather than shipping.
+  candidate reads their own board, applications and Updates feed; the
+  recruiter also reads the Candidate Dashboard, which served a number and a
+  letter grade until Phase 2 WP-E. No score,
+  percentage, rank or band index reaches any of those payloads, and there is
+  NO sanctioned exception: the Executive Profile Match Score the 2026-09-18
+  amendment let onto the recruiter table was removed by the Vivekium release
+  (D3), and the table's AI Match is a grade word with evidence tags. Version 2
+  because version 1 allowed `match_percent`; the sweep now allows no numeric
+  field on any of these payloads beyond the pager's own counts. Version 3
+  adds the Candidate Dashboard read.
 tags: [rule-1, no-numbers, serialisation]
 
 given:
@@ -25,6 +29,7 @@ workload:
   - read_applications
   - read_updates_feed
   - read_candidate_table
+  - read_candidate_dashboard
 
 expect:
   output:
@@ -32,11 +37,13 @@ expect:
     - status.read_the_job_board == 200
     - status.read_applications == 200
     - status.read_updates_feed == 200
+    - status.read_candidate_dashboard == 200
   trajectory:
     - job_board_read
     - applications_read
     - updates_feed_read
     - candidate_table_read
+    - candidate_dashboard_read
   prohibited:
     - a_number_reached_a_client
     - an_em_dash_reached_a_client

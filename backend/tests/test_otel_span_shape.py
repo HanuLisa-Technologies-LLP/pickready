@@ -109,7 +109,7 @@ def _emit_all() -> None:
     with otel.genai_span(
         otel.OPERATION_INVOKE_AGENT,
         request_model="gpt-5.6-luna",
-        task_type="claim_extraction",
+        task_type="extraction",
         prompt_version="1",
         prompt_digest="c41d0e2b",
         tenant_id=TENANT_ID,

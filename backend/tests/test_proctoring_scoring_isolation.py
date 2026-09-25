@@ -72,7 +72,7 @@ FORBIDDEN_TARGETS = (
     "app.services.siddhi",
     "app.services.matching",
     "app.services.rating",
-    "app.services.tiers",
+    "app.services.yukti",
     "app.services.hiring",
     "app.services.dashboard",
     "app.services.job_candidates",
@@ -145,7 +145,7 @@ def test_the_scorer_specifically_does_not_import_proctoring() -> None:
 @pytest.mark.parametrize(
     "module",
     ["services/miti", "services/siddhi", "services/hiring", "services/matching.py",
-     "services/rating.py", "services/tiers.py", "services/dashboard.py"],
+     "services/rating.py", "services/yukti", "services/dashboard.py"],
 )
 def test_no_grading_surface_reaches_proctoring(module: str) -> None:
     target = APP / module

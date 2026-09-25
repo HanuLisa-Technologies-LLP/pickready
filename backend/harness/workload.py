@@ -396,6 +396,17 @@ def _read_candidate_table(app_client: Application, ctx: ScenarioContext) -> None
     ctx.stage("candidate_table_read")
 
 
+def _read_candidate_dashboard(app_client: Application, ctx: ScenarioContext) -> None:
+    """The Candidate Dashboard (`/org/candidates`). It served a number and a
+    letter grade until Phase 2 WP-E (D3, no exception), so it is read here
+    beside the ranked table the same rule binds."""
+    app_client.as_staff()
+    app_client.request(
+        ctx, "read_candidate_dashboard", "GET", f"{V1}/dashboard/candidates?page=1"
+    )
+    ctx.stage("candidate_dashboard_read")
+
+
 def _read_another_tenants_job(app_client: Application, ctx: ScenarioContext) -> None:
     """Tenant A's staff asks for tenant B's job, which genuinely exists."""
     app_client.as_staff(user_key="staff_a", tenant_key="tenant_a")
@@ -1163,6 +1174,7 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     "advance_pipeline_again": _advance_pipeline_again,
     "skip_the_pipeline": _skip_the_pipeline,
     "read_candidate_table": _read_candidate_table,
+    "read_candidate_dashboard": _read_candidate_dashboard,
     "read_another_tenants_job": _read_another_tenants_job,
     "read_skills": _read_skills,
     "read_job_setup": _read_job_setup,

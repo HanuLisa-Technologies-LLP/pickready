@@ -247,7 +247,7 @@ def test_a_failed_must_have_is_named_beside_the_capped_grade():
     assembled = dashboard.assemble_row(
         row(
             **_scored(100),
-            ready_pick_rank=float(yukti_ranking.must_have_cap()),
+            ready_pick_rank=float(yukti_ranking.must_have_ceiling()),
             has_assessment_grade=True,
             must_have_failed=True,
         )

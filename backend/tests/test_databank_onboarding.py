@@ -254,6 +254,8 @@ async def _invite(monkeypatch, job, pairs, link_ids=None):
     monkeypatch.setattr(jobs_api, "_get_visible_job", _fake_visible)
     monkeypatch.setattr(lifecycle_email, "draft", _fake_draft)
     monkeypatch.setattr(email_outbox, "queue_candidate_email", _fake_queue)
+    # The jobs router imports no bare `dispatch` any more; its one dispatcher
+    # is recorded so a direct dispatch from the invite route would show.
     monkeypatch.setattr(
         jobs_api, "dispatch_after_commit",
         lambda *a, **k: calls.setdefault("tasks", []).append(a),

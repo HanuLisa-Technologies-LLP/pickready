@@ -53,7 +53,7 @@ LUNA, BECAUSE IT SITUATES AND DOES NOT JUDGE
 Task type `context_prefix`, model Luna. The prefix states where a passage sits
 in its document. It forms no opinion, assigns no level and reaches no
 conclusion. Putting Terra here would be a boundary violation dressed as an
-upgrade, which is the same argument that keeps `claim_extraction` on Luna.
+upgrade, which is the same argument that keeps every extraction task on Luna.
 
 A FAILURE IS COUNTED, NEVER GUESSED
 ------------------------------------
