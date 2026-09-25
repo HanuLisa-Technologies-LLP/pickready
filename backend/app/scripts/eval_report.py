@@ -7,8 +7,12 @@ WHY A SECOND EVAL
 `eval_interview` measures the agent that TALKS to a candidate. This measures
 the two paths whose bad output is most expensive and least visible:
 
-  * **AI matching**, which decides the order a recruiter reads applicants in.
-    Nobody sees a wrong ordering; they see a shortlist and assume it is right.
+  * **The ranked order**, which decides the order a recruiter reads applicants
+    in. Nobody sees a wrong ordering; they see a shortlist and assume it is
+    right. Since the Vivekium release that order is ONE key,
+    `yukti.ranking.rank_score` (its SQL twin orders every page), so this eval
+    measures the blend and the Must-have cap rather than the retired matcher's
+    four parameters and their 25-30 word comments.
   * **The PPI Assessment Report**, which is the product's deliverable. A remark
     that is 38 words instead of 45-50, a stray number, or a borrowed
     third-party instrument name is a defect a client reads before we do.
@@ -38,6 +42,7 @@ from dataclasses import dataclass, field
 from app.services import functional_assessment as fa
 from app.services.assessment_questions import budget as question_budget
 from app.services import matching, ppi
+from app.services.yukti import ranking
 from app.services.rating import (
     GRADE_HIGHLY,
     GRADE_MATCHING,
@@ -85,31 +90,22 @@ MATCHING_LABELS: tuple[tuple[float, str], ...] = (
     (0, GRADE_NOT),
 )
 
-#: Ranking cases. Each is (label, parameter scores, expected position order).
-#: These are the "labelled examples" the matching agent is measured against:
-#: the property that matters is not the absolute number, which never leaves the
-#: server, but that a stronger candidate outranks a weaker one on the same job.
-def _params(skills: int, experience: int, role: int, education: int) -> dict[str, int]:
-    """Build a breakdown using the REAL parameter keys.
-
-    Written as a helper rather than four literal dicts so a rename of
-    `matching.PARAMETERS` fails in one place instead of five.
-    """
-    return dict(
-        zip(
-            matching.PARAMETERS,
-            (skills, experience, role, education),
-        )
-    )
-
-
-RANKING_CASES: tuple[tuple[str, tuple[int, int, int, int]], ...] = (
-    ("strong all round", (94, 91, 90, 88)),
-    ("strong skills, thin experience", (92, 61, 78, 80)),
-    ("even mid", (72, 70, 74, 71)),
-    ("weak skills", (44, 70, 55, 82)),
-    ("weak all round", (31, 28, 35, 40)),
+#: Ranking cases, ordered strongest first. Each is (label, Yukti pre score,
+#: the report's overall or None when unassessed, whether a Must-have failed).
+#: The property that matters is not the absolute key, which never leaves the
+#: server, but that a stronger candidate outranks a weaker one on the same job,
+#: and that a failed Must-have holds an assessed candidate below the cap
+#: whatever their resume said.
+RANKING_CASES: tuple[tuple[str, float, float | None, bool], ...] = (
+    ("strong resume, strong assessment", 94.0, 92.0, False),
+    ("mid resume, strong assessment", 70.0, 88.0, False),
+    ("strong resume, not yet assessed", 80.0, None, False),
+    ("strong everything, failed a Must-have", 99.0, 98.0, True),
+    ("weak resume, weak assessment", 35.0, 40.0, False),
 )
+
+#: The tenant ratio every case is blended at: the migration's server default.
+RANKING_WEIGHT_PCT = 70
 
 #: Competency names a generator might return that are culture-fit by another
 #: name. All must be refused: cultural fit cannot be assessed accurately from a
@@ -187,31 +183,23 @@ def _measure_grade_boundaries() -> Result:
     return result
 
 
-def _measure_matching_label_is_the_one_scale() -> Result:
-    """`matching.matching_label` and `functional_assessment.rating_label` are
-    thin aliases over `services/rating` and must stay that way. The product
-    used to carry two parallel five-label scales kept in step by hand.
-
-    Note the input SCALES differ and that is not an inconsistency to fix here:
-    a matching PARAMETER is stored 1-10 and everything else is 0-100. Writing
-    this measurement the first time got that wrong and reported the code as
-    broken, which is the same mistake a caller makes -- so both are asserted
-    explicitly, and the agreement between them is asserted as well.
-    """
+def _measure_the_ai_match_word_is_the_one_scale() -> Result:
+    """`functional_assessment.rating_label` and the ranked table's AI Match
+    word (`yukti.ranking.grade_word`) are thin aliases over `services/rating`
+    and must stay that way. The product used to carry two parallel five-label
+    scales kept in step by hand."""
     result = Result("one_rating_scale")
     for score, expected in MATCHING_LABELS:
         result.record(
             fa.rating_label(score) == expected,
             f"rating_label({score}) = {fa.rating_label(score)!r}, expected {expected!r}",
         )
-        # The same grade, reached from the 1-10 side.
-        ten = score / 10.0
         result.record(
-            matching.matching_label(ten) == expected,
-            f"matching_label({ten}) = {matching.matching_label(ten)!r}, expected {expected!r}",
+            ranking.grade_word(score) == expected,
+            f"grade_word({score}) = {ranking.grade_word(score)!r}, expected {expected!r}",
         )
     # None in, None out, on both. A missing score must not become a grade.
-    result.record(matching.matching_label(None) is None, "matching_label(None) is not None")
+    result.record(ranking.grade_word(None) is None, "grade_word(None) is not None")
     result.record(fa.rating_label(None) is None, "rating_label(None) is not None")
     # A boolean is not a score. `isinstance(True, int)` is True in Python, so
     # without the explicit guard `True` would grade Not Matching.
@@ -222,20 +210,34 @@ def _measure_matching_label_is_the_one_scale() -> Result:
 def _measure_ranking_order() -> Result:
     """A stronger profile outranks a weaker one, on the same job.
 
-    This is the matching agent's only externally observable promise: the
-    absolute score never leaves the server, so ORDER is the whole product. The
-    cases are ordered strongest-first in RANKING_CASES, and every adjacent
-    pair must come out that way.
+    This is the ranked table's only externally observable promise: the key
+    never leaves the server, so ORDER is the whole product. The cases are
+    ordered strongest-first in RANKING_CASES, and every adjacent pair must come
+    out that way through the pure twin of the SQL rank expression.
     """
     result = Result("ranking_order")
     scored = [
-        (label, matching.compute_overall_score(_params(*scores)))
-        for label, scores in RANKING_CASES
+        (
+            label,
+            ranking.rank_score(pre, "scored", overall, failed, RANKING_WEIGHT_PCT),
+        )
+        for label, pre, overall, failed in RANKING_CASES
     ]
     for (left_label, left), (right_label, right) in zip(scored, scored[1:]):
         result.record(
             left > right,
             f"{left_label} ({left:.1f}) did not outrank {right_label} ({right:.1f})",
+        )
+    # The Must-have cap binds whatever the blend says (Runbook 14.1 and the
+    # one cap number, `miti.caps`): a failed Must-have never grades above
+    # Moderately Matching.
+    for label, pre, overall, failed in RANKING_CASES:
+        if not failed:
+            continue
+        key = ranking.rank_score(pre, "scored", overall, failed, RANKING_WEIGHT_PCT)
+        result.record(
+            ranking.grade_word(key) in (GRADE_MODERATELY, GRADE_NOT),
+            f"{label} graded {ranking.grade_word(key)!r} past the Must-have cap",
         )
     return result
 
@@ -246,53 +248,11 @@ def _measure_no_weightage_table() -> Result:
     Two things were wrong with it: it was SHOWN to clients as "35% role-fit
     weighting", which is a number reaching a client, and it asserted that
     skills matter 2.3x more than education for every role in the product.
+    Yukti's component weights live in `yukti/config.py`, never cross an API
+    boundary, and are not the four-parameter table.
     """
     result = Result("no_weightage_table")
     result.record(not hasattr(matching, "WEIGHTS"), "matching.WEIGHTS exists again")
-    # The plain mean, verified rather than assumed: an equal-weight mean of
-    # four equal scores is that score.
-    even = matching.compute_overall_score(_params(80, 80, 80, 80))
-    result.record(abs(even - 80) < 0.01, f"even scores averaged to {even}")
-    # And moving any ONE parameter by the same amount must move the overall by
-    # the same amount, whichever parameter it was. That is what "no weighting"
-    # means, stated as a measurement.
-    base = matching.compute_overall_score(_params(70, 70, 70, 70))
-    deltas = []
-    for key in matching.PARAMETERS:
-        scores = {name: 70 for name in matching.PARAMETERS}
-        scores[key] = 90
-        deltas.append(matching.compute_overall_score(scores) - base)
-    result.record(
-        max(deltas) - min(deltas) < 0.01,
-        f"parameters are not equally weighted: deltas {deltas}",
-    )
-    return result
-
-
-def _measure_comment_word_range() -> Result:
-    """Matching remarks are 25-30 words, enforced rather than hoped for.
-
-    Checked from BOTH directions, because the enforcement rewrites text: a
-    too-short remark must be padded to a real sentence, and a too-long one
-    trimmed without being cut mid-sentence.
-    """
-    result = Result("matching_remark_words")
-    cases = [
-        "Short.",
-        "Strong match.",
-        " ".join(["evidence"] * 12),
-        " ".join(["evidence"] * 27),
-        " ".join(["evidence"] * 60),
-        "",
-    ]
-    for text in cases:
-        out = matching.enforce_word_range(text, *fa.MATCHING_REMARK_WORDS)
-        count = matching.word_count(out)
-        low, high = fa.MATCHING_REMARK_WORDS
-        result.record(
-            low <= count <= high,
-            f"{count} words from input of {matching.word_count(text)}: {out[:60]!r}",
-        )
     return result
 
 
@@ -363,7 +323,6 @@ def _measure_no_numbers_reach_a_client() -> Result:
         fa._fallback_remark_45("Distributed systems"),
         fa._fallback_remark_25("Data modelling"),
         fa._unanswered_remark("Stakeholder influence", 45),
-        matching.enforce_word_range("Strong match.", *fa.MATCHING_REMARK_WORDS),
     ]
     for text in texts:
         hit = SCORE_SHAPED.search(text)
@@ -534,10 +493,9 @@ def _measure_report_reuse_is_retired() -> Result:
 async def run() -> list[Result]:
     return [
         _measure_grade_boundaries(),
-        _measure_matching_label_is_the_one_scale(),
+        _measure_the_ai_match_word_is_the_one_scale(),
         _measure_ranking_order(),
         _measure_no_weightage_table(),
-        _measure_comment_word_range(),
         _measure_ppi_remark_word_range(),
         _measure_no_banned_instrument(),
         _measure_no_numbers_reach_a_client(),

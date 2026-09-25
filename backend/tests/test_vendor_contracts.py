@@ -339,7 +339,7 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
     """
     calls = _stub(monkeypatch, [http_error("openai/error_401_authentication.json")])
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert len(calls) == 1
 
     # The breaker is now open, so the NEXT call does not reach the transport at
@@ -349,7 +349,7 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
         monkeypatch, [body("openai/chat_completion_terra_reasoning.json")]
     )
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert second == []
 
 
@@ -365,7 +365,7 @@ async def test_a_rate_limit_does_not_trip_the_breaker_on_one_occurrence(
             llm_router._Result(content="recovered"),
         ],
     )
-    result = await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    result = await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
     assert result == "recovered"
 
 
@@ -380,7 +380,7 @@ async def test_the_breaker_reopens_after_the_cooldown(
     """
     _stub(monkeypatch, [http_error("openai/error_401_authentication.json")])
     with pytest.raises(LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     real_monotonic = time.monotonic
     monkeypatch.setattr(
@@ -390,7 +390,7 @@ async def test_the_breaker_reopens_after_the_cooldown(
     )
     _stub(monkeypatch, [llm_router._Result(content="half-open probe succeeded")])
     assert (
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
         == "half-open probe succeeded"
     )
 
@@ -410,7 +410,7 @@ async def test_a_timeout_is_a_transient_and_is_retried(
         ],
     )
     assert (
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
         == "second attempt landed"
     )
     assert len(calls) == 2
@@ -424,7 +424,7 @@ def test_the_deadline_predicts_rather_than_merely_observing() -> None:
     text box. The check is `remaining < longest_attempt`.
     """
     ctx = llm_router._RouteContext(
-        task_type="rerank",
+        task_type="extraction",
         model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp"),
         messages=[],
@@ -456,7 +456,7 @@ async def test_a_retry_after_longer_than_the_remaining_budget_stops_the_loop(
     started = time.monotonic()
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm(
-            "rerank", [{"role": "user", "content": "hi"}], total_budget=20.0
+            "extraction", [{"role": "user", "content": "hi"}], total_budget=20.0
         )
     assert len(calls) == 1
     assert time.monotonic() - started < 10.0
@@ -466,8 +466,11 @@ async def test_a_retry_after_longer_than_the_remaining_budget_stops_the_loop(
 
 
 def test_the_interactive_cap_is_fifteen_and_thirty_seconds() -> None:
-    assert llm_providers.timeout_for("rerank") == 15.0
-    assert llm_providers.total_budget_for("rerank") == 30.0
+    # `email_composition` is the short-output interactive call a recruiter
+    # waits on; the `rerank` hint that carried this cap before was deleted
+    # with its last caller (Vivekium release, Phase 2 WP-F).
+    assert llm_providers.timeout_for("email_composition") == 15.0
+    assert llm_providers.total_budget_for("email_composition") == 30.0
 
 
 def test_jd_generation_gets_the_wider_interactive_tier() -> None:

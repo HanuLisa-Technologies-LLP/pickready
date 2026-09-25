@@ -45,14 +45,14 @@ from app.services import llm_router
 
 
 def test_every_spec_task_type_resolves_to_a_model() -> None:
-    """The five spec task types plus the two legacy hints must all route."""
+    """The spec task types that still have callers, plus the `extraction`
+    hint, must all route. `technical_questions` and the `rerank` hint were
+    deleted with their last callers (Vivekium release, Phase 2 WP-F)."""
     for task in (
         "jd_generation",
-        "technical_questions",
         "behavioral_assessment",
         "report_synthesis",
         "email_composition",
-        "rerank",
         "extraction",
     ):
         assert providers.model_for(task) in providers.ALLOWED_MODELS, task
@@ -270,56 +270,6 @@ def test_capability_set_resolution_applies_the_overlay() -> None:
         user_overrides={"publish_job": False, "manage_staff": True},
     )
     assert resolved == ["create_job", "manage_staff"]
-
-
-# ── Matching word labels: the "no numbers" boundary (spec §2.2) ──────────────
-
-from app.services import matching
-
-
-def test_matching_label_bands_are_inclusive_upward() -> None:
-    """claude.md rule 8: a score landing exactly on a boundary takes the
-    HIGHER band. Four grades since 2026-07-30 (spec §10.2)."""
-    assert matching.matching_label(9.0) == "Highly Matching"      # 90
-    assert matching.matching_label(7.5) == "Matching"             # 75
-    assert matching.matching_label(6.0) == "Moderately Matching"  # 60
-    assert matching.matching_label(5.9) == "Not Matching"
-    assert matching.matching_label(4.0) == "Not Matching"
-    assert matching.matching_label(1) == "Not Matching"
-    assert matching.matching_label(10) == "Highly Matching"
-
-
-def test_matching_label_is_none_for_no_score() -> None:
-    assert matching.matching_label(None) is None
-    assert matching.matching_label(True) is None      # bool is not a score
-    assert matching.matching_label("high") is None
-
-
-def test_ranking_payload_publishes_labels_and_never_a_score() -> None:
-    breakdown = {
-        "skills_match": {"score": 9, "comment": "c " * 26},
-        "experience_relevance": {"score": 6, "comment": "c " * 26},
-        "role_alignment": {"score": 4, "comment": "c " * 26},
-        "education_fit": {"score": 10, "comment": "c " * 26},
-        "overall": {"score": 7.6, "comment": "c " * 26},
-    }
-    payload = matching.ranking_payload(breakdown)
-    assert payload["ranking_status"] == "ready"
-    assert payload["skills_match_label"] == "Highly Matching"
-    assert payload["role_alignment_label"] == "Not Matching"
-    assert payload["overall_label"] == "Matching"
-    # The boundary: no numeric score reaches the client.
-    assert not any("score" in key for key in payload)
-    assert all(not isinstance(v, (int, float)) for v in payload.values())
-
-
-def test_unscored_link_is_an_explicit_state_not_a_silent_blank() -> None:
-    payload = matching.ranking_payload(None)
-    assert payload["ranking_status"] == "not_scored"
-    for key in matching.RANKING_COMMENT_KEYS.values():
-        assert payload[key] is None
-    for key in matching.RANKING_LABEL_KEYS.values():
-        assert payload[key] is None
 
 
 # ── Per-job JD sections (spec §3.1/§3.2) ─────────────────────────────────────

@@ -453,20 +453,6 @@ def test_prompt_and_template_files_are_clean() -> None:
 
 # ── No number reaches a client ─────────────────────────────────────────────
 
-def test_client_facing_ranking_payload_carries_no_score() -> None:
-    from app.services.matching import client_breakdown, ranking_payload
-
-    breakdown = {
-        "skills_match": {"score": 91, "comment": "x " * 27},
-        "experience_relevance": {"score": 74, "comment": "y " * 27},
-        "overall": {"score": 83, "comment": "z " * 47},
-    }
-    for payload in (ranking_payload(breakdown), client_breakdown(breakdown)):
-        flat = repr(payload)
-        for score in ("91", "74", "83"):
-            assert score not in flat, f"score {score} leaked in {flat[:200]}"
-
-
 def test_no_number_reaches_a_client_with_no_exception() -> None:
     """Rule 1, with NO exception since the Vivekium release (D3).
 
@@ -523,24 +509,16 @@ def test_report_ratings_are_words_not_numbers() -> None:
         assert label in set(GRADES)
 
 
-def test_matching_labels_are_words_not_numbers() -> None:
-    from app.services.matching import matching_label
-
-    for score in (0, 3, 6, 8, 9.5):
-        label = matching_label(score)
-        assert not any(char.isdigit() for char in label), label
-
-
-def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
+def test_the_assessment_and_the_ai_match_share_one_scale() -> None:
     """Two parallel five-label scales used to be kept in step by hand. One
-    scale now, so "Matching" means the same thing wherever it appears."""
+    scale now, so "Matching" means the same thing wherever it appears: the
+    report's grade and the ranked table's AI Match word both read
+    `rating.grade_for_percent`."""
     from app.services.functional_assessment import rating_label
-    from app.services.matching import MATCHING_LABELS, matching_label
-    from app.services.rating import GRADES
+    from app.services.yukti import ranking
 
-    assert MATCHING_LABELS == GRADES
     for percent in range(0, 101):
-        assert rating_label(percent) == matching_label(percent / 10.0)
+        assert rating_label(percent) == ranking.grade_word(percent)
 
 
 # ── The LLM router bounds what a human waits for ───────────────────────────
@@ -550,9 +528,7 @@ def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
 #: reply slow, so the latency brief's 15s / 30s contract is unchanged for them.
 IMMEDIATE_INTERACTIVE_TASKS = (
     "conversation_turn",
-    "situation_classification",
     "email_composition",
-    "rerank",
 )
 
 #: A request handler is blocked and the output is a DOCUMENT.

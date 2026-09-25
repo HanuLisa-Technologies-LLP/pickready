@@ -222,6 +222,22 @@ def test_the_jd_text_excludes_compensation() -> None:
         assert "ctc" not in target.text_sql.lower()
 
 
+def test_the_jd_text_mirrors_the_yukti_builder_and_never_reads_level() -> None:
+    """The SQL mirrors `yukti.inputs.jd_text` field for field (Phase 2 WP-F).
+    The retired `matching._jd_text` read `jobs.level` and `reportees`; a job
+    vector rebuilt from those would sit in a different text space from the
+    vectors the live path writes."""
+    from app.services.yukti import inputs
+
+    sql = reembed.target_for("jobs.embedding").text_sql
+    assert "j.level" not in sql
+    assert "reportees" not in sql
+    assert "j.assessment_grade" in sql
+    assert "j.experience_min_years" in sql and "j.experience_max_years" in sql
+    for key in inputs._JD_JSON_KEYS:
+        assert f"'{key}'" in sql, key
+
+
 def test_the_text_is_rebuilt_from_the_row_not_from_a_python_builder() -> None:
     """Re-embedding must be reproducible from the database alone. A builder in
     Python means the text depends on an application module that may have moved

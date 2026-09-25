@@ -25,7 +25,7 @@ third model arriving by accident.
 
 The TIERING did not change and `SPEC_B3_ASSIGNMENT` below is what proves it:
 every task that ran on the reasoning tier still does, and every task that ran on
-the extraction tier still does. `claim_extraction` in particular MUST NOT
+the extraction tier still does. An extraction task in particular MUST NOT
 EVALUATE, and a vendor swap is exactly the kind of change during which a task
 quietly moves a tier because both ids were being retyped anyway.
 
@@ -104,10 +104,6 @@ def test_an_unknown_task_type_raises_rather_than_defaulting() -> None:
 # that was not intended has to be made twice to pass.
 
 SPEC_B3_ASSIGNMENT = {
-    # Bodha -- SWOT conversational intake -> the reasoning tier
-    # Sutra -- competency naming, observable-evidence authoring, weight
-    # derivation -> the reasoning tier
-    "competency_transformation": llm_providers.MODEL_TERRA,
     # Sutra, simplified (Vivekium release) -- the skills draft JUDGES what the
     # role needs and the hidden assessment context WRITES what every candidate
     # is assessed against -> the reasoning tier, both
@@ -115,22 +111,16 @@ SPEC_B3_ASSIGNMENT = {
     "assessment_context": llm_providers.MODEL_TERRA,
     # Bodha -- the Job SWOT document -> the reasoning tier (writing)
     "swot_analysis": llm_providers.MODEL_TERRA,
-    # Yukti -- the legacy AI Score hint -> the extraction tier. Its last live
-    # caller (`matching._score_batch`) goes with the legacy matcher in Phase 2.
-    "rerank": llm_providers.MODEL_LUNA,
     # Yukti (Vivekium release) -- reads resumes against the saved skills and
     # the named SWOT needs and returns a verdict and a quote per item. That is
     # JUDGING, so the reasoning tier: stated here a second time, independently
     # of the table, because moving off `rerank` is exactly the change during
-    # which a task could land on the wrong tier unnoticed.
+    # which a task could land on the wrong tier unnoticed. (`rerank`, and the
+    # five task types no call site used, were DELETED in Phase 2 WP-F;
+    # `test_the_deleted_task_types_are_unknown` keeps them gone.)
     "yukti_matching": llm_providers.MODEL_TERRA,
     # Vaada -- conversation / question generation -> the reasoning tier
     "conversation_turn": llm_providers.MODEL_TERRA,
-    # Miti -- claim extraction -> the extraction tier (narrow, mechanical,
-    # must not evaluate)
-    "claim_extraction": llm_providers.MODEL_LUNA,
-    # Miti -- evidence tiering -> the extraction tier
-    "evidence_tiering": llm_providers.MODEL_LUNA,
     # Miti -- five dimension evaluators -> the reasoning tier
     "dimension_evaluation": llm_providers.MODEL_TERRA,
     # Miti -- triangulation agent -> the reasoning tier
@@ -147,7 +137,7 @@ SPEC_B3_ASSIGNMENT = {
     # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
     # yes-or-no equivalence classification over two short strings, on the
     # candidate's own request path. Narrow, mechanical, must be fast: the
-    # extraction tier, for the same reason `rerank` is.
+    # extraction tier.
     "fill_blank_equivalence": llm_providers.MODEL_LUNA,
     # Web research, both halves. BOTH WERE ON THE EXTRACTION TIER under the
     # `extraction` hint until 2026-09-08, which is the one place a task DID
@@ -164,6 +154,35 @@ SPEC_B3_ASSIGNMENT = {
 @pytest.mark.parametrize("task_type,model", sorted(SPEC_B3_ASSIGNMENT.items()))
 def test_spec_b3_assignment_matches_the_code(task_type: str, model: str) -> None:
     assert llm_providers.model_for(task_type) == model
+
+
+#: Deleted in the Vivekium release (Phase 2 WP-F): `rerank` with its last
+#: caller, the retired matcher, and five types no call site ever used.
+DELETED_TASK_TYPES = (
+    "rerank",
+    "competency_transformation",
+    "situation_classification",
+    "claim_extraction",
+    "evidence_tiering",
+    "technical_questions",
+)
+
+
+@pytest.mark.parametrize("task_type", DELETED_TASK_TYPES)
+def test_the_deleted_task_types_are_unknown(task_type: str) -> None:
+    """A task type with no caller is a routing row nothing exercises. Every
+    table must have lost it, not only `MODEL_FOR_TASK`."""
+    assert not llm_providers.is_known_task(task_type)
+    for table in (
+        llm_providers.MODEL_FOR_TASK,
+        llm_providers.TASK_TIMEOUTS,
+        llm_providers.TASK_TOTAL_BUDGET,
+        llm_providers.TASK_MAX_TOKENS,
+        llm_providers.TASK_TEMPERATURE,
+        llm_providers.TASK_RETRY_BUDGET,
+        llm_providers.TASK_COST_CEILING_USD,
+    ):
+        assert task_type not in table
 
 
 def test_the_aggregator_has_no_task_type() -> None:

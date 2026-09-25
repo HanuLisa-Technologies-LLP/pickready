@@ -321,12 +321,21 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         RESET,
         "The application. Preserved by D2, including its timestamps. The "
         "pre-screen grade written onto it is not: match_score, its rationale, "
-        "the four-parameter breakdown and the tier are all old machine output.",
+        "the four-parameter breakdown and the tier are all old machine output. "
+        "Neither is Yukti's reading: it goes back to `pending`, the state a link "
+        "no run has read yet, so the next AI Matching run reads it afresh.",
         resets=(
             ("match_score", "NULL"),
             ("match_rationale", "NULL"),
             ("match_breakdown_json", "NULL"),
             ("tier", "NULL"),
+            ("yukti_pre_score", "NULL"),
+            ("yukti_status", "'pending'"),
+            ("yukti_failure_reason", "NULL"),
+            ("evidence_tags_json", "'[]'::jsonb"),
+            ("yukti_provenance_json", "NULL"),
+            ("yukti_scored_at", "NULL"),
+            ("yukti_profile_id", "NULL"),
         ),
         order=70,
     ),

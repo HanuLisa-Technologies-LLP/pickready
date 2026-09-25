@@ -75,7 +75,7 @@ async def test_tokens_and_cost_are_attributed_to_the_model_and_the_credential(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(llm_router, "_call_openai", _usage(1000, 200))
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     key_entry = llm_router.key_stats()["fp-alpha"]
     assert key_entry["prompt_tokens"] == 1000
@@ -90,8 +90,8 @@ async def test_tokens_and_cost_are_attributed_to_the_model_and_the_credential(
 @pytest.mark.asyncio
 async def test_usage_accumulates_across_calls_and_models(monkeypatch) -> None:
     monkeypatch.setattr(llm_router, "_call_openai", _usage(100, 50))
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "b"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "a"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "b"}])
     await llm_router.invoke_llm("report_synthesis", [{"role": "user", "content": "c"}])
 
     models = llm_router.model_stats()
@@ -115,7 +115,7 @@ async def test_a_response_with_no_usage_is_distinguishable_from_zero(
         return llm_router._Result(content="ok")
 
     monkeypatch.setattr(llm_router, "_call_openai", _silent)
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     entry = llm_router.key_stats()["fp-alpha"]
     assert entry["successes"] == 1
@@ -133,7 +133,7 @@ async def test_a_bare_string_response_still_counts_as_a_success(monkeypatch) -> 
 
     monkeypatch.setattr(llm_router, "_call_openai", _plain)
     assert (
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
         == "just text"
     )
     assert llm_router.key_stats()["fp-alpha"]["successes"] == 1
@@ -164,10 +164,10 @@ async def test_a_failure_is_identifiable_by_fingerprint(monkeypatch) -> None:
 
     monkeypatch.setattr(llm_router, "_call_openai", _fail)
     with pytest.raises(llm_router.LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     entry = llm_router.key_stats()["fp-alpha"]
-    assert entry["failures"] == llm_providers.retry_budget_for("rerank")
+    assert entry["failures"] == llm_providers.retry_budget_for("extraction")
     assert entry["successes"] == 0
 
 
@@ -180,7 +180,7 @@ async def test_latency_is_recorded_for_failed_attempts_too(monkeypatch) -> None:
 
     monkeypatch.setattr(llm_router, "_call_openai", _fail)
     with pytest.raises(llm_router.LLMUnavailableError):
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     entry = llm_router.provider_stats()[llm_providers.PROVIDER]
     assert entry["attempts"] >= 1
@@ -199,7 +199,7 @@ async def test_one_success_closes_the_breaker_again(monkeypatch) -> None:
 
     monkeypatch.setattr(llm_router, "_call_openai", _flaky)
     assert (
-        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
         == "recovered"
     )
     key = _RouterKey(api_key="sk-do-not-log-me", fingerprint="fp-alpha")
@@ -212,7 +212,7 @@ async def test_one_success_closes_the_breaker_again(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_no_snapshot_ever_carries_key_material(monkeypatch) -> None:
     monkeypatch.setattr(llm_router, "_call_openai", _usage(10, 10))
-    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    await llm_router.invoke_llm("extraction", [{"role": "user", "content": "hi"}])
 
     for snapshot in (
         llm_router.key_stats(),

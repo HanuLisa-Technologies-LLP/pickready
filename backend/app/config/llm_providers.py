@@ -54,9 +54,9 @@ THE THREE ENDPOINTS, AND NOTHING ELSE
 The two-tier split is the point of the mapping and it survived the vendor
 change intact: every task that ran on the reasoning tier still runs on the
 reasoning tier, and every task that ran on the extraction tier still runs on
-the extraction tier. No task moved. `claim_extraction` in particular MUST NOT
-EVALUATE, and moving it up a tier would be a boundary violation rather than an
-upgrade -- see `MODEL_FOR_TASK` below.
+the extraction tier. No task moved. An extraction task MUST NOT EVALUATE, and
+moving one up a tier would be a boundary violation rather than an upgrade --
+see `MODEL_FOR_TASK` below.
 
 No third model, no second embedding model. Adding one is a later decision and
 not one to take on implementation judgment, so `MODEL_FOR_TASK` is a closed
@@ -162,16 +162,11 @@ TaskType = Literal[
     "conversation_turn",
     # ── Job setup ──
     "jd_generation",
-    "technical_questions",
     "swot_analysis",
     "skills_drafting",
     "assessment_context",
-    "situation_classification",
-    "competency_transformation",
     # ── Scoring ──
     "behavioral_assessment",
-    "claim_extraction",
-    "evidence_tiering",
     "dimension_evaluation",
     "triangulation",
     # ── Ranking (Vivekium release, Phase 2) ──
@@ -194,7 +189,6 @@ TaskType = Literal[
     "company_profile_research",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
-    "rerank",
     "extraction",
 ]
 
@@ -202,16 +196,20 @@ TaskType = Literal[
 #: WHICH MODEL EACH TASK RUNS ON (spec-doc5 §B.3).
 #:
 #: The split is one question: does this task JUDGE or WRITE (Terra), or does it
-#: EXTRACT, CLASSIFY or ROUTE (Luna)? Two entries below are worth their own
-#: sentence because the obvious answer is the wrong one:
+#: EXTRACT, CLASSIFY or ROUTE (Luna)? An extraction task is Luna and MUST NOT
+#: EVALUATE: Runbook §57.1 makes extraction a narrow mechanical step precisely
+#: so that a model's opinion cannot leak into the pipeline before the
+#: components allowed to hold one. Putting Terra there would not be an upgrade,
+#: it would be a boundary violation. `dimension_evaluation` and
+#: `yukti_matching` are Terra because they grade.
 #:
-#:   * `claim_extraction` is Luna and MUST NOT EVALUATE. Runbook §57.1 makes
-#:     extraction a narrow mechanical step precisely so that a model's opinion
-#:     of a claim cannot leak into the pipeline before the dimension evaluators,
-#:     which are the only components allowed to hold one. Putting Terra here
-#:     would not be an upgrade, it would be a boundary violation.
-#:   * `rerank` is Luna because reranking exists to be fast and orders a list
-#:     it does not grade. `dimension_evaluation` is Terra because it grades.
+#: SIX TASK TYPES WERE DELETED in the Vivekium release (Phase 2 WP-F):
+#: `rerank` (its last caller, the retired matcher, now runs as
+#: `yukti_matching`), and `competency_transformation`,
+#: `situation_classification`, `claim_extraction`, `evidence_tiering` and
+#: `technical_questions`, which no call site had used. A task type with no
+#: caller is a routing row nothing exercises, and `test_yukti_legacy_removed`
+#: keeps them gone.
 #:
 #: What is NOT here: the aggregator. spec-doc5 §B.3 assigns it "No model.
 #: Deterministic code only", so it has no task type at all, and
@@ -222,7 +220,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     # Vaada. "Human-quality dialogue is a stated product bar" (§B.3).
     "conversation_turn": MODEL_TERRA,
     "jd_generation": MODEL_TERRA,
-    "technical_questions": MODEL_TERRA,
     # The recruitment-facing SWOT document: writing, and evidence-bounded.
     "swot_analysis": MODEL_TERRA,
     # Sutra (Vivekium release). The skills draft JUDGES what a role needs from
@@ -230,9 +227,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     # line every candidate is assessed against. Both sides of the Terra half.
     "skills_drafting": MODEL_TERRA,
     "assessment_context": MODEL_TERRA,
-    # Sutra: competency naming, observable-evidence authoring, weight
-    # derivation. Judgment-heavy.
-    "competency_transformation": MODEL_TERRA,
     "behavioral_assessment": MODEL_TERRA,
     # Miti: five isolated rubric-anchored evaluators.
     "dimension_evaluation": MODEL_TERRA,
@@ -241,7 +235,7 @@ MODEL_FOR_TASK: dict[str, str] = {
     # Yukti (Vivekium release, Phase 2): reads a batch of resumes against a
     # job's saved skills and named needs and returns a verdict and a verbatim
     # quote per item. That is JUDGING, so it is Terra. It used to ride the
-    # Luna `rerank` hint, whose own entry below says rerank "orders a list it
+    # Luna `rerank` hint (deleted), which was for a call that "orders a list it
     # does not grade"; this call grades the evidence the order is built from,
     # which is the boundary violation that table exists to prevent.
     "yukti_matching": MODEL_TERRA,
@@ -292,25 +286,13 @@ MODEL_FOR_TASK: dict[str, str] = {
     # yes-or-no equivalence classification over two short strings, on the
     # candidate's own request path. Narrow, mechanical, must be fast.
     "fill_blank_equivalence": MODEL_LUNA,
-    # Bodha's situation-type call is a six-way classification over a completed
-    # SWOT, and the Hiring Manager confirms it explicitly before the session
-    # closes, so a wrong label is caught by a human rather than by a rescore.
-    "situation_classification": MODEL_LUNA,
-    # Miti stage 2. Narrow, mechanical, must-not-evaluate.
-    "claim_extraction": MODEL_LUNA,
-    # Miti stage 3. Mostly rule-based; only the specificity modifier needs
-    # model judgment at all.
-    "evidence_tiering": MODEL_LUNA,
-    # Yukti's AI Score. "Must be fast; this is an 'instant' product
-    # requirement" (§B.3).
-    "rerank": MODEL_LUNA,
     # Resume parsing and field extraction.
     "extraction": MODEL_LUNA,
     # Contextual retrieval's situating prefix. It says WHERE a passage sits
     # in its document and nothing about how good the passage is: it
     # summarises and situates, it does not judge. Terra here would be a
     # boundary violation dressed as an upgrade, the same argument that keeps
-    # `claim_extraction` on Luna. Pinned by tests/test_contextual_prefix.py.
+    # every extraction task on Luna. Pinned by tests/test_contextual_prefix.py.
     "context_prefix": MODEL_LUNA,
     # BGV employer-reply field extraction (add-features spec 2026-09-05).
     # Narrow and mechanical, exactly like `extraction`: it copies what the
@@ -384,9 +366,7 @@ TASK_TIMEOUTS: dict[str, float] = {
     #    flash-model era put it, so the candidate-facing latency contract is
     #    unmoved by the vendor change.
     "conversation_turn": 12.0,
-    "situation_classification": 12.0,
     "email_composition": 15.0,
-    "rerank": 15.0,
     # ── GENERATIVE interactive: a request handler is blocked and the output is
     #    a DOCUMENT. This is the one number the model consolidation genuinely
     #    moved, and it is worth stating why rather than letting a reader assume
@@ -415,11 +395,7 @@ TASK_TIMEOUTS: dict[str, float] = {
     # Background: the skills draft runs in pickready.draft_job_skills.
     "skills_drafting": 60.0,
     # Background.
-    "technical_questions": 90.0,
-    "competency_transformation": 90.0,
     "behavioral_assessment": 60.0,
-    "claim_extraction": 60.0,
-    "evidence_tiering": 45.0,
     "dimension_evaluation": 60.0,
     "triangulation": 60.0,
     # Background (the matching run on Route.ECS, the per-profile rescore on
@@ -474,19 +450,13 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     # is 26s and must stay above this number, or the loop's own deadline would
     # be tighter than one router call and the second attempt could never run.
     "conversation_turn": 24.0,
-    "situation_classification": 24.0,
     "email_composition": 30.0,
-    "rerank": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
     "assessment_context": 50.0,
     "swot_analysis": 120.0,
     "skills_drafting": 120.0,
-    "technical_questions": 200.0,
-    "competency_transformation": 200.0,
     "behavioral_assessment": 140.0,
-    "claim_extraction": 140.0,
-    "evidence_tiering": 100.0,
     "dimension_evaluation": 140.0,
     "triangulation": 140.0,
     # Two attempts at the cap, and no more: the per-profile rescore runs in the
@@ -539,14 +509,8 @@ TASK_MAX_TOKENS: dict[str, int] = {
     # A role summary and up to fifteen one-sentence evidence lines.
     "assessment_context": 2048,
     "email_composition": 1024,
-    "situation_classification": 512,
-    "rerank": 2048,
-    "technical_questions": 8192,
     # Seven stages over a whole matrix.
-    "competency_transformation": 8192,
     "behavioral_assessment": 4096,
-    "claim_extraction": 8192,
-    "evidence_tiering": 4096,
     "dimension_evaluation": 4096,
     "triangulation": 4096,
     # Five candidates, each with a verdict and a quote per skill (up to ten),
@@ -603,17 +567,13 @@ TASK_TEMPERATURE: dict[str, float] = {
     # ── Deterministic: these judge. ─────────────────────────────────────────
     "behavioral_assessment": 0.0,
     "report_synthesis": 0.0,        # states the grades a client reads
-    "rerank": 0.0,                  # orders candidates
     "extraction": 0.0,
     "bgv_reply_extraction": 0.0,
-    "claim_extraction": 0.0,
-    "evidence_tiering": 0.0,
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
     "triangulation": 0.0,
     # Judges resume evidence. Two runs over the same resumes must not read
     # them differently, or the order depends on when matching ran.
     "yukti_matching": 0.0,
-    "situation_classification": 0.0,
     # Deterministic, and it is a RE-INDEX argument rather than a grading one:
     # the same chunk of the same document must situate the same way on every
     # pass, or a re-index silently moves every vector in the corpus.
@@ -627,8 +587,6 @@ TASK_TEMPERATURE: dict[str, float] = {
     "bd_reach_evaluate": 0.0,
 
     # ── Generative: these write. ────────────────────────────────────────────
-    "competency_transformation": 0.2,
-    "technical_questions": 0.4,
     # Writes the payload of a structured question and the wording of an
     # anchored evidence question. Same tier of creativity as the question
     # bank writer it sits beside; what is asked is fixed by the matrix.
@@ -676,19 +634,13 @@ def temperature_for(task_type: str) -> float:
 # just makes the caller wait longer to hear it.
 TASK_RETRY_BUDGET: dict[str, int] = {
     "conversation_turn": 2,
-    "situation_classification": 2,
     "jd_generation": 3,
     "swot_analysis": 3,
     "skills_drafting": 3,
     # Interactive: a person pressed Save and is waiting.
     "assessment_context": 2,
     "email_composition": 3,
-    "rerank": 3,
-    "technical_questions": 3,
-    "competency_transformation": 3,
     "behavioral_assessment": 3,
-    "claim_extraction": 3,
-    "evidence_tiering": 3,
     "dimension_evaluation": 3,
     "triangulation": 3,
     # Two, for the Lambda budget argued at TASK_TOTAL_BUDGET above.
@@ -1208,9 +1160,7 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     # Interactive, short output. A candidate is waiting; a call here that could
     # cost a fifth of a dollar has a prompt that has gone wrong.
     "conversation_turn": 0.20,
-    "situation_classification": 0.05,
     "email_composition": 0.15,
-    "rerank": 0.06,
     "fill_blank_equivalence": 0.05,
     # Interactive, document output.
     "jd_generation": 0.25,
@@ -1220,11 +1170,7 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "bd_reach_evaluate": 0.60,
     "company_profile_research": 0.40,
     # Background.
-    "technical_questions": 0.40,
-    "competency_transformation": 0.40,
     "behavioral_assessment": 0.25,
-    "claim_extraction": 0.12,
-    "evidence_tiering": 0.08,
     "dimension_evaluation": 0.25,
     "triangulation": 0.25,
     # Five resumes in, the largest judging output out: above report_synthesis

@@ -190,61 +190,34 @@ async def _run_db_checks(report: Report) -> None:
 
             await _acheck(report, "multi_context_identifier_present", multi_context_exists)
 
-            # 6) A matching run has persisted a 4-parameter breakdown for >= 1 job.
-            async def breakdowns_persisted():
+            # 6) A matching run has written Yukti readings for >= 1 job.
+            #
+            # COUNTED, NOT SAMPLED, and read off the STATUS column the ranked
+            # table orders by (Vivekium release, Phase 2). The retired
+            # four-parameter breakdown is history and nothing writes it, so a
+            # check on it would pass for ever on old rows and prove nothing.
+            async def yukti_readings_persisted():
                 row = (
                     await s.execute(
                         text(
-                            "SELECT count(*) links, count(DISTINCT job_id) jobs "
-                            "FROM job_candidate_links "
-                            "WHERE match_breakdown_json IS NOT NULL"
+                            "SELECT count(*) FILTER (WHERE yukti_status = 'scored') scored, "
+                            "count(DISTINCT job_id) FILTER (WHERE yukti_status = 'scored') jobs, "
+                            "count(*) FILTER (WHERE yukti_status = 'not_assessed') not_assessed "
+                            "FROM job_candidate_links WHERE archived_at IS NULL"
                         )
                     )
                 ).first()
-                links, jobs = row[0], row[1]
+                scored, jobs, not_assessed = row[0], row[1], row[2]
                 if jobs < 1:
-                    return FAIL, "no job_candidate_links have match_breakdown_json (run matching)"
-
-                # COUNTED, NOT SAMPLED.
-                #
-                # This used to read `LIMIT 1` and report on whichever row came
-                # back. A sample of one is not evidence about a population in
-                # either direction: it reported WARN because ONE legacy row out
-                # of 1037 was short a key, and it would just as readily have
-                # reported PASS while half the table was malformed. That is the
-                # same shape as every other defect this repo has been bitten by
-                # -- a check whose green means less than it appears to.
-                #
-                # `?` is the jsonb key-exists operator, so this is an index-free
-                # but single-pass scan over a table of a size where that is
-                # cheap, and it names the actual number.
-                expected = ("skills_match", "experience_relevance", "role_alignment",
-                            "education_fit", "overall")
-                shortfalls = []
-                for key in expected:
-                    bad = (
-                        await s.execute(
-                            text(
-                                "SELECT count(*) FROM job_candidate_links "
-                                "WHERE match_breakdown_json IS NOT NULL "
-                                "  AND NOT (match_breakdown_json ? :key)"
-                            ),
-                            {"key": key},
-                        )
-                    ).scalar_one()
-                    if bad:
-                        shortfalls.append(f"{key} missing on {bad}")
-                if shortfalls:
+                    return FAIL, "no job_candidate_links carry a scored Yukti reading (run matching)"
+                if not_assessed:
                     return WARN, (
-                        f"{links} links across {jobs} job(s); "
-                        + ", ".join(shortfalls)
+                        f"{scored} scored links across {jobs} job(s); "
+                        f"{not_assessed} not assessed"
                     )
-                return PASS, (
-                    f"{links} scored links across {jobs} job(s); every breakdown "
-                    "carries all five keys"
-                )
+                return PASS, f"{scored} scored links across {jobs} job(s)"
 
-            await _acheck(report, "matching_breakdowns_persisted", breakdowns_persisted)
+            await _acheck(report, "yukti_readings_persisted", yukti_readings_persisted)
 
             # 7a) At least one PUBLISHED job with a resolvable public link/id.
             #     PRD v1.0 replaces the multi-level approval FSM with direct

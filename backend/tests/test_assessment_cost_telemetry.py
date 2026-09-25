@@ -422,7 +422,7 @@ def _usage(task_type: str, model: str, *, cached: int | None = None) -> None:
 
 def test_nothing_is_recorded_when_no_scope_is_bound() -> None:
     assert cost_telemetry.note_usage(
-        task_type="rerank",
+        task_type="extraction",
         model=llm_providers.MODEL_LUNA,
         provider=llm_providers.PROVIDER,
         prompt_tokens=10,
@@ -444,17 +444,17 @@ def test_synthesis_is_attributed_to_its_own_line_by_task_type() -> None:
 
 def test_an_inner_scope_does_not_hide_the_spend_from_an_outer_one() -> None:
     with cost_telemetry.collect() as outer:
-        _usage("rerank", llm_providers.MODEL_LUNA)
+        _usage("extraction", llm_providers.MODEL_LUNA)
         with cost_telemetry.collect() as inner:
-            _usage("rerank", llm_providers.MODEL_LUNA)
+            _usage("extraction", llm_providers.MODEL_LUNA)
     assert inner.calls == 1
     assert outer.calls == 2
 
 
 def test_the_tally_counts_the_calls_that_reported_a_cache_separately() -> None:
     with cost_telemetry.collect() as tally:
-        _usage("rerank", llm_providers.MODEL_LUNA, cached=None)
-        _usage("rerank", llm_providers.MODEL_LUNA, cached=250_000)
+        _usage("extraction", llm_providers.MODEL_LUNA, cached=None)
+        _usage("extraction", llm_providers.MODEL_LUNA, cached=250_000)
     assert tally.calls == 2
     assert tally.calls_reporting_cache == 1
     assert tally.cached_prompt_tokens == 250_000
@@ -478,15 +478,15 @@ def test_a_scope_bound_in_one_task_cannot_reach_the_next_one() -> None:
 
     async def _leaky() -> None:
         cost_telemetry.begin()
-        _usage("rerank", llm_providers.MODEL_LUNA)
+        _usage("extraction", llm_providers.MODEL_LUNA)
 
     async def _next_request() -> tuple[bool, int]:
         with cost_telemetry.collect() as tally:
-            _usage("rerank", llm_providers.MODEL_LUNA)
+            _usage("extraction", llm_providers.MODEL_LUNA)
             return (
                 # No scope survives into a task that bound none of its own.
                 cost_telemetry.note_usage(
-                    task_type="rerank",
+                    task_type="extraction",
                     model=llm_providers.MODEL_LUNA,
                     provider=llm_providers.PROVIDER,
                     prompt_tokens=1,
