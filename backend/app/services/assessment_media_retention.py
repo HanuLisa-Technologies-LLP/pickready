@@ -191,7 +191,22 @@ async def object_keys_for_candidate(
             select(VideoRecording).where(VideoRecording.candidate_id == candidate_id)
         )
     ).scalars().all()
-    return await _keys_for(session, list(rows))
+    from app.models.assessment import AssessmentConversation  # noqa: PLC0415
+    from app.models.candidate import JobCandidateLink  # noqa: PLC0415
+
+    conversation_ids = (
+        await session.execute(
+            select(AssessmentConversation.id)
+            .join(
+                JobCandidateLink,
+                JobCandidateLink.id == AssessmentConversation.job_candidate_link_id,
+            )
+            .where(JobCandidateLink.candidate_id == candidate_id)
+        )
+    ).scalars().all()
+    return await _keys_for(session, list(rows)) + await _voice_keys(
+        session, list(conversation_ids)
+    )
 
 
 async def object_keys_for_job(
@@ -216,7 +231,36 @@ async def object_keys_for_job(
             .where(JobCandidateLink.job_id == job_id)
         )
     ).scalars().all()
-    return await _keys_for(session, list(rows))
+    from app.models.assessment import AssessmentConversation  # noqa: PLC0415
+
+    conversation_ids = (
+        await session.execute(
+            select(AssessmentConversation.id)
+            .join(
+                JobCandidateLink,
+                JobCandidateLink.id == AssessmentConversation.job_candidate_link_id,
+            )
+            .where(JobCandidateLink.job_id == job_id)
+        )
+    ).scalars().all()
+    return await _keys_for(session, list(rows)) + await _voice_keys(
+        session, list(conversation_ids)
+    )
+
+
+async def _voice_keys(
+    session: AsyncSession, conversation_ids: list[uuid.UUID]
+) -> list[dict[str, str]]:
+    """A spoken answer's objects still in the store for these conversations
+    (p3-w5 hunk 2, applied at the stage 2 integration). The rows cascade with
+    the conversation, so an erasure or a job purge must ask BEFORE it deletes
+    them, exactly as it asks about the session recording. The one reader of
+    those rows is `assessment_conversation.voice_audio`, so it is asked rather
+    than queried a second way."""
+    from app.services.assessment_conversation import voice_audio  # noqa: PLC0415
+
+    keys = await voice_audio.undeleted_audio_keys(session, conversation_ids)
+    return [{"key": key, "kind": "assessment_voice_audio"} for key in keys]
 
 
 def delete_objects(entries: list[dict[str, str]]) -> MediaDeletion:

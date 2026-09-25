@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from app.workers.registry import Route, task
 from app.workers.runtime import (
@@ -82,7 +83,7 @@ def purge_assessment_media():
     route=Route.LAMBDA,
 )
 def reconcile_assessment_recordings():
-    """Hourly repair of the recording pipeline. Four passes, each asking the
+    """Hourly repair of the recording pipeline. Five passes, each asking the
     TABLE rather than trusting that an earlier step happened:
 
     1. RAW DELETIONS THAT DID NOT CONFIRM. A stored (`ready`) recording whose
@@ -104,6 +105,12 @@ def reconcile_assessment_recordings():
        row is given the failure state of its step, logged at ERROR, and
        becomes retryable by the hiring team, instead of waiting silently
        while the bucket's raw rule deletes the only copy.
+    5. SPOKEN-ANSWER AUDIO. A voice answer whose first deletion could not be
+       confirmed, or whose transcription never reported back (failed first
+       through the same stale rule the routes apply), is deleted and
+       HEAD-confirmed by `voice_audio.repair_pending_audio`; an unconfirmed
+       deletion is counted on the row and tried again next hour (p3-w5
+       hunk 2, applied at the stage 2 integration).
 
     Dispatches happen AFTER the commit that makes the rows they read durable.
 
@@ -120,6 +127,7 @@ def reconcile_assessment_recordings():
     from app.models.dual_mode import VideoRecording
     from app.services import assessment_media_retention as media_retention
     from app.services import deletion_requests, object_storage
+    from app.services.assessment_conversation import voice_audio
     from app.services.video import processing
     from app.services.video import recordings as video_recordings
     from app.workers.dispatch import dispatch
@@ -199,6 +207,16 @@ def reconcile_assessment_recordings():
                     "status_was=%s status=%s",
                     recording_id, was, now_status,
                 )
+
+            voice = await voice_audio.repair_pending_audio(
+                session, now=datetime.now(timezone.utc)
+            )
+            await session.commit()
+            logger.info(
+                "assessment_media.voice_audio_repaired examined=%d deleted=%d "
+                "unconfirmed=%d failed_stale=%d",
+                voice.examined, voice.deleted, voice.unconfirmed, voice.failed_stale,
+            )
         for recording_id in dict.fromkeys(to_process):
             dispatch("pickready.process_assessment_video", args=[recording_id])
         logger.info(

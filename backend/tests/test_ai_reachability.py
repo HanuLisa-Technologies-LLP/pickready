@@ -226,15 +226,6 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
         "bound to the conversation and log its digest; both are wired by the "
         "assessment and grading phases."
     ),
-    # A spoken answer's audio whose first deletion could not be confirmed, or
-    # whose transcription never reported back, is repaired by the hourly
-    # media sweep (`tasks_media.purge_assessment_media`), which belongs to the
-    # recording work package. Until that hunk lands nothing retries it, and
-    # the S3 lifecycle rule on `voice-answers/` is the only backstop.
-    ("app/services/assessment_conversation/voice_audio.py", "repair_pending_audio"): (
-        "the hourly media sweep calls it once PLAN-p3 WP5's tasks_media hunk "
-        "lands. When it does, move this entry to REQUIRED_CALLERS."
-    ),
 }
 
 #: The positive form of what W2 established, and the regression it guards.
@@ -245,6 +236,13 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    # A spoken answer's audio whose first deletion could not be confirmed, or
+    # whose transcription never reported back. Wired into the hourly
+    # recording repair at the stage 2 integration (p3-w5 hunk 2); without it
+    # the S3 lifecycle rule on `voice-answers/` is the only backstop.
+    ("app/services/assessment_conversation/voice_audio.py", "repair_pending_audio"): (
+        "app/workers/tasks_media.py, pickready.reconcile_assessment_recordings."
+    ),
     # Phase 4 WP-4B1, wired by the Phase 3 WP2 composer (the p4-4b1 hunk 3,
     # applied at the stage 2 integration). The only writer of an executed
     # coding question and its answer key: without a caller no coding question

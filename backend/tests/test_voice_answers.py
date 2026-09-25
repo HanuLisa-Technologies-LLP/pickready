@@ -404,6 +404,22 @@ async def test_an_unconfirmed_audio_delete_is_counted_and_retried_until_it_is_go
                 f"voice-answers/{world.conversation}/{voice_id}.transcript.json",
             ]
         )
+        # The erasure and job-purge enumerators name the same objects, so a
+        # purge that deletes the conversation (and with it these rows) asks
+        # first (p3-w5 hunk 2). Mutation-checked: dropping `_voice_keys` from
+        # either enumerator fails here.
+        from app.services import assessment_media_retention as retention
+
+        async with factory() as s:
+            async with superadmin_scope(s):
+                for entries in (
+                    await retention.object_keys_for_job(s, world.job),
+                    await retention.object_keys_for_candidate(s, world.candidate_id),
+                ):
+                    voice_entries = [
+                        e["key"] for e in entries if e["kind"] == "assessment_voice_audio"
+                    ]
+                    assert sorted(voice_entries) == sorted(keys)
 
         monkeypatch.setattr(voice, "delete_verified", media.delete_verified)
         result = await _repair(factory)
