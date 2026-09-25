@@ -61,6 +61,7 @@ from app.services.hiring import gates as hiring_gates
 from app.services.miti import aggregation as miti_aggregation
 from app.services.miti import dimensions as miti_dimensions
 from app.services.yukti import config as yukti_config
+from app.services.yukti import projection as yukti_projection
 from app.services.yukti import ranking as yukti_ranking
 
 __all__ = [
@@ -181,34 +182,24 @@ _READ_STATUSES: tuple[str, ...] = (
     yukti_config.STATUS_LEGACY,
 )
 
-NOT_CHECKED_LABEL = "Not checked yet"
-NOT_CHECKED_NOTE = "AI Matching has not read this resume yet."
-NOT_ASSESSED_LABEL = "Not assessed"
+#: The status words and the sentences under them are the ranked table's own,
+#: read from `yukti.projection` and `yukti.ranking` rather than retyped, so the
+#: dashboard and the job page can never describe one reading two ways (one
+#: implementation per concept; Phase 2 WP-F folded the dashboard's copy in).
+NOT_CHECKED_LABEL = yukti_projection.STATUS_WORD_PENDING
+NOT_CHECKED_NOTE = yukti_projection.LINE_PENDING
+NOT_ASSESSED_LABEL = yukti_projection.STATUS_WORD_NOT_ASSESSED
 UNDER_REVIEW_LABEL = "Under Review"
 UNDER_REVIEW_SCREEN_READER = "Status: Under Review, awaiting integrity disposition"
 
-RESUME_CHECK_NOTE = "Resume check only. Real skills are tested in the assessment."
-LEGACY_NOTE = "Checked before evidence tags existed. Run AI Matching to refresh."
+RESUME_CHECK_NOTE = yukti_ranking.HEADER_RESUME_ONLY
+LEGACY_NOTE = yukti_projection.LINE_LEGACY
 
 #: Why a resume could not be read, in words. Keyed by EVERY reason Yukti can
 #: store (`test_dashboard_columns` pins the key set to
 #: `yukti.config.FAILURE_REASONS`), so a reason added there cannot reach a row
 #: that has no sentence for it.
-NOT_ASSESSED_NOTES: dict[str, str] = {
-    yukti_config.FAILURE_NO_RESUME: "There is no resume on this application.",
-    yukti_config.FAILURE_NO_RESUME_TEXT: "No readable resume text.",
-    yukti_config.FAILURE_MODEL_UNAVAILABLE: (
-        "The AI check could not be completed. It is retried on the next AI "
-        "Matching run."
-    ),
-    yukti_config.FAILURE_MODEL_OUTPUT_INVALID: (
-        "The AI check could not be completed. It is retried on the next AI "
-        "Matching run."
-    ),
-    yukti_config.FAILURE_NO_GROUNDED_EVIDENCE: (
-        "Nothing on the resume could be checked against the skills on this job."
-    ),
-}
+NOT_ASSESSED_NOTES: dict[str, str] = dict(yukti_projection.FAILURE_LINES)
 
 BASIS_RESUME_ONLY = "Resume check only"
 BASIS_WITH_ASSESSMENT = "Tatva Assessment and resume check"
