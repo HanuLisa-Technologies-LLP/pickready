@@ -3234,3 +3234,6 @@ async def _support_staff_recipients(session, rbac, User, capability) -> list[str
 # no dispatch could reach.
 from app.workers import tasks_media, tasks_proctoring, tasks_questions, tasks_voice  # noqa: E402,F401
 from app.workers import tasks_invitations  # noqa: E402,F401
+# Phase 4 WP-4B2: the coding submission, its sweep, the sandbox probe and the
+# operator's sandbox verification. Registered by the same import rule.
+from app.workers import coding_tasks  # noqa: E402,F401

@@ -284,6 +284,35 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "because a confirmation or a reminder is only useful on the day."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-reconcile-coding-submissions",
+        task="pickready.reconcile_coding_submissions",
+        interval_minutes=15,
+        why=(
+            "Phase 4 WP-4B2: a final coding answer is executed by a task "
+            "dispatched AFTER its submit commits, and that invoke can be lost, "
+            "a worker can die mid-poll and a code-quality review can fail. "
+            "Each leaves a row owing work with nothing working on it. This "
+            "asks the TABLE, re-dispatches it (the task's advisory lock makes "
+            "a slow row a no-op), reports a row stuck past the alarm threshold "
+            "without giving up on it, and hands a completed conversation to "
+            "scoring once its coding work is done or has waited past the "
+            "maximum. Fifteen minutes, because scoring waits on it."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-probe-code-execution",
+        task="pickready.probe_code_execution",
+        interval_minutes=5,
+        why=(
+            "Phase 4 WP-4B2: one canary program through the code sandbox and "
+            "its health, logged as status and latency only. The alarm on "
+            "`code_execution.probe status=failed` is how a sandbox outage "
+            "pages somebody before candidates report it. With execution "
+            "disabled it logs `status=disabled`, so the policy is visible "
+            "rather than inferred from silence."
+        ),
+    ),
 
 )
 

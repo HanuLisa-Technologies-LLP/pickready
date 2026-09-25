@@ -1,0 +1,147 @@
+diff --git a/backend/app/services/code_execution/judge0.py b/backend/app/services/code_execution/judge0.py
+index 97b72a0..792ed11 100644
+--- a/backend/app/services/code_execution/judge0.py
++++ b/backend/app/services/code_execution/judge0.py
+@@ -474,6 +474,50 @@ class Judge0Provider:
+                     exc.reason,
+                 )
+ 
++    async def self_checks(self) -> dict[str, tuple[bool, str]]:
++        """The checks only this adapter can make, for the operator's sandbox
++        verification task (`coding_assessment.sweeps.verify_sandbox`).
++
++        NOT part of the port: what they check is wire detail. The verification
++        task asks for it by name and records every check as NOT PERFORMED for
++        a provider that does not offer it, so the verdict cannot be green.
++
++        `unauthenticated_refused`: `GET /languages` WITHOUT the token must be
++        refused (401 or 403). A host that answers it would run anybody's code.
++        `language_ids_match`: every configured language id must be one the
++        host offers, or a Run in that language would be refused at submit.
++        """
++        started = self._clock()
++        try:
++            async with httpx.AsyncClient(
++                base_url=self._base_url, timeout=self._timeout, transport=self._transport
++            ) as client:
++                bare = await client.get("/languages")
++        except httpx.TimeoutException as exc:
++            self._log("self_check_auth", 0, "timeout", started)
++            raise ExecutionUnavailable("sandbox self check timed out", reason="timeout") from exc
++        except httpx.TransportError as exc:
++            self._log("self_check_auth", 0, "network", started)
++            raise ExecutionUnavailable("sandbox self check could not connect", reason="network") from exc
++        self._log("self_check_auth", 0, _status_class(bare.status_code), started)
++        refused = bare.status_code in (401, 403)
++        checks: dict[str, tuple[bool, str]] = {
++            "unauthenticated_refused": (
++                refused,
++                "refused without a token" if refused else f"answered {bare.status_code} without a token",
++            )
++        }
++        payload = self._json(await self._request("languages", "GET", "/languages", batch_size=0), "languages")
++        if not isinstance(payload, list):
++            raise ExecutionRejected("sandbox /languages answer is not a list", reason="protocol")
++        offered = {entry.get("id") for entry in payload if isinstance(entry, dict)}
++        missing = sorted(key for key, language_id in self._language_ids.items() if language_id not in offered)
++        checks["language_ids_match"] = (
++            not missing,
++            "every configured language is offered" if not missing else "not offered: " + ", ".join(missing),
++        )
++        return checks
++
+     async def health(self) -> ProviderHealth:
+         response = await self._request("health", "GET", "/workers", batch_size=0)
+         payload = self._json(response, "health")
+diff --git a/backend/tests/fixtures/vendor/PROVENANCE.md b/backend/tests/fixtures/vendor/PROVENANCE.md
+index 6812e28..d9135ad 100644
+--- a/backend/tests/fixtures/vendor/PROVENANCE.md
++++ b/backend/tests/fixtures/vendor/PROVENANCE.md
+@@ -134,3 +134,8 @@ verification task planned for Phase 4 WP-4B2
+ (`pickready.verify_code_execution_sandbox`) is the first thing that will, and
+ until it has run against the pilot host these shapes are statements of what
+ the code expects and nothing more.
++
++`languages_200.json` was added on 2026-09-25 for the adapter's `self_checks`
++(Phase 4 WP-4B2): the Languages section's `GET /languages` shape, trimmed to
++the default configured ids plus one unconfigured language. Authored, not
++observed, like every file beside it.
+diff --git a/backend/tests/fixtures/vendor/judge0/languages_200.json b/backend/tests/fixtures/vendor/judge0/languages_200.json
+new file mode 100644
+index 0000000..1845a85
+--- /dev/null
++++ b/backend/tests/fixtures/vendor/judge0/languages_200.json
+@@ -0,0 +1,18 @@
++{
++  "_provenance": {
++    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Languages section): GET /languages answers the active languages as objects with an id and a name.",
++    "observed": false,
++    "notes": "Trimmed to the four languages judge0_language_ids configures by default, plus one it does not, so a test can remove one."
++  },
++  "status": 200,
++  "headers": {
++    "content-type": "application/json; charset=utf-8"
++  },
++  "body": [
++    {"id": 54, "name": "C++ (GCC 9.2.0)"},
++    {"id": 62, "name": "Java (OpenJDK 13.0.1)"},
++    {"id": 63, "name": "JavaScript (Node.js 12.14.0)"},
++    {"id": 71, "name": "Python (3.8.1)"},
++    {"id": 73, "name": "Rust (1.40.0)"}
++  ]
++}
+diff --git a/backend/tests/test_code_execution_judge0_self_checks.py b/backend/tests/test_code_execution_judge0_self_checks.py
+new file mode 100644
+index 0000000..b94b3b6
+--- /dev/null
++++ b/backend/tests/test_code_execution_judge0_self_checks.py
+@@ -0,0 +1,49 @@
++"""The Judge0 adapter's own checks for the operator verification task.
++
++Driven over `httpx.MockTransport` with authored fixtures, like the adapter's
++main test module. What is pinned: an unauthenticated request is really sent
++WITHOUT the token, a host that answers it fails the check, and a configured
++language the host does not offer is named.
++"""
++from __future__ import annotations
++
++import httpx
++
++from app.services.coding_assessment import sweeps
++from tests.test_code_execution_judge0_adapter import TOKEN, Recorder, envelope, provider, respond
++
++
++def _languages(request: httpx.Request) -> httpx.Response:
++    if request.headers.get("X-Auth-Token") != TOKEN:
++        return respond("error_401_unauthorized.json")
++    return respond("languages_200.json")
++
++
++async def test_a_host_that_refuses_strangers_and_offers_every_language_passes() -> None:
++    recorder = Recorder({("GET", "/languages"): _languages})
++    checks = await provider(recorder).self_checks()
++    assert set(checks) == set(sweeps.ADAPTER_CHECK_NAMES)
++    assert all(passed for passed, _detail in checks.values())
++    bare, authed = recorder.requests
++    assert "X-Auth-Token" not in bare.headers and "X-Auth-User" not in bare.headers
++    assert authed.headers["X-Auth-Token"] == TOKEN
++
++
++async def test_a_host_that_answers_without_a_token_fails() -> None:
++    recorder = Recorder({("GET", "/languages"): "languages_200.json"})
++    checks = await provider(recorder).self_checks()
++    assert checks["unauthenticated_refused"][0] is False
++
++
++async def test_a_configured_language_the_host_does_not_offer_is_named() -> None:
++    data = envelope("languages_200.json")
++    without_java = [entry for entry in data["body"] if entry["id"] != 62]
++
++    def handler(request: httpx.Request) -> httpx.Response:
++        if request.headers.get("X-Auth-Token") != TOKEN:
++            return respond("error_401_unauthorized.json")
++        return httpx.Response(200, json=without_java)
++
++    checks = await provider(Recorder({("GET", "/languages"): handler})).self_checks()
++    passed, detail = checks["language_ids_match"]
++    assert passed is False and "java" in detail

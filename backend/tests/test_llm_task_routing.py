@@ -154,6 +154,10 @@ SPEC_B3_ASSIGNMENT = {
     # WRITING, and the hardest writing task in the product: the reasoning tier.
     "coding_question_generation": llm_providers.MODEL_TERRA,
     "question_generation": llm_providers.MODEL_TERRA,
+    # Phase 4 WP-4B2: the code-quality review of a final coding answer. It
+    # JUDGES (four criteria and an overall score beside the hidden tests), so
+    # it sits on the reasoning tier with `answer_evaluation`.
+    "coding_quality_review": llm_providers.MODEL_TERRA,
     # Web research, both halves. BOTH WERE ON THE EXTRACTION TIER under the
     # `extraction` hint until 2026-09-08, which is the one place a task DID
     # silently sit on the wrong tier, and it cost the product a BD page that
