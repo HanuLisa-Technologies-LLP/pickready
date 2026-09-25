@@ -3,7 +3,10 @@
 Branch `wip/stage2-int`, built from `release/vivekium` (5bc4efb) by merging,
 in order, `wip/p2-a`, `wip/p4-4b1`, `wip/p3-w1`, `wip/p3-w4`, `wip/p4-4d`,
 `wip/p3-w6a`, `wip/p3-w6b`, then (second round) `wip/p2-b`, `wip/p2-e`,
-`wip/p3-w3`, `wip/p3-w2`, `wip/p4-4b2`, `wip/p3-w5`.
+`wip/p3-w3`, `wip/p3-w2`, `wip/p4-4b2`, `wip/p3-w5`, then (third round)
+`wip/p2-f` (which carries WP-C, WP-D, WP-E and WP-F on the Phase 2 integration
+line) and `wip/p4-4f` (which carries WP-4B2, WP-4C and WP-4F). Every Stage 2
+package is merged.
 
 Migration chain on this branch: 0121_candidate_comms -> 0122_yukti ->
 0123_assessment_conversation -> 0124_coding_execution -> 0125_proctoring_pause
@@ -11,8 +14,8 @@ Migration chain on this branch: 0121_candidate_comms -> 0122_yukti ->
 0121 plus upgrade verified).
 
 Every "HUNKS FOR ORCHESTRATOR" item in the merged packages' reports that
-targets a package NOT merged here (Phase 2 WP-C, WP-D, WP-F; Phase 4 WP-4C,
-WP-4F; Phase 5; Phase 7; the deploy stage) is recorded below VERBATIM from its
+targets work NOT on this branch (Phase 5, Phase 7, the deploy stage, and the
+one Phase 3 follow-up no package took) is recorded below VERBATIM from its
 source report, with the source named. The hunks that WERE applied are listed
 at the end, so nothing is applied twice.
 
@@ -22,38 +25,6 @@ directory at integration time; their hunks (if any) are not recorded here, and
 their CLAUDE.md drafts (`claude-p2-b.md`, `claude-p3-w3.md`,
 `claude-p4-4b2.md`) name none. `wip/p3-w2` has no CLAUDE.md draft on its
 branch.
-
----
-
-## Deferred, from p2-a.md (Phase 2 WP-A, Yukti core)
-
-### p2-a hunk 5 (target: Phase 2 WP-F)
-
-> 5. The `prescreen.anonymise` copy stays until WP-F deletes prescreen, or re-points it to `yukti.anonymise`, so there is one implementation.
-
----
-
-## Deferred, from p2-e.md (Phase 2 WP-E, the dashboard)
-
-### p2-e hunk 1, the ranking half (target: Phase 2 WP-C)
-
-> 1. Drop commit db5b00c after WP-B and WP-C merge (details at the top).
-
-Applied here for the MIGRATION half only: `p2e_scaffold_yukti_columns.py` is
-deleted because `0122_yukti` (WP-B) adds the same columns. The
-`app/services/yukti/ranking.py` half of db5b00c STAYS on this branch, because
-WP-C is not merged and the dashboard calls it. When WP-C merges, take WP-C's
-`ranking.py`. The dashboard's call contract, verbatim from the report:
-
-> My code calls exactly `yukti_ranking.rank_score_sql(link="link", report="rep", tenant="t")`, `yukti_ranking.grade_word(x)` and, in tests only, `rank_score(...)` and `must_have_cap()`. If WP-C's signatures differ, those call sites need adjusting.
-
-### p2-e hunk 2 (target: Phase 2 WP-C)
-
-> 2. When WP-C's `ranking.status_word` / `projection` land, point `services/dashboard.NOT_CHECKED_*`, `NOT_ASSESSED_NOTES`, `LEGACY_NOTE` and `RESUME_CHECK_NOTE` at them so there is one set of wording. `test_dashboard_columns` pins the reasons to `FAILURE_REASONS`, so it will catch a drift.
-
-### p2-e hunk 3 (targets: Phase 2 WP-C and WP-F)
-
-> 3. WP-F's planned sweep bans `ready_pick_score` and `pre_screen_grade` over `backend/tests`. `tests/test_report_number_ban.py` (WP-C) still uses `ready_pick_score` as an example of a forbidden key (lines 394–606), and `tests/test_yukti_live.py:277/543` (WP-F) names the pre-screen grade and dashboard cell. Those owners need to rename or exempt them. None of my files contain either string.
 
 ---
 
@@ -105,20 +76,34 @@ encryption header is not `aws:kms`, and this hunk is what fixes it.
 
 ---
 
-## Deferred, from p4-4d.md (Phase 4 WP-4D, Monaco coding answer)
+## Deferred, from p2-d.md and p2-f.md (Phase 2 WP-D / WP-F)
 
-### p4-4d hunk 5 (target: Phase 4 WP-4C, the backend coding router)
+### p2-d hunk 2 = p2-f hunk 3 (target: a Phase 3 follow-up, `schemas/ranking.py`)
 
-> 5. **WP-4C backend router:**
->    - Mount it under `/api/v2/assessments`.
->    - `POST .../coding/{qid}/runs` returns 202 `{run_id, status}`.
->    - `GET .../runs/{run_id}` returns `{run_id, status: queued|complete|unavailable|failed, tests: [{key, passed, result_word, stdout, expected_stdout, stderr, compile_output}], message}`.
->    - Refusals are `{"detail": "<sentence>"}`.
->    - `TranscriptAnswerDetailOut` gains optional `coding_outcome`, `compile_error`, `review_reasoning` and `review_citations`.
+> 2. Phase 3: when `assessment_mode*` / `video_status` go from `schemas/ranking.py`, remove the "Assessment" column from `candidate-ranking-table.tsx` (the header, the `TableCell` reading `assessment_mode_label` / `video_status`, and `columnCount` 13 to 12), the matching fields in `lib/types.ts`, and the fixture keys in `candidate-ranking-table.test.tsx`.
 
-`wip/p4-4c` points at the same commit as `wip/p4-4b2` (107b90d) at
-integration time, so WP-4C has not started: the Run routes the frontend calls
-do not exist on this branch.
+Still deferred: `schemas/ranking.py` still carries `assessment_mode`,
+`assessment_mode_label` and `video_status`, and `job_candidates._row_payload`
+still fills them. No merged Phase 3 package removed them.
+
+### p2-f hunk 1 (target: Phase 5)
+
+> 1. **Phase 5:** swap `_matching_dimensions` to `yukti.projection.ai_score_summary`, then delete `services/matching_categories.py` and its `PENDING_CATEGORY_READERS` entry. The hand-off test forces the second step once the first lands.
+
+---
+
+## Deferred, from p4-4f.md (Phase 4 WP-4F)
+
+### p4-4f hunk 1 (target: Phase 5, with the Miti coding sub-stage)
+
+> 1. **Phase 5, once Miti reads `coding_assessment.evidence` and stops sending coding answers to `_evaluate_subjective`.**
+>    - In `assessment_formats/evaluation.py`, delete `CODING_CRITERIA`, `NOT_EXECUTED_NOTE`, `HEDGE_MARKERS` and their `__all__` entries (lines 40-43, 58-83), the CODING prompt entry (93), the CODING branch of `rubric_for` (99-100), the hedge rule (181-187), the CODING branch of `evaluate` (219-230) and the note stamp (273-274).
+>    - Make `evaluate(CODING)` raise.
+>    - Delete `prompts/assessment_answer_evaluation_coding.txt`.
+>    - In `test_assessment_formats_evaluation.py`, delete the tests at lines 128, 192 and 378, add a test that `evaluate(CODING)` raises, and keep the empty-submission test.
+>    - Remove 7 entries from `PENDING_REMOVAL`.
+
+The full text is `docs/release/2026-09-vivekium/hunks/p4-4f-removals-and-harness.md` section 1.
 
 ---
 
@@ -135,16 +120,16 @@ do not exist on this branch.
    refuse `hiring_pipeline.SYSTEM_ONLY_TARGETS`, the way `change_status` now
    does. Not changed here: no merged package owns `api/dashboard.py`, and it
    changes a recruiter surface.
-2. **A v2 coding answer is stored but never executed.** `wip/p4-4b2`'s
-   `coding_assessment.submissions.accept_final` (the only writer of
-   `coding_submissions`) has no caller: `wip/p3-w3`'s `respond` was written
-   without it. `test_ai_reachability.ENTRY_POINTS_WITHOUT_CALLERS` records it
-   ("Phase 3's respond calls it for a v2 coding answer"), and likewise
-   `latest_draft` (the timeout auto-submit) and `scoring_hold` (Phase 5).
-   Harmless on pilot while `code_execution_backend=disabled` (the composer
-   serves no coding question then), and it must land before the sandbox is
-   enabled.
-3. **The Yukti ranking stand-in.** See p2-e hunk 1 above.
+2. **Scoring does not wait for an owed coding answer.** Answering the last
+   base question through `respond` completes the conversation and dispatches
+   scoring at once, while a v2 coding submission may still be executing.
+   `coding_assessment.submissions.scoring_hold` exists for exactly this and
+   has no caller (`test_ai_reachability.ENTRY_POINTS_WITHOUT_CALLERS`, owner
+   Phase 5). Harmless on pilot while `code_execution_backend=disabled` (no
+   coding question is composed), and it must land with Phase 5 before the
+   sandbox is enabled. The harness scenario
+   `adversarial.the_code_runner_is_unavailable` v2 records the early dispatch
+   in its expected counts with this reason beside it.
 
 ---
 
@@ -180,4 +165,15 @@ do not exist on this branch.
 | p3-w6b | 3, `model-assets.test.ts` green with WP4 merged | vitest |
 | p2-e | 1, migration half (scaffold migration deleted) | `chore(migrations): drop the p2-e scaffold migration; ...` |
 | integration | `_ensure_conversation_ready` deleted with its last caller; mode ratchet emptied | `refactor(assessment): the readiness helper goes ...` |
+| p2-a | 5, one anonymiser (`hiring/prescreen.py` deleted) | arrived with `wip/p2-f` |
+| p2-e | 1 (ranking half), 2, 3 | arrived with `wip/p2-f` (WP-C's `ranking.py`, the dashboard reads `yukti.projection`) |
+| p2-c | 1 to 4 (pending-schema fixture deleted, frontend polling URL, harness dashboard read, legacy read side deleted) | arrived with `wip/p2-d` / `wip/p2-f` |
+| p2-d | 1 (a finished run keeps its stages), 3 | arrived with `wip/p2-f` |
+| p2-f | 2 (SWOT and Sutra redaction) | already applied in round one |
+| p4-4c | 1, the respond hook in `turns.submit_turn` (and the expired-turn latest-Run submit) | `feat(assessment): a final coding answer given through the turn engine ...` |
+| p4-4c | 2, the Run route reads the server's turn clock | `fix(coding): a Run follows the server's turn clock; ...` |
+| p4-4c | 3, the `_v2_candidate_view` stand-in deleted | same commit |
+| p4-4d | 5, the WP-4C router | arrived with `wip/p4-4f` |
+| p4-4f | 2 and 3, the stale `PENDING_REMOVAL` entries deleted | `test(coding): the read-only evaluation ledger loses ...` |
+| p4-4f | 4, the harness answers through `respond` and sweeps the transcript | `test(harness): the coding scenarios answer through the real respond ...` |
 | p4-4b1 / p3-w4 / p2-b / p3-w3 / p3-w5 | migrations chained 0121 -> 0122 -> 0123 -> 0124 -> 0125 -> 0126 | `chore(migrations): chain 0125 ...`, the `wip/p3-w3` merge and the `wip/p3-w5` merge |
