@@ -455,14 +455,15 @@ async def _collect(
     deadline_seconds: float,
     poll_seconds: float,
     sleep: Callable[[float], Awaitable[Any]],
+    clock: Callable[[], float],
 ) -> list[code_execution.TestExecution]:
     """Poll to a PREDICTIVE deadline: another poll starts only if it can finish."""
-    started = time.monotonic()
+    started = clock()
     while True:
         results = await provider.collect(ticket)
         if results is not None:
             return results
-        if time.monotonic() - started + poll_seconds >= deadline_seconds:
+        if clock() - started + poll_seconds >= deadline_seconds:
             raise ExecutionUnavailable("the sandbox did not finish inside the poll deadline", reason="deadline")
         await sleep(poll_seconds)
 
@@ -483,20 +484,28 @@ async def _record_evidence(session: AsyncSession, row: CodingSubmission, questio
     message = await session.get(AssessmentMessage, answer.message_id)
     conversation = await session.get(AssessmentConversation, row.conversation_id)
     skill = await session.get(JobCompetency, question.competency_id)
-    link = (
-        await session.get(JobCandidateLink, conversation.job_candidate_link_id)
+    # One column, not the ORM row: the ledger needs the candidate and nothing
+    # else about the application.
+    candidate_id = (
+        (
+            await session.execute(
+                select(JobCandidateLink.candidate_id).where(
+                    JobCandidateLink.id == conversation.job_candidate_link_id
+                )
+            )
+        ).scalar_one_or_none()
         if conversation is not None
         else None
     )
-    if message is None or conversation is None or skill is None or link is None:
+    if message is None or conversation is None or skill is None or candidate_id is None:
         logger.warning("coding_submission.evidence_unlocated submission_id=%s", row.id)
         return
     await record_answer_evidence(
         session,
         tenant_id=row.tenant_id,
         job_id=conversation.job_id,
-        link_id=link.id,
-        candidate_id=link.candidate_id,
+        link_id=conversation.job_candidate_link_id,
+        candidate_id=candidate_id,
         skill_id=skill.id,
         skill_name=skill.name,
         skill_bucket=skill.category,
@@ -565,6 +574,7 @@ async def _execution_stage(
     provider: CodeExecutionProvider,
     *,
     sleep: Callable[[float], Awaitable[Any]],
+    clock: Callable[[], float],
 ) -> str | None:
     """Drive execution to `complete`. Returns the execution status it left,
     or None when another worker holds the lock or the row is gone."""
@@ -613,6 +623,7 @@ async def _execution_stage(
                 deadline_seconds=settings.coding_submission_poll_deadline_seconds,
                 poll_seconds=settings.code_execution_poll_seconds,
                 sleep=sleep,
+                clock=clock,
             )
             done = await _complete_execution(session, submission_id, ticket, results)
         except ExecutionTicketLost:
@@ -745,6 +756,7 @@ async def execute_submission(
     *,
     provider: CodeExecutionProvider | None = None,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> ExecutionReport:
     """The body of `pickready.execute_coding_submission`. See the module docstring.
 
@@ -759,7 +771,7 @@ async def execute_submission(
         except ExecutionNotConfigured as exc:
             await _record_attempt(session, sid, type(exc).__name__)
             raise SubmissionDefect(f"code execution is not configured: {exc.reason}") from exc
-    execution_status = await _execution_stage(session, sid, provider, sleep=sleep)
+    execution_status = await _execution_stage(session, sid, provider, sleep=sleep, clock=clock)
     if execution_status is None:
         return ExecutionReport(submission_id=str(sid), outcome="busy_or_gone")
     review_status = await _review_stage(session, sid)
