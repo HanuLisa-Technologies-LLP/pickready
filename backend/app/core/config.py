@@ -785,13 +785,14 @@ class Settings(BaseSettings):
     #: A Transcribe job reads its media from, and writes its output to, a
     #: bucket in ITS OWN region: a job running in ap-south-1 cannot read
     #: s3://bucket when that bucket lives in ap-south-2. This names the working
-    #: bucket in `transcribe_region`. The pipeline copies the extracted audio
-    #: in, runs the job, copies the transcript back to `s3_bucket` and deletes
-    #: both working objects, so nothing accumulates here. Empty means
-    #: `s3_bucket`, which is correct only when the two regions agree.
+    #: bucket in `transcribe_region`. The transcription step copies a spoken
+    #: answer's audio in, runs the job, copies the transcript back to
+    #: `s3_bucket` and deletes both working objects, so nothing accumulates
+    #: here. Empty means `s3_bucket`, which is correct only when the two
+    #: regions agree. (The whole-recording `video_transcribe_*` timeouts went
+    #: with the video-interview mode on 2026-09-24; a spoken answer carries
+    #: its own, shorter bounds.)
     transcribe_bucket: str = ""
-    video_transcribe_timeout_seconds: int = 1800
-    video_transcribe_poll_seconds: int = 15
     #: ffmpeg transcode settings for the long-term compressed mp4 (video spec
     #: section 8: codec and quality are configurable, storage optimization,
     #: not destructive compression). H.264 + AAC for browser playability.
