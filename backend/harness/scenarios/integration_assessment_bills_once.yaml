@@ -41,6 +41,8 @@ expect:
   output:
     - facts.assessment_turns >= 2
   trajectory:
+    # The start opens the first turn and every answer names it (2026-09-24).
+    - assessment_opened
     - assessment_completed
     - assessment_completion_retried
   prohibited:
