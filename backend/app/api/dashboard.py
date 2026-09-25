@@ -4,7 +4,7 @@
 # by a scheduled sweep; the views live in Track B's migrations. Until they exist,
 # this endpoint aggregates live over the base tables (data volumes are small
 # pre-launch); the query shape maps 1:1 onto the future views.
-# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments" — staff are
+# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments": staff are
 # assigned per tenant (PRD §4) and no per-job assignment table exists, so the
 # scope is the caller's tenant (enforced by RLS).
 """
