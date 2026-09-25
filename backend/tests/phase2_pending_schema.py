@@ -104,12 +104,18 @@ def ensure_columns() -> None:
     so an unreachable server is reported on stderr and left alone rather than
     failing collection of every module that never needed it.
     """
+    import asyncpg
+
     url = os.environ.get("DATABASE_URL", "")
     if not url.startswith("postgresql"):
         return
     try:
         asyncio.run(_ensure_columns(url))
-    except (OSError, asyncio.TimeoutError) as exc:
+    except (
+        OSError,
+        asyncio.TimeoutError,
+        asyncpg.exceptions.InvalidCatalogNameError,
+    ) as exc:
         import sys
 
         print(
