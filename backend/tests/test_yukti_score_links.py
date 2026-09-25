@@ -174,7 +174,9 @@ async def test_a_link_another_transaction_is_reading_is_skipped_not_waited_on(mo
     assert summary.skipped_locked == [link_id]
     assert summary.outcomes == {}
     assert router.calls == [], "a skipped link costs no model call"
-    assert written["status"] is None, "a skipped link is never written"
+    # The column is mapped since migration 0122, so an untouched link reads
+    # its server default rather than a missing attribute.
+    assert written["status"] == config.STATUS_PENDING, "a skipped link is never written"
 
 
 async def test_a_resume_with_no_text_is_not_assessed_without_a_model_call(monkeypatch) -> None:
