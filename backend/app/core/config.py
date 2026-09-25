@@ -651,6 +651,33 @@ class Settings(BaseSettings):
     #: solution fail on a slower moment of the same host.
     coding_reference_cpu_headroom: float = 0.5
 
+    # ── Coding Run, Submit, review and scoring (Phase 4 WP-4B2, `coding_assessment`)
+    #
+    # Run is interactive and bounded; Submit is final, stored first and
+    # executed by a dispatched task after commit. These are its bounds.
+    #: The HARD cap on Run presses per question, counted in `coding_runs`.
+    #: The Redis rate window fails open by design, so this count is the fence
+    #: that holds when Redis is down.
+    coding_run_max_per_question: int = 40
+    #: How long one submission task polls the sandbox for its hidden tests
+    #: before it records the attempt and hands back to the retry loop. The
+    #: ticket is committed first, so a later attempt COLLECTS, never resubmits.
+    coding_submission_poll_deadline_seconds: float = 120.0
+    #: The sweep re-dispatches an execution still open after this long.
+    coding_submission_redispatch_minutes: int = 5
+    #: The sweep retries a failed or unstarted code-quality review after this.
+    coding_review_retry_minutes: int = 15
+    #: The share of a coding question's score that comes from the hidden tests
+    #: (CONTRACT v2: 70 hidden tests, 30 code-quality review). Internal.
+    coding_score_test_weight: float = 0.7
+    #: Scoring waits for a pending coding submission for at most this long;
+    #: past it the answer is "Not assessed" and the report goes to a person.
+    coding_execution_max_wait_hours: int = 24
+    #: The five-minute sandbox probe's canary run may take this long.
+    coding_probe_deadline_seconds: float = 20.0
+    #: One check of the operator verification task may take this long.
+    coding_verify_deadline_seconds: float = 45.0
+
     # ── Assessment question formats (assessment-spec-doc.md) ────────────────
     #
     # Composition is enforced in code, not suggested in a prompt: evidence
@@ -1143,6 +1170,21 @@ class Settings(BaseSettings):
             raise ValueError("CODING_VALIDATION_DEADLINE_SECONDS must be greater than zero")
         if not 0 < self.coding_reference_cpu_headroom <= 1:
             raise ValueError("CODING_REFERENCE_CPU_HEADROOM must be in (0, 1]")
+        # Coding Run, Submit and scoring. A weight of 0 or 1 would silently
+        # drop one of the two halves the contract says a coding score has.
+        if not 0 < self.coding_score_test_weight < 1:
+            raise ValueError("CODING_SCORE_TEST_WEIGHT must be strictly between 0 and 1")
+        for name, value in {
+            "CODING_RUN_MAX_PER_QUESTION": self.coding_run_max_per_question,
+            "CODING_SUBMISSION_POLL_DEADLINE_SECONDS": self.coding_submission_poll_deadline_seconds,
+            "CODING_SUBMISSION_REDISPATCH_MINUTES": self.coding_submission_redispatch_minutes,
+            "CODING_REVIEW_RETRY_MINUTES": self.coding_review_retry_minutes,
+            "CODING_EXECUTION_MAX_WAIT_HOURS": self.coding_execution_max_wait_hours,
+            "CODING_PROBE_DEADLINE_SECONDS": self.coding_probe_deadline_seconds,
+            "CODING_VERIFY_DEADLINE_SECONDS": self.coding_verify_deadline_seconds,
+        }.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
         return self
 
     @property

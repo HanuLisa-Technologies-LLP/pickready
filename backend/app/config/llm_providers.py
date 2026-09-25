@@ -186,6 +186,7 @@ TaskType = Literal[
     "answer_evaluation",
     "fill_blank_equivalence",
     "coding_question_generation",
+    "coding_quality_review",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
     # ── Web research (BD Portal AI Reach, Company Profile research) ──
@@ -265,6 +266,9 @@ MODEL_FOR_TASK: dict[str, str] = {
     # one of them in the sandbox. Writing that is correct under execution is
     # the hardest writing task in the product, so it is Terra.
     "coding_question_generation": MODEL_TERRA,
+    # Judges the quality of a candidate's program beside its hidden-test
+    # results. It JUDGES, so it is on the reasoning tier with the other judges.
+    "coding_quality_review": MODEL_TERRA,
     # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
     # 2026-09-08. That was the single reason AI Reach returned two or three
     # companies and a researched company profile read thin, and it is the same
@@ -450,6 +454,9 @@ TASK_TIMEOUTS: dict[str, float] = {
     # assessment asks for: four starter programs, up to thirteen tests and a
     # reference solution in one JSON object.
     "coding_question_generation": 90.0,
+    # Background, inside the submission task. One review with reasoning and
+    # verbatim citations, the same size of job as `answer_evaluation`.
+    "coding_quality_review": 60.0,
     # IMMEDIATE interactive. A candidate has just submitted a fill-blank
     # answer and is waiting for the next question; the equivalence check runs
     # only when the exact match failed. Same cap as `conversation_turn`, for
@@ -502,6 +509,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     # the sandbox's verdict, so a third router attempt would buy less than a
     # second loop attempt does.
     "coding_question_generation": 180.0,
+    "coding_quality_review": 140.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -566,6 +574,8 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "answer_evaluation": 4096,
     # Four starter programs, a reference solution and up to thirteen tests.
     "coding_question_generation": 8192,
+    # Four criterion scores, reasoning and a handful of quoted fragments.
+    "coding_quality_review": 4096,
     # A boolean and one sentence of reason.
     "fill_blank_equivalence": 256,
 }
@@ -609,6 +619,7 @@ TASK_TEMPERATURE: dict[str, float] = {
     "context_prefix": 0.0,
     "project_evidence": 0.0,        # judges claims against evidence
     "answer_evaluation": 0.0,       # judges an answer against its rubric
+    "coding_quality_review": 0.0,   # judges a program beside its test results
     "fill_blank_equivalence": 0.0,  # classifies two strings as equivalent or not
     # Judges retrieved pages for truthfulness and relevance and drops what it
     # cannot support. A judging task, so deterministic: two runs over the same
@@ -691,6 +702,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
     "coding_question_generation": 2,
+    "coding_quality_review": 3,
     # TWO, NOT THREE, and both are interactive. Measured on the live pilot
     # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
     # full attempt on it, and the retry alone consumed more than the remaining
@@ -1230,6 +1242,8 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     # its task's worst case (`test_router_recovery`). The same row as the
     # other 8192-token background writers.
     "coding_question_generation": 0.40,
+    # The same row as `answer_evaluation`, the same size of judging call.
+    "coding_quality_review": 0.25,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of
