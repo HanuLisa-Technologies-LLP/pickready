@@ -34,9 +34,18 @@
  * green. A degraded run that looks complete is the failure this is here to
  * prevent.
  *
- * NO NUMBERS RULE. The counters here are counts of CANDIDATES and CATEGORIES --
- * how many rows are being processed. They are not scores, percentages, ranks or
- * any assessment output, and nothing on this panel grades anybody.
+ * DEGRADED IS A RUN-LEVEL STATE TOO (Vivekium release). A skipped row says
+ * which step did not run; it does not say that some candidates could not be
+ * assessed at all, which happens inside a step that did run. So the run
+ * carries `degraded` and the server's own `degraded_reasons`, and when it is
+ * set the heading stops saying "finished" plainly and a notice lists the
+ * reasons verbatim. The sentences are the server's: this file writes one
+ * sentence of its own, for a degraded run that arrived with no reason, and it
+ * says exactly that rather than nothing.
+ *
+ * NO NUMBERS RULE. The counters here are counts of CANDIDATES -- how many rows
+ * are being processed. They are not scores, percentages, ranks or any
+ * assessment output, and nothing on this panel grades anybody.
  */
 import * as React from "react";
 import { AlertTriangle, Check, Loader2, Minus } from "lucide-react";
@@ -54,7 +63,15 @@ export interface MatchingProgress {
   stages: MatchingStage[];
   candidate_count: number;
   scored_count: number;
+  /** The run could not do everything it set out to. */
+  degraded: boolean;
+  /** The server's sentences saying what, rendered verbatim. */
+  degraded_reasons: string[];
 }
+
+/** Shown only when a run says it is degraded and gives no reason. */
+export const DEGRADED_WITHOUT_REASON =
+  "The run did not complete every step, and it did not say which.";
 
 export type MatchingRunState = "idle" | "running" | "done" | "error";
 
@@ -118,6 +135,10 @@ export function MatchingReasoning({
   }
 
   const { stages, candidate_count: total, scored_count: scored } = progress;
+  const degraded = progress.degraded;
+  const reasons = progress.degraded_reasons.length
+    ? progress.degraded_reasons
+    : [DEGRADED_WITHOUT_REASON];
 
   return (
     <section
@@ -131,7 +152,9 @@ export function MatchingReasoning({
             ? "AI matching is running"
             : state === "error"
               ? "AI matching stopped"
-              : "AI matching finished"}
+              : degraded
+                ? "AI matching finished, but not everything was checked"
+                : "AI matching finished"}
         </h3>
         {total > 0 ? (
           <p className="text-xs">
@@ -171,6 +194,25 @@ export function MatchingReasoning({
           </li>
         ))}
       </ol>
+
+      {degraded ? (
+        <div
+          role="note"
+          aria-label="What this run could not do"
+          data-testid="matching-degraded"
+          className="mt-3 flex gap-2.5 border-t border-border pt-3 text-xs"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">What this run could not do</p>
+            <ul className="mt-1 space-y-1">
+              {reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
 
       {message ? (
         <p

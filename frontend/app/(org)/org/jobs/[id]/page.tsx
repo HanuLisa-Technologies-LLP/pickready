@@ -529,17 +529,35 @@ export default function OrgJobDetailPage() {
     setMatchingRunId("");
     setMatchingMessage("Starting the run.");
     try {
+      // The canonical run route, and a status route scoped to THIS job: the
+      // server answers 404 for a run id it did not record starting on this
+      // job in this tenant, so a run id cannot be read across jobs.
       const res = await apiPost<{ candidate_count: number; task_id: string }>(
-        `/jobs/${jobId}/run-matching`
+        `/matching/jobs/${jobId}/run`
       );
       setMatchingRunId(res.task_id);
       let finished = false;
       let finalState = "PENDING";
+      // What this run could not do, accumulated across polls. A degradation
+      // never un-happens within a run, and the terminal poll does not carry
+      // the stage payload (the run-status record holds the task's return
+      // value once it has finished), so a reason seen on any poll is kept.
+      let degraded = false;
+      let degradedReasons: string[] = [];
+      // Declared through `as` so the loop's reassignments are not narrowed
+      // away to the initial null.
+      let progress = null as MatchingProgress | null;
       for (let attempt = 0; attempt < 240; attempt += 1) {
         const status = await apiGet<MatchingTaskStatus & CarriesAiActivity>(
-          `/matching/tasks/${res.task_id}`
+          `/matching/jobs/${jobId}/tasks/${res.task_id}`
         );
         finalState = status.state;
+        degraded = degraded || Boolean(status.degraded);
+        for (const reason of status.degraded_reasons ?? []) {
+          if (!degradedReasons.includes(reason)) {
+            degradedReasons = [...degradedReasons, reason];
+          }
+        }
         // The AI activity line, from the same response the stage list comes
         // from, so the two cannot be read a poll apart from each other. The
         // field is optional: a response without it leaves the indicator silent
@@ -550,14 +568,25 @@ export default function OrgJobDetailPage() {
         );
         // The stage list is always returned, including for a task still sitting
         // in the queue, so the panel draws the whole plan at once and fills it
-        // in rather than appearing to invent steps as it goes.
-        if (status.stages?.length) {
-          setMatchingProgress({
+        // in rather than appearing to invent steps as it goes. A FINISHED run
+        // whose list is all pending is the server saying it holds no stage
+        // record any more (see above), not a description of the run, so the
+        // last list that did describe it stays on screen.
+        const describesRun =
+          !status.done ||
+          (status.stages ?? []).some((stage) => stage.status !== "pending");
+        if (status.stages?.length && describesRun) {
+          progress = {
             stages: status.stages,
             candidate_count: status.candidate_count ?? 0,
             scored_count: status.scored_count ?? 0,
-          });
+            degraded,
+            degraded_reasons: degradedReasons,
+          };
+        } else if (progress) {
+          progress = { ...progress, degraded, degraded_reasons: degradedReasons };
         }
+        if (progress) setMatchingProgress(progress);
         setMatchingMessage(
           status.state === "PENDING"
             ? "Waiting for a worker to pick the run up."
@@ -576,13 +605,22 @@ export default function OrgJobDetailPage() {
         throw new Error(`AI matching ended in ${finalState.toLowerCase()} state. No partial result is being presented as complete.`);
       }
       setMatchingState("done");
+      const plural = res.candidate_count === 1 ? "" : "s";
+      // A degraded run is never announced as complete: the panel above lists
+      // what it could not do, and the message and the toast point at it.
       setMatchingMessage(
-        `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored. Matching is complete.`
+        degraded
+          ? `${res.candidate_count} candidate${plural} in this run. Not everything could be checked; the notes above say what.`
+          : `${res.candidate_count} candidate${plural} checked. Matching is complete.`
       );
       setReloadKey((key) => key + 1);
       toast({
-        title: "AI matching complete",
-        description: `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored and ready to review.`,
+        title: degraded
+          ? "AI matching finished, but not everything was checked"
+          : "AI matching complete",
+        description: degraded
+          ? "The table is updated. The matching panel lists what this run could not do."
+          : `${res.candidate_count} candidate${plural} checked and ready to review.`,
       });
     } catch (e) {
       setMatchingState("error");
