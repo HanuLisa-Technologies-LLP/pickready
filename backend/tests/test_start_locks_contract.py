@@ -185,3 +185,36 @@ async def test_missing_questions_are_requested_once_per_window(candidate, monkey
         assert dispatch_mod.recorded_names().count(GENERATE) == 1
     finally:
         await cw.cleanup(factory, world)
+
+
+@pytest.mark.parametrize(("digest", "sent"), [("stale", 1), ("null", 0)])
+async def test_only_a_stamped_mismatch_is_rewritten_inside_the_window(
+    candidate, monkeypatch, digest, sent
+) -> None:
+    """Generation was requested a moment ago. Questions stamped with ANOTHER
+    contract mean the skills really changed, so the rewrite goes at once. An
+    UNSTAMPED set is what a generator that stopped stamping would write every
+    time, so it waits out the window: otherwise every poll of the start would
+    delete the set and start one more Fargate task."""
+    from datetime import datetime, timezone
+
+    cw.quiet_models(monkeypatch)
+    factory = cw.sessions()
+    world = await _world(candidate, digest=digest)
+    try:
+        await cw.set_conversation(
+            factory, world, questions_requested_at=datetime.now(timezone.utc)
+        )
+        with cw.client(candidate) as http:
+            started = http.post(f"{cw.BASE}/conversations/links/{world.link}/start")
+        assert started.status_code == 200, started.text
+        assert started.json()["status"] == "preparing"
+        questions = await cw.committed(
+            factory,
+            "SELECT id FROM candidate_questions WHERE job_candidate_link_id = :l",
+            l=str(world.link),
+        )
+        assert questions == [], "questions written against another contract survived"
+        assert dispatch_mod.recorded_names().count(GENERATE) == sent
+    finally:
+        await cw.cleanup(factory, world)

@@ -465,7 +465,14 @@ async def _regenerate(
     counts as a mismatch, which is what catches a question set generated
     before the digest existed (or for an application that was never invited
     under the current skills).
+
+    Only a STAMPED mismatch re-dispatches at once: those questions were
+    written against another contract, so the skills really changed. An
+    UNSTAMPED set waits out the redispatch window like any other request,
+    because a generator that stopped stamping would otherwise be sent again
+    on every poll of this route, one Fargate task each time.
     """
+    stamped = conversation.questions_contract_digest is not None
     await session.execute(
         delete(CandidateQuestion).where(CandidateQuestion.job_candidate_link_id == link.id)
     )
@@ -482,9 +489,10 @@ async def _regenerate(
     conversation.composition_json = None
     await session.flush()
     logger.info(
-        "assessment_start.questions_regenerated conversation_id=%s", conversation.id
+        "assessment_start.questions_regenerated conversation_id=%s stamped=%s",
+        conversation.id, stamped,
     )
-    _request_generation(session, conversation, link, now=now, force=True)
+    _request_generation(session, conversation, link, now=now, force=stamped)
 
 
 async def _lock_and_start(
