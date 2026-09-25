@@ -38,13 +38,39 @@ function interfaceFields(file: string, name: string): string[] {
   return [...withoutComments.matchAll(/^\s*([a-z_]+)\??:/gm)].map((match) => match[1]);
 }
 
+/** The backend module that owns the candidate projection of a coding payload. */
+const PAYLOAD_PY = join(HERE, "../../../backend/app/services/coding_assessment/payload.py");
+
+/** `CANDIDATE_FIELDS` as the server declares it, in order. Read from the
+ *  source rather than restated, so the two sides cannot drift apart. */
+function serverCandidateFields(): string[] {
+  const source = readFileSync(PAYLOAD_PY, "utf8");
+  const match = source.match(/^CANDIDATE_FIELDS: tuple\[str, \.\.\.\] = \(([\s\S]*?)^\)/m);
+  if (!match) throw new Error("CANDIDATE_FIELDS is not declared in payload.py");
+  return [...match[1].matchAll(/"([a-z_]+)"/g)].map((field) => field[1]);
+}
+
+/** The declared fields of a pydantic class in payload.py, in order. */
+function serverModelFields(name: string): string[] {
+  const source = readFileSync(PAYLOAD_PY, "utf8");
+  const start = source.indexOf(`class ${name}(`);
+  if (start === -1) throw new Error(`${name} is not declared in payload.py`);
+  const body = source.slice(source.indexOf("\n", start) + 1);
+  const end = body.search(/^\S/m);
+  const block = end === -1 ? body : body.slice(0, end);
+  return [...block.matchAll(/^    ([a-z_]+): /gm)].map((field) => field[1]);
+}
+
 /** Names that would be a way for an answer to reach the browser. */
 const ANSWER_SHAPED = /hidden|reference|solution|approach|answer|expected_output|rubric|key_/i;
 
 describe("the candidate view of a coding question", () => {
   it("has exactly the fields the server's candidate projection returns", () => {
-    // `services/coding_assessment/payload.CANDIDATE_FIELDS`, in order.
-    expect(interfaceFields("contracts.ts", "CodingPayloadViewV2")).toEqual([
+    // `services/coding_assessment/payload.CANDIDATE_FIELDS`, in order, read
+    // from the server source; the literal list beside it is the reviewed
+    // copy, so a change on either side fails here and names itself.
+    expect(interfaceFields("contracts.ts", "CodingPayloadViewV2")).toEqual(serverCandidateFields());
+    expect(serverCandidateFields()).toEqual([
       "payload_version",
       "title",
       "io",
@@ -59,7 +85,10 @@ describe("the candidate view of a coding question", () => {
   });
 
   it("describes a sample test by its input and output and nothing else", () => {
-    expect(interfaceFields("contracts.ts", "CodingVisibleTestView")).toEqual([
+    expect(interfaceFields("contracts.ts", "CodingVisibleTestView")).toEqual(
+      serverModelFields("VisibleTest")
+    );
+    expect(serverModelFields("VisibleTest")).toEqual([
       "id",
       "stdin",
       "expected_stdout",

@@ -296,11 +296,6 @@ export function ProctoringShell({
       fieldHooksFor: (questionKey: string) => runtime.current?.fieldHooksFor(questionKey) ?? NO_HOOKS,
       collectAnswerBehaviour: (questionKey: string): AnswerBehaviour | null =>
         runtime.current?.collectAnswerBehaviour(questionKey) ?? null,
-      // The client measures no paused time any more: the server holds the
-      // turn clock itself (warning acknowledgement, device pause). Zero is
-      // the true answer to the question this member asks, and the member
-      // leaves with the player's `paused_ms` in the Phase 3 contract.
-      consumePausedMs: () => 0,
       onConversationEnded: (status: "completed" | "terminated") => {
         // Flush what is queued before the detectors are torn down, so the
         // last few events reach the report rather than dying with the page.

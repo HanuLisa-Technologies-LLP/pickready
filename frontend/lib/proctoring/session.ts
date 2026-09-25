@@ -126,13 +126,10 @@ export function pauseScreenOpen(view: PauseView): boolean {
 /**
  * The hooks a field receives. `onBlockedAction` takes the kind of attempt the
  * field caught, so the session's event names it (the report itemises paste
- * attempts); the kind is optional only for the legacy code editor, which
- * Phase 4 replaces. Declared here rather than read off the shared contract so
- * this module states the parameter it actually handles.
+ * attempts). The kind is REQUIRED: the CodeMirror editor that could not name
+ * it is gone, and the Monaco editor names every attempt it refuses.
  */
-export type SessionFieldHooks = Omit<ProctoringFieldHooks, "onBlockedAction"> & {
-  onBlockedAction(kind?: BlockedAction): void;
-};
+export type SessionFieldHooks = ProctoringFieldHooks;
 
 /** The actions an answer field can be the target of, and so the ones that
  *  count against the answer on screen. */
@@ -384,13 +381,12 @@ export class SessionRuntime {
     const hooks = this.capture.hooksFor(questionKey);
     return {
       ...hooks,
-      onBlockedAction: (kind?: BlockedAction) => {
-        if (kind !== undefined && this.caughtThisDispatch.has(kind)) return;
-        hooks.onBlockedAction();
+      onBlockedAction: (kind) => {
+        if (this.caughtThisDispatch.has(kind)) return;
+        hooks.onBlockedAction(kind);
         this.emit({
           event_type: "BLOCKED_ACTION_ATTEMPTED",
-          // `kind` is absent only from the code editor Phase 4 replaces.
-          metadata: kind !== undefined ? { action: kind, via: "field" } : { via: "field" },
+          metadata: { action: kind, via: "field" },
         });
       },
     };

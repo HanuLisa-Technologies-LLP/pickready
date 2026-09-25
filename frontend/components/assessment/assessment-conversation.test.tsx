@@ -19,9 +19,11 @@ import { ApiError } from "@/lib/api";
 import { draftKey } from "@/lib/assessment/autosave";
 import type {
   AnswerBehaviour,
+  CodingPayloadViewV2,
   ConversationTurn,
   ProctoringBridge,
   ProctoringFieldHooks,
+  QuestionOut,
   TurnClock,
 } from "@/lib/assessment/contracts";
 
@@ -49,11 +51,17 @@ vi.mock("@/components/ui/toast", () => ({
 vi.mock("@/components/app-shell", () => ({
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
+// Monaco cannot run under jsdom; the double stands in for the editor.
+vi.mock("@monaco-editor/react", async () =>
+  (await import("@/lib/assessment/monaco-test-double")).monacoReactModule()
+);
 vi.mock("next/link", () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) => (
     <a href={href}>{children}</a>
   ),
 }));
+
+import { resetMonacoDouble } from "@/lib/assessment/monaco-test-double";
 
 import { AssessmentConversation, EXPIRY_UNREACHABLE } from "./assessment-conversation";
 
@@ -189,6 +197,7 @@ const respondCalls = () => apiPost.mock.calls.filter(([path]) => path === RESPON
 const startCalls = () => apiPost.mock.calls.filter(([path]) => path === START);
 
 beforeEach(() => {
+  resetMonacoDouble();
   window.localStorage.clear();
   apiPost.mockReset();
   apiPut.mockReset();
@@ -277,6 +286,55 @@ describe("respond", () => {
     await waitFor(() =>
       expect((screen.getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe("Kept")
     );
+  });
+});
+
+describe("a coding question", () => {
+  const STARTER = "def solve(items):\n    pass\n";
+  const PAYLOAD: CodingPayloadViewV2 = {
+    payload_version: 2,
+    title: "Remove duplicates",
+    io: "stdin_stdout",
+    input_format: "One line of integers.",
+    output_format: "The integers without duplicates.",
+    constraints: "Do not sort the input.",
+    languages: ["python"],
+    starter_code: { python: STARTER },
+    visible_tests: [{ id: "v1", stdin: "3 1 3", expected_stdout: "3 1", explanation: "" }],
+    limits: {},
+  };
+  const CODING: QuestionOut = {
+    id: "q-coding",
+    question_type: "coding",
+    payload: PAYLOAD,
+    time_allocation_seconds: 1200,
+  };
+
+  it("renders inside the player and sends only after the final-answer confirmation", async () => {
+    // Without the player's CodingConversationContext the editor's Run hook
+    // throws by design, so this render IS the wiring check. Untouched
+    // starter code is not an answer; the final send names the language and
+    // asks before the hidden tests run.
+    server([turn({ question: CODING })], [turn({ turn_seq: 5, prompt: "Next" })]);
+    mount(fakeBridge());
+    const editor = (await screen.findByTestId("monaco-input")) as HTMLTextAreaElement;
+    const submit = screen.getByRole("button", { name: /Submit final answer/ });
+    expect(screen.queryByRole("button", { name: /^Send$/ })).toBeNull();
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(editor, { target: { value: "print(1)" } });
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submit);
+    expect(respondCalls()).toHaveLength(0);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("Python");
+    fireEvent.click(screen.getAllByRole("button", { name: /Submit final answer/ }).at(-1)!);
+
+    await waitFor(() => expect(respondCalls()).toHaveLength(1));
+    expect(respondCalls()[0][1]).toMatchObject({
+      turn_seq: TURN_SEQ,
+      answer_payload: { language: "python", code: "print(1)" },
+    });
   });
 });
 

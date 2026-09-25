@@ -112,8 +112,8 @@ describe("behaviour capture", () => {
 
   it("counts a blocked action, an option click and a scroll on the answer they were aimed at", () => {
     const hooks = build().hooksFor("q1");
-    hooks.onBlockedAction();
-    hooks.onBlockedAction();
+    hooks.onBlockedAction("paste");
+    hooks.onBlockedAction("drop");
     hooks.onOptionClick(1400);
     hooks.onScroll();
     const behaviour = capture!.collect("q1");

@@ -36,6 +36,7 @@ import { ArrowLeft, CheckCircle2, Loader2, Send, Sparkles, Trash2 } from "lucide
 import { PageHeader } from "@/components/app-shell";
 import { AssessmentProgress, AssessmentSteps } from "@/components/assessment-progress";
 import { AutosaveIndicator } from "@/components/assessment/autosave-indicator";
+import { CodingSubmitButton } from "@/components/assessment/coding-submit-button";
 import { HistoryList } from "@/components/assessment/history-list";
 import { QuestionRenderer } from "@/components/assessment/question-renderer";
 import { TurnTimer, remainingMs } from "@/components/assessment/turn-timer";
@@ -56,11 +57,14 @@ import {
   emptyAnswerFor,
   isAnswerComplete,
   isAnswerEmpty,
+  isCodingAnswer,
+  starterCodeFor,
   textOf,
   turnIsProse,
   turnKeyFor,
 } from "@/lib/assessment/answers";
 import { clearDraft, readDraft, useAutosaveDraft } from "@/lib/assessment/autosave";
+import { CodingConversationContext } from "@/lib/assessment/coding";
 import type {
   AnswerPayload,
   ConversationTurn,
@@ -179,10 +183,13 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
   const turnKey =
     hasTurn && conversation ? turnKeyFor(conversation.conversation_id, conversation.turn_seq) : null;
   const prose = turnIsProse(question);
-  const starterCode = starterCodeOf(question);
+  // Untouched starter code is not an answer. A version 2 coding question
+  // carries one starter per language, so the comparison follows the language
+  // the answer is in (`starterCodeFor`), never the first one offered.
   const isEmpty = React.useCallback(
-    (candidate: AnswerPayload | null) => isAnswerEmpty(candidate, starterCode),
-    [starterCode]
+    (candidate: AnswerPayload | null) =>
+      isAnswerEmpty(candidate, starterCodeFor(question, candidate)),
+    [question]
   );
   const bridgePaused = Boolean(bridge.paused);
   const serverPaused = Boolean(conversation?.turn?.paused) || conversation?.status === "paused";
@@ -301,7 +308,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [conversation?.history.length, conversation?.prompt, sending]);
 
-  const complete = isAnswerComplete(value, starterCode);
+  const complete = isAnswerComplete(value, starterCodeFor(question, value));
   const view = React.useRef({ conversation, question, turnKey, prose, answerable });
   view.current = { conversation, question, turnKey, prose, answerable };
 
@@ -331,7 +338,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
     if (!current?.prompt || currentKey === null || !open || sendingRef.current) {
       return "not_sent";
     }
-    const currentStarter = starterCodeOf(currentQuestion);
+    const currentStarter = starterCodeFor(currentQuestion, currentValue);
     const empty = options.voice ? false : isAnswerEmpty(currentValue, currentStarter);
     if (
       !options.timedOut &&
@@ -670,18 +677,22 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                     </div>
                   ) : null}
                   {showTyping && fieldHooks && value !== null ? (
-                    <QuestionRenderer
-                      // A follow-up or a re-ask has no question row of its
-                      // own; it is prose, and prose renders as a short answer.
-                      question={question ?? proseTurn(turnKey)}
-                      prompt={conversation.prompt}
-                      value={value}
-                      onChange={setValue}
-                      disabled={inputDisabled}
-                      autosave={autosave}
-                      fieldHooks={fieldHooks}
-                      onSubmitShortcut={() => void submit({ timedOut: false })}
-                    />
+                    // A coding question's Run button needs the conversation it
+                    // belongs to; `useCodingConversationId` throws without it.
+                    <CodingConversationContext.Provider value={conversation.conversation_id}>
+                      <QuestionRenderer
+                        // A follow-up or a re-ask has no question row of its
+                        // own; it is prose, and prose renders as a short answer.
+                        question={question ?? proseTurn(turnKey)}
+                        prompt={conversation.prompt}
+                        value={value}
+                        onChange={setValue}
+                        disabled={inputDisabled}
+                        autosave={autosave}
+                        fieldHooks={fieldHooks}
+                        onSubmitShortcut={() => void submit({ timedOut: false })}
+                      />
+                    </CodingConversationContext.Provider>
                   ) : null}
                   {showTyping ? (
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -696,18 +707,29 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                           <Trash2 className="h-4 w-4" aria-hidden="true" />
                           Clear
                         </Button>
-                        <Button
-                          size="lg"
-                          disabled={inputDisabled || !complete}
-                          onClick={() => void submit({ timedOut: false })}
-                        >
-                          {sending ? (
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                          ) : (
-                            <Send className="h-4 w-4" aria-hidden="true" />
-                          )}
-                          {sending ? "Sending" : "Send"}
-                        </Button>
+                        {question?.question_type === "coding" && isCodingAnswer(value) ? (
+                          // A coding answer is final: the press confirms, naming
+                          // the language, before the hidden tests are run.
+                          <CodingSubmitButton
+                            language={value.language}
+                            disabled={inputDisabled || !complete}
+                            sending={sending}
+                            onConfirm={() => void submit({ timedOut: false })}
+                          />
+                        ) : (
+                          <Button
+                            size="lg"
+                            disabled={inputDisabled || !complete}
+                            onClick={() => void submit({ timedOut: false })}
+                          >
+                            {sending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Send className="h-4 w-4" aria-hidden="true" />
+                            )}
+                            {sending ? "Sending" : "Send"}
+                          </Button>
+                        )}
                       </div>
                     </div>
                   ) : null}
@@ -724,18 +746,6 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
       </div>
     </div>
   );
-}
-
-/**
- * The starter code a coding answer is compared against, "" for any other
- * format: untouched starter code is not an answer. Payload version 1 carries
- * one starter string; the per-language starters of version 2 are Phase 4's
- * shape and its `codingStarterFor` replaces this at integration.
- */
-function starterCodeOf(question: QuestionOut | null): string {
-  if (question?.question_type !== "coding") return "";
-  const starter = (question.payload as { starter_code?: unknown }).starter_code;
-  return typeof starter === "string" ? starter : "";
 }
 
 /** The question shape a prose follow-up or re-ask renders through. It has no
