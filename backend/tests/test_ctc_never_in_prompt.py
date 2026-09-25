@@ -107,9 +107,16 @@ PROMPT_BUILDERS: dict[str, Builder] = {
         "Phase 1", "the hiring team's own answer in the Drishti conversation", REVIEWED
     ),
     # ── Phase 3 / 4: the assessment ─────────────────────────────────────────
-    "app/services/assessment_questions/generate.py::generate_candidate_questions": Builder(
-        "Phase 3", "resume passages and parsed fields", PENDING,
-        "Phase 3 reuses compensation_guard.redact_text for resume passages (PLAN-p2 section 7)",
+    "app/services/assessment_questions/generate.py::_write_prose.execute": Builder(
+        "Phase 3 WP2 (redacted at the stage 2 integration)",
+        "resume passages and parsed fields, redacted; the skills and role summary",
+        CANARY,
+        "_write_prose redacts the resume text and summary; _resume_excerpt strips compensation keys",
+    ),
+    "app/services/coding_assessment/review.py::review_code_quality.execute": Builder(
+        "Phase 4 WP-4B2",
+        "the coding question, the candidate's program and its test outcome words",
+        REVIEWED,
     ),
     "app/services/assessment_formats/generation.py::anchor_evidence.execute": Builder(
         "Phase 3", "resume items to anchor an evidence question", PENDING,
@@ -131,9 +138,6 @@ PROMPT_BUILDERS: dict[str, Builder] = {
     ),
     "app/services/interviewer.py::_decide_assess": Builder(
         "Phase 3", "the question and the candidate's answer", REVIEWED
-    ),
-    "app/services/interviewer.py::_deliver_compose.execute": Builder(
-        "Phase 3", "the next question and the recent transcript", REVIEWED
     ),
     "app/services/interviewer.py::challenge_non_answer": Builder(
         "Phase 3", "the question and the non-answer", REVIEWED
@@ -556,6 +560,32 @@ def test_the_coding_question_request_carries_no_compensation() -> None:
     )
     router = CapturingRouter(lambda task, messages: "{}")
     router.sent.append(messages)
+    _assert_no_pay(router)
+
+
+async def test_the_prose_question_request_carries_no_compensation(monkeypatch) -> None:
+    """`_write_prose.execute` sends the request `_write_prose` assembles; the
+    canary hands it a resume and a summary carrying the sentinel, as a caller
+    that forgot to redact would."""
+    from app.services.assessment_questions import generate
+
+    competency = uuid.uuid4()
+    router = CapturingRouter(lambda task, messages: "{}")
+    _install(monkeypatch, router)
+    await generate._write_prose(
+        None,
+        job=SimpleNamespace(title="Senior Data Engineer"),
+        contract=SimpleNamespace(grade="managerial", role_summary="Runs the data platform."),
+        slots=[
+            SimpleNamespace(
+                index=0, category="must_have", skill_name="Kafka", competency_id=competency
+            )
+        ],
+        skills={competency: SimpleNamespace(evidence_line="Has run Kafka in production.")},
+        resume_excerpt=RESUME_WITH_PAY,
+        resume_text=RESUME_WITH_PAY,
+        project_evidence="",
+    )
     _assert_no_pay(router)
 
 

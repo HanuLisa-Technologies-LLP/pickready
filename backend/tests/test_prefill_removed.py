@@ -22,8 +22,9 @@ consent key is named in `consent_catalog.RETIRED_KEYS` so a stored consent
 act under it still reads as what it was.
 
 THE SWEEP normalises whitespace and maps offsets back to a line, the
-`test_company_dna_removed.py` technique, because a sweep with a one-line blind
-spot passes while the thing it forbids sits in a wrapped comment.
+technique the 2026-09-23 removal sweep adopted (CLAUDE.md), because a sweep
+with a one-line blind spot passes while the thing it forbids sits in a
+wrapped comment.
 """
 from __future__ import annotations
 
@@ -63,19 +64,15 @@ SINGLE_FILES = (".env.example",)
 #: created the columns and the table that survive.
 EXEMPT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("backend/alembic/versions/", "migrations are history"),
+    (
+        "backend/tests/test_question_generation_contract.py",
+        "reads the two surviving columns from the TABLE to prove nothing writes them",
+    ),
 )
 
 #: Files another work package still has to clean, and who. MUST SHRINK TO
 #: EMPTY at integration; a stale entry fails below, so the ratchet stays tight.
 PENDING: dict[str, str] = {
-    "backend/app/api/assessment_conversation.py": (
-        "Phase 3 WP3 rewrites the conversation route and deletes "
-        "_consume_prefilled_questions with it"
-    ),
-    "backend/app/models/assessment.py": (
-        "Phase 3 WP3 owns the model: unmap CandidateQuestion.prefilled_answer "
-        "and prefill_source (the columns stay, history only)"
-    ),
     "backend/app/services/siddhi/evidence.py": (
         "Phase 5: portable_node and KIND_PORTABLE lost their only caller "
         "(functional_assessment.portable_evidence_nodes, deleted here)"

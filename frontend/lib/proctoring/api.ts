@@ -216,7 +216,7 @@ export function postHeartbeat(sessionId: string, body: HeartbeatIn): Promise<Hea
 /**
  * The warning the candidate just acknowledged. The server holds the question
  * timer from the moment it issued the warning until this call (capped on its
- * side), which replaces the client-measured `paused_ms` that used to travel on
+ * side), which replaces the client-measured pause length that used to travel on
  * the next answer: a pause length the client reports is a number the client
  * chose.
  */

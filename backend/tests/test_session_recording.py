@@ -163,6 +163,12 @@ PERMITTED_IMPORTERS = {
     # SAME function the pipeline uses; a second deleter would be a second
     # answer to "is the object really gone".
     "services/assessment_media_retention.py",
+    # A spoken answer's audio (Phase 3 WP3). It is stored and deleted through
+    # `video.voice` / `video.storage`, the same encrypted transport and the
+    # same HEAD-confirmed deletion, so there is one answer to "is it gone". It
+    # holds audio for the minutes before a transcript exists and scores
+    # nothing (added at the stage 2 integration).
+    "services/assessment_conversation/voice_audio.py",
     # Candidate erasure reaches stored recordings through the same verified
     # deletion. It scores nothing; it only deletes.
     "services/erasure.py",

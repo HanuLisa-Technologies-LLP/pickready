@@ -20,9 +20,9 @@ it. A second writer is how the apply-time row came to exist in the first
 place, and it would pass every behavioural test written for the first one.
 
 The SQL sweep normalises whitespace, so an INSERT wrapped across lines is
-found (the 2026-09-23 lesson of `test_company_dna_removed.py`: a sweep with a
-blind spot is worse than no sweep, because the green result is what stops
-anybody looking).
+found (the 2026-09-23 lesson of the removal sweep's one-line blind spot,
+CLAUDE.md: a sweep with a blind spot is worse than no sweep, because the
+green result is what stops anybody looking).
 
 Mutation-checked: an `INSERT INTO assessment_conversations` literal added to
 `api/portal.py` fails `test_only_the_invitation_service_writes_the_row`.

@@ -68,6 +68,7 @@ from app.services import (
     agent_loop,
     assessment_contract,
     code_execution,
+    compensation_guard,
     conversation_guardrails,
     llm_router,
 )
@@ -136,7 +137,9 @@ class QuestionSet:
 def _resume_excerpt(profile: Profile | None) -> str:
     if profile is None:
         return ""
-    parsed = profile.parsed_fields_json or {}
+    # No pay reaches the question writer (owner criterion 7): compensation
+    # keys are stripped from the parsed fields and pay lines from the resume.
+    parsed = compensation_guard.strip_keys(dict(profile.parsed_fields_json or {}))
     parts = [
         json.dumps(
             {
@@ -146,7 +149,7 @@ def _resume_excerpt(profile: Profile | None) -> str:
                 "education": parsed.get("education", [])[:4],
             }
         ),
-        (profile.resume_text or "")[:2500],
+        compensation_guard.redact_text(profile.resume_text)[:2500],
     ]
     return "\n".join(part for part in parts if part)
 
@@ -269,8 +272,11 @@ async def _write_prose(
             }
             for slot in slots
         ],
-        "resume_summary": resume_excerpt,
-        "candidate_resume": resume_text[:6000],
+        # Redacted HERE, at the one place the request is assembled, so a
+        # caller that hands in raw text still sends no pay (the CTC canary in
+        # tests/test_ctc_never_in_prompt.py calls this function directly).
+        "resume_summary": compensation_guard.redact_text(resume_excerpt),
+        "candidate_resume": compensation_guard.redact_text(resume_text)[:6000],
         "project_evidence": project_evidence,
     }
     best: dict[int, str] = {}

@@ -34,15 +34,10 @@ EXEMPT = {
 
 FRONTEND = REPO / "frontend"
 #: Frontend files that still send or build the client pause, and their owner.
-PENDING_FRONTEND = {
-    FRONTEND / "components" / "assessment" / "assessment-conversation.tsx": "PLAN-p3 WP6a",
-    FRONTEND / "components" / "assessment" / "assessment-conversation.test.tsx": "PLAN-p3 WP6a",
-    FRONTEND / "app" / "(candidate)" / "portal" / "(app)" / "assessments" / "[link_id]" / "page.test.tsx": "PLAN-p3 WP6a",
-    FRONTEND / "lib" / "assessment" / "contracts.ts": "PLAN-p3 WP6a",
-    FRONTEND / "components" / "proctoring" / "proctoring-shell.tsx": "PLAN-p3 WP6b",
-    FRONTEND / "components" / "proctoring" / "proctoring-shell.test.tsx": "PLAN-p3 WP6b",
-    FRONTEND / "components" / "proctoring" / "warning-modal.tsx": "PLAN-p3 WP6b",
-}
+#: EMPTY since the stage 2 integration merged WP6a and WP6b: every hand-off
+#: landed, and the two comments that still named the removed field were
+#: reworded, so the sweep now covers the whole frontend.
+PENDING_FRONTEND: dict = {}
 
 
 def test_nothing_sends_or_reads_a_client_pause_or_edits_an_answer() -> None:

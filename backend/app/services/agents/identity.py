@@ -187,14 +187,17 @@ AGENTS: dict[str, Agent] = {
         ),
         portal=PORTAL_CUSTOMER,
         skills=("build_matching_categories", "score_resume_fit", "retrieve_matching_evidence"),
+        # `hiring.prescreen` stopped being reached when AI Matching moved onto
+        # Yukti (Phase 2 WP-B): the parse no longer grades. `services/yukti`
+        # is the reading now (stage 2 integration).
         implemented_by=(
             "app.services.matching",
             "app.services.matching_categories",
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         activates_to=(
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         produces=("ai_score",),

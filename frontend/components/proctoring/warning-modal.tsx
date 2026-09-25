@@ -7,9 +7,9 @@
 // the moment it issued the warning until the candidate acknowledges it
 // (`POST /proctoring/sessions/{id}/warnings/ack`, capped on the server), so a
 // warning does not cost them thinking time on the question they were in the
-// middle of. SUPERSEDES the client stopwatch (`usePausedTime`) that measured
-// the hold here and sent it as `paused_ms` on the next answer (Phase 3,
-// 2026-09-24): a pause length the client reports is a number the client
+// middle of. SUPERSEDES the client stopwatch that measured the hold here and
+// sent its length on the next answer (Phase 3, 2026-09-24): a pause length
+// the client reports is a number the client
 // chose, and it lived in a React ref, so a reload between the warning and the
 // answer lost it.
 //

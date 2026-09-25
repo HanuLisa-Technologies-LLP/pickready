@@ -208,7 +208,10 @@ def test_the_deleted_probe_task_is_gone() -> None:
     the reason attached instead of as a generic import error.
     """
     assert "pickready.probe_llm_models" not in names()
-    assert not [e for e in SCHEDULE if "probe" in e.rule]
+    # The DELETED task's rule, by the task it named. A different probe is not
+    # the deleted one: `pickready.probe_code_execution` (Phase 4 WP-4B2) is a
+    # live five-minute sandbox health check with its own scheduler rule.
+    assert not [e for e in SCHEDULE if e.task == "pickready.probe_llm_models"]
     for module in sorted(WORKERS.glob("tasks*.py")):
         assert "probe_llm_models" not in module.read_text(encoding="utf-8"), module.name
 
