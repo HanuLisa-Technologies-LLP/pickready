@@ -47,6 +47,12 @@ PERMITTED_IMPORTERS: dict[str, str] = {
     # recording start, and nothing else.
     "api/assessment_conversation.py": "the gate on the conversation",
     "api/assessment_recording.py": "the gate on the recording start",
+    # The coding Run routes (Phase 4 WP-4C, merged at the stage 2 integration
+    # 2026-09-25). The same narrow permission as the conversation: a Run is
+    # refused while proctoring is not active or the turn clock is paused
+    # (`require_active`, `PAUSED_DETAIL`), and nothing from proctoring reaches
+    # the execution, its outcome or any score.
+    "api/assessment_coding.py": "the gate on a coding Run",
     # The conversation engine that replaced the body of `respond` (PLAN-p3
     # WP3, 2026-09-24). It HANDS the answer field's timings to proctoring's
     # behaviour log, exactly as `respond` did, and reads nothing back.
