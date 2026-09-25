@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.schemas import bd, candidates, jobs, matching, provider
+from app.schemas import bd, candidates, jobs, matching, provider, ranking
 from app.schemas.pagination import PageMeta
 
 #: The responses that had NO derived navigation and now inherit it.
@@ -104,7 +104,7 @@ def test_nothing_was_removed_from_any_existing_response() -> None:
 def test_the_richest_existing_shape_was_not_disturbed() -> None:
     """`RankedCandidatesOut` already had this vocabulary; PageMeta adopted its
     names rather than inventing a fifth set. It must keep its own fields."""
-    fields = set(jobs.RankedCandidatesOut.model_fields)
+    fields = set(ranking.RankedCandidatesOut.model_fields)
     for name in ("total", "page", "page_size", "total_pages", "has_next", "has_previous"):
         assert name in fields, name
 
@@ -122,16 +122,16 @@ def test_the_transcript_keeps_offset_pagination_on_purpose() -> None:
 def test_the_applications_list_keeps_its_own_empty_set_convention() -> None:
     """One documented divergence, and the reason it is allowed to stand.
 
-    `JobLinksOut` and `MatchResultsOut` already carried the derived fields and
-    report a MINIMUM of one page where `PageMeta` reports zero. Both readings
-    are defensible; these are already in a shipped client, and changing a
-    number an existing UI renders is a replacement, not an extension. Both
-    gained `has_previous`, so the vocabulary matches everywhere even where the
-    empty-set convention does not.
+    `JobLinksOut` already carried the derived fields and reports a MINIMUM of
+    one page where `PageMeta` reports zero. Both readings are defensible; it
+    is already in a shipped client, and changing a number an existing UI
+    renders is a replacement, not an extension. It gained `has_previous`, so
+    the vocabulary matches everywhere even where the empty-set convention
+    does not. (`MatchResultsOut` shared the convention until the Vivekium
+    release deleted `GET /matching/jobs/{id}/results`, which nothing called.)
     """
     for model, collection in (
         (candidates.JobLinksOut, "links"),
-        (matching.MatchResultsOut, "results"),
     ):
         empty = model(job_id=uuid4(), **{collection: []})
         assert empty.total_pages == 1, model.__name__
@@ -148,7 +148,7 @@ def test_no_new_endpoint_invents_a_fifth_pagination_shape() -> None:
     page" for the whole API.
     """
     offenders: list[str] = []
-    for module in (bd, candidates, provider, jobs, matching):
+    for module in (bd, candidates, provider, jobs, matching, ranking):
         for name, obj in vars(module).items():
             if not inspect.isclass(obj) or not hasattr(obj, "model_fields"):
                 continue

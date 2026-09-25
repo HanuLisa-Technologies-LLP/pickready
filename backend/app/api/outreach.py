@@ -42,6 +42,7 @@ from app.services import capabilities as caps
 from app.services import engagement
 from app.services import outreach_content
 from app.services.audit import audit
+from app.services.yukti import projection
 from app.workers import status as task_status
 from app.workers.dispatch import dispatch
 
@@ -159,6 +160,9 @@ async def _resolve(
 
     company, company_culture = await _company_context(session, user)
     links = await _load_links(session, user, job, payload.link_ids)
+    # The job's CURRENT skill names, read once: an evidence tag names a skill
+    # by id, and the email says what the skill is called today.
+    skill_names = (await projection.job_skills_view(session, job.id)).names
 
     # Batch-load the candidates instead of one SELECT per recipient. A send to
     # 50 selected candidates was 50 extra round trips before the first email was
@@ -193,12 +197,17 @@ async def _resolve(
             )
             continue
 
+        # The skills the resume EVIDENCED (positive skill tags, by name), and
+        # never a grade word, a score or a model-written tag: a candidate must
+        # not be able to reconstruct an internal rating from their email.
+        evidenced = projection.skill_list_phrase(
+            projection.strengths_for_prompt(link.evidence_tags_json, skill_names)
+        )
         if payload.mode == "manual":
-            breakdown = link.match_breakdown_json or {}
             strengths = (
-                (breakdown.get("overall") or {}).get("comment")
-                or (breakdown.get("skills_match") or {}).get("comment")
-                or "the experience outlined in your profile"
+                f"your experience with {evidenced}"
+                if evidenced
+                else "the experience outlined in your profile"
             )
             ctx = {
                 "candidate_name": name,
@@ -210,15 +219,17 @@ async def _resolve(
             body = _substitute(payload.body or "", ctx)
             ai_fallback = False
         else:
-            breakdown = link.match_breakdown_json or {}
+            # Only the evidenced skills reach the prompt, under the one
+            # evidence key they answer; the other keys stay absent, which
+            # `generation_sufficiency.outreach_evidence` reads as "nothing
+            # recorded" rather than as a sentence about the record.
             email = await outreach_content.generate_outreach_email(
                 {
                     "name": candidate.full_name,
                     "email": candidate.email,
-                    "skills_comment": (breakdown.get("skills_match") or {}).get("comment", ""),
-                    "experience_comment": (breakdown.get("experience_relevance") or {}).get("comment", ""),
-                    "role_comment": (breakdown.get("role_alignment") or {}).get("comment", ""),
-                    "education_comment": (breakdown.get("education_fit") or {}).get("comment", ""),
+                    "skills_comment": (
+                        f"the {evidenced} experience on your resume" if evidenced else ""
+                    ),
                 },
                 {"title": job.title},
                 {"name": company, "culture": company_culture},

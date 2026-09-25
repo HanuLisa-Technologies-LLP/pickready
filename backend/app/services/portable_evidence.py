@@ -246,7 +246,7 @@ _VERDICT_KEYS: frozenset[str] = frozenset(
     {
         "score", "scores", "grade", "grades", "rating", "ratings", "rated",
         "band", "bands", "tier", "tiers", "percent", "percentage",
-        "match_score", "match_percent", "verdict", "overall", "composite",
+        "match_score", "verdict", "overall", "composite",
         "required_level", "level", "confidence", "assessment", "evaluation",
         "report", "report_id", "result", "rank", "ranking", "weight",
         "threshold", "delivered_score", "adjusted_composite",

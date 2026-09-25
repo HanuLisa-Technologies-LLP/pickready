@@ -63,13 +63,12 @@ from app.schemas.jobs import (
     JobPatchIn,
     PublicJobOut,
     PublishJobOut,
-    RankedCandidateOut,
-    RankedCandidatesOut,
     ReportingToOptionsOut,
     ReviewProfileOut,
     jd_body_is_empty,
 )
 from app.schemas.matching import RunMatchingOut
+from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
 from uuid import uuid4 as _uuid4
 
 from app.services import approval_fsm as fsm
@@ -1344,30 +1343,29 @@ async def list_job_candidates(
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> RankedCandidatesOut:
-    """The job page's inline candidate table — ranked, paginated, word-labelled.
+    """The job page's inline candidate table: ranked, paginated, in words.
 
-    Ordering is decided in SQL from the job's grade (services/job_candidates)
-    and is a TOTAL order, so page boundaries stay stable across requests. No
-    numeric score appears in the response: the five comments each carry a word
-    label instead (spec §2.2 / claude.md).
+    The order is ONE key derived in SQL (`services/yukti/ranking`): the Yukti
+    resume check, blended with the Tatva Assessment once a report exists,
+    capped after the blend when a Must-have failed, then arrival, then id. It
+    is a TOTAL order, so page boundaries stay stable across requests. No
+    number appears in the response (D3): the AI Match is a grade word, its
+    evidence tags are text and its provenance is sentences, and the page's
+    `ranking_header` says in words how the order is made.
 
     Every row carries `profile_age`. After a renewal, applicants from the
-    previous window read as Old Profiles — still listed, still ranked, still
+    previous window read as Old Profiles: still listed, still ranked, still
     openable; the distinction is provenance and billing, never access.
 
     Every row also carries `is_new_candidate`, and the page carries
-    `new_candidate_count` (workflow section 32). Somebody who applies the
-    morning after a selection round lands wherever their score puts them, which
-    is usually a page nobody opens again; the count is how the team finds out
-    they are there at all, so it is computed over the WHOLE job rather than
-    over the rows on this page.
+    `new_candidate_count` (workflow section 32), computed over the WHOLE job
+    rather than over the rows on this page.
     """
     job = await _get_visible_job(session, user, job_id)
     grade = job.assessment_grade or "non_managerial"
     result = await job_candidates.ranked_candidates(
         session,
         job.id,
-        grade,
         page=page,
         page_size=page_size,
         include_archived=include_archived,
@@ -1377,7 +1375,7 @@ async def list_job_candidates(
     return RankedCandidatesOut(
         job_id=job.id,
         grade=grade,
-        level=job_candidates.grade_label(grade),
+        ranking_header=result.ranking_header,
         results=[RankedCandidateOut.model_validate(row) for row in result.rows],
         total=result.total,
         page=result.page,

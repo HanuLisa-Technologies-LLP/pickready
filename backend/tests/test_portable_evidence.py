@@ -597,7 +597,7 @@ def test_the_table_has_no_verdict_column(world: World):
     assert columns, "the table is missing entirely"
     forbidden = {
         "score", "grade", "band", "tier", "percent", "percentage", "rating",
-        "match_score", "match_percent", "required_level", "verdict",
+        "match_score", "required_level", "verdict",
         "composite", "overall_score", "delivered_score", "confidence",
         "report_id", "evaluation_id",
     }

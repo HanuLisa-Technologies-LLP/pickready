@@ -43,7 +43,7 @@ from app.services import capabilities as caps
 from app.services import generation_sufficiency
 from app.services import assessment_invite, email_outbox, lifecycle_email
 from app.services.audit import audit
-from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
+from app.services.yukti import projection
 
 router = APIRouter()
 
@@ -145,26 +145,24 @@ async def _load_targets(
     return targets, skipped
 
 
-def _strengths_prose(breakdown: dict | None) -> str:
-    """The candidate's evidenced strengths, as PROSE for the prompt.
+def _strengths_prose(link: JobCandidateLink, names: dict[str, str]) -> str:
+    """The skills the candidate's resume EVIDENCED, as prose for the prompt.
 
-    Built from the stored ranking COMMENTS only. No score, band, or label goes
-    into an email prompt — a candidate must not be able to reconstruct their
-    internal rating from the wording they receive (spec §10, claude.md).
+    Built from the link's positive skill evidence tags only, by the skill's
+    current name (`yukti.projection.strengths_for_prompt`). No score, grade
+    word or label goes into an email prompt: a candidate must not be able to
+    reconstruct an internal rating from the wording they receive (spec
+    section 10, claude.md).
     """
-    payload = ranking_payload(breakdown)
-    lines = [
-        payload[key]
-        for key in RANKING_COMMENT_KEYS.values()
-        if key != "overall_comment" and payload.get(key)
-    ]
-    return "\n".join(f"- {line}" for line in lines) or (
-        # THE CONSTANT, not the literal. `generation_sufficiency` has to
-        # RECOGNISE this exact default in order to refuse generation over it,
-        # and a default and its recogniser held as two independent literals
-        # drift the first time somebody rewords one of them.
-        generation_sufficiency.GENERIC_STRENGTHS_PLACEHOLDER
-    )
+    skills = projection.strengths_for_prompt(link.evidence_tags_json, names)
+    phrase = projection.skill_list_phrase(skills)
+    if phrase:
+        return f"- Evidenced on the resume: {phrase}"
+    # THE CONSTANT, not the literal. `generation_sufficiency` has to RECOGNISE
+    # this exact default in order to refuse generation over it, and a default
+    # and its recogniser held as two independent literals drift the first time
+    # somebody rewords one of them.
+    return generation_sufficiency.GENERIC_STRENGTHS_PLACEHOLDER
 
 
 @router.post("/draft", response_model=EmailDraftsOut)
@@ -185,12 +183,19 @@ async def draft_emails(
     frontend = get_settings().frontend_url.rstrip("/")
 
     drafts: list[EmailDraftOut] = []
+    # The job's current skill names, read once per job rather than per
+    # candidate: a tag names a skill by id and the email says its name today.
+    skill_names: dict[uuid.UUID, dict[str, str]] = {}
     for link, candidate, job in targets:
+        if job.id not in skill_names:
+            skill_names[job.id] = dict(
+                (await projection.job_skills_view(session, job.id)).names
+            )
         context = {
             "candidate_name": candidate.full_name or "there",
             "job_title": job.title,
             "company_name": company_name,
-            "strengths": _strengths_prose(link.match_breakdown_json),
+            "strengths": _strengths_prose(link, skill_names[job.id]),
             # Signed, expiring, and bound to this candidate's address, so the
             # click has to pass through the candidate portal sign-in before it
             # can reach an assessment (services/assessment_invite).
