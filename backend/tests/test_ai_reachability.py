@@ -245,6 +245,19 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    # Phase 4 WP-4B1, wired by the Phase 3 WP2 composer (the p4-4b1 hunk 3,
+    # applied at the stage 2 integration). The only writer of an executed
+    # coding question and its answer key: without a caller no coding question
+    # is ever served, and nothing fails, because the slot quietly becomes prose.
+    ("app/services/assessment_formats/coding_generation.py", "write_coding_question"): (
+        "app/services/assessment_questions/generate.py, for every coding slot "
+        "the budgeted mix allocates."
+    ),
+    ("app/services/assessment_formats/coding_generation.py", "persist_coding_question"): (
+        "app/services/assessment_questions/generate.py, in the transaction "
+        "that writes the candidate_questions row, so a question never exists "
+        "without its key."
+    ),
     ("app/services/assessment_contract.py", "lock_contract"): (
         "app/api/assessment_conversation.py, the first start. The only writer "
         "of job_skill_snapshots after migration 0118, in the transaction that "
