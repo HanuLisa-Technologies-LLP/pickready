@@ -180,6 +180,8 @@ async def change_status(
     act on the message without reading the spec.
     """
     row = await _link_or_404(session, user, link_id)
+    if pipeline.normalize(body.status) in pipeline.SYSTEM_ONLY_TARGETS:
+        raise HTTPException(status_code=409, detail=pipeline.SYSTEM_ONLY_REFUSAL)
     if pipeline.normalize(body.status) == pipeline.ASSESSMENT_INVITED:
         # "Move to: Assessment invitation sent" IS an invitation, so it goes
         # through the one invitation path. Applied directly it wrote the stage

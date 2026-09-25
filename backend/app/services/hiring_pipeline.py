@@ -244,7 +244,28 @@ def can_transition(current: str | None, target: str) -> bool:
 # The API now returns the allowed manual set (GET /pipeline/applications/{id}
 # /transitions and every candidate row), so this rule lives in one place and
 # the UI never hardcodes a stage list of its own.
-MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED})
+#
+# `assessment_in_progress` is withdrawn too (Vivekium release, stage 2
+# integration, from PLAN-p3 WP1). It promises that the candidate has OPENED
+# the assessment, and it has a system writer that keeps that promise: the
+# start routes move the application when the session begins. A hand move to
+# it claimed a started session that did not exist. `api/pipeline.change_status`
+# refuses it as a target, not only the dropdown. `assessment_completed` is
+# NOT withdrawn yet: nothing in the product writes it automatically today, so
+# withdrawing the hand move would strand every assessed candidate before
+# shortlisting. It goes when the report writer moves the application itself
+# (Phase 5; recorded in docs/release/2026-09-vivekium/stage2-deferred-hunks.md).
+MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED, ASSESSMENT_IN_PROGRESS})
+
+#: Targets `api/pipeline.change_status` refuses outright, because a system
+#: writer owns them and a hand move would claim an event that did not happen.
+SYSTEM_ONLY_TARGETS: frozenset[str] = frozenset({ASSESSMENT_IN_PROGRESS})
+
+#: The sentence a refused hand move to a system-only target answers with.
+SYSTEM_ONLY_REFUSAL = (
+    "An application moves to Assessment in progress when the candidate opens "
+    "the assessment. It cannot be set by hand."
+)
 
 
 def manual_transitions(current: str | None) -> frozenset[str]:

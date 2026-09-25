@@ -456,3 +456,30 @@ async def test_the_hand_move_to_invited_needs_the_invitation_capability(
     assert refused.status_code == 403, refused.text
     assert await _statuses(world) == ["applied"]
     assert await _conversations(world) == 0
+
+
+async def test_a_hand_move_to_in_progress_is_refused_and_not_offered(
+    seeded, no_drafting_in_the_request
+) -> None:
+    """`assessment_in_progress` promises the candidate opened the assessment,
+    and the start routes are what write it. After a real invitation the
+    dropdown no longer offers it, and asking for it by hand is a 409 carrying
+    the server's sentence, with the stage and the conversation untouched.
+
+    Mutation-checked: removing the `SYSTEM_ONLY_TARGETS` refusal in
+    `change_status` lets the move through (200) and fails this test."""
+    from app.services import hiring_pipeline as hp
+
+    world = await seeded(applicants=1, grant_subunits=STEM_REPORT)
+    link = world.links[0]
+    with _client(world) as http:
+        invited = _move(http, link, "assessment_invited")
+        assert invited.status_code == 200, invited.text
+        offered = [option["status"] for option in invited.json()["allowed_transition_options"]]
+        refused = _move(http, link, "assessment_in_progress")
+
+    assert "assessment_in_progress" not in offered
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == hp.SYSTEM_ONLY_REFUSAL
+    assert await _statuses(world) == ["assessment_invited"]
+    assert await _conversations(world) == 1
