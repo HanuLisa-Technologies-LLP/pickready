@@ -1077,6 +1077,20 @@ module "scheduler" {
       task            = "pickready.reconcile_queued_emails"
       rate_expression = "rate(15 minutes)"
     }
+    # Phase 4 WP-4B2. The Terraform half of the two entries in
+    # app/workers/schedule.py; tests/test_schedule_parity.py fails on drift.
+    # Re-dispatches coding submissions nothing is working on and hands a
+    # completed conversation to scoring once its coding work is done.
+    "readypick-reconcile-coding-submissions" = {
+      task            = "pickready.reconcile_coding_submissions"
+      rate_expression = "rate(15 minutes)"
+    }
+    # One canary through the code sandbox; logs status=disabled while
+    # CODE_EXECUTION_BACKEND is disabled.
+    "readypick-probe-code-execution" = {
+      task            = "pickready.probe_code_execution"
+      rate_expression = "rate(5 minutes)"
+    }
   }
 
   tags = local.tags

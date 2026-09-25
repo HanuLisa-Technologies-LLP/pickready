@@ -659,6 +659,10 @@ class Settings(BaseSettings):
     #: The Redis rate window fails open by design, so this count is the fence
     #: that holds when Redis is down.
     coding_run_max_per_question: int = 40
+    #: A queued Run whose sandbox has not answered for this long is recorded
+    #: as unavailable, so a poll that keeps failing cannot leave the Run
+    #: button disabled for the rest of a twenty-minute question.
+    coding_run_deadline_seconds: float = 60.0
     #: How long one submission task polls the sandbox for its hidden tests
     #: before it records the attempt and hands back to the retry loop. The
     #: ticket is committed first, so a later attempt COLLECTS, never resubmits.
@@ -1176,6 +1180,7 @@ class Settings(BaseSettings):
             raise ValueError("CODING_SCORE_TEST_WEIGHT must be strictly between 0 and 1")
         for name, value in {
             "CODING_RUN_MAX_PER_QUESTION": self.coding_run_max_per_question,
+            "CODING_RUN_DEADLINE_SECONDS": self.coding_run_deadline_seconds,
             "CODING_SUBMISSION_POLL_DEADLINE_SECONDS": self.coding_submission_poll_deadline_seconds,
             "CODING_SUBMISSION_REDISPATCH_MINUTES": self.coding_submission_redispatch_minutes,
             "CODING_REVIEW_RETRY_MINUTES": self.coding_review_retry_minutes,

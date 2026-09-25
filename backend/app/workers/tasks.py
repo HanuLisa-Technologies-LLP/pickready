@@ -3254,3 +3254,6 @@ async def _support_staff_recipients(session, rbac, User, capability) -> list[str
 # module and nothing else, so a task module not imported here would be a task
 # no dispatch could reach.
 from app.workers import tasks_media, tasks_proctoring, tasks_questions  # noqa: E402,F401
+# Phase 4 WP-4B2: the coding submission, its sweep, the sandbox probe and the
+# operator's sandbox verification. Registered by the same import rule.
+from app.workers import coding_tasks  # noqa: E402,F401
