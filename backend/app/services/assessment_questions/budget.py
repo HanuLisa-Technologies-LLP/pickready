@@ -1,242 +1,164 @@
-"""How many questions a candidate is asked: the per-grade ranges and the close rule.
+"""How many questions a candidate is asked, and of which kind.
 
-Carved out of `services/ppi.py` on 2026-09-24 (PLAN-p3 WP0) as a PURE MOVE,
-with no behaviour change. The matrix (`services/ppi`) and the question budget
-are different questions: the matrix is per JOB, the budget bounds how many
-questions probe it. This module reads the matrix's category constants, so
-`ppi.matrix_is_complete` and `ppi._matrix_payload` import the ceiling and the
-range from here INSIDE the function: a module-level import in both directions
-would close a cycle.
+PURE AND DETERMINISTIC. Nothing here reads the database, calls a model or
+reads a clock, so two candidates on one job are given the same budget and the
+same mix, which is what keeps their reports comparable, and a provider outage
+cannot change either.
+
+HOW MANY (`question_budget`)
+----------------------------
+One question per skill in the job's contract, and never fewer than the grade's
+floor (`assessment_question_floor_<grade>`). The skills store caps a bucket at
+five, so a budget is 8 to 15. This SUPERSEDES the per-grade ranges this module
+held until 2026-09-25 (12 to 38 questions by grade and STEM flag) and the
+early close that let a conversation stop inside the range: every item in the
+plan is asked, so the mix below is what a candidate is actually served.
+
+WHAT KIND (`mix`)
+-----------------
+Counted in QUESTIONS, never in time or weight. For a coding role the shares
+are prose 0.7, coding 0.2 and objective 0.1 (multiple choice and
+fill-in-the-blank); for any other role the coding share joins prose. The
+budget is apportioned by LARGEST REMAINDER, and a tie in the remainders goes to
+prose, then coding, then objective, so the result is total and the same on
+every run: N=10 is 7/2/1, N=8 is 6/1/1, N=15 is 11/3/1.
+
+WHO IS A CODING ROLE (`coding_eligibility`)
+-------------------------------------------
+Three conditions, each recorded by name when it fails, because "no coding
+question" must never be indistinguishable from "a coding question was lost":
+the job's STEM verdict, a computing occupation read from the title
+(`stem_classification.is_computing_occupation`, so a Civil Engineer is STEM
+and is not asked to program), and a sandbox that can run code
+(`code_execution.is_enabled`). The sandbox is asked by the caller and passed
+in, which keeps this module pure.
 """
 from __future__ import annotations
 
-from app.services.ppi import (
-    CATEGORY_BEHAVIOURAL,
-    CATEGORY_MUST_HAVE,
-    CATEGORY_NICE_TO_HAVE,
-)
+from dataclasses import dataclass
+from fractions import Fraction
 
+from app.core.config import get_settings
+from app.services import stem_classification
 
 __all__ = [
     "DEFAULT_GRADE",
-    "GRADE_QUESTION_RANGES",
-    "STEM_GRADE_QUESTION_RANGES",
-    "TYPICAL_SPLITS",
-    "conversation_may_close",
-    "max_questions",
-    "min_questions",
-    "resolve_question_range",
-    "resolve_question_target",
-    "typical_split",
+    "GRADES",
+    "CODING_EXCLUDED_DISABLED",
+    "CODING_EXCLUDED_NOT_COMPUTING",
+    "CODING_EXCLUDED_NOT_STEM",
+    "CODING_EXCLUSION_REASONS",
+    "CodingEligibility",
+    "Mix",
+    "coding_eligibility",
+    "mix",
+    "question_budget",
+    "question_floor",
 ]
 
-
-# ── Question volume by role type and grade (Master Directive Part 3 §6) ─────
-# A RANGE per (role classification, grade), resolved ONCE per job at setup
-# from how many items that job's matrix actually holds -- not a single fixed
-# number per grade, and not a number chosen per candidate.
-#
-# THE DIRECTIVE'S TABLE REPLACED THE OLD SINGLE-RANGE ONE (spec §5.4), in
-# direction as well as in numbers: STEM roles probe DEEPER at every grade
-# (Vaada's 25-35 exchange budget vs 15-20, Part 3 §1), and seniority now adds
-# questions rather than removing them. The directive's STEM rows are keyed by
-# seniority words this platform does not store (Junior/Mid/Senior/Principal);
-# they are mapped onto the four stored grades by role: a non-managerial STEM
-# IC gets the Mid-level band, a managerial one the Senior/Lead band, and
-# leadership/CXO the Principal/Architect band.
-
-#: grade -> (minimum total, maximum total) -- NON-STEM roles (the default).
-GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
-    "non_managerial": (12, 18),
-    "managerial": (15, 22),
-    "leadership": (18, 25),
-    "cxo": (18, 25),
-}
-
-#: grade -> (minimum total, maximum total) -- STEM roles (Part 3 §6).
-STEM_GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
-    "non_managerial": (18, 28),
-    "managerial": (22, 35),
-    "leadership": (25, 38),
-    "cxo": (25, 38),
-}
-
-
-def _grade_ranges(role_classification: str | None) -> dict[str, tuple[int, int]]:
-    """The job's STEM flag is the input to this logic (Part 3 §6). None or an
-    unknown value resolves to the non-STEM table, same direction as every
-    other fallback in the feature."""
-    if role_classification == "STEM":
-        return STEM_GRADE_QUESTION_RANGES
-    return GRADE_QUESTION_RANGES
-
-#: grade -> {aspect: (low, high)}. ILLUSTRATIVE, and the spec says so in as many
-#: words: "typical, illustrative sub-splits ... not a rigid per-job formula".
-#: They are held here because they are the client's stated shape of a balanced
-#: interview and they steer the remainder allocation when the matrix has fewer
-#: items than the grade's floor. Nothing REFUSES a split that falls outside
-#: them; only the grade TOTAL is enforced.
-TYPICAL_SPLITS: dict[str, dict[str, tuple[int, int]]] = {
-    "non_managerial": {
-        CATEGORY_MUST_HAVE: (4, 7),
-        CATEGORY_NICE_TO_HAVE: (2, 4),
-        CATEGORY_BEHAVIOURAL: (6, 8),
-    },
-    "managerial": {
-        CATEGORY_MUST_HAVE: (5, 8),
-        CATEGORY_NICE_TO_HAVE: (3, 5),
-        CATEGORY_BEHAVIOURAL: (7, 9),
-    },
-    "leadership": {
-        CATEGORY_MUST_HAVE: (5, 8),
-        CATEGORY_NICE_TO_HAVE: (3, 5),
-        CATEGORY_BEHAVIOURAL: (9, 12),
-    },
-    "cxo": {
-        CATEGORY_MUST_HAVE: (4, 7),
-        CATEGORY_NICE_TO_HAVE: (2, 4),
-        CATEGORY_BEHAVIOURAL: (11, 14),
-    },
-}
-
+GRADES: tuple[str, ...] = ("non_managerial", "managerial", "leadership", "cxo")
 DEFAULT_GRADE = "non_managerial"
+
+#: Why a role was given no coding question. A closed vocabulary, recorded on
+#: the conversation's composition record and read by the report's provenance.
+CODING_EXCLUDED_NOT_STEM = "not_stem"
+CODING_EXCLUDED_NOT_COMPUTING = "not_computing_occupation"
+CODING_EXCLUDED_DISABLED = "code_execution_disabled"
+CODING_EXCLUSION_REASONS: tuple[str, ...] = (
+    CODING_EXCLUDED_NOT_STEM,
+    CODING_EXCLUDED_NOT_COMPUTING,
+    CODING_EXCLUDED_DISABLED,
+)
 
 
 def _grade(grade: str | None) -> str:
-    return grade if grade in GRADE_QUESTION_RANGES else DEFAULT_GRADE
+    return grade if grade in GRADES else DEFAULT_GRADE
 
 
-def min_questions(grade: str | None, role_classification: str | None = None) -> int:
-    return _grade_ranges(role_classification)[_grade(grade)][0]
+def question_floor(grade: str | None) -> int:
+    """The fewest questions an assessment at this grade may hold."""
+    return int(getattr(get_settings(), f"assessment_question_floor_{_grade(grade)}"))
 
 
-def max_questions(grade: str | None, role_classification: str | None = None) -> int:
-    return _grade_ranges(role_classification)[_grade(grade)][1]
+def question_budget(grade: str | None, skill_count: int) -> int:
+    """How many questions: one per skill, and never fewer than the floor."""
+    if skill_count < 0:
+        raise ValueError("a skill count cannot be negative")
+    return max(int(skill_count), question_floor(grade))
 
 
-def typical_split(grade: str | None) -> dict[str, tuple[int, int]]:
-    return TYPICAL_SPLITS[_grade(grade)]
+@dataclass(frozen=True)
+class Mix:
+    """How many questions of each family. Counts, never shares."""
+
+    prose: int
+    coding: int
+    objective: int
+
+    @property
+    def total(self) -> int:
+        return self.prose + self.coding + self.objective
+
+    def as_dict(self) -> dict[str, int]:
+        return {"prose": self.prose, "coding": self.coding, "objective": self.objective}
 
 
-def resolve_question_range(
-    grade: str | None,
-    item_count: int,
-    role_classification: str | None = None,
-) -> tuple[int, int]:
-    """The RANGE this job's assessment may run to, decided once by Sutra.
+def mix(total: int, *, coding: bool) -> Mix:
+    """Apportion `total` questions over the three families by largest remainder.
 
-    A RANGE, not a number, and the difference is the whole of the 2026-08-23
-    change. Previously setup resolved a single total and the conversation asked
-    exactly that many questions, whatever the candidate said. The specification
-    splits the decision in two: Sutra "sets the total question-count range for
-    the role's candidate assessment, based on how many matrix items exist and
-    the role's grade", and Vaada decides "the actual count ... dynamically
-    during the conversation itself, based on answer depth and completeness".
-
-    Both halves matter, and they protect different things.
-
-      * The RANGE is per JOB and agent-decided with no manual override, which is
-        what keeps two candidates on one job comparable. It is still driven by
-        the matrix size clamped into the grade's band, exactly as the single
-        target was: a matrix with more items than the grade's floor gets one
-        question per item so every item the report grades was actually probed,
-        and a smaller matrix still asks the grade's minimum rather than becoming
-        a four-question interview.
-      * The FLOOR is what stops the dynamic half from becoming a way to end an
-        assessment early. Vaada may stop when it has sufficient evidence across
-        every dimension, and never before this many base questions, so a
-        candidate who writes three confident paragraphs is not assessed on less
-        than a candidate who writes one.
-
-    Above the grade's ceiling the answer is still not to truncate:
-    `matrix_is_complete` refuses the save, because silently dropping items would
-    grade a candidate on criteria nobody asked them about.
+    `coding=False` moves the coding share onto prose, so a role that is not a
+    coding role (or whose sandbox is down) is asked prose instead, never fewer
+    questions.
     """
-    low, high = _grade_ranges(role_classification)[_grade(grade)]
-    resolved = max(low, min(high, int(item_count)))
-    return low, resolved
+    if total < 0:
+        raise ValueError("a question budget cannot be negative")
+    settings = get_settings()
+    # EXACT ARITHMETIC. The shares are decimals written by a person, and a
+    # float remainder of 0.6000000000000005 against 0.6000000000000001 would
+    # decide a "tie" by representation error instead of by the stated order.
+    prose_share = Fraction(str(settings.assessment_share_prose))
+    coding_share = Fraction(str(settings.assessment_share_coding))
+    objective_share = Fraction(str(settings.assessment_share_objective))
+    if not coding:
+        prose_share += coding_share
+        coding_share = Fraction(0)
+    # The order of this tuple IS the tie-break: prose, then coding, then
+    # objective. Python's sort is stable, so equal remainders keep it.
+    shares = (("prose", prose_share), ("coding", coding_share), ("objective", objective_share))
+    exact = {name: total * share for name, share in shares}
+    counts = {name: int(exact[name]) for name, _ in shares}
+    remaining = total - sum(counts.values())
+    by_remainder = sorted(
+        (name for name, share in shares if share > 0),
+        key=lambda name: -(exact[name] - counts[name]),
+    )
+    for name in by_remainder[:remaining]:
+        counts[name] += 1
+    result = Mix(prose=counts["prose"], coding=counts["coding"], objective=counts["objective"])
+    if result.total != total:
+        # Unreachable while the shares sum to one (the settings validator
+        # refuses anything else); loud rather than a silently short plan.
+        raise RuntimeError(f"mix of {total} apportioned to {result.total}")
+    return result
 
 
-def resolve_question_target(
-    grade: str | None,
-    item_count: int,
-    role_classification: str | None = None,
-) -> int:
-    """The CEILING of the range, i.e. how many questions are written up front.
+@dataclass(frozen=True)
+class CodingEligibility:
+    """Whether a job's candidates are given coding questions, and if not, why."""
 
-    Retained under its original name and still stamped onto `job.question_target`
-    because a persisted column, an API field and a shipped client all read it.
-    What changed is what it MEANS: it used to be the number of questions the
-    conversation would ask, and it is now the most it may ask. Vaada stops at or
-    before it (`conversation_may_close`).
-
-    Questions are generated to the ceiling rather than to the floor on purpose.
-    Generation happens once, before the candidate starts; writing only the floor
-    would mean a conversation that legitimately needs more evidence has no
-    further prompts to reach for, and the fallback would be a question written
-    mid-turn with no rubric behind it.
-    """
-    return resolve_question_range(grade, item_count, role_classification)[1]
+    eligible: bool
+    excluded_reason: str | None
 
 
-def conversation_may_close(
-    *,
-    grade: str | None,
-    asked: int,
-    total_written: int,
-    covered_dimensions: int,
-    total_dimensions: int,
-    role_classification: str | None = None,
-) -> bool:
-    """Vaada's stopping decision: has enough been gathered, and may it stop yet?
-
-    Three conditions, and each is refusing a different failure:
-
-      * `asked >= floor` -- never stop below the grade's minimum. Without it,
-        the dynamic half becomes a way for a fluent candidate to be assessed on
-        fewer criteria than a hesitant one, and two reports on the same job stop
-        being comparable, which is the one property the matrix exists to give.
-      * every dimension covered -- the spec's own stopping rule is "sufficient
-        evidence has been gathered across all matrix dimensions". A dimension
-        with no evidence is not a dimension that scored badly; it is one nobody
-        asked about, and the report must never present the two as the same
-        thing.
-      * `asked < total_written` -- there is somewhere left to go. Running out of
-        written prompts closes the conversation regardless, and that is handled
-        by the caller; this function answers the EARLY-stop question only.
-
-    Deterministic and calls no model, for the reason every guard in this
-    codebase does: the moment it matters most is the moment the provider is
-    down. A model asked "have you gathered enough?" mid-outage returns nothing,
-    and the safe direction on no answer must be "keep asking", not "stop".
-    """
-    floor = min_questions(grade, role_classification)
-    if asked < floor:
-        return False
-    if total_dimensions <= 0:
-        return False
-    if covered_dimensions < total_dimensions:
-        return False
-    return asked < total_written
-
-
-# Import-time integrity checks -- these ranges are a product contract
-# (Master Directive Part 3 §6).
-assert set(GRADE_QUESTION_RANGES) == {"non_managerial", "managerial", "leadership", "cxo"}
-assert set(STEM_GRADE_QUESTION_RANGES) == set(GRADE_QUESTION_RANGES)
-assert set(TYPICAL_SPLITS) == set(GRADE_QUESTION_RANGES)
-assert all(low <= high for low, high in GRADE_QUESTION_RANGES.values())
-assert all(low <= high for low, high in STEM_GRADE_QUESTION_RANGES.values())
-# STEM probes deeper than non-STEM at every grade (Part 3 §1, §6).
-assert all(
-    STEM_GRADE_QUESTION_RANGES[g][0] >= GRADE_QUESTION_RANGES[g][0]
-    and STEM_GRADE_QUESTION_RANGES[g][1] >= GRADE_QUESTION_RANGES[g][1]
-    for g in GRADE_QUESTION_RANGES
-)
-# Every grade's typical split must be able to sit inside its own total range, or
-# the illustrative shape would contradict the rule that is actually enforced.
-assert all(
-    sum(low for low, _ in split.values()) <= GRADE_QUESTION_RANGES[grade][1]
-    and sum(high for _, high in split.values()) >= GRADE_QUESTION_RANGES[grade][0]
-    for grade, split in TYPICAL_SPLITS.items()
-)
+def coding_eligibility(
+    *, role_classification: str | None, job_title: str, execution_enabled: bool
+) -> CodingEligibility:
+    """The three conditions for a coding question, checked in a fixed order so
+    the recorded reason is the first one that failed."""
+    if role_classification != stem_classification.STEM:
+        return CodingEligibility(False, CODING_EXCLUDED_NOT_STEM)
+    if not stem_classification.is_computing_occupation(job_title):
+        return CodingEligibility(False, CODING_EXCLUDED_NOT_COMPUTING)
+    if not execution_enabled:
+        return CodingEligibility(False, CODING_EXCLUDED_DISABLED)
+    return CodingEligibility(True, None)

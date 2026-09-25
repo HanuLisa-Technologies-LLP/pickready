@@ -215,10 +215,6 @@ class Settings(BaseSettings):
     # response", and it takes a reason and writes an audit row. Without that an
     # expiry would convert a stale-credential risk into a dead end for a
     # candidate who did nothing wrong, which is the worse failure.
-    #: Vivekium feature 2 (C2, owner-ruled): the ceiling on questions a
-    #: candidate is ASKED in one assessment. Pre-filled questions cost
-    #: nothing against it; the trim drops lowest-weight items past it.
-    assessment_question_ceiling: int = 40
     verification_link_ttl_days: int = 3
 
     # -- A fresher's own verification documents (migration 0114) -------------
@@ -651,35 +647,29 @@ class Settings(BaseSettings):
     #: solution fail on a slower moment of the same host.
     coding_reference_cpu_headroom: float = 0.5
 
-    # ── Assessment question formats (assessment-spec-doc.md) ────────────────
+    # ── The question budget and the format mix (Appendix B, PLAN-p3 WP2) ─────
     #
-    # Composition is enforced in code, not suggested in a prompt: evidence
-    # questions must be the majority of the assessment's time and weight, the
-    # supporting formats the minority, and the whole thing must fit the
-    # role's duration. These are the bounds. `services/assessment_formats/
-    # config.py` reads them into one object; nothing else carries a literal.
-    #: Evidence-based questions' minimum share of total weight AND of total
-    #: time allocation. Above one half by definition of "majority", with a
-    #: margin so a rounding effect cannot tip a valid assessment over.
-    assessment_evidence_min_share: float = 0.55
-    #: The supporting formats' (MCQ, fill-blank, coding) maximum share of the
-    #: QUESTION COUNT, by seniority. Senior roles skew further toward
-    #: evidence and away from recall-style questions.
-    assessment_supporting_max_share: float = 0.25
-    assessment_supporting_max_share_senior: float = 0.15
-    #: The assessment's total suggested duration per grade, in minutes. The
-    #: sum of every question's time allocation must fit inside it.
-    assessment_duration_minutes_non_managerial: int = 100
-    assessment_duration_minutes_managerial: int = 85
-    assessment_duration_minutes_leadership: int = 70
-    assessment_duration_minutes_cxo: int = 50
-    #: Suggested time per question, by format, in seconds.
-    assessment_time_evidence_seconds: int = 240
-    assessment_time_short_answer_seconds: int = 180
-    assessment_time_mcq_single_seconds: int = 60
-    assessment_time_mcq_multi_seconds: int = 90
-    assessment_time_fill_blank_seconds: int = 60
-    assessment_time_coding_seconds: int = 600
+    # HOW MANY: one question per skill in the contract, never fewer than the
+    # grade's floor. With at most five skills per bucket the budget is 8 to 15.
+    # EVERY ITEM IS ASKED: nothing is pre-filled from a resume or an earlier
+    # employer's record, and nothing is trimmed (supersedes C2 and CR 23).
+    assessment_question_floor_non_managerial: int = 10
+    assessment_question_floor_managerial: int = 10
+    assessment_question_floor_leadership: int = 10
+    assessment_question_floor_cxo: int = 8
+    #: WHAT KIND, BY COUNT, for a coding role (a STEM verdict AND a computing
+    #: occupation AND a working sandbox): prose, coding, objective (multiple
+    #: choice and fill-in-the-blank). Any other role gets no coding question
+    #: and the coding share joins prose. The three must sum to one.
+    assessment_share_prose: float = 0.7
+    assessment_share_coding: float = 0.2
+    assessment_share_objective: float = 0.1
+    #: The time each question is allocated, by family (Appendix B section 3).
+    #: Stamped on the question row when it is written; the conversation's
+    #: clock is the server's and snapshots its own allocation per turn.
+    assessment_time_prose_seconds: int = 180
+    assessment_time_objective_seconds: int = 60
+    assessment_time_coding_seconds: int = 1200
     #: INTERNAL weight per format, within a matrix item. What makes evidence
     #: dominance structural rather than stated.
     assessment_weight_evidence: float = 1.0
@@ -689,8 +679,8 @@ class Settings(BaseSettings):
     assessment_weight_fill_blank: float = 0.4
     assessment_weight_coding: float = 0.8
     #: How many times the composer may regenerate a mix that fails validation
-    #: before it falls back to an all-evidence allocation for the supporting
-    #: slots, which is always valid.
+    #: before every slot it could not fill soundly becomes a prose question,
+    #: each one recorded as a degradation on the conversation.
     assessment_composition_attempts: int = 3
     #: The fewest words an AI evaluation's reasoning may carry. A bare verdict
     #: with a sentence attached is not a reasoning a recruiter can act on.
@@ -1066,6 +1056,45 @@ class Settings(BaseSettings):
         if value not in {"smtp", "ses"}:
             raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
         object.__setattr__(self, "email_transport", value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_question_mix(self) -> "Settings":
+        """Refuse a question budget or mix that cannot describe an assessment.
+
+        The three shares are apportioned by largest remainder over the budget
+        (`assessment_questions.budget.mix`), which only means something when
+        they are non-negative and sum to one. A floor below one would let a
+        job with one skill be assessed on one question. Refused at boot rather
+        than discovered when the first candidate's questions are written.
+        """
+        shares = (
+            self.assessment_share_prose,
+            self.assessment_share_coding,
+            self.assessment_share_objective,
+        )
+        if any(share < 0 for share in shares) or abs(sum(shares) - 1.0) > 1e-9:
+            raise ValueError(
+                "ASSESSMENT_SHARE_PROSE, ASSESSMENT_SHARE_CODING and "
+                "ASSESSMENT_SHARE_OBJECTIVE must be non-negative and sum to 1"
+            )
+        if self.assessment_share_prose <= 0:
+            raise ValueError("ASSESSMENT_SHARE_PROSE must be above 0")
+        floors = (
+            self.assessment_question_floor_non_managerial,
+            self.assessment_question_floor_managerial,
+            self.assessment_question_floor_leadership,
+            self.assessment_question_floor_cxo,
+        )
+        if any(floor < 1 for floor in floors):
+            raise ValueError("every ASSESSMENT_QUESTION_FLOOR_* must be at least 1")
+        times = (
+            self.assessment_time_prose_seconds,
+            self.assessment_time_objective_seconds,
+            self.assessment_time_coding_seconds,
+        )
+        if any(seconds < 1 for seconds in times):
+            raise ValueError("every ASSESSMENT_TIME_*_SECONDS must be at least 1")
         return self
 
     @model_validator(mode="after")
