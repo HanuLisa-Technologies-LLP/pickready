@@ -78,7 +78,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.assessment_pause import PAUSE_DEVICE_LOSS, PAUSE_TRANSCRIPTION
+from app.models.assessment_pause import PAUSE_TRANSCRIPTION
 from app.models.voice import (
     VOICE_CONSUMED,
     VOICE_FAILED,
@@ -122,10 +122,6 @@ STALE_TURN_DETAIL = (
 )
 NO_OPEN_TURN_DETAIL = "Please open the assessment first; no question is on screen yet."
 COMPLETE_DETAIL = "Conversation is already complete"
-PAUSED_DETAIL = (
-    "The assessment is paused because your camera or microphone stopped. Turn "
-    "it back on to continue; your time is paused until then."
-)
 TURN_EXPIRED_DETAIL = (
     "The time for this question has run out, so it can no longer be changed."
 )
@@ -340,24 +336,6 @@ def require_turn(conversation: AssessmentConversation, turn_seq: int) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NO_OPEN_TURN_DETAIL)
     if int(turn_seq) != int(conversation.turn_seq):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=STALE_TURN_DETAIL)
-
-
-async def require_not_device_paused(
-    session: AsyncSession, conversation: AssessmentConversation
-) -> None:
-    """A lost camera or microphone pauses the assessment; nothing is answered,
-    drafted or recorded until it is back.
-
-    The pause is proctoring's (`services/proctoring/device_pause`), and so is
-    the decision about one left open past its grace (the session ends). Any
-    UNCLOSED device pause refuses here, including one past its cap: an answer
-    taken in that moment would be an answer given with the camera off. This is
-    the same question `proctoring.gate.require_answerable` asks, and the
-    routes switch to that one call when both work packages are integrated.
-    """
-    open_pause = await pauses.unclosed_pause(session, conversation.id, PAUSE_DEVICE_LOSS)
-    if open_pause is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PAUSED_DETAIL)
 
 
 # ── Voice answers on the current turn ────────────────────────────────────────

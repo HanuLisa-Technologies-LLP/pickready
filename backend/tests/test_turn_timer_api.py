@@ -18,6 +18,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.services.assessment_conversation import turns
+from app.services.proctoring import gate as proctoring_gate
 from tests import conversation_world as cw
 from tests.candidate_session import close_candidate_session, create_candidate_session
 
@@ -255,12 +256,55 @@ async def test_a_device_pause_refuses_answers_until_it_ends(candidate, monkeypat
             )
             shown = http.post(f"{cw.BASE}/conversations/links/{world.link}/start")
         assert refused.status_code == 409
-        assert refused.json()["detail"] == turns.PAUSED_DETAIL
+        assert refused.json()["detail"] == proctoring_gate.PAUSED_DETAIL
         assert drafted.status_code == 409
         assert shown.status_code == 200, shown.text
         assert shown.json()["status"] == "paused"
         assert shown.json()["turn"]["paused"] is True
         assert shown.json()["turn"]["pause_reason"] == "device_loss"
         assert await cw.messages(factory, world) == []
+    finally:
+        await cw.cleanup(factory, world)
+
+
+async def test_a_device_pause_past_its_grace_ends_the_session_and_the_ending_commits(
+    candidate, monkeypatch
+) -> None:
+    """The answer route asks proctoring FIRST whether an open device pause has
+    run past its grace, and the ending is returned, never raised: the
+    candidate sees the terminated state, and a SECOND connection reads the
+    conversation terminated, so the next request does not find the same
+    expired pause again (p3-w4 hunk 2, stage 2 integration).
+
+    Mutation-checked: removing the `_ended_by_device_grace` call from
+    `respond` answers 409 (the pause refusal) and the conversation stays
+    active, failing both halves."""
+    from sqlalchemy import text as sql_text
+
+    from app.core.db import superadmin_scope
+
+    cw.quiet_models(monkeypatch)
+    factory = cw.sessions()
+    world = await cw.seed(
+        factory, candidate_id=candidate.candidate_id, started=True, open_turn=True,
+        turn_age_seconds=20,
+    )
+    try:
+        await cw.add_pause(factory, world, reason="device_loss", started_ago=300, expires_in=-60)
+        with cw.client(candidate) as http:
+            ended = _respond(http, world, {"turn_seq": 1, "answer": cw.TEXT_ANSWER})
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["status"] == "terminated"
+        assert ended.json()["termination_message"]
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    stored = (
+                        await s.execute(
+                            sql_text("SELECT status FROM assessment_conversations WHERE id = :c"),
+                            {"c": str(world.conversation)},
+                        )
+                    ).scalar_one()
+        assert stored == "terminated"
     finally:
         await cw.cleanup(factory, world)

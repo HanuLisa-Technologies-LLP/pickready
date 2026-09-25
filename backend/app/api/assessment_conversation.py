@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -71,6 +72,7 @@ from app.schemas.assessment_conversation import (
     VoiceBeginIn,
 )
 from app.schemas.assessments import QuestionOut
+from app.schemas.proctoring import TerminationOut
 from app.services import (
     assessment_consent,
     assessment_contract,
@@ -627,6 +629,46 @@ async def _flush_cost(ctx: turns.TurnContext, tally: Any) -> None:
 # Every turn invokes a model, so these are the most expensive candidate
 # surfaces in the product; the ceilings sit well above a real assessment and
 # well below a flood, per candidate.
+# ── A device pause past its grace ends the session FIRST ────────────────────
+#
+# p3-w4 hunk 2, applied at the stage 2 integration. Every route that could
+# take an answer asks proctoring whether an open device pause has run past its
+# grace BEFORE anything else, and an ending is RETURNED, never raised: a raise
+# would roll the ending back with the request, and the next request would find
+# the same expired pause again. The start and the answer route show the
+# terminated state; the draft and the voice routes answer 409 with the
+# candidate's message, returned as a response so the ending still commits.
+
+
+async def _ended_by_device_grace(
+    session: AsyncSession, conversation: AssessmentConversation, *, now: datetime
+) -> TerminationOut | None:
+    return await proctoring_gate.enforce(session, conversation, now=now)
+
+
+async def _terminated_view(
+    session: AsyncSession,
+    job: Job,
+    link: JobCandidateLink,
+    conversation: AssessmentConversation,
+    termination: TerminationOut,
+) -> ConversationOut:
+    prompts = turns.as_prompts(await turns.conversation_prompts(session, job, link))
+    return ConversationOut(
+        conversation_id=conversation.id,
+        status="terminated",
+        prompt=None,
+        progress_label="Conversation ended",
+        answered_questions=conversation.next_question_index,
+        total_questions=len(prompts),
+        termination_message=termination.message,
+    )
+
+
+def _ended_response(termination: TerminationOut) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": termination.message})
+
+
 @router.post(
     "/conversations/links/{link_id}/start",
     response_model=ConversationOut,
@@ -650,10 +692,13 @@ async def start_conversation(
     tally = cost_telemetry.begin()
     link, job = await _candidate_link(session, user, link_id)
     conversation = await _invited_conversation(session, link, lock=True)
+    now = datetime.now(timezone.utc)
+    ended = await _ended_by_device_grace(session, conversation, now=now)
+    if ended is not None:
+        return await _terminated_view(session, job, link, conversation, ended)
     proctoring_session = await proctoring_gate.require_active(session, conversation)
     _refuse_retired_mode(conversation)
     await assessment_consent.require_consent(session, conversation)
-    now = datetime.now(timezone.utc)
 
     if conversation.started_at is None:
         # A running conversation always finishes; a NEW one must be payable.
@@ -717,8 +762,14 @@ async def respond(
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
     if conversation.status == "terminated":
         raise HTTPException(status_code=409, detail=proctoring_gate.SESSION_ENDED_DETAIL)
+    ended = await _ended_by_device_grace(session, conversation, now=datetime.now(timezone.utc))
+    if ended is not None:
+        return await _terminated_view(session, job, link, conversation, ended)
     _refuse_retired_mode(conversation)
-    proctoring_session = await proctoring_gate.require_active(session, conversation)
+    # Proctoring's one answer to "may this be answered now": an active session
+    # and no open device pause (p3-w4 hunk 2, applied at the stage 2
+    # integration; it replaces the engine's own copy of the pause check).
+    proctoring_session = await proctoring_gate.require_answerable(session, conversation)
     prompts = turns.as_prompts(await turns.conversation_prompts(session, job, link))
     if turns.is_finished(conversation, prompts):
         raise HTTPException(status_code=409, detail=turns.COMPLETE_DETAIL)
@@ -727,7 +778,6 @@ async def respond(
     clock = await turns.turn_clock(session, conversation, now=now)
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    await turns.require_not_device_paused(session, conversation)
     ctx = turns.TurnContext(
         session=session, job=job, link=link, conversation=conversation,
         prompts=prompts, proctoring_session=proctoring_session,
@@ -779,7 +829,10 @@ async def save_draft(
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
     if conversation.status != "active":
         raise HTTPException(status_code=409, detail=turns.COMPLETE_DETAIL)
-    await proctoring_gate.require_active(session, conversation)
+    ended = await _ended_by_device_grace(session, conversation, now=datetime.now(timezone.utc))
+    if ended is not None:
+        return _ended_response(ended)
+    await proctoring_gate.require_answerable(session, conversation)
     prompts = turns.as_prompts(await turns.conversation_prompts(session, job, link))
     if turns.is_finished(conversation, prompts):
         raise HTTPException(status_code=409, detail=turns.COMPLETE_DETAIL)
@@ -788,7 +841,6 @@ async def save_draft(
     clock = await turns.turn_clock(session, conversation, now=now)
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    await turns.require_not_device_paused(session, conversation)
     if clock.expired:
         raise HTTPException(status_code=409, detail=turns.TURN_EXPIRED_DETAIL)
     conversation.draft_answer_json = {
@@ -819,14 +871,19 @@ async def _open_voice_turn(
     user: CurrentUser,
     conversation_id: uuid.UUID,
     turn_seq: int | None,
-) -> tuple[turns.TurnContext, timers.TurnClock]:
+) -> tuple[turns.TurnContext, timers.TurnClock] | JSONResponse:
     """The conversation, its open turn and its clock, for a voice route. The
-    same gates as an answer: invitation, proctoring, the turn, the device."""
+    same gates as an answer: invitation, proctoring, the turn, the device. A
+    device pause past its grace ends the session and comes back as the 409
+    response the route returns as it is, so the ending commits."""
     conversation = await _locked_conversation(session, conversation_id)
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
     if conversation.status != "active":
         raise HTTPException(status_code=409, detail=turns.COMPLETE_DETAIL)
-    proctoring_session = await proctoring_gate.require_active(session, conversation)
+    ended = await _ended_by_device_grace(session, conversation, now=datetime.now(timezone.utc))
+    if ended is not None:
+        return _ended_response(ended)
+    proctoring_session = await proctoring_gate.require_answerable(session, conversation)
     prompts = turns.as_prompts(await turns.conversation_prompts(session, job, link))
     if turns.is_finished(conversation, prompts):
         raise HTTPException(status_code=409, detail=turns.COMPLETE_DETAIL)
@@ -835,7 +892,6 @@ async def _open_voice_turn(
     clock = await turns.turn_clock(session, conversation, now=datetime.now(timezone.utc))
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    await turns.require_not_device_paused(session, conversation)
     ctx = turns.TurnContext(
         session=session, job=job, link=link, conversation=conversation,
         prompts=prompts, proctoring_session=proctoring_session,
@@ -862,14 +918,17 @@ async def begin_voice_answer(
     body: VoiceBeginIn,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> VoiceAnswerOut:
+) -> VoiceAnswerOut | JSONResponse:
     """Start speaking the answer to the prose turn on screen.
 
     One spoken answer per turn: a second begin returns the one in flight, a
     transcript already made is final, and after a FAILED transcription the
     answer is typed.
     """
-    ctx, clock = await _open_voice_turn(session, user, conversation_id, body.turn_seq)
+    opened = await _open_voice_turn(session, user, conversation_id, body.turn_seq)
+    if isinstance(opened, JSONResponse):
+        return opened
+    ctx, clock = opened
     conversation = ctx.conversation
     if clock.expired:
         raise HTTPException(status_code=409, detail=turns.TURN_EXPIRED_DETAIL)
@@ -915,7 +974,7 @@ async def upload_voice_audio(
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-) -> VoiceAnswerOut:
+) -> VoiceAnswerOut | JSONResponse:
     """The recording of one spoken answer.
 
     Read with a ceiling one byte above `assessment_voice_max_bytes`, so an
@@ -923,7 +982,10 @@ async def upload_voice_audio(
     encrypted under `voice-answers/`, the clock is PAUSED while Transcribe
     runs, and the transcription is dispatched after the commit.
     """
-    ctx, clock = await _open_voice_turn(session, user, conversation_id, None)
+    opened = await _open_voice_turn(session, user, conversation_id, None)
+    if isinstance(opened, JSONResponse):
+        return opened
+    ctx, clock = opened
     conversation = ctx.conversation
     row = await _voice_row(session, conversation, voice_id)
     if row.turn_seq != conversation.turn_seq:
