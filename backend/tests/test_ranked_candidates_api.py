@@ -236,6 +236,23 @@ def test_equal_keys_order_by_arrival_then_id_across_pages(client, tenant_a) -> N
     assert [r["link_id"] for r in second["results"]] == [str(newer)]
 
 
+def test_equal_keys_and_equal_arrival_order_by_id_across_pages(client, tenant_a) -> None:
+    """The trailing `id` is what makes the order TOTAL: three rows with the
+    same key AND the same arrival instant still page in one stable order, each
+    exactly once. Postgres compares a uuid bytewise, which is the order of its
+    lowercase hex text."""
+    links = [
+        add_link(tenant_a, name=f"Twin {index}", yukti_status="scored", pre=80.0,
+                 provenance=_provenance(tenant_a), created_days_ago=3)
+        for index in range(3)
+    ]
+    seen = [
+        _page(client, tenant_a, page=page, page_size=1)["results"][0]["link_id"]
+        for page in (1, 2, 3)
+    ]
+    assert seen == sorted(str(link) for link in links)
+
+
 # ── Renames move the label, never the order ──────────────────────────────────
 
 
