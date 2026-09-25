@@ -36,15 +36,21 @@ from pydantic import ValidationError
 
 from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
 from app.services import application_validation
-from tests.ranking_world import (  # noqa: F401  -- fixtures
+from tests.ranking_world import (
     Tenant,
     add_link,
     client_for,
     current_digest,
     execute,
     run,
-    tenant_a,
+    tenant_world,
 )
+
+
+@pytest.fixture
+def tenant_a() -> Iterator[Tenant]:
+    yield from tenant_world()
+
 
 HEADER_RESUME_ONLY = "Resume check only. Real skills are tested in the assessment."
 

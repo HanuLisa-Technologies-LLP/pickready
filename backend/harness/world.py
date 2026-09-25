@@ -552,14 +552,19 @@ async def _seed_link(
     profile: uuid.UUID,
     status: str = "applied",
     source_type: str = "applied",
-    match_score: float | None = 74.0,
+    pre_score: float | None = 74.0,
 ) -> uuid.UUID:
+    """One link as a Yukti run leaves it: a pre-assessment score and the
+    `scored` status when a score is given, `pending` otherwise. The ranked
+    table orders on these (`yukti.ranking`); the retired `match_score` and
+    `tier` are history columns the Vivekium release stopped writing, so a
+    world that seeded them would rank on nothing."""
     link = uuid.uuid4()
     await session.execute(
         sa.text(
             "INSERT INTO job_candidate_links (id, tenant_id, job_id, "
             " candidate_id, profile_id, source, status, source_type, "
-            " match_score, tier, created_at) "
+            " yukti_pre_score, yukti_status, yukti_profile_id, created_at) "
             # `source` is `LinkSource`, whose only values are `fresh` and
             # `databank`; `source_type` is the separate applied/sourced/databank
             # provenance of 2026-07-28. Seeding 'applied' into the first of them
@@ -567,7 +572,7 @@ async def _seed_link(
             # values` inside SQLAlchemy's row processor, which is the same shape
             # as the defect `PipelineStatus`'s own docstring records.
             "VALUES (:id, :tid, :job, :cid, :pid, 'fresh', :status, :stype, "
-            " :score, :tier, :at)"
+            " :score, :ystatus, :ypid, :at)"
         ),
         {
             "id": str(link),
@@ -577,8 +582,9 @@ async def _seed_link(
             "pid": str(profile),
             "status": status,
             "stype": source_type,
-            "score": match_score,
-            "tier": None if match_score is None else "matching",
+            "score": pre_score,
+            "ystatus": "pending" if pre_score is None else "scored",
+            "ypid": None if pre_score is None else str(profile),
             "at": ANCHOR - timedelta(days=1),
         },
     )
@@ -1119,7 +1125,7 @@ async def _ranked_pool(
             # assertion has something to order. `index % 37` rather than a
             # random draw: `seed_mock_data.py` makes the same choice, and for
             # the same reason.
-            match_score=float(40 + (index * 37) % 55),
+            pre_score=float(40 + (index * 37) % 55),
         )
         links.append(link)
     world.ids["pool_links"] = links

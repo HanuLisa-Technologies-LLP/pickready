@@ -467,27 +467,50 @@ def test_client_facing_ranking_payload_carries_no_score() -> None:
             assert score not in flat, f"score {score} leaked in {flat[:200]}"
 
 
-def test_match_percent_is_the_one_sanctioned_number() -> None:
-    """Rule 1's single amendment (owner-ruled 2026-09-18, vivekium brief).
+def test_no_number_reaches_a_client_with_no_exception() -> None:
+    """Rule 1, with NO exception since the Vivekium release (D3).
 
-    The Executive Profile Match Score, `match_percent` on the recruiter
-    candidate table, is the ONE number that reaches a client. This pins the
-    exception at exactly that field: the serializer source names it once,
-    and the per-parameter breakdown projections still leak nothing (the
-    test above this one proves that with values).
+    The 2026-09-18 amendment sanctioned one number, `match_percent` on the
+    recruiter candidate table. D3 removed it: the AI Match is a grade word.
+    Pinned three ways, because each catches what the others cannot:
+
+    * the ranked row and page schemas declare NO numeric field except the
+      pager's own counts, and forbid undeclared keys, so a number cannot ride
+      in unannounced;
+    * the row serializer's source does not name `match_percent` at all;
+    * the harness's allowlist of sanctioned numeric fields is EMPTY, so the
+      no-numbers scenario has no name left to excuse.
     """
     import inspect
 
+    from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
     from app.services import job_candidates
 
+    for name, field in RankedCandidateOut.model_fields.items():
+        annotation = str(field.annotation)
+        assert "int" not in annotation and "float" not in annotation, name
+    assert RankedCandidateOut.model_config.get("extra") == "forbid"
+    assert RankedCandidatesOut.model_config.get("extra") == "forbid"
+    pager = {
+        "total", "page", "page_size", "total_pages", "range_start",
+        "range_end", "new_candidate_count",
+    }
+    integers = {
+        name for name, field in RankedCandidatesOut.model_fields.items()
+        if field.annotation is int
+    }
+    assert integers == pager
+
     source = inspect.getsource(job_candidates._row_payload)
-    assert source.count('"match_percent"') == 1, (
-        "match_percent must be defined exactly once in the row serializer"
-    )
-    # The word-label fields stay words: the amendment did not widen.
+    assert "match_percent" not in source
+    # The word-label fields stay words, and are on the payload.
     for field in ("ctc_match_label", "notice_period_label",
                   "education_match_label", "bgv_status_label"):
         assert f'"{field}"' in source, f"{field} missing from the row payload"
+
+    from harness import probes
+
+    assert probes.SANCTIONED_NUMERIC_FIELDS == frozenset()
 
 
 def test_report_ratings_are_words_not_numbers() -> None:

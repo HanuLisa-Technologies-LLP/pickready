@@ -23,15 +23,24 @@ from fastapi.testclient import TestClient
 
 from app.api import matching as matching_api
 from app.workers import dispatch
-from tests.ranking_world import (  # noqa: F401  -- fixtures
+from tests.ranking_world import (
     Tenant,
     client_for,
     committed,
     execute,
     run,
-    tenant_a,
-    tenant_b,
+    tenant_world,
 )
+
+
+@pytest.fixture
+def tenant_a() -> Iterator[Tenant]:
+    yield from tenant_world()
+
+
+@pytest.fixture
+def tenant_b() -> Iterator[Tenant]:
+    yield from tenant_world()
 
 
 @pytest.fixture

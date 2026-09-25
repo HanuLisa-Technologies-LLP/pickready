@@ -296,19 +296,10 @@ def add_link(
     return link
 
 
-@pytest.fixture
-def tenant_a() -> Iterator[Tenant]:
-    require_database()
-    tenant = Tenant()
-    run(_seed_tenant(tenant))
-    try:
-        yield tenant
-    finally:
-        run(_teardown(tenant))
-
-
-@pytest.fixture
-def tenant_b() -> Iterator[Tenant]:
+def tenant_world() -> Iterator[Tenant]:
+    """A seeded tenant for the length of one test. Wrap it in a fixture in the
+    test module (`yield from tenant_world()`), so each module declares its own
+    fixtures rather than importing them."""
     require_database()
     tenant = Tenant()
     run(_seed_tenant(tenant))
