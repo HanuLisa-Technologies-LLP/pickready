@@ -42,6 +42,7 @@ import pytest
 
 from app.api import (
     admin,
+    assessment_coding,
     assessment_conversation,
     assessment_recording,
     assessments,
@@ -70,6 +71,9 @@ ROUTERS = {
     # Carved out of `assessments` on 2026-09-24 (PLAN-p3 WP0). Listed so the
     # moved routes stay under this sweep rather than leaving it with the move.
     "assessment_conversation": assessment_conversation,
+    # Phase 4 WP-4C: the coding Run and final-answer state routes, candidate
+    # audience. The Run is a write, so it belongs under this sweep.
+    "assessment_coding": assessment_coding,
     "assessment_recording": assessment_recording,
     "auth": auth,
     "bd": bd,

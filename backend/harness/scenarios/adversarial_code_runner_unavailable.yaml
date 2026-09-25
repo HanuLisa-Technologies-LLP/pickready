@@ -1,0 +1,88 @@
+id: adversarial.the_code_runner_is_unavailable
+version: 1
+tier: adversarial
+description: >
+  The sandbox answers every request with a server error while a candidate is
+  on an executed coding question. The product must degrade the way it says it
+  will, at every step, and say so each time: the Run button answers 503 with
+  the server's sentence and records the run as unavailable (never counted
+  against the candidate); the final answer is still accepted and kept open;
+  the execution task records the attempt and re-raises for the retry rather
+  than grading anything; scoring holds for the wait window; and once the window
+  has passed the answer reads "not assessed", withholds a score and asks for a
+  person, rather than grading the candidate for our outage. The deployment is
+  configured as a live one is, so the product's own `get_provider` builds the
+  real Judge0 adapter and its real classification decides what the 500 means;
+  the recorded error class is what proves the outage was met, rather than the
+  disabled backend that would answer the candidate with the same 503.
+tags: [coding, code-execution, sandbox, resilience, degradation]
+
+given:
+  world: coding_question_open
+
+faults:
+  - code_execution_failure: {kind: unavailable}
+
+workload:
+  - run_the_coding_samples
+  - record_the_final_coding_answer
+  - read_the_coding_submission_state
+  - execute_the_coding_submission
+  - weigh_the_coding_evidence_over_the_wait
+
+expect:
+  state:
+    # The Run the sandbox never took: on record, and for the outage.
+    - coding_runs.statuses == [unavailable]
+    - coding_runs.error_classes == [ExecutionUnavailable]
+    # The final answer is kept OPEN, with the attempt recorded, so the sweep
+    # and the task's retry come back for it. Nothing was graded.
+    - coding_submissions.column:execution_status == pending
+    - coding_submissions.column:review_status == pending
+    - coding_submissions.column:execution_attempts == 1
+    - coding_submissions.column:last_error_class == ExecutionUnavailable
+  dispatched:
+    # Handed to execution once, after the commit. Scoring was NOT dispatched:
+    # the answer is still owed, so there is nothing yet to grade it on.
+    pickready.execute_coding_submission: 1
+    pickready.run_functional_assessment: 0
+  output:
+    - status.run_the_coding_samples == 503
+    - body.run_the_coding_samples.detail == "The code runner is not available right now. Your code is kept; you can keep working and submit when ready."
+    - body.read_the_coding_submission_state.state_word == Submitted
+    - facts.coding_submission_recorded == true
+    - facts.coding_execution_error == server_error
+    # Inside the window, scoring waits and the grader is told the answer is
+    # still being checked.
+    - facts.coding_evidence.inside_the_wait.scoring_held == true
+    - facts.coding_evidence.inside_the_wait.state == pending
+    - facts.coding_evidence.inside_the_wait.score_withheld == true
+    # At the end of the window, scoring proceeds and the answer is NOT
+    # ASSESSED: no score, a person in the loop, and the sentence a report
+    # prints says why.
+    - facts.coding_evidence.after_the_wait.scoring_held == false
+    - facts.coding_evidence.after_the_wait.state == unavailable
+    - facts.coding_evidence.after_the_wait.score_withheld == true
+    - facts.coding_evidence.after_the_wait.needs_human_review == true
+    - facts.coding_evidence.after_the_wait.phrase == "The code runner was unavailable, so this answer was not assessed."
+    - degradations.count == 3
+    - degradations.kinds == [code_execution_unavailable, code_runner_unavailable, coding_answer_not_assessed]
+  trajectory:
+    - coding_run_refused_for_an_outage
+    - coding_answer_recorded
+    - coding_submission_state_read
+    - coding_execution_refused_for_an_outage
+    - coding_evidence_weighed
+  prohibited:
+    # Silent survival is a finding, not a pass (HARNESS.md section 4).
+    - a_fault_went_unrecorded
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - the_answer_key_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - state_correctness
+    - degradation_honesty
+    - recovery
+    - safety_and_policy
+    - no_numbers_to_client
