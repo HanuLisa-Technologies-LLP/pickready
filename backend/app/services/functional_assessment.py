@@ -103,7 +103,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CATEGORY_TECHNICAL",
     "GRADES",
-    "GRADE_QUESTION_RANGES",
     "MATCHING_DIMENSIONS",
     "PROBE_REMARK_WORDS",
     "RADAR_BANDS",
@@ -121,12 +120,10 @@ __all__ = [
     "word_count",
 ]
 
-#: Re-exported so a caller has one import for the whole assessment contract.
-#: Ranges, not counts: Draft v4 resolves a total per JOB from the grade's range
-#: and the size of that job's matrix (spec §5.4).
-GRADE_QUESTION_RANGES = question_budget.GRADE_QUESTION_RANGES
-
-GRADE_NAMES: tuple[str, ...] = tuple(GRADE_QUESTION_RANGES)
+#: The four grades. How many questions a grade is asked is
+#: `assessment_questions.budget` (one per skill above the grade's floor); the
+#: per-grade ranges this module re-exported were deleted on 2026-09-25.
+GRADE_NAMES: tuple[str, ...] = question_budget.GRADES
 
 # ── The AI Score's matching categories (spec §3.2) ───────────────────────────
 # NO WEIGHTS. The spec is explicit: "make sure there are no mathematical

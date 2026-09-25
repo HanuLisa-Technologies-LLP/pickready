@@ -141,7 +141,7 @@ def _prompt_reasons(prompt: str, *, max_chars: int) -> list[str]:
     return reasons
 
 
-def _max_prompt_chars() -> int:
+def max_prompt_chars() -> int:
     # Read inside the function: `ppi_interview` imports `ppi`, which imports
     # this module, and a module-scope import here would close that cycle.
     from app.services import ppi_interview  # noqa: PLC0415
@@ -251,7 +251,7 @@ async def anchor_evidence(
             value={}, degraded=bool(evidence_slots), attempts=0
         )
     slots_by_index = {slot.index: slot for slot in evidence_slots}
-    max_chars = _max_prompt_chars()
+    max_chars = max_prompt_chars()
     system = registry.render(
         "assessment_evidence_anchoring",
         candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
@@ -432,7 +432,7 @@ async def write_structured(
     question_type = slot.question_type
     if question_type not in _PROMPT_FOR_TYPE:
         raise ValueError(f"{question_type} has no structured payload to write")
-    max_chars = _max_prompt_chars()
+    max_chars = max_prompt_chars()
     values: dict[str, Any] = {
         "item_name": skill.name,
         "item_measures": skill.evidence_line or skill.name,
