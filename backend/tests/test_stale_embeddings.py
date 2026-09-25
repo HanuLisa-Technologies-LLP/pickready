@@ -131,13 +131,15 @@ async def test_editing_the_job_description_clears_the_vector() -> None:
     [
         ("title", "Staff Platform Engineer"),
         ("department", "Platform"),
-        ("level", "senior"),
+        ("assessment_grade", "leadership"),
+        ("experience_min_years", 1),
+        ("experience_max_years", 4),
     ],
 )
 async def test_every_field_the_vector_is_built_from_invalidates_it(
     field: str, value: str
 ) -> None:
-    """`matching._jd_text` reads all of these, so all of them are sources."""
+    """`yukti.inputs.jd_text` reads all of these, so all of them are sources."""
     cleared = await _mutate_and_check(lambda job: setattr(job, field, value))
     assert cleared, f"changing {field} left a stale vector in place"
 
@@ -190,17 +192,16 @@ async def test_a_rolled_back_edit_does_not_lose_the_embedding() -> None:
 
 
 async def test_the_source_field_list_matches_what_the_embedding_reads() -> None:
-    """A field added to `matching._jd_text` without being added to
+    """A field added to `yukti.inputs.jd_text` without being added to
     `_EMBEDDING_SOURCE_FIELDS` reintroduces exactly this bug, silently."""
     import inspect
 
-    from app.services import matching
+    from app.services.yukti import inputs
 
-    source = inspect.getsource(matching._jd_text)
+    source = inspect.getsource(inputs.jd_text)
     for field in _EMBEDDING_SOURCE_FIELDS:
         assert field in source, (
-            f"{field} is listed as an embedding source but _jd_text does not read it"
+            f"{field} is listed as an embedding source but jd_text does not read it"
         )
-    for attribute in ("title", "department", "level"):
-        assert f"job.{attribute}" in source
-        assert attribute in _EMBEDDING_SOURCE_FIELDS
+    assert "level" not in _EMBEDDING_SOURCE_FIELDS
+    assert '"level"' not in source and "job.level" not in source

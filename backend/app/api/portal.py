@@ -98,7 +98,7 @@ router = APIRouter()
 
 class StoredResumeOut(BaseModel):
     """The candidate's most recent stored resume, reusable on a new
-    application (claude.md rule 6 / FR-6.2). No Cloudinary URL is exposed —
+    application (claude.md rule 6 / FR-6.2). No storage URL is exposed:
     the UI only needs to name the file it would reuse."""
     has_resume: bool = False
     filename: str | None = None
@@ -249,7 +249,7 @@ async def _previous_resume(
     """The candidate's most recent stored resume, reused across applications
     (FR-6.2 / FR-9.2 / claude.md rule 6, reversed 2026-07-24).
 
-    # The latest profile with complete Cloudinary metadata is the reusable
+    # The latest profile with a complete stored resume file is the reusable
     # resume snapshot. A new application copies that immutable metadata.
     """
     return (
@@ -2310,11 +2310,13 @@ async def edit_application(
         },
     )
     if resume_replaced:
-        # Re-parse and re-embed, then re-score: the recruiter's ranking must
-        # reflect the resume actually on file. After the commit, so neither
-        # task can read the snapshot before the new resume is stored on it.
+        # Re-parse, and the parse re-reads: `pickready.parse_resume` dispatches
+        # `pickready.yukti_score_profile` after its own commit, which reads THIS
+        # link against its job's saved skills. A job-wide AI Matching run here
+        # would re-read every other candidate on the job to refresh one. After
+        # the commit, so the parse cannot read the snapshot before the new
+        # resume is stored on it.
         dispatch_after_commit(session, "pickready.parse_resume", args=[str(profile.id)])
-        dispatch_after_commit(session, "pickready.run_matching", args=[str(link.job_id)])
 
     return ApplyOut(
         link_id=link.id,
