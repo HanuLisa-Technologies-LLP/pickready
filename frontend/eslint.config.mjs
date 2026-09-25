@@ -37,5 +37,10 @@ export default defineConfig([
     // hook in a non-component. Linting them says nothing about our code and
     // the only way to satisfy it would be to edit a pinned file.
     "public/models/**",
+    // The Monaco editor's AMD build, copied from node_modules by
+    // scripts/copy-monaco.mjs and gitignored. Minified third-party output
+    // for the same reason as the models above: linting it says nothing
+    // about this project's code.
+    "public/monaco/**",
   ]),
 ]);

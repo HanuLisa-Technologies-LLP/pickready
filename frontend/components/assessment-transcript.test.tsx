@@ -3,10 +3,17 @@
 // The recruiter's view of one exchange per format (assessment spec 7).
 
 import * as React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { installCodeMirrorDomShims } from "@/lib/assessment/jsdom-shims";
+import { CODING_LANGUAGE_LABELS } from "@/lib/assessment/answers";
+import { resetMonacoDouble } from "@/lib/assessment/monaco-test-double";
+
+// Monaco cannot run under jsdom; the double records what the editor is handed
+// and renders a textarea standing in for it.
+vi.mock("@monaco-editor/react", async () =>
+  (await import("@/lib/assessment/monaco-test-double")).monacoReactModule()
+);
 
 const { apiGet, toast } = vi.hoisted(() => ({ apiGet: vi.fn(), toast: vi.fn() }));
 
@@ -35,7 +42,7 @@ import {
   type TranscriptExchange,
 } from "./assessment-transcript";
 
-beforeAll(installCodeMirrorDomShims);
+beforeEach(resetMonacoDouble);
 afterEach(() => {
   cleanup();
   apiGet.mockReset();
@@ -132,6 +139,32 @@ const EXCHANGES: TranscriptExchange[] = [
   },
 ];
 
+/** A coding answer that was RUN: payload version 2, an outcome sentence in
+ *  words, a review with verbatim code citations, and no not-executed note. */
+const EXECUTED_CODING: TranscriptExchange = {
+  ordinal: 5,
+  domain: "must_have",
+  question: "Read a list of integers and print them without duplicates.",
+  answer: "Code submitted in Python 3, three lines.",
+  criterion: "Python",
+  follow_up: false,
+  asked_at: null,
+  question_type: "coding",
+  detail: detail({
+    payload: { version: 2, languages: ["python", "java"] },
+    answer: {
+      language: "python",
+      code: "xs = input().split()\nfor x in xs:\n    print(x)",
+    },
+    coding_outcome:
+      "Compiled and passed seven of the ten hidden tests; two exceeded the time limit and one gave a wrong answer.",
+    compile_error: "warning: unused variable",
+    review_reasoning: "A readable loop that does not yet remove repeated values.",
+    review_citations: ["for x in xs:"],
+    time_spent: "about fifteen minutes",
+  }),
+};
+
 function transcript(exchanges: TranscriptExchange[]): Transcript {
   return {
     job_candidate_link_id: "link-1",
@@ -191,16 +224,49 @@ describe("per-format rendering", () => {
     expect(blank.textContent).toContain("Left blank");
   });
 
-  it("shows code read-only and highlighted, with the reasoning and the not-executed note", async () => {
+  it("shows a legacy answer read-only, with the reading and the not-executed note", async () => {
     mountWith([EXCHANGES[3]]);
     const coding = await screen.findByTestId("coding-detail");
     const editor = coding.querySelector('[data-testid="code-editor"]') as HTMLElement;
     expect(editor.getAttribute("data-readonly")).toBe("true");
-    expect(editor.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
-    expect(editor.textContent).toContain("dict.fromkeys");
+    await waitFor(() =>
+      expect(coding.querySelector('[data-testid="monaco-input"]')).toBeTruthy()
+    );
+    const input = coding.querySelector('[data-testid="monaco-input"]') as HTMLTextAreaElement;
+    expect(input.readOnly).toBe(true);
+    expect(input.value).toContain("dict.fromkeys");
+    expect(input.getAttribute("data-language")).toBe("python");
     expect(screen.getByTestId("not-executed-note").textContent).toContain("Not executed.");
     expect(screen.getByTestId("not-executed-note").textContent).toContain("read, not run");
     expect(screen.getByTestId("evaluation-reasoning").textContent).toContain("appears to preserve order");
+    expect(screen.queryByTestId("coding-outcome")).toBeNull();
+  });
+
+  it("shows an executed answer with what the tests showed, the compiler and the review", async () => {
+    mountWith([EXECUTED_CODING]);
+    const coding = await screen.findByTestId("coding-detail");
+    expect(screen.getByTestId("coding-outcome").textContent).toContain(
+      "Compiled and passed seven of the ten hidden tests"
+    );
+    expect(screen.getByTestId("coding-compile-error").textContent).toContain("warning: unused");
+    const review = screen.getByTestId("coding-review");
+    expect(review.textContent).toContain("Code quality review");
+    expect(review.textContent).toContain("readable loop");
+    expect(review.textContent).toContain("for x in xs:");
+    // An executed answer was run, so nothing says it was not.
+    expect(screen.queryByTestId("not-executed-note")).toBeNull();
+    // Everything this section writes is words: the outcome's counts are
+    // spelled out. What is stripped first is quoted (the code and its
+    // citation) or a language's own name ("Python 3").
+    let written = coding.textContent ?? "";
+    for (const quoted of [
+      String(EXECUTED_CODING.detail?.answer.code),
+      ...(EXECUTED_CODING.detail?.review_citations ?? []),
+      ...Object.values(CODING_LANGUAGE_LABELS),
+    ]) {
+      written = written.split(quoted).join("");
+    }
+    expect(written).not.toMatch(/\d/);
   });
 
   it("carries no number, score or percentage in the words the product writes", async () => {
@@ -234,6 +300,13 @@ describe("per-format rendering", () => {
       // Navigation, not a score, and both predate the question formats.
       .replace(/Question \d+/g, "")
       .replace(/Showing \d+ of \d+ answered\./g, "");
+    // A coding language's own name is not a number about anybody: "Python 3"
+    // names the language a candidate wrote in (the backend registry's label,
+    // `code_execution/languages.py`). Stripped by the label table rather than
+    // by a pattern, so no other digit can hide behind this exemption.
+    for (const label of Object.values(CODING_LANGUAGE_LABELS)) {
+      chrome = chrome.split(label).join("");
+    }
 
     expect(chrome).not.toMatch(/\d/);
     expect(document.body.textContent ?? "").not.toMatch(/%/);

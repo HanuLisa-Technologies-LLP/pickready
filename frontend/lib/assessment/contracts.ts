@@ -57,6 +57,8 @@ export interface FillBlankPayloadView {
   blanks: FillBlankView[];
 }
 
+/** A coding question issued before payload version 2: one language and one
+ *  starter. Old rows only; nothing new is issued in this shape. */
 export interface CodingPayloadView {
   language: string;
   language_options: string[];
@@ -64,10 +66,69 @@ export interface CodingPayloadView {
   constraints: string;
 }
 
+/** One visible sample test: what the candidate may run their code against
+ *  and read. `id` is the server's opaque key (`v1`, `v2`, ...) and is never
+ *  shown; a sample is named by its position. The hidden tests the final
+ *  answer is checked against are not a field of anything the browser
+ *  receives. */
+export interface CodingVisibleTestView {
+  id: string;
+  stdin: string;
+  expected_stdout: string;
+  /** Why the sample's output is what it is; may be empty. */
+  explanation: string;
+}
+
+/** The limits one language's programs run under, as the server stores them.
+ *  Carried on the payload because the server sends it; NOTHING renders it,
+ *  because every figure here is a number on an assessment screen. */
+export interface CodingLanguageLimitsView {
+  cpu_seconds: number;
+  cpu_extra_seconds: number;
+  wall_seconds: number;
+  memory_kb: number;
+  stack_kb: number;
+  max_processes: number;
+  max_file_kb: number;
+  max_output_chars: number;
+}
+
+/**
+ * The candidate view of a coding question at payload version 2: exactly the
+ * keys `services/coding_assessment/payload.candidate_projection` returns
+ * (`CANDIDATE_FIELDS`).
+ *
+ * Candidate-safe BY CONSTRUCTION: the hidden tests, their expected outputs
+ * and the reference solution live in `coding_question_keys` on the server and
+ * are never part of a payload, so this type has no field that could carry
+ * them, and `coding-contract.test.ts` fails if one is ever added.
+ */
+export interface CodingPayloadViewV2 {
+  payload_version: 2;
+  title: string;
+  io: "stdin_stdout";
+  input_format: string;
+  output_format: string;
+  constraints: string;
+  /** The languages this question offers, in configured order. */
+  languages: string[];
+  /** Starter code keyed by language, one entry per offered language. */
+  starter_code: Record<string, string>;
+  visible_tests: CodingVisibleTestView[];
+  limits: Record<string, CodingLanguageLimitsView>;
+}
+
+export function isCodingPayloadV2(
+  payload: QuestionPayloadView
+): payload is CodingPayloadViewV2 {
+  return (payload as { payload_version?: unknown }).payload_version === 2;
+}
+
 export type QuestionPayloadView =
   | McqPayloadView
   | FillBlankPayloadView
   | CodingPayloadView
+  | CodingPayloadViewV2
   | Record<string, never>;
 
 export interface QuestionOut {
@@ -127,6 +188,11 @@ export interface RespondBody {
   behaviour?: AnswerBehaviour;
 }
 
+/** A blocked clipboard or drag action inside an answer field. The same
+ *  words the lockdown layer reports, so one attempt reads identically in the
+ *  answer's behaviour record and in the session's event log. */
+export type BlockedFieldAction = "copy" | "cut" | "paste" | "drop";
+
 /**
  * The hooks an answer field attaches to proctoring (proctoring spec 4.5).
  *
@@ -141,8 +207,12 @@ export interface ProctoringFieldHooks {
   /** Called on every keydown inside the field with the event's timestamp and
    *  whether it was a deletion (Backspace or Delete). */
   onKeyDown(timeStampMs: number, isDeletion: boolean): void;
-  /** A blocked paste, drop or clipboard read on this field. */
-  onBlockedAction(): void;
+  /**
+   * A blocked copy, cut, paste or drop on this field. The code editor names
+   * the kind it refused; `kind` is optional only because the text fields'
+   * shared handlers (`field-events.ts`, Phase 3's) do not pass one yet.
+   */
+  onBlockedAction(kind?: BlockedFieldAction): void;
   /** A click on an MCQ option, for rapid-fire versus considered selection. */
   onOptionClick(timeStampMs: number): void;
   onScroll(): void;

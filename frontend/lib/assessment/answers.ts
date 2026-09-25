@@ -7,6 +7,7 @@
 // send a blank answer that another refused.
 
 import {
+  isCodingPayloadV2,
   isTextType,
   type AnswerPayload,
   type CodingPayloadView,
@@ -15,6 +16,7 @@ import {
   type QuestionOut,
   type QuestionType,
 } from "@/lib/assessment/contracts";
+import { numberInWords } from "@/lib/assessment/words";
 
 export type TextAnswer = { text: string };
 export type McqSingleAnswer = { selected_option_id: string };
@@ -59,6 +61,10 @@ export function emptyAnswerFor(question: QuestionOut): AnswerPayload {
         values: (question.payload as FillBlankPayloadView).blanks.map(() => ""),
       };
     case "coding": {
+      if (isCodingPayloadV2(question.payload)) {
+        const language = question.payload.languages[0] ?? "";
+        return { language, code: question.payload.starter_code[language] ?? "" };
+      }
       const payload = question.payload as CodingPayloadView;
       return { language: payload.language, code: payload.starter_code };
     }
@@ -127,7 +133,9 @@ export function answerLine(question: QuestionOut | null, value: AnswerPayload | 
   }
   if (isCodingAnswer(value)) {
     const lines = value.code.split("\n").length;
-    return `Code submitted in ${languageLabel(value.language)}, ${lines === 1 ? "one line" : `${lines} lines`}.`;
+    // Counts written out, as everywhere on the assessment surface
+    // (`words.ts`): a digit on this screen reads as a clock or a score.
+    return `Code submitted in ${languageLabel(value.language)}, ${lines === 1 ? "one line" : `${numberInWords(lines)} lines`}.`;
   }
   return "";
 }
@@ -150,22 +158,52 @@ export function fillTemplate(template: string, values: string[]): string {
     .join("");
 }
 
-/** How each permitted coding language is written for a person. Mirrors
- *  `services/assessment_formats/types.CODING_LANGUAGES`. */
+/**
+ * How each coding language is written for a person.
+ *
+ * The first four are the languages a deployment can offer, in the words of
+ * the backend's language registry
+ * (`backend/app/services/code_execution/languages.py`, `LanguageSpec.label`);
+ * `coding-languages-parity.test.ts` fails when the two disagree. The rest are
+ * the older keys a stored answer from before code execution may carry, so
+ * the recruiter's transcript can still name them.
+ */
 export const CODING_LANGUAGE_LABELS: Record<string, string> = {
-  python: "Python",
-  javascript: "JavaScript",
-  typescript: "TypeScript",
+  python: "Python 3",
   java: "Java",
+  cpp: "C++",
+  javascript: "JavaScript (Node.js)",
+  typescript: "TypeScript",
   go: "Go",
   csharp: "C#",
-  cpp: "C++",
   sql: "SQL",
   plaintext: "Plain text",
 };
 
 export function languageLabel(language: string): string {
   return CODING_LANGUAGE_LABELS[language] ?? language;
+}
+
+/**
+ * The starter code the candidate was given for the language their answer is
+ * in, or "" for anything that is not a coding question. A version 2 question
+ * carries one starter per language, so the comparison follows the language
+ * the candidate picked rather than the first one offered: an answer that
+ * switched to Java and left the Java starter untouched has written nothing,
+ * however different it is from the Python starter.
+ */
+export function starterCodeFor(
+  question: QuestionOut | null | undefined,
+  value: AnswerPayload | null
+): string {
+  if (!question || question.question_type !== "coding") return "";
+  if (isCodingPayloadV2(question.payload)) {
+    const language = isCodingAnswer(value)
+      ? value.language
+      : (question.payload.languages[0] ?? "");
+    return question.payload.starter_code[language] ?? "";
+  }
+  return (question.payload as CodingPayloadView).starter_code ?? "";
 }
 
 /** The key under which a turn's answer is drafted and its behaviour captured.

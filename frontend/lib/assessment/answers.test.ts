@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   answerLine,
+  starterCodeFor,
   emptyAnswerFor,
   fillTemplate,
   isAnswerComplete,
@@ -40,13 +41,36 @@ const BLANK: QuestionOut = {
   time_allocation_seconds: 60,
 };
 
+const PY_STARTER = "def solve(items):\n    pass\n";
+const JAVA_STARTER = "public class Main {\n    public static void main(String[] a) {}\n}\n";
+
 const CODING: QuestionOut = {
   id: "q-code",
   question_type: "coding",
   payload: {
-    language: "python",
-    language_options: ["python", "go"],
-    starter_code: "def solve(items):\n    pass\n",
+    payload_version: 2,
+    title: "Sum a list",
+    io: "stdin_stdout",
+    input_format: "One line of integers.",
+    output_format: "Their sum.",
+    constraints: "",
+    languages: ["python", "java"],
+    starter_code: { python: PY_STARTER, java: JAVA_STARTER },
+    visible_tests: [{ id: "v1", stdin: "1 2\n", expected_stdout: "3\n", explanation: "" }],
+    limits: {},
+  },
+  time_allocation_seconds: 1200,
+};
+
+/** A question from before code execution (payload version 1). Old rows
+ *  only, but the helpers still read one correctly. */
+const LEGACY_CODING: QuestionOut = {
+  id: "q-code-v1",
+  question_type: "coding",
+  payload: {
+    language: "go",
+    language_options: ["go"],
+    starter_code: "package main\n",
     constraints: "",
   },
   time_allocation_seconds: 600,
@@ -56,17 +80,33 @@ describe("emptiness and completeness", () => {
   it("starts every format from its own empty shape", () => {
     expect(emptyAnswerFor(MCQ)).toEqual({ selected_option_ids: [] });
     expect(emptyAnswerFor(BLANK)).toEqual({ values: ["", ""] });
-    expect(emptyAnswerFor(CODING)).toEqual({
-      language: "python",
-      code: "def solve(items):\n    pass\n",
-    });
+    // A coding question starts in its FIRST offered language, with that
+    // language's starter.
+    expect(emptyAnswerFor(CODING)).toEqual({ language: "python", code: PY_STARTER });
   });
 
   it("does not count untouched starter code as an answer", () => {
     // The starter is the question's, not the candidate's. Sending it back
     // would be an empty submission dressed as code.
-    expect(isAnswerComplete(emptyAnswerFor(CODING), "def solve(items):\n    pass\n")).toBe(false);
+    const empty = emptyAnswerFor(CODING);
+    expect(isAnswerComplete(empty, starterCodeFor(CODING, empty))).toBe(false);
     expect(isAnswerComplete({ language: "python", code: "def solve(items):\n    return []\n" })).toBe(true);
+  });
+
+  it("compares a coding answer with the starter of the language it is IN", () => {
+    // Switching to Java and leaving the Java starter untouched is still
+    // nothing written, however different it is from the Python starter.
+    const untouchedJava = { language: "java", code: JAVA_STARTER };
+    expect(starterCodeFor(CODING, untouchedJava)).toBe(JAVA_STARTER);
+    expect(isAnswerComplete(untouchedJava, starterCodeFor(CODING, untouchedJava))).toBe(false);
+    expect(starterCodeFor(CODING, null)).toBe(PY_STARTER);
+    expect(starterCodeFor(MCQ, { selected_option_ids: [] })).toBe("");
+    expect(starterCodeFor(null, null)).toBe("");
+  });
+
+  it("still reads a version 1 question's single language and starter", () => {
+    expect(emptyAnswerFor(LEGACY_CODING)).toEqual({ language: "go", code: "package main\n" });
+    expect(starterCodeFor(LEGACY_CODING, null)).toBe("package main\n");
   });
 
   it("accepts a fill-blank with one blank filled and one left", () => {
@@ -93,9 +133,12 @@ describe("the readable line", () => {
     );
   });
 
-  it("summarises code by language and length without quoting it", () => {
-    expect(answerLine(CODING, { language: "go", code: "package main\nfunc main() {}\n" })).toBe(
-      "Code submitted in Go, 3 lines."
+  it("summarises code by language and length without quoting it, in words", () => {
+    expect(answerLine(CODING, { language: "java", code: JAVA_STARTER })).toBe(
+      "Code submitted in Java, four lines."
+    );
+    expect(answerLine(CODING, { language: "python", code: "print(1)" })).toBe(
+      "Code submitted in Python 3, one line."
     );
   });
 });

@@ -19,8 +19,10 @@
 // question as the candidate saw it and the answer as they gave it. What the
 // format adds sits BELOW that, from `detail`: an MCQ's options with the chosen
 // and the correct ones marked in words, a fill-blank's inputs beside what was
-// accepted, a coding answer syntax-highlighted with how it was read and the
-// note that it was not run, and, for an evidence question, the resume item
+// accepted, a coding answer syntax-highlighted with what its hidden tests
+// showed in words and the code-quality review (or, for an answer from before
+// code execution, the note that it was read and not run), and, for an
+// evidence question, the resume item
 // that prompted it, which is the most valuable thing on this screen: it is
 // what was being probed.
 //
@@ -68,7 +70,20 @@ export interface TranscriptAnswerDetail {
   blank_results: string[];
   evaluation_reasoning: string | null;
   evaluation_citations: string[];
+  /** Only on a coding answer from BEFORE code execution existed, which was
+   *  read and judged rather than run. Stored rows keep saying so. */
   not_executed_note: string | null;
+  /** A coding answer that was run: what the hidden tests showed, in words
+   *  with counts spelled out ("Compiled and passed seven of the ten hidden
+   *  tests."). Never a figure, and never a test's content. */
+  coding_outcome?: string | null;
+  /** The compiler's message when the submitted code did not compile. It is
+   *  derived from the candidate's own code only. */
+  compile_error?: string | null;
+  /** The code-quality review: its reasoning, and the verbatim fragments of
+   *  the submitted code it rests on. */
+  review_reasoning?: string | null;
+  review_citations?: string[];
   /** A phrase ("about two minutes"), never a count. */
   time_spent: string | null;
 }
@@ -285,6 +300,7 @@ function CodingDetail({ detail }: { detail: TranscriptAnswerDetail }) {
         ? detail.payload.language
         : "plaintext";
   const code = typeof detail.answer.code === "string" ? detail.answer.code : "";
+  const citations = detail.review_citations ?? [];
 
   return (
     <div className="mt-3 space-y-3" data-testid="coding-detail">
@@ -294,8 +310,41 @@ function CodingDetail({ detail }: { detail: TranscriptAnswerDetail }) {
         language={language}
         readOnly
         ariaLabel="The code as submitted"
-        className="[&_.cm-editor]:min-h-[6rem]"
+        height={readOnlyEditorHeight(code)}
       />
+      {detail.coding_outcome ? (
+        // First, ahead of any reading of the code: what the tests showed is
+        // the evidence this answer is graded on.
+        <div data-testid="coding-outcome">
+          <p className="text-xs font-semibold uppercase tracking-wide">What the tests showed</p>
+          <p className="mt-1 text-sm">{detail.coding_outcome}</p>
+        </div>
+      ) : null}
+      {detail.compile_error ? (
+        <div data-testid="coding-compile-error">
+          <p className="text-xs font-semibold uppercase tracking-wide">Compiler output</p>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words border border-border bg-muted p-2 font-mono text-xs">
+            {detail.compile_error}
+          </pre>
+        </div>
+      ) : null}
+      {detail.review_reasoning || citations.length > 0 ? (
+        <div className="space-y-2" data-testid="coding-review">
+          <p className="text-xs font-semibold uppercase tracking-wide">Code quality review</p>
+          {detail.review_reasoning ? (
+            <p className="whitespace-pre-wrap text-sm">{detail.review_reasoning}</p>
+          ) : null}
+          {citations.length > 0 ? (
+            <ul className="space-y-1 border-l border-teal-600 pl-3 font-mono text-xs">
+              {citations.map((citation, index) => (
+                <li key={index} className="whitespace-pre-wrap">
+                  {citation}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {detail.not_executed_note ? (
         <p className="border border-border bg-muted p-3 text-sm" data-testid="not-executed-note">
           <span className="font-semibold">Not executed. </span>
@@ -305,6 +354,24 @@ function CodingDetail({ detail }: { detail: TranscriptAnswerDetail }) {
       <Reasoning detail={detail} />
     </div>
   );
+}
+
+/** Lines of submitted code shown before the viewer scrolls. */
+const READ_ONLY_MIN_LINES = 4;
+const READ_ONLY_MAX_LINES = 24;
+/** Monaco's line height and vertical padding, from `monaco-setup.editorOptions`. */
+const EDITOR_LINE_PX = 22;
+const EDITOR_PADDING_PX = 24;
+
+/** The read-only viewer sized to the code it shows, within bounds, so a short
+ *  answer is not a tall empty box and a long one does not push the rest of
+ *  the transcript off the screen. */
+export function readOnlyEditorHeight(code: string): string {
+  const lines = Math.min(
+    READ_ONLY_MAX_LINES,
+    Math.max(READ_ONLY_MIN_LINES, code.split("\n").length)
+  );
+  return `${lines * EDITOR_LINE_PX + EDITOR_PADDING_PX}px`;
 }
 
 function ProbeAnchor({ anchor }: { anchor: string }) {

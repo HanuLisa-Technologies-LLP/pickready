@@ -13,3 +13,10 @@ next-env.d.ts
 # was built from with nothing saying so. The vendored MODELS under
 # public/models are the opposite case and ARE committed.
 public/proctoring/
+
+# The Monaco editor's AMD build, copied from node_modules/monaco-editor/min/vs
+# by scripts/copy-monaco.mjs on every build so the coding editor is served
+# from this origin (the CSP admits no CDN). A copy of a pinned package, not
+# our source: committing it would let it drift from the version package.json
+# pins with nothing saying so.
+public/monaco/

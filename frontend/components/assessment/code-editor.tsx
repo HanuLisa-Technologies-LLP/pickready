@@ -1,122 +1,64 @@
 "use client";
 
-// The code editor: CodeMirror 6, for the coding format and for the recruiter's
+// The code editor: Monaco, for the coding format and for the recruiter's
 // read-only view of what was submitted.
 //
-// WHAT IS DELIBERATELY NOT HERE
-// -----------------------------
-// No autocompletion. The `codemirror` meta-package's `basicSetup` bundles
-// `@codemirror/autocomplete`, which completes identifiers and closes brackets,
-// and a completion popup on an assessment is a hint engine (assessment spec
-// 2.5: "no autocomplete that would solve the problem for them"). The
-// extensions are listed one by one instead so that nothing arrives by bundle.
+// SELF-HOSTED. Monaco is fetched at runtime by its own AMD loader from
+// `/monaco/vs`, which `scripts/copy-monaco.mjs` fills from the pinned package
+// on every build (`lib/assessment/monaco-setup.ts` explains why never a CDN).
+// Only the small React wrapper is in the page bundle, so the editor's several
+// megabytes are downloaded only when an editor actually mounts: on a coding
+// question, or on a transcript that shows submitted code.
 //
-// PASTE AND DROP ARE REFUSED AT THE EDITOR'S OWN DOM HANDLERS, in addition to
-// the lockdown layer the proctoring shell installs on the document. The two do
-// different jobs: the lockdown emits the session-level blocked-action event
-// and this handler counts the attempt against the answer it was aimed at. Both
-// fire on one attempt, deliberately. This stops the ordinary candidate; it
-// does not stop a determined one with developer knowledge, and nothing here
-// claims otherwise.
+// CLIPBOARD AND DROP ARE REFUSED IN TWO LAYERS on an editable editor, both
+// reporting through `fieldHooks.onBlockedAction()`: DOM listeners on this
+// component's host in the capture phase (`lib/assessment/editor-guard.ts`),
+// and editor commands bound over the clipboard keystrokes
+// (`monaco-setup.registerEditorCommands`). The read-only view installs
+// neither: a recruiter reading submitted code is not being assessed.
 //
-// THE HIGHLIGHT STYLE IS THE BRAND'S OWN. CodeMirror's default style colours
-// keywords purple, which DESIGN.md forbids anywhere, and its comment colour is
-// a grey, which the product's text never is. Every colour below is a token
-// from globals.css, so the editor follows the theme swap like every other
-// surface.
+// KEYSTROKES ARE RECORDED ON THE HOST, IN THE CAPTURE PHASE, NOT INSIDE THE
+// EDITOR. A keydown reaches the host before the editor sees it, so
+// Ctrl/Cmd+Enter can be stopped here and the editor never inserts the line
+// break that a handler running after it would have to undo. And the recorder
+// does not depend on the editor's internal event routing, which is what a
+// keystroke recorder must not be at the mercy of: the recording is proctoring
+// evidence, and a library upgrade that reorders its own dispatch would
+// silently stop it. The recorder is registered BEFORE the clipboard guard on
+// the same element, so a refused Ctrl+V is still recorded as a keystroke.
+//
+// A FAILED LOAD IS SAID OUT LOUD. The wrapper's own behaviour when the
+// loader fails is to log to the console and show its loading text for ever,
+// which on a timed question is a candidate watching a placeholder while the
+// clock runs. The load is tracked here and a failure replaces the placeholder
+// with a sentence and a reload control.
 
 import * as React from "react";
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from "@codemirror/commands";
-import {
-  HighlightStyle,
-  bracketMatching,
-  indentOnInput,
-  syntaxHighlighting,
-} from "@codemirror/language";
-import { Compartment, EditorState } from "@codemirror/state";
-import {
-  EditorView,
-  drawSelection,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  keymap,
-  lineNumbers,
-} from "@codemirror/view";
-import { tags } from "@lezer/highlight";
+import Editor, { loader } from "@monaco-editor/react";
+import { RotateCw } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import type { ProctoringFieldHooks } from "@/lib/assessment/contracts";
-import { languageSupport } from "@/lib/assessment/coding-languages";
+import { installEditorGuard } from "@/lib/assessment/editor-guard";
 import { isDeletionKey, isSubmitShortcut } from "@/lib/assessment/field-events";
+import {
+  configureMonacoLoader,
+  disableLanguageServices,
+  editorOptions,
+  monacoLanguageId,
+  registerEditorCommands,
+  type Monaco,
+  type MonacoEditor,
+} from "@/lib/assessment/monaco-setup";
+import {
+  applyMonacoTheme,
+  MONACO_THEME_NAME,
+  watchPageTheme,
+} from "@/lib/assessment/monaco-theme";
 
-const brandHighlight = HighlightStyle.define([
-  {
-    tag: [
-      tags.keyword,
-      tags.controlKeyword,
-      tags.operatorKeyword,
-      tags.definitionKeyword,
-      tags.moduleKeyword,
-    ],
-    color: "hsl(var(--navy-400))",
-    fontWeight: "600",
-  },
-  // Teal is evidence: a literal is the one thing in a program that states a
-  // fact rather than a structure.
-  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "hsl(var(--teal-700))" },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "hsl(var(--navy-500))" },
-  // Comments in ink, italic. Never dimmed: text is never grey.
-  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], fontStyle: "italic" },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], fontWeight: "600" },
-  { tag: [tags.typeName, tags.className, tags.namespace], color: "hsl(var(--teal-900))" },
-  { tag: tags.invalid, textDecoration: "underline" },
-]);
+configureMonacoLoader();
 
-const theme = EditorView.theme({
-  "&": {
-    backgroundColor: "hsl(var(--surface))",
-    color: "hsl(var(--ink))",
-    fontSize: "0.875rem",
-    border: "1px solid hsl(var(--input))",
-  },
-  "&.cm-focused": {
-    outline: "none",
-    borderColor: "hsl(var(--navy-600))",
-    boxShadow: "0 0 0 2px hsl(var(--ring) / 0.3)",
-  },
-  ".cm-scroller": {
-    // The token, not the literal name. `var(--font-mono)` is what next/font
-    // binds in `app/layout.tsx` and expands to the self-hosted face PLUS its
-    // metric-adjusted fallback, so the editor cannot drift from the stack the
-    // rest of the product reads, and text measured during the font swap keeps
-    // the same metrics.
-    fontFamily:
-      "var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-    lineHeight: "1.6",
-    overflow: "auto",
-    maxHeight: "60vh",
-  },
-  ".cm-content": { caretColor: "hsl(var(--ink))", padding: "0.75rem 0" },
-  ".cm-gutters": {
-    backgroundColor: "hsl(var(--muted))",
-    color: "hsl(var(--ink))",
-    borderRight: "1px solid hsl(var(--border))",
-  },
-  ".cm-activeLine": { backgroundColor: "hsl(var(--navy-50))" },
-  ".cm-activeLineGutter": { backgroundColor: "hsl(var(--navy-100))" },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "hsl(var(--navy-100))",
-  },
-  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "hsl(var(--ink))" },
-  ".cm-matchingBracket": {
-    backgroundColor: "hsl(var(--teal-100))",
-    outline: "1px solid hsl(var(--teal-600))",
-  },
-});
+type LoadState = "loading" | "ready" | "failed";
 
 export interface CodeEditorProps {
   value: string;
@@ -126,8 +68,12 @@ export interface CodeEditorProps {
   readOnly?: boolean;
   disabled?: boolean;
   fieldHooks?: ProctoringFieldHooks;
+  /** Called on Ctrl/Cmd+Enter inside the editor, after the keystroke has
+   *  been recorded. The caller decides what the shortcut means. */
   onSubmitShortcut?: () => void;
   ariaLabel: string;
+  /** Any CSS height. The editor does not size itself to its content. */
+  height?: string;
   className?: string;
 }
 
@@ -140,137 +86,91 @@ export function CodeEditor({
   fieldHooks,
   onSubmitShortcut,
   ariaLabel,
+  height = "18rem",
   className,
 }: CodeEditorProps) {
   const host = React.useRef<HTMLDivElement | null>(null);
-  const view = React.useRef<EditorView | null>(null);
-  const languageCompartment = React.useRef(new Compartment());
-  const editableCompartment = React.useRef(new Compartment());
-  // The handlers read the latest props through a ref so the view, which is
-  // expensive to build, is created once and never rebuilt because a callback
-  // identity changed.
+  // The handlers read the latest props through a ref so the editor, which is
+  // expensive to build, is never rebuilt because a callback identity changed.
   const latest = React.useRef({ onChange, fieldHooks, onSubmitShortcut });
   latest.current = { onChange, fieldHooks, onSubmitShortcut };
-  // What the editor last reported, so an echo of its own change is not
-  // dispatched back into it as an external update.
-  const lastEmitted = React.useRef(value);
-
-  const editable = !readOnly && !disabled;
+  const releaseTheme = React.useRef<(() => void) | null>(null);
+  const [loadState, setLoadState] = React.useState<LoadState>("loading");
 
   React.useEffect(() => {
-    if (!host.current) return;
-    const state = EditorState.create({
-      doc: lastEmitted.current,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        history(),
-        drawSelection(),
-        indentOnInput(),
-        bracketMatching(),
-        highlightActiveLine(),
-        syntaxHighlighting(brandHighlight),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-        EditorView.lineWrapping,
-        theme,
-        EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
-        languageCompartment.current.of(languageSupport(language) ?? []),
-        editableCompartment.current.of([
-          EditorView.editable.of(editable),
-          EditorState.readOnly.of(!editable),
-        ]),
-        EditorView.domEventHandlers({
-          paste(event) {
-            event.preventDefault();
-            latest.current.fieldHooks?.onBlockedAction();
-            return true;
-          },
-          drop(event) {
-            event.preventDefault();
-            latest.current.fieldHooks?.onBlockedAction();
-            return true;
-          },
-          dragover(event) {
-            // Without this the browser never fires `drop`, so the attempt
-            // would be neither refused nor counted.
-            event.preventDefault();
-            return true;
-          },
-        }),
-        EditorView.updateListener.of((update) => {
-          if (!update.docChanged) return;
-          const code = update.state.doc.toString();
-          lastEmitted.current = code;
-          latest.current.onChange?.(code);
-        }),
-      ],
-    });
-    const created = new EditorView({ state, parent: host.current });
-    view.current = created;
-    // `scroll` does not bubble, so the document-level handlers register on
-    // the content element never see it; the scrolling element is listened to
-    // directly.
-    const onScroll = () => latest.current.fieldHooks?.onScroll();
-    created.scrollDOM.addEventListener("scroll", onScroll);
-    return () => {
-      created.scrollDOM.removeEventListener("scroll", onScroll);
-      created.destroy();
-      view.current = null;
-    };
-    // The view is built once. Language, editability and value are pushed in
-    // by the effects below through compartments and transactions.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const init = loader.init();
+    init.then(
+      () => setLoadState("ready"),
+      (error: unknown) => {
+        // Unmounting cancels this wrapper around the loader's shared promise;
+        // that is not a failure of the load.
+        if ((error as { type?: string } | null)?.type === "cancelation") return;
+        setLoadState("failed");
+      }
+    );
+    return () => init.cancel();
   }, []);
 
-  React.useEffect(() => {
-    view.current?.dispatch({
-      effects: languageCompartment.current.reconfigure(languageSupport(language) ?? []),
-    });
-  }, [language]);
+  React.useEffect(() => () => releaseTheme.current?.(), []);
 
+  // The recorder and the clipboard guard, on the host, in the capture phase.
+  // Only on an editable editor: nothing is being answered in the read-only
+  // view.
   React.useEffect(() => {
-    view.current?.dispatch({
-      effects: editableCompartment.current.reconfigure([
-        EditorView.editable.of(editable),
-        EditorState.readOnly.of(!editable),
-      ]),
+    const element = host.current;
+    if (!element || readOnly) return;
+    const record = (event: KeyboardEvent) => {
+      const { fieldHooks: hooks, onSubmitShortcut: submit } = latest.current;
+      hooks?.onKeyDown(event.timeStamp, isDeletionKey(event.key));
+      if (submit && isSubmitShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        submit();
+      }
+    };
+    element.addEventListener("keydown", record, { capture: true });
+    const removeGuard = installEditorGuard(element, {
+      onBlocked: (kind) => latest.current.fieldHooks?.onBlockedAction(kind),
     });
-  }, [editable]);
+    return () => {
+      element.removeEventListener("keydown", record, { capture: true });
+      removeGuard();
+    };
+  }, [readOnly]);
 
-  React.useEffect(() => {
-    const current = view.current;
-    if (!current || value === lastEmitted.current) return;
-    // An external value (a restored draft, a cleared field, a language
-    // reset): replace the whole document rather than diffing, because the
-    // editor's own history is what a candidate would undo through and an
-    // external replacement is one step.
-    lastEmitted.current = value;
-    current.dispatch({
-      changes: { from: 0, to: current.state.doc.length, insert: value },
-    });
-  }, [value]);
+  const options = React.useMemo(
+    () => editorOptions({ readOnly, disabled, ariaLabel }),
+    [readOnly, disabled, ariaLabel]
+  );
 
-  // KEYSTROKES ARE RECORDED ON THE HOST, IN THE CAPTURE PHASE, NOT INSIDE THE
-  // EDITOR'S OWN HANDLER PIPELINE.
-  //
-  // Two reasons, and the second is the load-bearing one. A keydown reaches
-  // the host before the editor sees it, so Ctrl/Cmd+Enter can be stopped
-  // here and the editor never inserts the line break that a handler running
-  // after it would have to undo. And the capture handler does not depend on
-  // the editor's internal event routing, which is what a keystroke recorder
-  // must not be at the mercy of: the recording is proctoring evidence, and a
-  // library upgrade that reorders its own dispatch would silently stop it.
-  // Paste and drop stay on the editor's own DOM handlers, where they can
-  // refuse the editor's default behaviour rather than race it.
-  const onKeyDownCapture = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const { fieldHooks: hooks, onSubmitShortcut: submit } = latest.current;
-    hooks?.onKeyDown(event.timeStamp, isDeletionKey(event.key));
-    if (submit && isSubmitShortcut(event)) {
-      event.preventDefault();
-      event.stopPropagation();
-      submit();
-    }
-  };
+  const beforeMount = React.useCallback((monaco: Monaco) => {
+    disableLanguageServices(monaco);
+    applyMonacoTheme(monaco);
+  }, []);
+
+  const onMount = React.useCallback(
+    (editor: MonacoEditor, monaco: Monaco) => {
+      if (!readOnly) {
+        registerEditorCommands(editor, monaco, (kind) =>
+          latest.current.fieldHooks?.onBlockedAction(kind)
+        );
+      }
+      releaseTheme.current?.();
+      releaseTheme.current = watchPageTheme(monaco);
+      editor.onDidScrollChange((event) => {
+        if (event.scrollTopChanged || event.scrollLeftChanged) {
+          latest.current.fieldHooks?.onScroll();
+        }
+      });
+      // The mono face is self-hosted and swaps in after first paint; Monaco
+      // measures glyph widths once, so it measures again when it arrives or
+      // the cursor drifts off the characters.
+      void document.fonts?.ready.then(() => monaco.editor.remeasureFonts());
+    },
+    [readOnly]
+  );
+
+  const locked = readOnly || disabled;
 
   return (
     <div
@@ -278,12 +178,84 @@ export function CodeEditor({
       className={className}
       data-testid="code-editor"
       data-language={language}
-      data-readonly={readOnly || disabled ? "true" : "false"}
-      onKeyDownCapture={onKeyDownCapture}
+      data-readonly={locked ? "true" : "false"}
+      data-load-state={loadState}
       // `onFocus`/`onBlur` are focusin/focusout in React, which bubble from
-      // the content element, so one pair on the host covers the editor.
+      // the editor's input element, so one pair on the host covers it.
       onFocus={() => latest.current.fieldHooks?.onFieldFocus()}
       onBlur={() => latest.current.fieldHooks?.onFieldBlur()}
-    />
+    >
+      {loadState === "failed" ? (
+        <EditorLoadFailure readOnly={readOnly} value={value} height={height} />
+      ) : (
+        <div className="border border-input">
+          <Editor
+            // One editor per language: switching language starts a fresh
+            // undo history, so Ctrl+Z can never bring another language's
+            // code back under this one's name.
+            key={language}
+            value={value}
+            language={monacoLanguageId(language)}
+            theme={MONACO_THEME_NAME}
+            height={height}
+            options={options}
+            beforeMount={beforeMount}
+            onMount={onMount}
+            onChange={(next) => {
+              if (!locked) latest.current.onChange?.(next ?? "");
+            }}
+            loading={
+              <p className="text-sm" data-testid="code-editor-loading">
+                Loading the code editor
+              </p>
+            }
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditorLoadFailure({
+  readOnly,
+  value,
+  height,
+}: {
+  readOnly: boolean;
+  value: string;
+  height: string;
+}) {
+  if (readOnly) {
+    // The code itself is the evidence; it is shown plainly rather than not
+    // at all, and the reader is told why it looks different.
+    return (
+      <div className="space-y-2" data-testid="code-editor-failed">
+        <p className="text-xs" role="status">
+          The code viewer could not be loaded, so the code is shown without highlighting.
+        </p>
+        <pre
+          className="overflow-auto border border-input bg-surface p-3 font-mono text-sm"
+          style={{ maxHeight: height }}
+        >
+          {value}
+        </pre>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex flex-col items-start gap-3 border border-input bg-surface p-4"
+      style={{ minHeight: height }}
+      data-testid="code-editor-failed"
+      role="alert"
+    >
+      <p className="text-sm">
+        The code editor could not be loaded. Reload the page to try again.
+      </p>
+      <Button type="button" variant="outline" onClick={() => window.location.reload()}>
+        <RotateCw className="h-4 w-4" aria-hidden="true" />
+        Reload the page
+      </Button>
+    </div>
   );
 }
