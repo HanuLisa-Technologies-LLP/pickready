@@ -442,39 +442,44 @@ def _measure_culture_is_refused() -> Result:
 
 
 def _measure_question_counts_by_grade() -> Result:
-    """Volume is a RANGE per grade, resolved once per job (spec 5.4).
+    """How many questions: ONE PER SKILL IN THE CONTRACT, never fewer than the
+    grade's floor (Appendix B, PLAN-p3 WP2).
 
-    The direction is the surprising part and has not changed: MORE questions for
-    a junior candidate, fewer for a CXO. What changed in Draft v4 is that the
-    number inside the range follows the size of that job's own matrix, so two
-    jobs at one grade may legitimately differ while two candidates on one job
-    never can.
+    SUPERSEDES the per-grade RANGE this measured until the stage 2 integration
+    (Master Directive Part 3 section 6: 12 to 18 non-managerial up to 18 to 25
+    CXO, resolved from the matrix size). Phase 3 WP2 replaced it with the
+    count-based budget in `assessment_questions.budget`: with at most five
+    skills per bucket a job asks 8 to 15 questions, and every skill is asked.
+    The measurement moved with the rule rather than being deleted, because a
+    budget that silently drops below the floor, or below one question per
+    skill, changes what a real candidate is asked.
     """
     result = Result("question_counts_by_grade")
-    # Master Directive Part 3 §6, non-STEM column.
-    expected = {
-        "non_managerial": (12, 18),
-        "managerial": (15, 22),
-        "leadership": (18, 25),
-        "cxo": (18, 25),
+    #: The floors `core/config.py` ships (`assessment_question_floor_*`).
+    expected_floor = {
+        "non_managerial": 10,
+        "managerial": 10,
+        "leadership": 10,
+        "cxo": 8,
     }
-    for grade, bounds in expected.items():
-        actual = (question_budget.min_questions(grade), question_budget.max_questions(grade))
-        result.record(actual == bounds, f"{grade}: {actual}, expected {bounds}")
-    # A resolved target never leaves its grade's range, whatever the matrix
-    # holds. Both ends, because a silent clamp in either direction would change
-    # how long a real candidate sits in an interview.
-    for grade, (low, high) in expected.items():
-        for size in (0, 1, low, high, high + 40):
-            target = question_budget.resolve_question_target(grade, size)
+    for grade, floor in expected_floor.items():
+        actual = question_budget.question_floor(grade)
+        result.record(actual == floor, f"{grade}: floor {actual}, expected {floor}")
+    # One per skill above the floor, the floor below it: both ends, because a
+    # silent clamp in either direction changes how long somebody sits in an
+    # interview. Fifteen is the most a saved contract can hold (three buckets
+    # of at most five).
+    for grade, floor in expected_floor.items():
+        for skills in (0, 1, floor, 15):
+            budget = question_budget.question_budget(grade, skills)
             result.record(
-                low <= target <= high,
-                f"{grade} resolved {target} for a {size}-item matrix, "
-                f"outside {low}..{high}",
+                budget == max(skills, floor),
+                f"{grade} gave {budget} questions for {skills} skills, "
+                f"expected {max(skills, floor)}",
             )
     # A grade nobody recognises must not silently produce zero questions.
     result.record(
-        question_budget.resolve_question_target(None, 12) > 0,
+        question_budget.question_budget(None, 0) > 0,
         "an unknown grade produced no questions",
     )
     return result

@@ -255,7 +255,7 @@ async def _invite(monkeypatch, job, pairs, link_ids=None):
     monkeypatch.setattr(lifecycle_email, "draft", _fake_draft)
     monkeypatch.setattr(email_outbox, "queue_candidate_email", _fake_queue)
     monkeypatch.setattr(
-        jobs_api, "dispatch",
+        jobs_api, "dispatch_after_commit",
         lambda *a, **k: calls.setdefault("tasks", []).append(a),
     )
     monkeypatch.setattr(
