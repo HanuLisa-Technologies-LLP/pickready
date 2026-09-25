@@ -13,9 +13,9 @@ it stands for, a payload only when `types.parse_payload` accepts it.
 WHAT IS AND IS NOT INVENTED ON DEGRADATION
 ------------------------------------------
 Nothing. A structured slot the model could not fill soundly is handed back as
-None, and `composition.fall_back` turns it into the text question
-`ppi.generate_candidate_questions` already wrote for that item from this
-candidate's resume. For the anchor batch the loop's own fallback is an empty
+None, and the composer serves the prose question already written for that
+skill from this candidate's resume, with the reason recorded
+(`composition.degrade_to_prose`). For the anchor batch the loop's own fallback is an empty
 dict, and the valid subset of the last attempt is kept beside it: each of
 those items passed the same deterministic checks individually, so using them
 is not substituting content for work that did not happen, it is declining to
@@ -43,7 +43,8 @@ from typing import Any, Sequence
 from app.prompts import fragments, registry
 from app.services import agent_loop, conversation_guardrails, llm_router
 from app.services.assessment_formats import config as format_config
-from app.services.assessment_formats import evaluation, types
+from app.services.assessment_contract import ContractSkill
+from app.services.assessment_formats import types
 from app.services.assessment_formats.composition import Slot
 
 logger = logging.getLogger(__name__)
@@ -66,15 +67,18 @@ FILLER_OPTIONS: tuple[str, ...] = (
 )
 
 #: The shortest prompt that can be a question rather than a fragment. The
-#: same floor `ppi.generate_candidate_questions` applies to a model-written
+#: same floor `assessment_questions.generate` applies to a model-written
 #: prompt.
 MIN_PROMPT_CHARS = 15
 
+#: The OBJECTIVE formats only. A coding question is EXECUTED and is written by
+#: `coding_generation.write_coding_question`, which proves its tests in the
+#: sandbox; the v1 "read the code" coding writer this map used to name is
+#: deleted, and asking for one here raises.
 _PROMPT_FOR_TYPE: dict[str, str] = {
     types.MCQ_SINGLE: "assessment_format_mcq_single",
     types.MCQ_MULTI: "assessment_format_mcq_multi",
     types.FILL_BLANK: "assessment_format_fill_blank",
-    types.CODING: "assessment_format_coding",
 }
 
 
@@ -105,9 +109,8 @@ class _AnchorBatch:
 class StructuredQuestion:
     prompt: str
     payload: dict[str, Any]
-    #: MCQ: the misconception each distractor stands for. Coding: the fixed
-    #: criteria the answer will be read against. Fill-blank: None; the
-    #: accepted answers ARE the key.
+    #: MCQ: the misconception each distractor stands for. Fill-blank: None;
+    #: the accepted answers ARE the key.
     rubric: dict[str, Any] | None
 
 
@@ -138,7 +141,7 @@ def _prompt_reasons(prompt: str, *, max_chars: int) -> list[str]:
     return reasons
 
 
-def _max_prompt_chars() -> int:
+def max_prompt_chars() -> int:
     # Read inside the function: `ppi_interview` imports `ppi`, which imports
     # this module, and a module-scope import here would close that cycle.
     from app.services import ppi_interview  # noqa: PLC0415
@@ -217,15 +220,21 @@ async def anchor_evidence(
     *,
     job: Any,
     slots: Sequence[Slot],
-    competencies: dict[Any, Any],
+    skills: dict[Any, ContractSkill],
+    role_summary: str,
     resume_text: str,
     resume_excerpt: str,
     project_evidence: str,
-    hiring_context: str,
     prior_failures: Sequence[str] = (),
 ) -> tuple[dict[int, AnchoredQuestion], agent_loop.LoopResult[dict[int, AnchoredQuestion]]]:
     """Write every evidence slot's question, anchored to the resume, in one
     call. Returns (what to use, the loop result).
+
+    THE ROLE IS DESCRIBED BY THE CONTRACT, NEVER BY THE JOB DESCRIPTION. The
+    skills, their evidence lines and Sutra's role summary are what every
+    candidate on the job is assessed against; the job description is
+    recruiter-edited text that can carry compensation, which must never reach
+    a prompt.
 
     `prior_failures` carries the composition validator's reasons from a
     previous pass, so a regeneration is told what was wrong with the last
@@ -242,7 +251,7 @@ async def anchor_evidence(
             value={}, degraded=bool(evidence_slots), attempts=0
         )
     slots_by_index = {slot.index: slot for slot in evidence_slots}
-    max_chars = _max_prompt_chars()
+    max_chars = max_prompt_chars()
     system = registry.render(
         "assessment_evidence_anchoring",
         candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
@@ -253,14 +262,13 @@ async def anchor_evidence(
         "job": {
             "title": getattr(job, "title", ""),
             "grade": getattr(job, "assessment_grade", ""),
-            "description": str(getattr(job, "jd_markdown", "") or "")[:2500],
         },
-        "hiring_context": hiring_context,
+        "role_summary": role_summary,
         "slots": [
             {
                 "index": slot.index,
-                "matrix_item": getattr(competencies.get(slot.competency_id), "name", ""),
-                "what_it_measures": getattr(competencies.get(slot.competency_id), "description", "") or "",
+                "skill": skills[slot.competency_id].name,
+                "what_good_evidence_looks_like": skills[slot.competency_id].evidence_line,
                 "suggested_sub_type": sub_types[position % len(sub_types)],
             }
             for position, slot in enumerate(evidence_slots)
@@ -391,8 +399,6 @@ def _parse_structured(raw: str, *, question_type: str, max_chars: int) -> tuple[
             _mcq_reasons(clean, parsed.get("misconceptions"), correct=set(clean["correct_option_ids"]))
         )
         rubric = {"misconceptions": dict(parsed.get("misconceptions") or {})}
-    elif question_type == types.CODING:
-        rubric = {"criteria": evaluation.rubric_for(types.CODING)}
     # The candidate reads the prompt verbatim, so the outbound guard runs
     # here. A prompt that loses every sentence to it is not a question.
     guarded = conversation_guardrails.inspect_agent_output(prompt)
@@ -413,30 +419,32 @@ async def write_structured(
     session: Any,
     *,
     job: Any,
-    competency: Any,
+    skill: ContractSkill,
+    role_summary: str,
     slot: Slot,
     resume_excerpt: str,
 ) -> agent_loop.LoopResult[StructuredQuestion | None]:
-    """Write one supporting question's prompt and payload. Never raises;
-    degraded means None and the slot falls back to its text question."""
+    """Write one objective question's prompt and payload. Never raises for an
+    outage or a bad answer: degraded means None and the composer serves the
+    slot's prose question with the reason recorded. Raises `ValueError` for a
+    format that has no objective writer (coding included), which is a caller
+    defect."""
     question_type = slot.question_type
     if question_type not in _PROMPT_FOR_TYPE:
         raise ValueError(f"{question_type} has no structured payload to write")
-    max_chars = _max_prompt_chars()
+    max_chars = max_prompt_chars()
     values: dict[str, Any] = {
-        "item_name": getattr(competency, "name", ""),
-        "item_measures": getattr(competency, "description", None) or getattr(competency, "name", ""),
+        "item_name": skill.name,
+        "item_measures": skill.evidence_line or skill.name,
         "job_title": getattr(job, "title", ""),
         "candidate_text_is_data": fragments.CANDIDATE_TEXT_IS_DATA,
         "no_evaluation": fragments.NO_EVALUATION,
     }
     if question_type in (types.MCQ_SINGLE, types.MCQ_MULTI):
         values["option_count"] = types.MCQ_OPTIONS_DEFAULT
-    if question_type == types.CODING:
-        values["languages"] = ", ".join(types.CODING_LANGUAGES)
     system = registry.render(_PROMPT_FOR_TYPE[question_type], **values)
     payload = {
-        "job_description": str(getattr(job, "jd_markdown", "") or "")[:2500],
+        "role_summary": role_summary,
         "candidate_resume": (resume_excerpt or "")[:2500],
     }
 

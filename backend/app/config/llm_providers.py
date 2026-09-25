@@ -188,6 +188,9 @@ TaskType = Literal[
     "answer_evaluation",
     "fill_blank_equivalence",
     "coding_question_generation",
+    # Phase 3 WP2: the per-candidate prose questions against the locked
+    # skills contract. Background, inside pickready.generate_candidate_questions.
+    "question_generation",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
     # ── Web research (BD Portal AI Reach, Company Profile research) ──
@@ -274,6 +277,8 @@ MODEL_FOR_TASK: dict[str, str] = {
     # one of them in the sandbox. Writing that is correct under execution is
     # the hardest writing task in the product, so it is Terra.
     "coding_question_generation": MODEL_TERRA,
+    # Writes the per-candidate questions every answer is judged against.
+    "question_generation": MODEL_TERRA,
     # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
     # 2026-09-08. That was the single reason AI Reach returned two or three
     # companies and a researched company profile read thin, and it is the same
@@ -465,6 +470,8 @@ TASK_TIMEOUTS: dict[str, float] = {
     # assessment asks for: four starter programs, up to thirteen tests and a
     # reference solution in one JSON object.
     "coding_question_generation": 90.0,
+    # Background: one call writes every prose question for one candidate.
+    "question_generation": 60.0,
     # IMMEDIATE interactive. A candidate has just submitted a fill-blank
     # answer and is waiting for the next question; the equivalence check runs
     # only when the exact match failed. Same cap as `conversation_turn`, for
@@ -521,6 +528,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     # the sandbox's verdict, so a third router attempt would buy less than a
     # second loop attempt does.
     "coding_question_generation": 180.0,
+    "question_generation": 140.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -590,6 +598,8 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "answer_evaluation": 4096,
     # Four starter programs, a reference solution and up to thirteen tests.
     "coding_question_generation": 8192,
+    # Up to fifteen questions of about eighty tokens, with JSON around them.
+    "question_generation": 4096,
     # A boolean and one sentence of reason.
     "fill_blank_equivalence": 256,
 }
@@ -652,6 +662,9 @@ TASK_TEMPERATURE: dict[str, float] = {
     # Writes one coding problem and its tests. Same tier as the other question
     # writers; correctness is enforced by the sandbox, not by the sampler.
     "coding_question_generation": 0.4,
+    # WRITES, never judges: phrasing may vary per candidate; WHAT is asked is
+    # fixed by the contract and the composer, not by the sampler.
+    "question_generation": 0.4,
     "jd_generation": 0.5,
     "swot_analysis": 0.5,
     # Proposes a list a person edits. Low: the same JD and SWOT should not
@@ -720,6 +733,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
     "coding_question_generation": 2,
+    "question_generation": 3,
     # TWO, NOT THREE, and both are interactive. Measured on the live pilot
     # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
     # full attempt on it, and the retry alone consumed more than the remaining
@@ -1263,6 +1277,8 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     # its task's worst case (`test_router_recovery`). The same row as the
     # other 8192-token background writers.
     "coding_question_generation": 0.40,
+    # 4096 output tokens on the reasoning tier, the behavioral_assessment row.
+    "question_generation": 0.25,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of

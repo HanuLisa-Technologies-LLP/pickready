@@ -10,10 +10,8 @@ from app.services import application_validation
 from app.services import functional_assessment as fa
 from app.services import gap_analysis
 from app.services import ppi
-from app.services.assessment_questions import budget as question_budget
 from app.services import rating
 from app.services.functional_assessment import (
-    GRADE_QUESTION_RANGES,
     _fallback_remark_25,
     _fallback_remark_45,
     _unanswered_remark,
@@ -28,61 +26,10 @@ GRADES = ("non_managerial", "managerial", "leadership", "cxo")
 
 
 # ── Question counts ──────────────────────────────────────────────────────────
-
-def test_question_ranges_follow_the_grade_table() -> None:
-    """Master Directive Part 3 §6 — the non-STEM column, with seniority now
-    ADDING questions rather than removing them.
-
-    A RANGE per grade, not a count. The count is resolved once per job from how
-    many items that job's matrix actually holds, so two jobs at the same grade
-    can legitimately ask a different number of questions while two candidates on
-    ONE job never can.
-    """
-    assert GRADE_QUESTION_RANGES == {
-        "non_managerial": (12, 18),
-        "managerial": (15, 22),
-        "leadership": (18, 25),
-        "cxo": (18, 25),
-    }
-    assert question_budget.STEM_GRADE_QUESTION_RANGES == {
-        "non_managerial": (18, 28),
-        "managerial": (22, 35),
-        "leadership": (25, 38),
-        "cxo": (25, 38),
-    }
-
-
-@pytest.mark.parametrize("grade,bounds", list(GRADE_QUESTION_RANGES.items()))
-def test_the_resolved_target_never_leaves_its_grade_range(grade, bounds) -> None:
-    low, high = bounds
-    # A matrix smaller than the floor still asks the floor: the surplus goes to
-    # the aspects the typical split weights most heavily, so a four-item matrix
-    # does not become a four-question interview.
-    assert question_budget.resolve_question_target(grade, 1) == low
-    # One question per item in between.
-    assert question_budget.resolve_question_target(grade, low + 1) == low + 1
-    # And never more than the grade allows, whatever the matrix holds.
-    assert question_budget.resolve_question_target(grade, high + 50) == high
-
-
-def test_an_unknown_grade_resolves_as_non_managerial() -> None:
-    assert question_budget.resolve_question_target(None, 15) == 15
-    assert question_budget.max_questions("not-a-grade") == GRADE_QUESTION_RANGES["non_managerial"][1]
-
-
-def test_the_typical_splits_are_illustrative_and_fit_their_own_range() -> None:
-    """Spec §5.4 calls the sub-splits illustrative, and nothing enforces them.
-
-    What must hold is that they are not self-contradictory: a split whose floors
-    already exceeded the grade's total ceiling would describe an interview the
-    product refuses to run.
-    """
-    for grade, (low, high) in GRADE_QUESTION_RANGES.items():
-        split = question_budget.typical_split(grade)
-        assert set(split) == set(ppi.CATEGORIES)
-        assert sum(bounds[0] for bounds in split.values()) <= high
-        assert sum(bounds[1] for bounds in split.values()) >= low
-
+#
+# The per-grade ranges this section pinned were deleted on 2026-09-25: the
+# budget is one question per skill above the grade's floor, pinned in
+# `tests/test_question_budget_and_mix.py`.
 
 def test_the_standalone_technical_track_is_gone() -> None:
     """Draft v4 folded technical depth into the matrix's Must-have items.

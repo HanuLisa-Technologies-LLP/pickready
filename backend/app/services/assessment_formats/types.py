@@ -26,6 +26,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.services.coding_assessment import payload as coding_payload
+
 __all__ = [
     "EVIDENCE_BASED",
     "MCQ_SINGLE",
@@ -326,7 +328,15 @@ def is_structured(question_type: str) -> bool:
 
 
 def parse_payload(question_type: str, payload: dict[str, Any] | None) -> BaseModel:
-    """The typed payload, or a ValueError naming what is wrong with it."""
+    """The typed payload, or a ValueError naming what is wrong with it.
+
+    A coding payload dispatches on its version: `payload_version: 2` is the
+    EXECUTED shape (`coding_assessment.payload.CodingPayloadV2`, whose answer
+    key lives in `coding_question_keys`), anything else is the read-only v1
+    shape every coding row written before Phase 4 carries.
+    """
+    if question_type == CODING and coding_payload.is_v2(payload):
+        return coding_payload.parse(payload)
     model = PAYLOAD_MODELS[question_type]
     return model.model_validate(payload or {})
 
@@ -353,8 +363,11 @@ def parse_answer(question_type: str, payload: dict[str, Any] | None, answer: dic
         if len(parsed.values) != len(question_blank.blanks):  # type: ignore[attr-defined]
             raise ValueError("one value per blank is required")
     elif question_type == CODING:
-        question_code = CodingPayload.model_validate(payload or {})
-        permitted = {question_code.language, *question_code.language_options}
+        if coding_payload.is_v2(payload):
+            permitted = set(coding_payload.parse(payload).languages)
+        else:
+            question_code = CodingPayload.model_validate(payload or {})
+            permitted = {question_code.language, *question_code.language_options}
         if parsed.language not in permitted:  # type: ignore[attr-defined]
             raise ValueError("that language is not permitted for this question")
     return parsed
@@ -414,6 +427,11 @@ def candidate_view(question_id: Any, question_type: str, payload: dict[str, Any]
             ],
         }
     if question_type == CODING:
+        if coding_payload.is_v2(payload):
+            # The executed shape carries its own allowlist. Its answer key is
+            # not in the payload at all (`coding_question_keys`), and the
+            # database refuses a coding payload that carries it.
+            return coding_payload.candidate_projection(payload)
         code = CodingPayload.model_validate(payload or {})
         return {
             "language": code.language,

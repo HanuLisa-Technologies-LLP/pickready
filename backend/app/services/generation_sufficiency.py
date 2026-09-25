@@ -60,6 +60,7 @@ on a public page, neutral and precise in an internal report.
 | services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
 | assessment_formats/coding_generation | coding_question_generation.txt | coding_question_generation | candidate-facing | `code_execution.is_enabled()` and a skill name and evidence line |
 | services/yukti/judge          | yukti_matching_system.txt       | yukti_matching            | internal         | `grounding` over every tag and quote; a failure is `not_assessed`, never a default |
+| assessment_questions/generate | assessment_question_generation.txt | question_generation | candidate-facing | a saved, invited contract (`ContractNotReady`, `LookupError`); a template, recorded, for any slot not written |
 | services/swot_analysis        | swot_analysis_system.txt        | swot_analysis             | internal         | `swot_input_state` |
 | services/outreach_content     | outreach_email_system.txt       | email_composition         | candidate-facing | `outreach_state` |
 | services/outreach_content     | email_generation.txt            | email_composition         | candidate-facing | `outreach_state` |
@@ -162,6 +163,10 @@ GATED_PROMPTS: tuple[str, ...] = (
     # is candidate-facing, and a model narrating how thin the role summary was
     # would put that narration in front of every candidate on the job.
     "coding_question_generation",
+    # Phase 3 WP2 (Vivekium release): the per-candidate prose questions. Every
+    # line is read by a candidate, so a model narrating the resume it was
+    # given would put that narration in front of the person being assessed.
+    "assessment_question_generation",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
 #: The few-shot block every gated prompt carries, and the fence around the one

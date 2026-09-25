@@ -82,6 +82,8 @@ _RENDER_VALUES: dict[str, dict[str, object]] = {
     # The executed coding question (Phase 4). No placeholders: everything
     # that varies arrives in the user message as JSON.
     "coding_question_generation": {},
+    # The per-candidate prose questions (Phase 3 WP2). No placeholders either.
+    "assessment_question_generation": {},
 }
 
 #: The gated prompts loaded by `app.prompts` (str.format) rather than by the

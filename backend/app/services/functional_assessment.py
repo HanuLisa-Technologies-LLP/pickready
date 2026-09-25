@@ -103,7 +103,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CATEGORY_TECHNICAL",
     "GRADES",
-    "GRADE_QUESTION_RANGES",
     "MATCHING_DIMENSIONS",
     "PROBE_REMARK_WORDS",
     "RADAR_BANDS",
@@ -115,18 +114,15 @@ __all__ = [
     "infer_grade",
     "infer_grade_fallback",
     "must_have_cap_applies",
-    "portable_evidence_nodes",
     "rating_label",
     "run_assessment",
     "word_count",
 ]
 
-#: Re-exported so a caller has one import for the whole assessment contract.
-#: Ranges, not counts: Draft v4 resolves a total per JOB from the grade's range
-#: and the size of that job's matrix (spec §5.4).
-GRADE_QUESTION_RANGES = question_budget.GRADE_QUESTION_RANGES
-
-GRADE_NAMES: tuple[str, ...] = tuple(GRADE_QUESTION_RANGES)
+#: The four grades. How many questions a grade is asked is
+#: `assessment_questions.budget` (one per skill above the grade's floor); the
+#: per-grade ranges this module re-exported were deleted on 2026-09-25.
+GRADE_NAMES: tuple[str, ...] = question_budget.GRADES
 
 # ── The AI Score's matching categories (spec §3.2) ───────────────────────────
 # NO WEIGHTS. The spec is explicit: "make sure there are no mathematical
@@ -1718,47 +1714,6 @@ async def _declared_employments(
     ]
 
 
-def portable_evidence_nodes(state: "AssessmentState") -> tuple[Any, ...]:
-    """The citable "this rests on the portable record" nodes for this report.
-
-    DERIVED FROM THE QUESTION ROWS, NEVER RECOMPUTED FROM THE COVERAGE RULE.
-    `candidate_questions.prefill_source` is the durable record of what actually
-    happened when this candidate's assessment was built; re-running
-    `portable_evidence.coverage` here would answer a question about today's
-    record, and a portable fact could have been added or retired since. A
-    report is a permanent record of what it was written from, so the citation
-    has to come from the row that was written, the same argument that keeps
-    `report_dimensions.required_level` copied rather than joined.
-
-    Returns a node per rated ITEM, not per question: several questions can
-    probe one criterion, and one criterion is what a statement cites.
-
-    NO PRIOR GRADE IS READ OR READABLE HERE. The only field consulted is a
-    thirty-character provenance string, and the only field it can be is one of
-    the two values in `resume_prefill._LABEL_FOR_SOURCE`.
-    """
-    from app.services import resume_prefill
-    from app.services.siddhi import evidence as siddhi_evidence
-
-    names: dict[str, str] = {
-        str(competency.id): competency.name
-        for competency in (state.get("competencies") or [])
-    }
-    seen: set[str] = set()
-    nodes: list[Any] = []
-    for question in state.get("candidate_questions") or []:
-        if getattr(question, "prefill_source", None) != (
-            resume_prefill.PREFILL_SOURCE_PORTABLE
-        ):
-            continue
-        name = names.get(str(question.competency_id))
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        nodes.append(siddhi_evidence.portable_node(name))
-    return tuple(nodes)
-
-
 async def _ledger_claims(state: "AssessmentState") -> list[Any]:
     """Every claim recorded against this application, or an empty list.
 
@@ -2164,14 +2119,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
         validation=validation,
         validation_points=points_section,
         claim_evidence=claims_section,
-        # The portable nodes travel the same channel as the employer ones, and
-        # for the same reason: a statement citing "we already held this" has to
-        # be refusable by the same chokepoint as every other statement in the
-        # document. A criterion established by the Portable layer is graded by
-        # THIS job's matrix like any other; what the node adds is where the
-        # evidence under that grade came from (CR 23, 2026-09-22).
-        extra_nodes=claim_evidence.employment_nodes(employments)
-        + portable_evidence_nodes(state),
+        extra_nodes=claim_evidence.employment_nodes(employments),
     )
 
     scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)

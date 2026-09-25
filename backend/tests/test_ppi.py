@@ -7,8 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import ppi, rating
-from app.services.assessment_questions import budget as question_budget
-from app.services.assessment_questions import generate as question_generation
 from app.services import application_validation as av
 from app.services import skills
 from app.services.hiring import scorecard
@@ -239,47 +237,6 @@ def test_a_hand_typed_culture_competency_blocks_the_save() -> None:
     rows = _small_matrix() + [_competency(ppi.CATEGORY_BEHAVIOURAL, "Culture fit")]
     problems = skills.validate_for_save(rows)
     assert problems and "Culture" in problems[0]
-
-
-# ── Per-candidate questions (spec §5.6) ──────────────────────────────────────
-
-def _matrix(per_aspect: int = 5) -> list[SimpleNamespace]:
-    return [
-        SimpleNamespace(id=uuid.uuid4(), category=category,
-                        name=f"{category}-{index}", ordinal=index + 1)
-        for category in ppi.CATEGORIES
-        for index in range(per_aspect)
-    ]
-
-
-def test_allocation_probes_every_item_at_least_once() -> None:
-    competencies = _matrix()
-    plan = question_generation._allocate(competencies, 20, "non_managerial")
-    assert len(plan) == 20
-    assert {row.name for row in plan} == {row.name for row in competencies}
-
-
-def test_allocation_spends_the_remainder_on_the_most_weighted_aspect() -> None:
-    """The typical split is illustrative and nothing enforces it, but it is
-    what decides where a SPARE question goes: whichever aspect the client's
-    table asks the most of."""
-    competencies = _matrix()
-    plan = question_generation._allocate(competencies, 20, "non_managerial")  # 15 items, 5 spare
-    extras = plan[15:]
-    split = question_budget.typical_split("non_managerial")
-    heaviest = max(ppi.CATEGORIES, key=lambda category: split[category][1])
-    assert all(row.category == heaviest for row in extras)
-
-
-def test_seniority_and_stem_both_raise_the_question_count() -> None:
-    # Master Directive Part 3 section 6 inverted the old direction: seniority
-    # now ADDS questions, and a STEM job probes deeper than a non-STEM one at
-    # every grade.
-    assert question_budget.max_questions("cxo") >= question_budget.max_questions("non_managerial")
-    assert question_budget.min_questions("cxo") >= question_budget.min_questions("non_managerial")
-    for grade in ("non_managerial", "managerial", "leadership", "cxo"):
-        assert question_budget.min_questions(grade, "STEM") > question_budget.min_questions(grade)
-        assert question_budget.max_questions(grade, "STEM") > question_budget.max_questions(grade)
 
 
 # ── Mandatory application fields (spec §7) ───────────────────────────────────

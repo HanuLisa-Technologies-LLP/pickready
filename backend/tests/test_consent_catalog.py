@@ -19,12 +19,14 @@ from app.services import consent_catalog as cc
 # ── The catalogue is what the brief specifies ────────────────────────────────
 
 
-def test_the_catalogue_is_two_stages_and_eight_items():
-    assert len(cc.CONSENT_ITEMS) == 8
+def test_the_catalogue_is_two_stages_and_seven_items():
+    # SEVEN since 2026-09-25: change request 23's optional cross-employer
+    # evidence reuse retired with the reuse it authorised
+    # (`consent_catalog.RETIRED_KEYS`, `tests/test_prefill_removed.py`).
+    assert len(cc.CONSENT_ITEMS) == 7
     assert set(cc.STAGE_A_KEYS) == {
         "profile_retention",
         "media_and_records_access",
-        "cross_employer_evidence_reuse",
     }
     assert len(cc.STAGE_B_KEYS) == 5
     # Feature 4's statutory tick rides in Stage B.
@@ -32,28 +34,23 @@ def test_the_catalogue_is_two_stages_and_eight_items():
 
 
 def test_only_the_briefs_own_registration_items_can_block():
-    """Change request 23's cross-employer reuse item is OPTIONAL, and the two
-    sets being different is what stops it from quietly becoming a condition
-    of having a profile at all."""
+    """Every item in the catalogue today is required. `STAGE_A_REQUIRED_KEYS`
+    is still DERIVED from `required` rather than listed, so an optional item
+    added later cannot become a condition of having a profile by accident."""
     assert set(cc.STAGE_A_REQUIRED_KEYS) == {
         "profile_retention",
         "media_and_records_access",
     }
-    assert cc.ITEMS_BY_KEY["cross_employer_evidence_reuse"].required is False
+    assert all(cc.ITEMS_BY_KEY[key].required for key in cc.STAGE_A_KEYS)
     assert all(cc.ITEMS_BY_KEY[key].required for key in cc.STAGE_B_KEYS)
 
 
-def test_cross_employer_reuse_is_its_own_item_and_says_so():
-    """It must not read as a restatement of `profile_retention`. That item is
-    about being CONSIDERED by an employer; this one is about evidence
-    gathered for one employer being reused to establish criteria for
-    another, and it says what declining costs."""
-    reuse = cc.ITEMS_BY_KEY["cross_employer_evidence_reuse"]
-    considered = cc.ITEMS_BY_KEY["profile_retention"]
-    assert reuse.text != considered.text
-    assert "reused to establish the criteria" in reuse.text
-    assert "If I do not agree" in reuse.text
-    assert "employer clients registered on the platform" in reuse.text
+def test_a_retired_key_is_never_a_live_item():
+    """A key cannot be retired and offered at once, and a retired key keeps a
+    date so the record of when it stopped being asked is in the source."""
+    assert not set(cc.RETIRED_KEYS) & set(cc.ITEMS_BY_KEY)
+    for key, retired_on in cc.RETIRED_KEYS.items():
+        assert len(retired_on) == 10 and retired_on[4] == "-", (key, retired_on)
 
 
 def test_the_wording_rules_hold_inside_the_catalogue():
@@ -129,9 +126,6 @@ PINNED_DIGESTS: dict[tuple[str, int], str] = {
     ),
     ("statutory_identifier_verification", 1): (
         "4833d447f743d6f39e5ca9495e04866cce2960ce26d5d5745bb85c2dd19be2fa"
-    ),
-    ("cross_employer_evidence_reuse", 1): (
-        "d7871ec0b0431e7653eb21f78f7b8752bb368feaa5a1c3c4ce882a80173b9adf"
     ),
 }
 

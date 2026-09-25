@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
     backoff_seconds=5.0,
 )
 def generate_candidate_questions(link_id: str):
-    """This candidate's PPI questions, from their resume + the job's framework.
+    """This candidate's questions, written against the job's skills contract.
 
-    Per candidate, unlike the technical bank. Idempotent: a candidate who
-    already has questions keeps exactly those, so a redelivery cannot
-    hand someone a different assessment halfway through.
+    Dispatched after the invitation commits (and again by the start when the
+    questions are missing or were written against a different contract).
+    Idempotent: a candidate who already has questions keeps exactly those, so
+    a redelivery cannot hand someone a different assessment halfway through.
+    An application with no invitation, or a job whose skills are not saved,
+    RAISES: the task fails loudly rather than writing questions nobody can
+    take.
     """
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
@@ -45,9 +49,10 @@ def generate_candidate_questions(link_id: str):
             job = await session.get(Job, link.job_id)
             if job is None:
                 raise ValueError(f"Job {link.job_id} not found")
-            rows = await _generate(session, job, link)
+            result = await _generate(session, job, link)
             await session.commit()
             logger.info(
-                "ppi_questions.generated link_id=%s count=%d", link_id, len(rows)
+                "assessment_questions.task_done link_id=%s count=%d created=%s",
+                link_id, len(result.rows), result.created,
             )
     _run(_task())

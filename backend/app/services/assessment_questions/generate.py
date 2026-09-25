@@ -1,106 +1,136 @@
-"""Per-candidate question generation: the questions that probe a saved matrix.
+"""Per-candidate question generation against the job's skills contract.
 
-Carved out of `services/ppi.py` on 2026-09-24 (PLAN-p3 WP0) as a PURE MOVE,
-with no behaviour change. The matrix is per JOB and lives in `services/ppi`;
-the questions are per CANDIDATE and are generated here from the JD, the saved
-matrix and that candidate's resume. `pickready.generate_candidate_questions`
-(`workers/tasks_questions.py`) is the task that runs it.
+`pickready.generate_candidate_questions` (`workers/tasks_questions.py`) runs
+this after an invitation commits. It writes EVERY question the candidate will
+be asked, once, before they start.
+
+WHAT IT READS
+-------------
+The CONTRACT (`assessment_contract.load_contract_for_conversation`): the
+skills in three buckets with their hidden priorities and evidence lines, the
+role summary Sutra wrote at Save, and the grade. Before any candidate on the
+job has started that is the saved live rows; afterwards it is the locked
+snapshot. The questions record the digest of the contract they were written
+against, and the start compares it with the contract it locks, regenerating
+before the first answer when the two differ.
+
+It never reads the job description, the SWOT or anything carrying
+compensation. The contract is what every candidate is assessed against;
+the job description is recruiter-edited text.
+
+WHAT IT WRITES
+--------------
+The budget is one question per skill above the grade's floor; the mix is
+70/20/10 prose, coding and objective for a coding role, and prose and objective
+otherwise (`budget`). The composer places each family on a skill
+deterministically (`composition.compose`), and the writers fill the content:
+
+  * prose, ONE model call for every slot (`question_generation`), which is
+    also the question any slot is served as if its own writer fails;
+  * evidence anchoring, the Must-have and Nice-to-have prose slots anchored to
+    a quotable item from this candidate's resume (`generation.anchor_evidence`);
+  * objective, one call per slot (`generation.write_structured`);
+  * coding, one EXECUTED question per slot, its reference solution proven in
+    the sandbox (`coding_generation.write_coding_question`).
+
+EVERY ITEM IS ASKED. Nothing is pre-filled from the resume or from another
+employer's record and nothing is trimmed: this SUPERSEDES the resume pre-fill
+(C2) and the portable layer (CR 23), and no row this module writes carries a
+pre-filled answer.
+
+A DEGRADATION IS A RECORD, NEVER A SHORTFALL
+--------------------------------------------
+A coding or objective slot its writer could not fill is served as the prose
+question already written for its skill, and the reason is recorded. A prose
+slot the model could not write is served from a deterministic angle and its
+row carries no `generated_at`, so template text is never recorded as
+generation. All of it lands in the conversation's composition record
+(`assessment_conversations.composition_json`), which the report's provenance
+reads.
 """
 from __future__ import annotations
 
 import json
 import logging
-from itertools import cycle
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import CandidateQuestion, JobCompetency
+from app.models.assessment import AssessmentConversation, CandidateQuestion
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
+from app.prompts import registry
 from app.services import (
-    consent_catalog,
+    agent_loop,
+    assessment_contract,
+    code_execution,
+    conversation_guardrails,
     llm_router,
-    portable_evidence,
 )
-from app.services.assessment_formats import composition, generation
+from app.services.assessment_contract import (
+    BUCKET_BEHAVIOURAL,
+    BUCKET_MUST_HAVE,
+    AssessmentContract,
+    ContractSkill,
+)
+from app.services.assessment_formats import coding_generation, composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types as question_types
-from app.prompts import registry
-from app.services.assessment_questions.budget import (
-    DEFAULT_GRADE,
-    resolve_question_target,
-    typical_split,
-)
-from app.services.ppi import (
-    CATEGORIES,
-    load_framework,
-)
+from app.services.assessment_questions import budget
+from app.services.generation_sufficiency import meta_commentary_defects
+from app.services.stem_classification import STEM
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "COMPOSITION_RECORD_VERSION",
+    "GENERIC_ANGLES",
+    "PROMPT_NAME",
+    "QuestionSet",
+    "TASK_TYPE",
     "generate_candidate_questions",
-    "portable_coverage",
 ]
 
+TASK_TYPE = "question_generation"
+PROMPT_NAME = "assessment_question_generation"
+#: The shape of `assessment_conversations.composition_json`. Bumped when a
+#: reader would need to tell two shapes apart.
+COMPOSITION_RECORD_VERSION = 1
 
-# ── Per-candidate question generation (spec §5.6) ────────────────────────────
+#: The degradation reason when an objective writer produced nothing usable.
+OBJECTIVE_GENERATION_FAILED = "objective_generation_failed"
 
-
-def _allocation_priority(grade: str | None) -> dict[str, int]:
-    """Which aspect gets a surplus question first.
-
-    Ordered by the typical split's own weighting for this grade: whichever
-    aspect the client's table asks the most of is the one a spare question goes
-    to. That keeps the illustrative splits doing what the spec says they are for
-    -- shaping a balanced interview -- without any of them being enforced.
-    """
-    split = typical_split(grade)
-    ordered = sorted(CATEGORIES, key=lambda category: -split[category][1])
-    return {category: index for index, category in enumerate(ordered)}
-
-
-def _allocate(
-    competencies: list[JobCompetency], total: int, grade: str | None
-) -> list[JobCompetency]:
-    """Spread `total` questions across the matrix, one per item first.
-
-    Every item must be probed at least once -- an unprobed item still gets a
-    grade and a remark in the report, and grading something the candidate was
-    never asked about is exactly the unfair output the review gate exists to
-    prevent. `matrix_is_complete` refuses a matrix bigger than `total`, so the
-    truncation below is unreachable through the product's own save path and
-    exists only so a hand-written row cannot make this function lie about its
-    length.
-    """
-    if not competencies:
-        return []
-    plan = list(competencies[:total])
-    if len(plan) >= total:
-        return plan
-    priority = _allocation_priority(grade)
-    extras = cycle(
-        sorted(competencies, key=lambda row: (priority[row.category], row.ordinal))
-    )
-    while len(plan) < total:
-        plan.append(next(extras))
-    return plan
-
-
-#: Text in `app/prompts/ppi_candidate_questions_system.txt`, loaded through the
-#: registry so a wording change is a versioned diff in a prompt file rather than
-#: a string literal in a module of code.
-_QUESTION_SYSTEM_PROMPT = registry.render("ppi_candidate_questions_system")
-
-_GENERIC_ANGLES: tuple[str, ...] = (
+#: Deterministic prose angles, used ONLY for a slot the model did not write.
+#: A row asked from one of these carries no `generated_at`.
+GENERIC_ANGLES: tuple[str, ...] = (
     "Tell me about a specific situation where {name} was decisive in your work. What did you personally do, and what was the outcome?",
     "Walk me through the most demanding piece of work you have done involving {name}. What made it hard, and how did you handle it?",
     "Describe a time your approach to {name} did not work. What did you change, and what happened next?",
     "Give me a concrete example of {name} in your recent work, including what you decided and how you knew it was right.",
     "How have you developed {name} over your career? Give one example that shows the difference it made.",
 )
+
+
+@dataclass(frozen=True)
+class QuestionSet:
+    """What one generation produced: the rows, and the record of how."""
+
+    rows: tuple[CandidateQuestion, ...]
+    #: True when this call wrote the rows; False when they already existed and
+    #: were returned untouched (a redelivered task).
+    created: bool
+    #: The composition record stamped on the conversation, for a set this call
+    #: wrote. INTERNAL: counts and reasons for the report's provenance, never
+    #: serialised to a client. None for a set that already existed: its record
+    #: is the one stamped when it was written.
+    composition: dict[str, Any] | None = None
+
+
+# ── Inputs ───────────────────────────────────────────────────────────────────
 
 
 def _resume_excerpt(profile: Profile | None) -> str:
@@ -121,25 +151,399 @@ def _resume_excerpt(profile: Profile | None) -> str:
     return "\n".join(part for part in parts if part)
 
 
-async def generate_candidate_questions(
+async def _conversation(session: AsyncSession, link: JobCandidateLink) -> AssessmentConversation:
+    """The invitation. An application nobody invited is never given questions:
+    the row IS the invitation, and questions without one would be an
+    assessment reachable by guessing a URL."""
+    conversation = (
+        await session.execute(
+            select(AssessmentConversation).where(
+                AssessmentConversation.job_candidate_link_id == link.id
+            )
+        )
+    ).scalar_one_or_none()
+    if conversation is None:
+        raise LookupError(
+            f"application {link.id} has no assessment invitation, so it has no questions to write"
+        )
+    return conversation
+
+
+async def _contract(
+    session: AsyncSession, job: Job, conversation: AssessmentConversation
+) -> AssessmentContract:
+    contract = await assessment_contract.load_contract_for_conversation(session, conversation.id)
+    if not contract.locked and not await assessment_contract.skills_saved(session, job.id):
+        raise assessment_contract.ContractNotReady()
+    buckets = {skill.bucket for skill in contract.skills}
+    if BUCKET_MUST_HAVE not in buckets or BUCKET_BEHAVIOURAL not in buckets:
+        # The skills rules refuse to save such a contract, so this is a defect
+        # upstream rather than a state to write questions around.
+        raise assessment_contract.ContractNotReady(
+            "The saved skills need at least one Must-have and one Behavioural "
+            "skill before questions can be written."
+        )
+    return contract
+
+
+# ── Prose: one call, every slot ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _ProseAttempt:
+    valid: dict[int, str]
+    reasons: tuple[str, ...]
+
+
+def _parse_prose(raw: str, *, total: int, max_chars: int) -> _ProseAttempt:
+    parsed = json.loads(raw)
+    items = parsed.get("questions") if isinstance(parsed, dict) else None
+    if not isinstance(items, list):
+        return _ProseAttempt({}, ("return a 'questions' list",))
+    valid: dict[int, str] = {}
+    reasons: list[str] = []
+    seen: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            reasons.append("every entry needs an integer 'index' from the slots list")
+            continue
+        if not 0 <= index < total:
+            reasons.append(f"index {index} is not one of the slots")
+            continue
+        prompt = " ".join(str(item.get("prompt") or "").split())
+        problems: list[str] = []
+        if len(prompt) < generation.MIN_PROMPT_CHARS:
+            problems.append("write a complete question")
+        if len(prompt) > max_chars:
+            problems.append(f"keep it under {max_chars} characters")
+        if conversation_guardrails.inspect_agent_output(prompt) != prompt:
+            problems.append("never state a score, a grade, a number about the candidate or how the answer is judged")
+        if meta_commentary_defects(prompt):
+            problems.append("ask about the candidate's work, never about the information you were given")
+        key = prompt.casefold()
+        if key in seen:
+            problems.append(f"it repeats the question for index {seen[key]}; ask from a different angle")
+        if problems:
+            reasons.append(f"index {index}: " + "; ".join(problems))
+            continue
+        seen[key] = index
+        valid[index] = prompt
+    missing = [index for index in range(total) if index not in valid]
+    if missing:
+        reasons.append("write one question for every slot index; missing " + ", ".join(map(str, missing)))
+    return _ProseAttempt(valid, tuple(reasons))
+
+
+async def _write_prose(
     session: AsyncSession,
-    job: Job,
-    link: JobCandidateLink,
     *,
-    grade: str | None = None,
-) -> list[CandidateQuestion]:
-    """Generate this candidate's questions against the job's saved matrix.
+    job: Job,
+    contract: AssessmentContract,
+    slots: list[composition.Slot],
+    skills: dict[uuid.UUID, ContractSkill],
+    resume_excerpt: str,
+    resume_text: str,
+    project_evidence: str,
+) -> tuple[list[str], list[bool]]:
+    """One question per slot. Returns (prompts, generated) in slot order.
 
-    Idempotent: a candidate who already has questions keeps exactly those. Two
-    candidates on the same job get DIFFERENT questions probing the SAME matrix
-    -- that is what makes their reports comparable while keeping each
-    conversation relevant to the person in it (spec §5.6).
-
-    These rows are the WHOLE conversation now. A Must-have or Nice-to-have row
-    is re-written with its own rubric at the moment it is asked
-    (`services/ppi_interview.write_question`); the prompt stored here is the
-    deterministic probe that is asked if that generation is unavailable.
+    Inside the bounded loop with deterministic criteria. The loop never raises;
+    what it could not write, the deterministic angles supply, and the slot is
+    recorded as NOT generated.
     """
+    system = registry.render(PROMPT_NAME)
+    max_chars = generation.max_prompt_chars()
+    payload = {
+        "job": {"title": job.title, "grade": contract.grade},
+        "role_summary": contract.role_summary,
+        "slots": [
+            {
+                "index": slot.index,
+                "bucket": slot.category,
+                "skill": slot.skill_name,
+                "what_good_evidence_looks_like": skills[slot.competency_id].evidence_line,
+            }
+            for slot in slots
+        ],
+        "resume_summary": resume_excerpt,
+        "candidate_resume": resume_text[:6000],
+        "project_evidence": project_evidence,
+    }
+    best: dict[int, str] = {}
+
+    async def execute(reflection: str) -> _ProseAttempt:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload)},
+        ]
+        if reflection:
+            messages.append({"role": "user", "content": reflection})
+        raw = await llm_router.invoke_llm(
+            TASK_TYPE, messages, response_format_json=True, session=session
+        )
+        attempt = _parse_prose(raw, total=len(slots), max_chars=max_chars)
+        if len(attempt.valid) >= len(best):
+            best.clear()
+            best.update(attempt.valid)
+        return attempt
+
+    def evaluate(value: _ProseAttempt) -> agent_loop.Critique:
+        return agent_loop.reject(*value.reasons) if value.reasons else agent_loop.ok()
+
+    result = await agent_loop.run_loop(
+        name="assessment_question_generation",
+        execute=execute,
+        evaluate=evaluate,
+        fallback=_ProseAttempt({}, ()),
+        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
+        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
+    )
+    # A degraded run keeps the valid subset of its best attempt: each of
+    # those passed the same deterministic checks one by one, so using them is
+    # declining to discard work that happened, not substituting for work that
+    # did not. Everything else is a recorded template.
+    written = dict(best) if result.degraded else dict(result.value.valid)
+    if result.degraded:
+        logger.warning(
+            "assessment_questions.prose_degraded slots=%d written=%d attempts=%d",
+            len(slots), len(written), result.attempts,
+        )
+    prompts: list[str] = []
+    generated: list[bool] = []
+    used: set[str] = {prompt.casefold() for prompt in written.values()}
+    for slot in slots:
+        prompt = written.get(slot.index)
+        if prompt is not None:
+            prompts.append(prompt)
+            generated.append(True)
+            continue
+        chosen = GENERIC_ANGLES[slot.index % len(GENERIC_ANGLES)].format(name=slot.skill_name)
+        for offset in range(len(GENERIC_ANGLES)):
+            candidate = GENERIC_ANGLES[(slot.index + offset) % len(GENERIC_ANGLES)].format(
+                name=slot.skill_name
+            )
+            if candidate.casefold() not in used:
+                chosen = candidate
+                break
+        used.add(chosen.casefold())
+        prompts.append(chosen)
+        generated.append(False)
+    return prompts, generated
+
+
+# ── Coding: executed, one per slot ───────────────────────────────────────────
+
+
+async def _write_coding(
+    session: AsyncSession,
+    *,
+    job: Job,
+    contract: AssessmentContract,
+    slots: list[composition.Slot],
+    skills: dict[uuid.UUID, ContractSkill],
+    prose: list[str],
+    generated: list[bool],
+) -> None:
+    """Fill every coding slot with a sandbox-proven draft, or degrade it.
+
+    A sandbox that is disabled or unreachable LATCHES: every later coding slot
+    is degraded with the same reason and no further model call is made,
+    because asking the model again cannot fix a sandbox.
+    """
+    latched: str | None = None
+    avoid = list(await coding_generation.issued_titles(session, job_id=job.id))
+    for slot in slots:
+        if slot.question_type != question_types.CODING:
+            continue
+        if latched is not None:
+            composition.degrade_to_prose(slot, latched, prose[slot.index], generated=generated[slot.index])
+            continue
+        outcome = await coding_generation.write_coding_question(
+            session,
+            job=job,
+            contract_skill=skills[slot.competency_id],
+            role_summary=contract.role_summary,
+            grade=contract.grade,
+            avoid_titles=tuple(avoid),
+        )
+        if outcome.draft is None:
+            reason = str(outcome.refusal)
+            composition.degrade_to_prose(slot, reason, prose[slot.index], generated=generated[slot.index])
+            if reason in (
+                coding_generation.REFUSAL_EXECUTION_DISABLED,
+                coding_generation.REFUSAL_EXECUTION_UNAVAILABLE,
+            ):
+                latched = reason
+            continue
+        slot.coding_draft = outcome.draft
+        slot.prompt = outcome.draft.statement
+        slot.generated = True
+        avoid.append(outcome.draft.title)
+
+
+# ── Anchoring and objective: the bounded composition loop ────────────────────
+
+
+async def _fill_and_validate(
+    session: AsyncSession,
+    *,
+    job: Job,
+    contract: AssessmentContract,
+    slots: list[composition.Slot],
+    skills: dict[uuid.UUID, ContractSkill],
+    mix: budget.Mix,
+    prose: list[str],
+    generated: list[bool],
+    resume_text: str,
+    resume_excerpt: str,
+    project_evidence: str,
+) -> None:
+    conf = format_config.get_config()
+    failures: list[str] = []
+    for attempt in range(1, conf.composition_attempts + 1):
+        anchored, anchor_result = await generation.anchor_evidence(
+            session,
+            job=job,
+            slots=slots,
+            skills=skills,
+            role_summary=contract.role_summary,
+            resume_text=resume_text,
+            resume_excerpt=resume_excerpt,
+            project_evidence=project_evidence,
+            prior_failures=failures,
+        )
+        for slot in slots:
+            if slot.question_type != question_types.EVIDENCE_BASED:
+                continue
+            written = anchored.get(slot.index)
+            if written is None:
+                continue
+            slot.prompt = written.prompt
+            slot.resume_anchor = written.resume_anchor
+            slot.payload = dict(written.payload)
+            slot.generated = True
+        for slot in slots:
+            if composition.family_of(slot.question_type) != composition.FAMILY_OBJECTIVE or slot.payload:
+                continue
+            result = await generation.write_structured(
+                session,
+                job=job,
+                skill=skills[slot.competency_id],
+                role_summary=contract.role_summary,
+                slot=slot,
+                resume_excerpt=resume_excerpt,
+            )
+            if result.value is None:
+                continue
+            slot.prompt = result.value.prompt
+            slot.payload = dict(result.value.payload)
+            slot.rubric = result.value.rubric
+            slot.generated = True
+        failures = composition.validate(slots, mix=mix, skills=contract.skills)
+        logger.info(
+            "assessment_questions.composition_validated attempt=%d anchored=%d "
+            "anchoring_degraded=%s failures=%d",
+            attempt, len(anchored), anchor_result.degraded, len(failures),
+        )
+        if not failures:
+            return
+
+    # Deterministic and always valid: an unanchored evidence slot is asked as
+    # the prose question already written for its skill, and an objective slot
+    # with no payload is degraded to prose with its reason recorded.
+    composition.fall_back(slots, prose, generated=generated)
+    remaining = composition.validate(slots, mix=mix, skills=contract.skills)
+    if remaining:
+        # Unreachable by construction of `fall_back`, and loud if that
+        # construction is ever broken: a candidate must never be served an
+        # assessment the validator refused.
+        raise RuntimeError(
+            f"the assessment composition is still invalid after the fallback: {remaining}"
+        )
+
+
+# ── The record ───────────────────────────────────────────────────────────────
+
+
+def _record(
+    *,
+    contract: AssessmentContract,
+    floor: int,
+    total: int,
+    eligibility: budget.CodingEligibility,
+    mix: budget.Mix,
+    slots: list[composition.Slot],
+) -> dict[str, Any]:
+    return {
+        "version": COMPOSITION_RECORD_VERSION,
+        "contract_digest": contract.digest,
+        "contract_version": contract.version,
+        "grade": contract.grade,
+        "skill_count": len(contract.skills),
+        "floor": floor,
+        "budget": total,
+        "coding": {
+            "eligible": eligibility.eligible,
+            "excluded_reason": eligibility.excluded_reason,
+        },
+        "planned": mix.as_dict(),
+        "served": composition.served_mix(slots),
+        "degraded": [
+            {
+                "ordinal": slot.index + 1,
+                "skill_id": str(slot.competency_id),
+                "planned": slot.planned_family,
+                "reason": slot.degradation,
+            }
+            for slot in slots
+            if slot.degradation
+        ],
+        "templated": [slot.index + 1 for slot in slots if not slot.generated],
+        "unanchored": [
+            slot.index + 1
+            for slot in slots
+            if slot.category != BUCKET_BEHAVIOURAL
+            and slot.planned_family == composition.FAMILY_PROSE
+            and slot.question_type == question_types.SHORT_ANSWER
+        ],
+    }
+
+
+def _stamp(
+    conversation: AssessmentConversation, contract: AssessmentContract, record: dict[str, Any]
+) -> None:
+    """Record on the invitation what these questions were written against.
+
+    The start compares `questions_contract_digest` with the contract it locks
+    and regenerates before the first answer when they differ (NULL counts as a
+    difference). The columns are migration 0123's (Phase 3 WP3).
+    """
+    conversation.questions_contract_digest = contract.digest
+    conversation.questions_contract_version = contract.version
+    conversation.composition_json = record
+
+
+# ── The entry point ──────────────────────────────────────────────────────────
+
+
+async def generate_candidate_questions(
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> QuestionSet:
+    """Write this candidate's questions against the job's contract. Idempotent.
+
+    A candidate who already has questions keeps exactly those, so a
+    redelivered task cannot hand somebody a different assessment. Raises
+    `LookupError` for an application with no invitation and
+    `assessment_contract.ContractNotReady` for a job whose skills are not
+    saved; both fail the task loudly rather than writing an assessment nobody
+    can take or nobody agreed to.
+    """
+    conversation = await _conversation(session, link)
     existing = (
         await session.execute(
             select(CandidateQuestion)
@@ -148,198 +552,75 @@ async def generate_candidate_questions(
         )
     ).scalars().all()
     if existing:
-        return list(existing)
+        return QuestionSet(rows=tuple(existing), created=False)
 
-    # GATE G1. Questions are written against the job's criteria, so a job with
-    # no approved, frozen matrix has nothing to write them against. This used to
-    # generate one on demand, which meant a candidate could be asked questions
-    # derived from criteria nobody had reviewed -- and then graded against them.
-    from app.services.hiring import scorecard  # noqa: PLC0415
-
-    await scorecard.require_frozen_matrix(session, job.id)
-    framework = await load_framework(session, job.id)
-    grade = grade or job.assessment_grade or DEFAULT_GRADE
-    # The job's resolved target, not a per-candidate decision. Falls back to
-    # resolving it now for a job whose matrix predates `question_target`.
-    total = job.question_target or resolve_question_target(
-        grade, len(framework), job.role_classification
+    contract = await _contract(session, job, conversation)
+    skills = {skill.id: skill for skill in contract.skills}
+    floor = budget.question_floor(contract.grade)
+    total = budget.question_budget(contract.grade, len(contract.skills))
+    eligibility = budget.coding_eligibility(
+        role_classification=job.role_classification,
+        job_title=job.title,
+        execution_enabled=code_execution.is_enabled(),
     )
-    allocation = _allocate(framework, total, grade)
-    if not allocation:
-        return []
+    mix = budget.mix(total, coding=eligibility.eligible)
+    allocation = composition.allocate(
+        contract.skills, total, stem=job.role_classification == STEM
+    )
+    slots = composition.compose(allocation, mix=mix, grade=contract.grade)
 
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None
-    # Project Evidence Intelligence: the derived evidence block (claims and
-    # observations labelled, validation areas named) joins the resume in the
-    # generation context, so a candidate's questions can probe what their
-    # projects actually show. Context only -- it moves no weight, no grade and
-    # no report section, and an empty string for a candidate with no projects
-    # changes nothing.
+    resume_text = (profile.resume_text or "") if profile is not None else ""
+    resume_excerpt = _resume_excerpt(profile)
+    # Project Evidence Intelligence: context only. It moves no weight and no
+    # grade, and an empty block for a candidate with no projects changes
+    # nothing.
     from app.services.projects import context as project_context  # noqa: PLC0415
 
-    project_evidence_block = await project_context.candidate_project_context(
+    project_evidence = await project_context.candidate_project_context(
         session, link.candidate_id
     )
-    prompts: dict[int, str] = {}
-    try:
-        raw = await llm_router.chat_completion(
-            "behavioral_assessment",
-            [
-                {"role": "system", "content": _QUESTION_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "job": {
-                                "title": job.title,
-                                "grade": grade,
-                                "jd": job.jd_json,
-                            },
-                            "allocation": [
-                                {
-                                    "index": index,
-                                    "category": row.category,
-                                    "name": row.name,
-                                    "measures": row.description,
-                                }
-                                for index, row in enumerate(allocation)
-                            ],
-                            "candidate_resume": _resume_excerpt(profile),
-                            "project_evidence": project_evidence_block,
-                        }
-                    ),
-                },
-            ],
-            response_format_json=True,
-            session=session,
-        )
-        for item in json.loads(raw).get("questions", []):
-            if not isinstance(item, dict):
-                continue
-            try:
-                index = int(item["index"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            prompt = str(item.get("prompt") or "").strip()
-            if 0 <= index < len(allocation) and len(prompt) >= 15:
-                prompts[index] = prompt
-    except Exception:
-        logger.warning(
-            "ppi.questions.llm_unavailable link_id=%s, using matrix-derived questions",
-            link.id,
-        )
 
-    base_prompts: list[str] = []
-    seen_prompts: set[str] = set()
-    for index, competency in enumerate(allocation):
-        prompt = prompts.get(index) or _GENERIC_ANGLES[index % len(_GENERIC_ANGLES)].format(
-            name=competency.name
-        )
-        # A model that repeats itself would collapse several items into one
-        # probe; fall back to a distinct angle rather than storing a duplicate
-        # the candidate would visibly be asked twice.
-        if prompt.casefold() in seen_prompts:
-            for offset in range(len(_GENERIC_ANGLES)):
-                alternative = _GENERIC_ANGLES[(index + offset) % len(_GENERIC_ANGLES)].format(
-                    name=competency.name
-                )
-                if alternative.casefold() not in seen_prompts:
-                    prompt = alternative
-                    break
-        seen_prompts.add(prompt.casefold())
-        base_prompts.append(prompt)
-
-    # The format of every slot, and the content of the ones that are not
-    # plain text. The text question written above is what every slot falls
-    # back to, so nothing below can leave a slot with nothing to ask.
-    slots = await _compose_formats(
+    prose, generated = await _write_prose(
         session,
-        job,
-        allocation,
-        grade=grade,
-        base_prompts=base_prompts,
-        profile=profile,
-        project_evidence_block=project_evidence_block,
+        job=job,
+        contract=contract,
+        slots=slots,
+        skills=skills,
+        resume_excerpt=resume_excerpt,
+        resume_text=resume_text,
+        project_evidence=project_evidence,
     )
-    # ── Resume pre-fill and the asked-question ceiling (feature 2, C2) ──────
-    # A criterion the resume already evidences (a substantive anchor AND the
-    # skill on the candidate's own parsed claim list) is recorded rather than
-    # asked; whatever would still be ASKED past the ceiling is trimmed lowest
-    # weight first, and never created at all. The trim is per candidate by
-    # ruling: the owner traded fixed-count comparability for speed, and the
-    # criteria ORDER stays deterministic per job.
-    from app.core.config import get_settings as _get_settings
-    from app.services import resume_prefill
-
-    # ── The Portable layer, mapped against THIS job's matrix (CR 23) ────────
-    #
-    # Owner ruling 2026-09-22. A criterion the candidate's PORTABLE record
-    # already establishes is recorded rather than asked, exactly as a resume
-    # pre-fill is, and for the same reason: nobody should be made to re-type a
-    # fact the platform already holds.
-    #
-    # THE CRITERION IS NEVER DROPPED FROM THE MATRIX. Its row is still
-    # created, still carries its rubric, still carries its required level and
-    # is still graded and charted. What changes is where the evidence for it
-    # came from, and `prefill_source` says so on the row. A criterion that
-    # vanished because the record covered it would be the "insufficient
-    # evidence is not negative evidence" rule failing in its other direction:
-    # an item nobody grades.
-    #
-    # PORTABLE IS TRIED FIRST, resume anchor second. A portable fact is the
-    # stronger record of the two: it carries an originator, a date and a
-    # locator, and one of its kinds was written by somebody other than the
-    # candidate. The resume anchor is the weaker fallback, not the default.
-    coverage = await portable_coverage(session, job, link)
-    covered = coverage.by_name()
-
-    text_types = frozenset(
-        {question_types.EVIDENCE_BASED, question_types.SHORT_ANSWER}
-    )
-    prefills: dict[int, str] = {}
-    sources: dict[int, str] = {}
     for slot in slots:
-        competency = allocation[slot.index]
-        established = covered.get(competency.name)
-        if established is not None and slot.question_type in text_types:
-            prefills[slot.index] = portable_evidence.prefill_text(established)
-            sources[slot.index] = resume_prefill.PREFILL_SOURCE_PORTABLE
-            continue
-        answer = resume_prefill.evidence_for(
-            competency_name=competency.name,
-            # THE ARGUMENT THAT CLOSES THE DEFECT. Until 2026-09-22 this call
-            # passed no category at all, so a Behavioural competency whose name
-            # appeared in the parsed skills was pre-filled and skipped. Every
-            # behavioural dimension is freshly assessed, always.
-            category=competency.category,
-            resume_anchor=slot.resume_anchor,
-            parsed_fields=profile.parsed_fields_json if profile else None,
-            question_type=slot.question_type,
-            text_types=text_types,
-        )
-        if answer is not None:
-            prefills[slot.index] = answer
-            sources[slot.index] = resume_prefill.PREFILL_SOURCE_RESUME
-    trimmed = resume_prefill.trim_to_ceiling(
-        slots,
-        prefilled_indexes=set(prefills),
-        ceiling=_get_settings().assessment_question_ceiling,
+        slot.prompt = prose[slot.index]
+        slot.generated = generated[slot.index]
+    await _write_coding(
+        session,
+        job=job,
+        contract=contract,
+        slots=slots,
+        skills=skills,
+        prose=prose,
+        generated=generated,
     )
-    if prefills or trimmed:
-        logger.info(
-            "ppi.questions.resume_aware link_id=%s prefilled=%d portable=%d "
-            "trimmed=%d",
-            link.id,
-            len(prefills),
-            sum(
-                1
-                for source in sources.values()
-                if source == resume_prefill.PREFILL_SOURCE_PORTABLE
-            ),
-            len(trimmed),
-        )
-    rows: list[CandidateQuestion] = [
-        CandidateQuestion(
+    await _fill_and_validate(
+        session,
+        job=job,
+        contract=contract,
+        slots=slots,
+        skills=skills,
+        mix=mix,
+        prose=prose,
+        generated=generated,
+        resume_text=resume_text,
+        resume_excerpt=resume_excerpt,
+        project_evidence=project_evidence,
+    )
+
+    now = datetime.now(timezone.utc)
+    rows: list[CandidateQuestion] = []
+    for slot in slots:
+        row = CandidateQuestion(
             tenant_id=job.tenant_id,
             job_id=job.id,
             job_candidate_link_id=link.id,
@@ -352,225 +633,29 @@ async def generate_candidate_questions(
             resume_anchor=slot.resume_anchor,
             time_allocation_seconds=slot.time_allocation_seconds,
             weight=slot.weight,
-            prefilled_answer=prefills.get(slot.index),
-            prefill_source=sources.get(slot.index),
+            generated_at=now if slot.generated else None,
         )
-        for slot in slots
-        if slot.index not in trimmed
-    ]
-    session.add_all(rows)
+        if slot.question_type == question_types.CODING:
+            await coding_generation.persist_coding_question(session, row, slot.coding_draft)
+        else:
+            session.add(row)
+        rows.append(row)
+    record = _record(
+        contract=contract,
+        floor=floor,
+        total=total,
+        eligibility=eligibility,
+        mix=mix,
+        slots=slots,
+    )
+    _stamp(conversation, contract, record)
     await session.flush()
-    by_type = {
-        question_type: sum(1 for row in rows if row.question_type == question_type)
-        for question_type in question_types.QUESTION_TYPES
-    }
     logger.info(
-        "ppi.questions.generated link_id=%s grade=%s count=%d formats=%s",
-        link.id, grade, len(rows), by_type,
+        "assessment_questions.generated link_id=%s conversation_id=%s "
+        "contract_version=%d contract_digest=%s count=%d planned=%s served=%s "
+        "degraded=%d templated=%d",
+        link.id, conversation.id, contract.version, contract.digest, len(rows),
+        record["planned"], record["served"], len(record["degraded"]),
+        len(record["templated"]),
     )
-    return rows
-
-
-async def portable_coverage(
-    session: AsyncSession, job: Job, link: JobCandidateLink
-) -> portable_evidence.Coverage:
-    """The Portable plus Job Specific split for one candidate on one job (CR 23).
-
-    HARVEST FIRST, THEN MAP. The harvest is deterministic extraction from rows
-    the product already holds (the parsed resume, the finalised employment
-    history, an employer's own confirmation) and it calls no model, so running
-    it here costs a few indexed statements and guarantees the split is computed
-    against what is true NOW rather than against whatever a previous
-    application happened to leave behind.
-
-    This runs inside `pickready.generate_candidate_questions`, which is already
-    a dispatched task, so no request handler waits on it.
-
-    `retake` is imported INSIDE the function. It owns `RETAKE_WINDOW_DAYS`,
-    which is the product's one "how old is too old" boundary and belongs to the
-    module that already explains it to the candidate; importing it at module
-    scope here would make this file depend on the report models for a single
-    integer.
-
-    NEITHER HALF MAY FAIL QUESTION GENERATION. A candidate is waiting on their
-    assessment; the worst honest outcome of a portable read that will not work
-    is that every criterion is asked, which is the product's behaviour from
-    before this feature and is never wrong. The failure is LOGGED with its
-    class, never swallowed into a bare pass, and an empty Coverage is a real
-    value rather than a substitute for a missing one: it says the record
-    establishes nothing, which is exactly what the caller should then act on.
-    """
-    from app.services import retake
-
-    if not await consent_catalog.cross_employer_reuse_allowed(
-        session, link.candidate_id
-    ):
-        # Not an error and not a degradation. The candidate was asked and
-        # either declined or was never asked, and absence of consent is never
-        # consent.
-        return portable_evidence.Coverage()
-
-    try:
-        await portable_evidence.harvest(
-            session,
-            candidate_id=link.candidate_id,
-            job_id=job.id,
-            tenant_id=job.tenant_id,
-        )
-    except Exception as exc:  # noqa: BLE001 - recorded, never silent
-        logger.warning(
-            "ppi.portable_harvest_failed link_id=%s reason=%s",
-            link.id, type(exc).__name__, exc_info=True,
-        )
-
-    criteria = await load_framework(session, job.id)
-    if not criteria:
-        return portable_evidence.Coverage()
-    try:
-        facts = await portable_evidence.load_for_candidate(
-            session, link.candidate_id
-        )
-    except Exception as exc:  # noqa: BLE001 - recorded, never silent
-        logger.warning(
-            "ppi.portable_load_failed link_id=%s reason=%s",
-            link.id, type(exc).__name__, exc_info=True,
-        )
-        return portable_evidence.Coverage(
-            to_assess=tuple(
-                row.name
-                for row in criteria
-                if row.category not in portable_evidence.NEVER_COVERED_CATEGORIES
-            ),
-            behavioural=tuple(
-                row.name
-                for row in criteria
-                if row.category in portable_evidence.NEVER_COVERED_CATEGORIES
-            ),
-        )
-    return portable_evidence.coverage(
-        list(criteria), facts, max_age_days=retake.RETAKE_WINDOW_DAYS
-    )
-
-
-async def _hiring_context(session: AsyncSession, job: Job) -> str:
-    """The JD and saved Job SWOT document for candidate question generation."""
-    analysis = (
-        await session.execute(
-            select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
-        )
-    ).scalars().first()
-    return json.dumps(
-        {
-            "hiring_requirement": job.jd_json or {},
-            "swot": {
-                area: getattr(analysis, area) or "" if analysis is not None else ""
-                for area in SWOT_AREAS
-            },
-        }
-    )
-
-
-async def _compose_formats(
-    session: AsyncSession,
-    job: Job,
-    allocation: list[JobCompetency],
-    *,
-    grade: str,
-    base_prompts: list[str],
-    profile: Profile | None,
-    project_evidence_block: str,
-) -> list[composition.Slot]:
-    """Decide each slot's format, fill it, validate the mix, and never serve
-    an invalid one (spec section 3.2).
-
-    The FORMAT mix is deterministic per job (`composition.compose`); the
-    CONTENT is written per candidate by the model, inside the bounded loop.
-    A composition that fails validation is regenerated up to
-    `composition_attempts` times with the failures fed to the writer, then
-    `composition.fall_back` turns every slot the model could not fill into
-    the text question already written for its item, which validates by
-    construction. Nothing is cached and no template is shared between
-    candidates: two candidates on one job get the same formats in the same
-    positions and different content in every one of them.
-    """
-    conf = format_config.get_config()
-    role_classification = job.role_classification
-    competencies = {row.id: row for row in allocation}
-    resume_text = (profile.resume_text or "") if profile is not None else ""
-    resume_excerpt = _resume_excerpt(profile)
-    hiring_context = await _hiring_context(session, job)
-    slots = composition.compose(allocation, grade=grade, role_classification=role_classification)
-    for slot in slots:
-        slot.prompt = base_prompts[slot.index]
-
-    failures: list[str] = []
-    for attempt in range(1, conf.composition_attempts + 1):
-        anchored, anchor_result = await generation.anchor_evidence(
-            session,
-            job=job,
-            slots=slots,
-            competencies=competencies,
-            resume_text=resume_text,
-            resume_excerpt=resume_excerpt,
-            project_evidence=project_evidence_block,
-            hiring_context=hiring_context,
-            prior_failures=failures,
-        )
-        for slot in slots:
-            if slot.question_type != question_types.EVIDENCE_BASED:
-                continue
-            written = anchored.get(slot.index)
-            if written is None:
-                slot.resume_anchor = None
-                slot.payload = {}
-                continue
-            slot.prompt = written.prompt
-            slot.resume_anchor = written.resume_anchor
-            slot.payload = dict(written.payload)
-        for slot in slots:
-            if slot.question_type not in question_types.SUPPORTING_TYPES or slot.payload:
-                continue
-            result = await generation.write_structured(
-                session,
-                job=job,
-                competency=competencies[slot.competency_id],
-                slot=slot,
-                resume_excerpt=resume_excerpt,
-            )
-            if result.value is None:
-                # The slot keeps the text question already written for its
-                # item. Reverted here, not left empty: a structured row with
-                # no payload would be a question with no answer key.
-                composition.revert_to_text(slot)
-                slot.prompt = base_prompts[slot.index]
-                continue
-            slot.prompt = result.value.prompt
-            slot.payload = dict(result.value.payload)
-            slot.rubric = result.value.rubric
-        failures = composition.validate(slots, grade, role_classification)
-        logger.info(
-            "ppi.composition.validated attempt=%d anchored=%d anchoring_degraded=%s failures=%s",
-            attempt, len(anchored), anchor_result.degraded, failures,
-        )
-        if not failures:
-            return slots
-
-    # Deterministic, and always valid: every slot the model could not fill
-    # soundly becomes the plain text question already written for its item.
-    composition.fall_back(slots, grade)
-    for slot in slots:
-        if slot.question_type == question_types.SHORT_ANSWER:
-            slot.prompt = base_prompts[slot.index]
-    remaining = composition.validate(slots, grade, role_classification)
-    if remaining:
-        # Unreachable by construction of `fall_back`, and a loud failure is
-        # the right answer if that construction is ever broken: a candidate
-        # must never be served an assessment the validator rejected.
-        raise RuntimeError(
-            "assessment composition is still invalid after the deterministic "
-            f"fallback: {remaining}"
-        )
-    logger.warning(
-        "ppi.composition.fell_back link_grade=%s failures=%s", grade, failures
-    )
-    return slots
+    return QuestionSet(rows=tuple(rows), created=True, composition=record)

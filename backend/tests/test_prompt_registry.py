@@ -89,12 +89,19 @@ def test_the_snapshot_covers_every_agent_prompt() -> None:
     # single-pass matrix generator it drove (spec-doc6 D1, "delete on
     # activation"); Sutra's replacement asks for two stages rather than a
     # whole matrix and is a different prompt, not an edit of that one.
-    # SIX since 2026-09-24: the two interviewer question prompts were DELETED
-    # with the dead delivery graph that rendered them
-    # (`tests/test_dead_interviewer_modes_removed.py`); the live question
-    # writer is `ppi_write_question`, which is not a moved prompt and so has no
-    # snapshot here.
-    assert len(SNAPSHOTS) == 6, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    # FIVE since the stage 2 integration (2026-09-25), two deletions from the
+    # eight this file held before stage 2:
+    # - the two interviewer question prompts were DELETED with the dead
+    #   delivery graph that rendered them
+    #   (`tests/test_dead_interviewer_modes_removed.py`); the live question
+    #   writer is `ppi_write_question`, which is not a moved prompt and so has
+    #   no snapshot here (Phase 3 WP3);
+    # - `ppi_candidate_questions_system` became
+    #   `assessment_question_generation` when generation moved onto the skills
+    #   contract. A renamed prompt with new inputs is a new prompt, not a moved
+    #   one, so it is gated by `generation_sufficiency.GATED_PROMPTS` instead
+    #   (Phase 3 WP2).
+    assert len(SNAPSHOTS) == 5, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 
@@ -108,7 +115,7 @@ def test_a_missing_prompt_fails_loudly_and_says_what_exists() -> None:
         registry.load("no_such_prompt_at_all")
     assert "no_such_prompt_at_all" in str(caught.value)
     # The message has to be actionable, so it lists what IS there.
-    assert "ppi_candidate_questions_system" in str(caught.value)
+    assert "interview_challenge" in str(caught.value)
 
 
 def test_a_missing_placeholder_value_raises_rather_than_being_sent() -> None:
