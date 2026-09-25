@@ -13,9 +13,10 @@ WHAT IT PROMISES
   operator reason, and the candidate's clock stays paused for
   `assessment_voice_failure_pause_seconds` (or until they acknowledge) so they
   can read what happened and type instead.
-- The AUDIO is deleted, HEAD-confirmed, whatever happened. A delete that
-  cannot be confirmed is COUNTED on the row (`audio_delete_failures`) and the
-  hourly media sweep retries it; there is no terminal failure state.
+- The AUDIO is deleted, HEAD-confirmed, whatever happened
+  (`assessment_conversation.voice_audio`). A delete that cannot be confirmed
+  is COUNTED on the row (`audio_delete_failures`) and the hourly repair pass
+  retries it; there is no terminal failure state.
 - Idempotent: a redelivered message for a row that is no longer waiting does
   nothing, and each attempt uses its own Transcribe job name.
 
@@ -58,8 +59,7 @@ def transcribe_voice_answer(voice_id: str):
         VOICE_UPLOADED,
         VoiceAnswer,
     )
-    from app.services import object_storage
-    from app.services.assessment_conversation import pauses, turns
+    from app.services.assessment_conversation import pauses, turns, voice_audio
     from app.services.video import transcribe, voice
 
     async def _task() -> None:
@@ -104,7 +104,18 @@ def transcribe_voice_answer(voice_id: str):
                 failure = f"Amazon Transcribe could not be called: {type(exc).__name__}"
 
             now = datetime.now(timezone.utc)
-            if failure is None:
+            # Read the row again, locked: a candidate's request may have
+            # failed it on read while Transcribe ran past its budget
+            # (`turns.fail_stale_voice`), and they were then told to type. A
+            # transcript arriving after that is not written over the answer
+            # they were told to give instead; only the audio still goes.
+            await session.refresh(row, with_for_update=True)
+            if row.status != VOICE_TRANSCRIBING:
+                logger.warning(
+                    "voice_transcribe.outcome_discarded voice_id=%s status=%s",
+                    row.id, row.status,
+                )
+            elif failure is None:
                 row.status = VOICE_TRANSCRIBED
                 row.transcript_text = text
                 row.transcribed_at = now
@@ -124,29 +135,10 @@ def transcribe_voice_answer(voice_id: str):
                     row.id, row.conversation_id, failure,
                 )
 
-            # The audio goes whatever happened. Confirmed by a HEAD, counted
-            # when it cannot be, and retried by the hourly media sweep.
-            gone = True
-            for key in (audio_key, output_key):
-                try:
-                    confirmed = await asyncio.to_thread(voice.delete_verified, key)
-                except object_storage.ObjectStorageError:
-                    # The state above must still commit: a transcript the
-                    # candidate is waiting on is not lost over a cleanup step.
-                    logger.warning(
-                        "voice_transcribe.audio_delete_error voice_id=%s", row.id
-                    )
-                    confirmed = False
-                if not confirmed:
-                    gone = False
-            if gone:
-                row.audio_deleted_at = now
-            else:
-                row.audio_delete_failures = int(row.audio_delete_failures or 0) + 1
-                logger.warning(
-                    "voice_transcribe.audio_delete_unconfirmed voice_id=%s failures=%d",
-                    row.id, row.audio_delete_failures,
-                )
+            # The audio goes whatever happened: HEAD-confirmed, counted when
+            # it cannot be, and retried by the hourly repair pass
+            # (`voice_audio.repair_pending_audio`).
+            await voice_audio.delete_audio(row, now=now)
             await session.commit()
             logger.info(
                 "voice_transcribe.done voice_id=%s status=%s", row.id, row.status

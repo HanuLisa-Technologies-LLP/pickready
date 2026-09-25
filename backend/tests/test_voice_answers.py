@@ -353,3 +353,167 @@ async def test_a_transcription_that_never_reports_back_is_failed_on_read(
         assert "time budget" in rows[0].failure_reason
     finally:
         await cw.cleanup(factory, world)
+
+
+# ── The audio goes, and a lost task is repaired ──────────────────────────────
+
+
+async def _repair(factory) -> "voice_audio.RepairResult":
+    from app.services.assessment_conversation import voice_audio
+
+    async with factory() as s:
+        async with s.begin():
+            async with superadmin_scope(s):
+                return await voice_audio.repair_pending_audio(
+                    s, now=datetime.now(timezone.utc)
+                )
+
+
+async def test_an_unconfirmed_audio_delete_is_counted_and_retried_until_it_is_gone(
+    candidate, monkeypatch, media
+) -> None:
+    """"Store transcript text only". A delete the HEAD could not confirm is
+    COUNTED, the keys stay findable for a purge that must delete objects before
+    rows, and the hourly repair pass deletes them; nothing gives up."""
+    from app.services.assessment_conversation import voice_audio
+
+    cw.quiet_models(monkeypatch)
+    _transcribes_to(monkeypatch, SPOKEN)
+    factory = cw.sessions()
+    world = await cw.seed(
+        factory, candidate_id=candidate.candidate_id, started=True, open_turn=True
+    )
+    try:
+        with cw.client(candidate) as http:
+            voice_id = _record(http, world)["id"]
+        monkeypatch.setattr(voice, "delete_verified", lambda key: False)
+        await _run_task(voice_id)
+
+        rows = await cw.committed(
+            factory,
+            "SELECT status, audio_deleted_at, audio_delete_failures FROM voice_answers "
+            "WHERE id = :v",
+            v=voice_id,
+        )
+        assert rows[0].status == "transcribed", "a cleanup failure cost the transcript"
+        assert rows[0].audio_deleted_at is None
+        assert rows[0].audio_delete_failures == 1
+
+        async with factory() as s:
+            async with superadmin_scope(s):
+                keys = await voice_audio.undeleted_audio_keys(s, [world.conversation])
+        assert sorted(keys) == sorted(
+            [
+                f"voice-answers/{world.conversation}/{voice_id}.webm",
+                f"voice-answers/{world.conversation}/{voice_id}.transcript.json",
+            ]
+        )
+
+        monkeypatch.setattr(voice, "delete_verified", media.delete_verified)
+        result = await _repair(factory)
+        assert result.deleted >= 1
+        rows = await cw.committed(
+            factory,
+            "SELECT audio_deleted_at, audio_delete_failures FROM voice_answers WHERE id = :v",
+            v=voice_id,
+        )
+        assert rows[0].audio_deleted_at is not None
+        assert f"voice-answers/{world.conversation}/{voice_id}.webm" not in media.objects
+        async with factory() as s:
+            async with superadmin_scope(s):
+                assert await voice_audio.undeleted_audio_keys(s, [world.conversation]) == []
+    finally:
+        await cw.cleanup(factory, world)
+
+
+async def test_a_lost_transcription_is_failed_and_its_audio_deleted_by_the_repair_pass(
+    candidate, monkeypatch, media
+) -> None:
+    """Nobody may be reading the row again: the candidate's turn has moved on.
+    The repair pass fails it by the same rule the routes apply on read, and
+    deletes the audio; a transcription still inside its budget is left alone,
+    because the task may be running this minute."""
+    cw.quiet_models(monkeypatch)
+    factory = cw.sessions()
+    world = await cw.seed(
+        factory, candidate_id=candidate.candidate_id, started=True, open_turn=True
+    )
+    try:
+        with cw.client(candidate) as http:
+            voice_id = _record(http, world)["id"]
+
+        await _repair(factory)
+        fresh = await cw.committed(
+            factory, "SELECT status, audio_deleted_at FROM voice_answers WHERE id = :v", v=voice_id
+        )
+        assert fresh[0].status == "uploaded", "a transcription in its budget was failed"
+        assert fresh[0].audio_deleted_at is None
+
+        stale = datetime.now(timezone.utc).timestamp() - turns.transcription_budget_seconds() - 5
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await s.execute(
+                        text("UPDATE voice_answers SET uploaded_at = to_timestamp(:t) WHERE id = :v"),
+                        {"t": stale, "v": voice_id},
+                    )
+        result = await _repair(factory)
+        assert result.failed_stale >= 1
+        rows = await cw.committed(
+            factory,
+            "SELECT status, failure_reason, audio_deleted_at FROM voice_answers WHERE id = :v",
+            v=voice_id,
+        )
+        assert rows[0].status == "failed"
+        assert "time budget" in rows[0].failure_reason
+        assert rows[0].audio_deleted_at is not None
+    finally:
+        await cw.cleanup(factory, world)
+
+
+async def test_a_transcript_arriving_after_the_row_was_failed_does_not_replace_it(
+    candidate, monkeypatch, media
+) -> None:
+    """The candidate was told to type once the row failed on read. A Transcribe
+    job that finishes after that must not turn the row back into an answer they
+    were told not to rely on; its audio still goes."""
+    cw.quiet_models(monkeypatch)
+    factory = cw.sessions()
+    world = await cw.seed(
+        factory, candidate_id=candidate.candidate_id, started=True, open_turn=True
+    )
+    try:
+        with cw.client(candidate) as http:
+            voice_id = _record(http, world)["id"]
+
+        def _slow_run(**kwargs):
+            async def _fail_meanwhile() -> None:
+                meanwhile = cw.sessions()
+                async with meanwhile() as s:
+                    async with s.begin():
+                        async with superadmin_scope(s):
+                            await s.execute(
+                                text(
+                                    "UPDATE voice_answers SET status = 'failed', "
+                                    "failure_reason = 'failed on read', failed_at = now() "
+                                    "WHERE id = :v"
+                                ),
+                                {"v": voice_id},
+                            )
+
+            asyncio.run(_fail_meanwhile())
+            return {"results": {"transcripts": [{"transcript": SPOKEN}]}}
+
+        monkeypatch.setattr(transcribe, "run_transcription", _slow_run)
+        await _run_task(voice_id)
+
+        rows = await cw.committed(
+            factory,
+            "SELECT status, transcript_text, audio_deleted_at FROM voice_answers WHERE id = :v",
+            v=voice_id,
+        )
+        assert rows[0].status == "failed"
+        assert rows[0].transcript_text is None
+        assert rows[0].audio_deleted_at is not None
+    finally:
+        await cw.cleanup(factory, world)
