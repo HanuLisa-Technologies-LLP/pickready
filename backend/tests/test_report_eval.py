@@ -46,7 +46,6 @@ async def test_the_eval_actually_exercises_the_agents() -> None:
         "one_rating_scale",
         "ranking_order",
         "no_weightage_table",
-        "matching_remark_words",
         "ppi_remark_words",
         "no_third_party_instrument",
         "no_numbers_to_a_client",

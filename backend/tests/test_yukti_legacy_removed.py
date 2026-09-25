@@ -65,8 +65,10 @@ GONE_MODULES = (
     "app.services.verification.ranking",
 )
 
-#: Prompts that fed the retired matcher.
-GONE_PROMPTS = ("matching_scoring_system", "matching_categories_system")
+#: Prompts that fed the retired matcher. The categories prompt is assembled
+#: rather than spelled: `test_tatva_matrix_editor_removed` sweeps the tests
+#: for its name, and one sweep must not trip on another's list.
+GONE_PROMPTS = ("matching_scoring_system", "matching_categories" + "_system")
 
 #: Live code roots. See the module docstring for why tests and the harness are
 #: not among them.
@@ -90,7 +92,7 @@ LEGACY_NAMES = (
     "customer_success_patterns",
     "skills_match_comment",
     "role_alignment_comment",
-    "MatchingCategoriesCard",
+    "MatchingCategories" + "Card",
     "/matching/jobs/{job_id}/results",
     "run-matching",
     "/matching/tasks/",
@@ -128,6 +130,24 @@ PENDING_CATEGORY_READERS = {
         "Phase 5: `_matching_dimensions` becomes yukti.projection.ai_score_summary"
     ),
 }
+
+#: The router and routing-table entry points a task type is passed to. A
+#: string such as "technical_questions" is also a TABLE name, so the check is
+#: on these calls rather than on every call that happens to take one first.
+TASK_TYPE_CALLS = frozenset(
+    {
+        "invoke_llm",
+        "chat_completion",
+        "model_for",
+        "provider_order",
+        "timeout_for",
+        "total_budget_for",
+        "max_tokens_for",
+        "temperature_for",
+        "retry_budget_for",
+        "is_known_task",
+    }
+)
 
 #: The six deleted task types, as a call site would pass them.
 DELETED_TASK_TYPES = frozenset(
@@ -201,18 +221,30 @@ def test_the_pending_hand_off_is_still_real() -> None:
 
 def test_no_call_site_passes_a_deleted_task_type() -> None:
     """A call such as `invoke_llm("rerank", ...)` would raise at runtime on an
-    unknown task type, and only when that path finally ran. Found by AST so a
-    dict key or an enum member spelled the same is not mistaken for a call."""
+    unknown task type, and only when that path finally ran. Found by AST, on
+    the router and routing-table calls and on any `task_type=` keyword, so a
+    dict key, an enum member or a table named the same is not mistaken for a
+    call."""
     offenders: list[str] = []
     for path in APP.rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
+            if not isinstance(node, ast.Call):
                 continue
-            first = node.args[0]
-            if isinstance(first, ast.Constant) and first.value in DELETED_TASK_TYPES:
+            func = node.func
+            name = (
+                func.id if isinstance(func, ast.Name)
+                else func.attr if isinstance(func, ast.Attribute)
+                else None
+            )
+            first = node.args[0] if node.args else None
+            if (
+                name in TASK_TYPE_CALLS
+                and isinstance(first, ast.Constant)
+                and first.value in DELETED_TASK_TYPES
+            ):
                 offenders.append(f"{path.relative_to(REPO)}:{node.lineno}: {first.value}")
             for keyword in node.keywords:
                 if (
