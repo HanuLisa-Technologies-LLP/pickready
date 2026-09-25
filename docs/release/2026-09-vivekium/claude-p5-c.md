@@ -130,6 +130,11 @@ human disposition; the on-screen report is deliberately not gated.
   application, and an evaluation (and a decision on it) can exist before the
   report does; a person who decided on that earlier state has not read this
   report, so `created_at < synthesized_at` does not clear it.
+- **G4 is a REQUIRED CALLER, not a hope.** `test_ai_reachability.REQUIRED_CALLERS`
+  names `delivery.gate_delivery` and `delivery.prism_pdf` (orchestrator hunk,
+  part 2), so a PDF route that goes back to calling the renderer directly
+  fails the build instead of shipping every flagged report ungated, which is
+  what happened for the whole life of the module before this release.
 - **An absent report is refused, never cleared.** `getattr(None,
   "needs_human_review", False)` reads as "nothing to review", so
   `gate_delivery(session, None)` raises instead of minting a clearance for a

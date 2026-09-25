@@ -1,3 +1,27 @@
+WP5-C (Siddhi) orchestrator hunks, in two parts. Plain text above and between
+the parts is ignored by `git apply`.
+
+PART 1 applies on wip/p5-c alone (files owned by WP5-A/D/F and the observability
+module): the PDF route runs G4 then the gated renderer, the run's
+ProvenanceRecorder, the orchestrator's switch to Siddhi's remarks, composer and
+quality gate, the withheld-statement alarm, and their tests.
+
+PART 2 applies only once wip/p5-e (evidence_retrieval) is merged: it hands
+evidence_retrieval.support_passages_for_statement to Siddhi's support check
+through siddhi.support.statement_passage_source, bound to the run's session,
+tenant and application; moves evidence_retrieval and tools to LIVE in
+test_ai_reachability; adds REQUIRED_CALLERS for statement_passage_source,
+delivery.gate_delivery and delivery.prism_pdf; and adds
+tests/test_siddhi_support_wiring.py.
+
+Verified: wip/p5-c + PART 1, merged with wip/p5-e, + PART 2, gives the same
+tree as merging wip/p5-c with wip/p5-e first and then applying the whole file.
+When WP5-D moves synthesis_node's body into its own orchestrator, the
+passage_source keyword moves with the compose_prism call (and the AST test in
+test_siddhi_support_wiring.py follows the call: it looks for
+build_gap_analysis today).
+
+======================== PART 1 ========================
 diff --git a/backend/app/api/assessments.py b/backend/app/api/assessments.py
 index 790c42b..c91a034 100644
 --- a/backend/app/api/assessments.py
@@ -571,10 +595,10 @@ index f55c6e9..54e8602 100644
      return result["report_id"]
 diff --git a/backend/tests/test_prism_pdf_g4.py b/backend/tests/test_prism_pdf_g4.py
 new file mode 100644
-index 0000000..e38249c
+index 0000000..a84bbec
 --- /dev/null
 +++ b/backend/tests/test_prism_pdf_g4.py
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,146 @@
 +"""The PDF route runs gate G4: a flagged report is not downloaded until a person decides.
 +
 +PLAN-p5 P5-D7. `siddhi.delivery` had no production caller, so the PDF route
@@ -614,8 +638,28 @@ index 0000000..e38249c
 +                candidate = await s.get(Candidate, fx.cand_id)
 +                candidate.retain_assessment_consent = True
 +                candidate.retain_assessment_consented_at = datetime.now(timezone.utc)
-+                report = await s.get(FunctionalSkillsReport, fx.report_id)
-+                report.needs_human_review = True
++                # A report is written once and never UPDATEd (PLAN-p5 P5-D12:
++                # the database refuses it), so a flagged report is WRITTEN
++                # flagged, the way the scoring run writes one. The seeded,
++                # unflagged row is replaced rather than edited in place, which
++                # keeps this test valid once the immutability trigger lands.
++                seeded = await s.get(FunctionalSkillsReport, fx.report_id)
++                summary, written_at = seeded.overall_summary, seeded.synthesized_at
++                await s.delete(seeded)
++                await s.flush()
++                s.add(
++                    FunctionalSkillsReport(
++                        id=fx.report_id,
++                        tenant_id=fx.tenant_id,
++                        job_id=fx.job_id,
++                        job_candidate_link_id=fx.link_id,
++                        grade="non_managerial",
++                        overall_summary=summary,
++                        validation_json={},
++                        synthesized_at=written_at,
++                        needs_human_review=True,
++                    )
++                )
 +
 +
 +async def _download(factory, fx: _Fixture):
@@ -1334,3 +1378,376 @@ index d351166..62ba749 100644
  # ── One dashboard ────────────────────────────────────────────────────────────
  #
  # The five things above, on one page, so the first question during an incident
+
+======================== PART 2 (after merging wip/p5-e) ========================
+diff --git a/backend/app/services/functional_assessment.py b/backend/app/services/functional_assessment.py
+index 54e8602..78fcc8d 100644
+--- a/backend/app/services/functional_assessment.py
++++ b/backend/app/services/functional_assessment.py
+@@ -1853,8 +1853,10 @@ async def synthesis_node(state: AssessmentState) -> dict:
+     # an import cycle this module has already closed once: the full suite went
+     # green while a single test file went red, because pytest happened to
+     # initialise the other side first.
++    from app.services import evidence_retrieval
+     from app.services import verification as verification_base
+     from app.services.miti import live as miti_live
++    from app.services.siddhi import support as siddhi_support
+     from app.services.siddhi import synthesis as siddhi_synthesis
+ 
+     session = state["session"]
+@@ -2018,6 +2020,17 @@ async def synthesis_node(state: AssessmentState) -> dict:
+         # evidence under that grade came from (CR 23, 2026-09-22).
+         extra_nodes=claim_evidence.employment_nodes(employments)
+         + portable_evidence_nodes(state),
++        # THE SUPPORT CHECK'S THIRD LOOK, THROUGH THE TOOL LAYER. A statement
++        # its own citation does not support is looked up once in this
++        # application's other answers; the lookup can only lift it to `weak`.
++        # Siddhi never imports the retrieval entry point: it is handed here,
++        # bound to this tenant and this application, so the scope is fixed once.
++        passage_source=siddhi_support.statement_passage_source(
++            evidence_retrieval.support_passages_for_statement,
++            session,
++            tenant_id=state["job"].tenant_id,
++            link_id=state["link"].id,
++        ),
+     )
+ 
+     scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
+diff --git a/backend/tests/test_ai_reachability.py b/backend/tests/test_ai_reachability.py
+index d1de5a6..beeb850 100644
+--- a/backend/tests/test_ai_reachability.py
++++ b/backend/tests/test_ai_reachability.py
+@@ -108,6 +108,21 @@ LIVE: dict[str, str] = {
+         "as the scoring backfill. The conversation's per-answer call is wired by "
+         "the assessment phase."
+     ),
++    "app.services.evidence_retrieval": (
++        "PLAN-p5 WP5-E built it and WP5-C wired its first caller (Vivekium "
++        "release): functional_assessment.synthesis_node hands "
++        "support_passages_for_statement to Siddhi's support check through "
++        "siddhi.support.statement_passage_source. Vaada's and Miti's calls "
++        "(resume_passages_for_skill, project_evidence_for_candidate, "
++        "transcript_passages_for_skill) land with Phase 3 and WP5-B."
++    ),
++    "app.services.tools": (
++        "evidence_retrieval calls tools.executor.execute, so the capability "
++        "check, the stage policy and the tenant check run on the scoring path "
++        "before any row is read. Until the Vivekium release the package was "
++        "reachable only because rbac reads the agent constants, and it guarded "
++        "a path no route executed."
++    ),
+     "app.services.rag": (
+         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
+         "pickready.index_document and pickready.reconcile_context_index, which "
+@@ -123,21 +138,6 @@ LIVE: dict[str, str] = {
+ NOT_LIVE: dict[str, str] = {
+     "app.services.reasoning": "RPN-AI-UP-001 W5; reached only from eval scripts",
+     "app.services.orchestration": "RPN-AI-UP-001 W10.1; reached only from eval scripts",
+-    # AWAITING CALLERS, on purpose. PLAN-p5 WP5-E built the one Evidence RAG
+-    # entry point ahead of the agents that read it; nothing on the live path
+-    # imports it yet. When this fails, the wiring phase moves it to LIVE, and
+-    # `app.services.tools` leaves IMPORTED_BUT_NOT_EXERCISED in the same
+-    # change, because these calls are the first live `tools.execute` callers.
+-    "app.services.evidence_retrieval": (
+-        "PLAN-p5 WP5-E, awaiting callers. Phase 3 (Vaada, the dispatched "
+-        "question generation in assessment_questions/generate.py) calls "
+-        "resume_passages_for_skill per contract skill and "
+-        "project_evidence_for_candidate once, replacing its direct "
+-        "projects.context read; Phase 5 WP5-B/C (Miti items.evaluate_skill, "
+-        "before the model call) calls transcript_passages_for_skill with the "
+-        "skill's own answer ids excluded, and Siddhi's support check calls "
+-        "support_passages_for_statement"
+-    ),
+     "app.evaluation": (
+         "W7.4 requires this in the other direction too: nothing under "
+         "app/services may import app/evaluation, and no route or worker may "
+@@ -166,13 +166,13 @@ NOT_LIVE: dict[str, str] = {
+ #: about the entry point that would prove execution rather than about the
+ #: import graph. `ENTRY_POINTS_WITHOUT_CALLERS` below is the sharp version of
+ #: the same claim, and it is the one W2 has to change.
+-IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
+-    "app.services.tools": (
+-        "RPN-AI-UP-001 W3. Reachable only because rbac reads the agent "
+-        "constants. The capability check runs before the handler, which is the "
+-        "correct ordering, but it guards a path no route executes."
+-    ),
+-}
++#:
++#: EMPTY SINCE THE VIVEKIUM RELEASE: `tools` left it when Siddhi's support
++#: check became the first live `tools.execute` caller (see LIVE). Kept, like
++#: `ENTRY_POINTS_WITHOUT_CALLERS`, because it is the shape the next such
++#: finding needs, and its check iterates inside the body so an empty dict
++#: passes having checked everything there was rather than emitting a skip.
++IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {}
+ 
+ #: The behavioural half: a function that is the ONLY writer of a table and has
+ #: no caller. `(module, function)` -> the reason it currently has none.
+@@ -212,6 +212,24 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
+ #: defect: `services/rag` was importable from `api/admin` for its whole life
+ #: while `context_chunks` stayed empty in every environment.
+ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
++    ("app/services/siddhi/support.py", "statement_passage_source"): (
++        "app/services/functional_assessment.py synthesis_node (the grading "
++        "orchestrator after WP5-D). Without it the support check never looks "
++        "in the candidate's other answers, so a true statement pinned to the "
++        "wrong answer goes to review as unsupported and nobody is told where "
++        "the candidate actually said it."
++    ),
++    ("app/services/siddhi/delivery.py", "gate_delivery"): (
++        "app/api/assessments.py download_report_pdf (the report routes move to "
++        "api/assessment_reports.py with WP5-F). For its whole life before the "
++        "Vivekium release G4 had no production caller, so every flagged report "
++        "was downloadable while the gate read as enforced."
++    ),
++    ("app/services/siddhi/delivery.py", "prism_pdf"): (
++        "the same PDF route, with the clearance gate_delivery minted. A route "
++        "that called report_pdf.render_report_pdf directly would render a "
++        "flagged report with G4 never having run."
++    ),
+     ("app/services/rag/index.py", "index_document"): (
+         "app/workers/tasks.py, from pickready.index_document. Without a caller "
+         "the index is never written, and retrieval over an empty table returns "
+@@ -381,20 +399,25 @@ def test_a_package_recorded_as_dead_has_not_quietly_become_live(
+     )
+ 
+ 
+-@pytest.mark.parametrize("package", sorted(IMPORTED_BUT_NOT_EXERCISED))
+ def test_a_package_recorded_as_importable_but_unexercised_is_still_importable(
+-    package: str, reachable: dict[str, list[str]]
++    reachable: dict[str, list[str]]
+ ) -> None:
+     """The weaker claim, asserted so the stronger one below stays meaningful.
+ 
+     If one of these loses its import path entirely it has become genuinely
+     dead, which is a different fact from the one recorded here and belongs in
+-    NOT_LIVE. Asserting it keeps the two lists from silently swapping."""
+-    assert _hits(reachable, package), (
+-        f"{package} is no longer reachable at all. It was recorded as "
+-        f"importable but unexercised: {IMPORTED_BUT_NOT_EXERCISED[package]}\n"
+-        "Move it to NOT_LIVE, or restore the import."
+-    )
++    NOT_LIVE. Asserting it keeps the two lists from silently swapping.
++
++    Iterated inside the body, not parametrised: the dict is empty today, and a
++    parametrised test over an empty collection is a SKIPPED placeholder, which
++    the skip inventory then reports as undeclared (the reason
++    `test_every_function_recorded_as_uncalled_still_has_no_caller` gives)."""
++    for package, reason in sorted(IMPORTED_BUT_NOT_EXERCISED.items()):
++        assert _hits(reachable, package), (
++            f"{package} is no longer reachable at all. It was recorded as "
++            f"importable but unexercised: {reason}\n"
++            "Move it to NOT_LIVE, or restore the import."
++        )
+ 
+ 
+ def _callers_of(relative: str, function: str) -> list[str]:
+diff --git a/backend/tests/test_siddhi_support_wiring.py b/backend/tests/test_siddhi_support_wiring.py
+new file mode 100644
+index 0000000..5f9e7b1
+--- /dev/null
++++ b/backend/tests/test_siddhi_support_wiring.py
+@@ -0,0 +1,204 @@
++"""Siddhi's support check reaches the candidate's other answers through the tool layer.
++
++Lands with the wiring, once WP5-C (Siddhi) and WP5-E (`evidence_retrieval`)
++are both merged: before that the production seam had nothing real to bind, and
++a test that could only skip is not a check.
++
++  * the seam's keyword parameters exist on the real retrieval entry point, so
++    the wiring cannot drift from the function it names;
++  * the scoring orchestrator hands Siddhi exactly that function, bound to the
++    run's own session, tenant and application;
++  * END TO END against a real database, through the REAL executor, policy and
++    retriever: a remark pinned to the wrong answer is lifted to `weak` by the
++    answer that does support it, the stored verdict names that answer's chunk,
++    and the read model resolves it to the candidate's words;
++  * an agent without the grant is refused by the real executor, and that
++    refusal propagates through the seam rather than reading as "unavailable".
++"""
++from __future__ import annotations
++
++import ast
++import inspect
++import pathlib
++
++import pytest
++
++from app.services import evidence_retrieval
++from app.services.siddhi import report as siddhi_report
++from app.services.siddhi import support, trail
++
++from tests import rag_world
++
++BACKEND = pathlib.Path(__file__).resolve().parents[1]
++
++
++def test_the_seam_matches_the_retrieval_entry_points_signature() -> None:
++    parameters = inspect.signature(
++        evidence_retrieval.support_passages_for_statement
++    ).parameters
++    assert list(parameters)[0] == "session"
++    for name in ("tenant_id", "link_id", "statement"):
++        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
++    # The seam binds nothing else, so every other parameter must default.
++    for name, parameter in parameters.items():
++        if name not in {"session", "tenant_id", "link_id", "statement"}:
++            assert parameter.default is not inspect.Parameter.empty, name
++
++
++def test_the_orchestrator_hands_siddhi_the_retrieval_entry_point() -> None:
++    """Read from the source, because running `synthesis_node` needs a scored
++    application; what this pins is the ONE call and what it is bound to."""
++    source = (BACKEND / "app/services/functional_assessment.py").read_text(encoding="utf-8")
++    calls = [
++        node
++        for node in ast.walk(ast.parse(source))
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Attribute)
++        and node.func.attr == "build_gap_analysis"
++    ]
++    assert len(calls) == 1
++    [seam] = [kw.value for kw in calls[0].keywords if kw.arg == "passage_source"]
++    assert isinstance(seam, ast.Call)
++    assert isinstance(seam.func, ast.Attribute)
++    assert seam.func.attr == "statement_passage_source"
++    fetch = seam.args[0]
++    assert isinstance(fetch, ast.Attribute)
++    assert fetch.attr == "support_passages_for_statement"
++    assert isinstance(fetch.value, ast.Name) and fetch.value.id == "evidence_retrieval"
++    assert {kw.arg for kw in seam.keywords} == {"tenant_id", "link_id"}
++
++
++# ── End to end, against a real database ──────────────────────────────────────
++
++SKILL = "Streaming platform"
++
++#: Pinned to exchange 1 (a disagreement with an architect), which names no
++#: Kafka and no consumer offsets. Exchange 2 says exactly this.
++MISATTRIBUTED = "They migrated the consumer offsets ahead of the Kafka cutover."
++
++
++@pytest.fixture
++async def indexed(monkeypatch):
++    rag_world.disable_prefixes(monkeypatch)
++    engine, factory = await rag_world.factory_or_skip()
++    fx = rag_world.World()
++    await rag_world.seed(factory, fx)
++    await rag_world.index_all(factory, fx)
++    try:
++        yield factory, fx
++    finally:
++        await rag_world.cleanup(factory, fx)
++        await engine.dispose()
++
++
++def _rows() -> list[dict]:
++    return [
++        {
++            "category": "must_have",
++            "name": SKILL,
++            "grade": "Matching",
++            "remark": MISATTRIBUTED,
++        }
++    ]
++
++
++def _exchanges(fx) -> dict:
++    question, answer = rag_world.EXCHANGES[1]
++    return {
++        SKILL: [
++            {
++                "question": question,
++                "answer": answer,
++                "question_id": "",
++                "message_ids": [str(fx.answer_ids[1])],
++            }
++        ]
++    }
++
++
++async def _compose(session, fx):
++    return await siddhi_report.compose_prism(
++        dimensions=_rows(),
++        evidence_by_item=_exchanges(fx),
++        embed=None,
++        passage_source=support.statement_passage_source(
++            evidence_retrieval.support_passages_for_statement,
++            session,
++            tenant_id=fx.tenant_id,
++            link_id=fx.link_id,
++        ),
++    )
++
++
++async def test_a_misattributed_remark_is_lifted_by_the_answer_that_supports_it(
++    indexed,
++) -> None:
++    from app.core.db import superadmin_scope
++
++    factory, fx = indexed
++    chunks = {row.ordinal: row.id for row in await rag_world.chunk_rows(factory, fx.link_id)}
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                composed = await _compose(s, fx)
++
++    [(section, statement)] = [
++        pair for pair in composed.statements() if pair[1]["kind"] == "finding"
++    ]
++    verdict = statement["support"]
++    assert verdict["level"] == support.LEVEL_WEAK
++    assert verdict["reason"] == support.REASON_ELSEWHERE
++    assert verdict["passage_check"] == support.PASSAGE_FOUND
++    # The chunk that SAYS it (exchange 2), and not the one the remark cites.
++    assert f"context_chunks:{chunks[2]}" in verdict["passages"]
++    assert f"context_chunks:{chunks[1]}" not in verdict["passages"]
++    # Misattributed, not unsupported: marked, and not sent to review for it.
++    assert not composed.unsupported()
++    assert statement["text"] == MISATTRIBUTED
++
++    stored = {"groups": [], "siddhi": composed.siddhi_namespace()}
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                view = await trail.citation_view(
++                    s, stored, link_id=fx.link_id,
++                    chunk_source_ids=(fx.link_id, fx.profile_id),
++                )
++    [shown] = [entry for entry in view["statements"] if entry["kind"] == "finding"]
++    assert shown["support"] == support.SUPPORT_NOTES[support.REASON_ELSEWHERE]
++    supporting = [
++        entry for entry in shown["evidence"]
++        if entry["kind"] == trail.EVIDENCE_KIND_WORDS[trail.SUPPORTING_PASSAGE]
++    ]
++    assert supporting and "consumer offsets" in (supporting[0]["excerpt"] or "")
++
++
++async def test_an_agent_without_the_grant_is_refused_through_the_seam(indexed) -> None:
++    """A policy refusal is a wiring defect identical on every retry, so it
++    RAISES through the seam; recording it as `unavailable` would ship a lookup
++    that never ran."""
++    from app.core.db import superadmin_scope
++    from app.services.tools import permissions
++    from app.services.tools.errors import ToolPermissionError
++
++    factory, fx = indexed
++
++    async def _as_email_agent(session, **kwargs):
++        return await evidence_retrieval.support_passages_for_statement(
++            session, agent=permissions.AGENT_EMAIL, **kwargs
++        )
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                with pytest.raises(ToolPermissionError):
++                    await siddhi_report.compose_prism(
++                        dimensions=_rows(),
++                        evidence_by_item=_exchanges(fx),
++                        embed=None,
++                        passage_source=support.statement_passage_source(
++                            _as_email_agent, s,
++                            tenant_id=fx.tenant_id, link_id=fx.link_id,
++                        ),
++                    )
