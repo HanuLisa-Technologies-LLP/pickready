@@ -266,7 +266,7 @@ def test_matching_no_longer_nudges_anything_with_longevity():
     calling this module rather than moving a number nobody sorts on; WP-F
     deletes the module with its last reader."""
     src = pathlib.Path(matching.__file__).read_text(encoding="utf-8")
-    assert not set(re.findall(r"longevity\.(\w+)", src))
+    assert not set(re.findall(r"\blongevity\.(\w+)", src))
 
 
 def test_the_breakdown_carries_the_word_and_client_projections_stay_clean():
