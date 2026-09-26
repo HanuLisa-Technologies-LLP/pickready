@@ -116,11 +116,37 @@ class TaskContext:
         Never raises into the work. A progress display that can fail the task
         it is describing is a strictly worse trade than one that goes blank,
         which is the rule `matching_progress.Progress` already states.
+
+        CALLED FROM BOTH SIDES OF A LOOP. A sync task body calls it with no
+        loop running, and `asyncio.run` is right. `run_matching` calls it from
+        INSIDE its own `asyncio.run`, where a second `asyncio.run` raises; that
+        raise was swallowed here, the coroutine was never awaited, and no
+        progress payload ever reached the job page while a run was in flight.
+        Inside a running loop the write is scheduled on THAT loop (the status
+        client is loop-bound), and a strong reference is held until it is done,
+        because the loop keeps only a weak one.
         """
+        write = status.write(self.run_id, status.STATE_PROGRESS, payload)
         try:
-            _run(status.write(self.run_id, status.STATE_PROGRESS, payload))
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is None:
+                _run(write)
+            else:
+                pending = loop.create_task(write)
+                _PUBLISHES_IN_FLIGHT.add(pending)
+                pending.add_done_callback(_PUBLISHES_IN_FLIGHT.discard)
         except Exception:  # noqa: BLE001 -- see above
-            logger.debug("taskrun.publish_failed run_id=%s", self.run_id, exc_info=True)
+            write.close()
+            logger.warning("taskrun.publish_failed run_id=%s", self.run_id, exc_info=True)
+
+
+#: Progress writes scheduled on a running loop, held until they finish: the
+#: event loop keeps only a weak reference to a task, so an unreferenced write
+#: can be collected before it runs.
+_PUBLISHES_IN_FLIGHT: set[asyncio.Task] = set()
 
 
 # -- Session helper ----------------------------------------------------------

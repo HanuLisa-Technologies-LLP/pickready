@@ -1121,6 +1121,13 @@ are in `docs/spec/ASSESSMENT_FLOW.md`.
   fake) and Transcribe are doubled. A dispatched task is run BY NAME, never by
   draining. `tests/test_end_to_end_journey.py` is not superseded: it owns the
   provenance ledger, A2A contracts and gate arithmetic.
+- **Progress is published from both sides of a loop**:
+  `runtime.TaskContext.publish` runs the write with `asyncio.run` when no loop
+  is running and SCHEDULES it on the running loop otherwise (holding a
+  reference until it finishes). It used to call `asyncio.run` inside
+  `run_matching`'s own loop, raise, and swallow that at DEBUG, so the job page
+  never saw an in-flight stage (`tests/test_task_progress_publish.py`, found
+  by the golden journey).
 - **A sweep with a literal backspace in it never ran**: a `\b` written as
   U+0008 made the employment-gap sweep over Miti match nothing. The lesson is
   the 2026-09-23 one again.
@@ -1175,10 +1182,6 @@ to date rather than marked, because they describe the present.
 
 ### OPEN AT THE END OF THE RELEASE, SAID OUT LOUD
 
-- **Matching progress is never published while a run is in flight**:
-  `runtime.TaskContext.publish` calls `asyncio.run` from inside the task's own
-  loop, raises, and is swallowed at DEBUG (the `RuntimeWarning` in every run).
-  The job page shows only the terminal payload.
 - The retrieval-time injection screen is not in force (above).
 - `agent_execution_traces` has no writer; `RequestTrace.add_cost` has no
   caller.
