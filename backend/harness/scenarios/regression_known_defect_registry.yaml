@@ -34,7 +34,10 @@ expect:
     # unreachable orchestration package (Phase 7 WP-B5). The defect it guarded
     # (a task routed to an agent holding no tools) has no router left to
     # recur in; the grants themselves stay pinned by the tool manifest.
-    - facts.defect_registry_size >= 9
+    # EIGHT since the final sweeps: `pii-card-before-phone` exercised
+    # `services/safety/pii.py`, the PII masker nothing in the product ran,
+    # which was deleted (it is not a defect that can recur in live code).
+    - facts.defect_registry_size >= 8
     - status.probe_health == [200, 200]
   trajectory:
     - defect_registry_replayed
