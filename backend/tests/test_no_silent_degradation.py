@@ -515,10 +515,8 @@ _LOG_METHODS = frozenset(
 #: and WP-B6 narrowed the Razorpay webhook to its unique violation). Same ratchet rule as above: it may shrink, it may
 #: not grow. Each entry names its owner.
 #:
-#:   services/functional_assessment `_llm_score` and grade inference. Phase 5
-#:                                  replaces both.
-#:   services/interviewer.py        two dead generation modes. Phase 3.
-#:   services/video/processing.py   the video answer path. Phase 3.
+#:   (functional_assessment, interviewer and video/processing left with the
+#:   grading split, PLAN-p5 WP5-D.)
 #:   services/projects/parsers.py   JUSTIFIED: a corrupt PDF or DOCX returns
 #:                                  an artifact carrying `supported=False` and
 #:                                  a written limitation, which is the recorded
@@ -533,11 +531,12 @@ _LOG_METHODS = frozenset(
 LEGACY_SILENT_HANDLER_FILES: frozenset[str] = frozenset(
     {
         "scripts/validate_stack.py",
-        "services/functional_assessment.py",
-        "services/interviewer.py",
+        # functional_assessment.py, interviewer.py and video/processing.py
+        # left with the grading split (PLAN-p5 WP5-D): the orchestrator holds
+        # no handler, the follow-up parser catches only a JSON decode error
+        # and logs it, and the processing handler records then re-raises.
         "services/projects/invisible_text.py",
         "services/projects/parsers.py",
-        "services/video/processing.py",
     }
 )
 

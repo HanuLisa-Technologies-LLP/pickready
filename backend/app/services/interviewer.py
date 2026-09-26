@@ -472,10 +472,19 @@ async def _decide_validate(state: _DecideState) -> _DecideState:
     """Reject anything that is not a single usable question."""
     if state.get("stop"):
         return {"follow_up": None}
+    # Only an unparseable or wrongly shaped MODEL RESPONSE ends here, and it is
+    # logged by name: the old broad handler also absorbed a programming error
+    # in this node as "no follow-up", which is the silent shape the b7 sweep
+    # forbids.
     try:
-        value = json.loads(state.get("raw") or "").get("follow_up")
-    except Exception:  # noqa: BLE001
+        parsed = json.loads(state.get("raw") or "")
+    except json.JSONDecodeError:
+        logger.info("interviewer.follow_up_unparseable")
         return {"follow_up": None}
+    if not isinstance(parsed, dict):
+        logger.info("interviewer.follow_up_unparseable shape=%s", type(parsed).__name__)
+        return {"follow_up": None}
+    value = parsed.get("follow_up")
     if value is None:
         return {"follow_up": None}
     text = _strip_praise(" ".join(str(value).split()))
