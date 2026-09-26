@@ -178,10 +178,9 @@ async def _seed_side(session, side: Side) -> None:
     await session.execute(
         sa.text(
             "INSERT INTO job_candidate_links "
-            "(id, tenant_id, job_id, candidate_id, profile_id, source, status, "
-            " hm_access_granted) "
+            "(id, tenant_id, job_id, candidate_id, profile_id, source, status) "
             "VALUES (:link, :tenant, :job, :candidate, :profile, 'fresh', "
-            " 'applied', true)"
+            " 'applied')"
         ),
         ids,
     )

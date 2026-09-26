@@ -96,8 +96,7 @@ async def _redirect_for(path: str, granted_fixture=None):
         resume_original_filename="MyResume.pdf",
         resume_mime_type="application/pdf",
     )
-    link = SimpleNamespace(profile_id=profile_id, tenant_id=tenant_id,
-                           hm_access_granted=True)
+    link = SimpleNamespace(profile_id=profile_id, tenant_id=tenant_id)
     return await candidates_api.resume_file(
         request=_request(path.format(profile_id=profile_id)),
         profile_id=profile_id,

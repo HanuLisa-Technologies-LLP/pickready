@@ -166,6 +166,25 @@ async def upload_resume(
     )
 
 
+async def _require_full_profile_access(session: AsyncSession, user: CurrentUser) -> None:
+    """Refuse a caller who does not hold SEND_OUTREACH, BEFORE any file is read.
+
+    This used to have a second half: a caller holding only VIEW_REVIEW_SCREEN
+    (a Hiring Manager) could also read a candidate once HR had set
+    `job_candidate_links.hm_access_granted` on one of that candidate's links.
+    The one route that set the flag was deleted in the 2026-09 route scrap
+    (`tests/test_dead_routes_removed.py`) and nothing else writes it, so the
+    data half could only ever answer "not granted". Reading a flag nobody can
+    set is a permission rule that exists in prose only; the column survives in
+    the database (server default false, pilot holds no link rows) and is read
+    by nothing.
+    """
+    if not await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    ):
+        raise HTTPException(status_code=403, detail="Profile access not granted")
+
+
 @router.get("/{candidate_id}/profile", response_model=ProfileOut)
 async def get_profile(
     candidate_id: uuid.UUID,
@@ -175,31 +194,14 @@ async def get_profile(
 ) -> ProfileOut:
     """Full Profile for the HR Review Screen (FR-7.1/7.2).
 
-    # ASSUMPTION: full access to any profile is derived from the HR-exclusive
-    # SEND_OUTREACH capability; holders of only VIEW_REVIEW_SCREEN (Hiring
-    # Managers) can read a candidate solely when HR has granted access on at
-    # least one of that candidate's links (FR-8.1) — capability + data, no
-    # role branch.
+    Full access to any profile is the SEND_OUTREACH capability, and nothing
+    else: see `_require_full_profile_access` for the grant flag it replaced.
     """
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     profile_query = select(Profile).where(Profile.candidate_id == candidate_id)
     if profile_id is not None:
@@ -211,9 +213,9 @@ async def get_profile(
         raise HTTPException(status_code=404, detail="No profile for this candidate")
     if profile_id is not None:
         # EXISTENCE check only. The same (candidate, tenant, profile) triple
-        # legitimately appears on many rows — one per job the candidate is
+        # legitimately appears on many rows, one per job the candidate is
         # linked to in this tenant, and a reused resume keeps the same profile
-        # — so `scalar_one_or_none()` here raised MultipleResultsFound (500)
+        # so `scalar_one_or_none()` here raised MultipleResultsFound (500)
         # for any candidate linked to more than one job, which the review
         # screen surfaced as "Could not load this candidate's profile".
         scoped_profile_link = (
@@ -282,21 +284,7 @@ async def get_project_evidence(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
     return {"projects": await project_context.recruiter_views(session, candidate_id)}
 
 
@@ -327,11 +315,7 @@ async def preview_resume(
     ).scalars().first()
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access and not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     try:
         resume_bytes = await fetch_resume_bytes(profile)
@@ -412,11 +396,7 @@ async def resume_file(
     ).scalars().first()
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access and not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
     if access_token is None:
         query = urlencode(
             {
@@ -690,7 +670,7 @@ async def schedule_interview(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> InterviewOut:
     """Interview invite with .ics, sent ONLY from the tenant's verified
-    sending domain (FR-8.3 / claude.md rule 5) — never Gmail/Outlook."""
+    sending domain (FR-8.3 / claude.md rule 5), never Gmail/Outlook."""
     link = await _get_link(session, user, link_id)
     candidate = await session.get(Candidate, link.candidate_id)
     tenant = await session.get(Tenant, user.tenant_id)
@@ -801,21 +781,7 @@ async def get_bgv_results(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     inquiries = (
         await session.execute(

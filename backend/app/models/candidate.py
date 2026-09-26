@@ -352,8 +352,12 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
     # refused without them (services/application_validation).
     validation_json: Mapped[dict | None] = mapped_column(JSONB)
 
-    # HR grants Hiring Manager access per profile (FR-8.1)
-    hm_access_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # `hm_access_granted` (migration 0001, server default false) is still a
+    # COLUMN and deliberately no longer an attribute: its only writer, an HR
+    # route, was deleted in the 2026-09 route scrap, and a
+    # permission flag nothing can set must not be readable as if it could be
+    # (api/candidates._require_full_profile_access). Dropping the column is a
+    # migration of its own; the server default keeps every INSERT valid.
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True
     )
