@@ -37,12 +37,11 @@ from app.core.db import get_session_factory, superadmin_scope
 from app.models.candidate import (
     Candidate,
     JobCandidateLink,
-    PipelineStatusEntry,
     Profile,
 )
 from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
 from app.models.company import Company
-from app.models.enums import LinkSource, PipelineStatus
+from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.candidate_update import CandidateUpdate
 from app.models.tenant import Tenant
@@ -2137,12 +2136,6 @@ async def my_applications(
                 .limit(1)
                 .exists()
                 .label("report_ready"),
-                select(PipelineStatusEntry.status)
-                .where(PipelineStatusEntry.job_candidate_link_id == JobCandidateLink.id)
-                .order_by(PipelineStatusEntry.at.desc())
-                .limit(1)
-                .scalar_subquery()
-                .label("latest_status"),
             )
             .select_from(JobCandidateLink)
             .outerjoin(Job, Job.id == JobCandidateLink.job_id)
@@ -2163,7 +2156,7 @@ async def my_applications(
     )
 
     out: list[ApplicationOut] = []
-    for link, job, tenant, conversation, report_ready, latest_status in rows:
+    for link, job, tenant, conversation, report_ready in rows:
         window = job_posting.describe(job) if job else None
         can_edit = job is not None and job_posting.can_edit_application(
             applied_at=link.created_at,
@@ -2172,14 +2165,6 @@ async def my_applications(
             grace_period_end_date=job.grace_period_end_date,
         )
         status = hiring_pipeline.normalize(link.status)
-        # The legacy `stage` field only understands the OLD five-value enum, so
-        # a new pipeline stage maps to None there rather than being coerced
-        # into a value it does not mean.
-        legacy_stage = latest_status
-        try:
-            legacy_stage = PipelineStatus(legacy_stage) if legacy_stage else None
-        except ValueError:
-            legacy_stage = None
 
         out.append(ApplicationOut(
             link_id=link.id,
@@ -2188,7 +2173,6 @@ async def my_applications(
             company_name=tenant.name if tenant else None,
             company_slug=employer_pages.visible_slug(tenant),
             applied_at=link.created_at,
-            stage=legacy_stage,
             assessment_status=job.assessment_status if job else None,
             conversation_status=conversation.status if conversation else None,
             report_ready=report_ready,

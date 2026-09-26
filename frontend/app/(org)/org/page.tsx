@@ -5,8 +5,9 @@ import { redirect } from "next/navigation";
 // A SERVER redirect, not `router.replace` in an effect. The client version had
 // to ship the page, hydrate, run the effect and only then navigate, so every
 // sign-in paid a round trip and showed a skeleton for a screen nobody was ever
-// meant to see. The same shape as the other two redirect-only routes in this
-// product, `/bd/social` and the candidate settings page.
+// meant to see. It is the only redirect-only route left: the compatibility
+// redirects (`/bd/social`, the candidate settings page and the bare
+// `/portal/assessments`) were deleted at the 2026-09 compatibility cutoff.
 export default function OrgHomePage() {
   redirect("/org/jobs");
 }

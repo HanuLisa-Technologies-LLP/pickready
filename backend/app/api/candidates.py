@@ -58,12 +58,8 @@ from app.services import team_review
 from app.services.audit import audit
 from app.services import llm_router
 from app.services.resume_storage import (
-    ALLOWED_RESUME_CONTENT_TYPES,
-    ALLOWED_RESUME_EXTENSIONS as ALLOWED_RESUME_EXTS,
-    MAX_RESUME_BYTES,
     apply_resume_asset,
     fetch_resume_bytes,
-    read_validated_resume,
     ResumeStorageError,
     store_resume,
 )
