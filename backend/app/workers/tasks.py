@@ -1167,9 +1167,8 @@ def run_functional_assessment(link_id: str):
     COMMIT; the loser then raises, and `max_attempts=2` runs the entire chain
     again; and on that retry the row EXISTS, so the writer takes its UPDATE
     branch and rewrites a report that may already have been delivered. Reports
-    are immutable in this product and a retake writes a NEW report beside the
-    old one, so a race rewriting one in place is that rule failing without a
-    sound.
+    are immutable in this product (insert-only since migration 0130), so a
+    race rewriting one in place is that rule failing without a sound.
 
     So the second run RETURNS. That is not an error and not a degradation: the
     first run is doing exactly what the second came to do. The lock is

@@ -28,7 +28,7 @@ exists:
   3. THE RETRY OVERWRITES A REPORT SOMEBODY MAY BE READING. On the retry the
      row now exists, so the writer takes the UPDATE branch and rewrites a
      report that was already delivered. `claude.md` states reports are
-     immutable and that a retake writes a NEW report alongside the old one; an
+     immutable (insert-only in the database since migration 0130); an
      in-place rewrite driven by a race is that rule failing silently.
 
 WHY `try` AND NEVER A WAIT
