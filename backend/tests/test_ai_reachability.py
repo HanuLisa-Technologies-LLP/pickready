@@ -282,7 +282,7 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "unsupported and nobody is told where the candidate actually said it."
     ),
     ("app/services/siddhi/delivery.py", "gate_delivery"): (
-        "app/api/assessments.py download_report_pdf. For its whole life before "
+        "app/api/assessment_reports.py download_report_pdf. For its whole life before "
         "the Vivekium release G4 had no production caller, so every flagged "
         "report was downloadable while the gate read as enforced."
     ),
@@ -351,7 +351,7 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     # the skills are never drafted, and a lost draft is never repaired, and
     # every one of those failures is silent because nothing raises.
     ("app/services/swot_analysis.py", "request_generation"): (
-        "app/api/assessments.py, POST .../swot-analysis/generate. The only way "
+        "app/api/job_setup.py, POST .../swot-analysis/generate. The only way "
         "a SWOT generation is asked for and handed off after the commit."
     ),
     ("app/services/swot_analysis.py", "run_generation"): (
@@ -359,7 +359,7 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "a generated SWOT draft."
     ),
     ("app/services/skills.py", "after_swot_saved"): (
-        "app/api/assessments.py, the SWOT save and restore routes. The first "
+        "app/api/job_setup.py, the SWOT save and restore routes. The first "
         "human SWOT save is what starts the skills draft."
     ),
     ("app/services/skills.py", "request_draft"): (
@@ -432,7 +432,7 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "app/api/assessment_coding.py, GET .../coding/{qid}/submission."
     ),
     ("app/services/coding_assessment/transcript.py", "recruiter_views"): (
-        "app/api/assessments.py, the recruiter transcript. Without it an "
+        "app/api/assessment_reports.py, the recruiter transcript. Without it an "
         "executed coding answer reads as nothing beside the candidate's code."
     ),
     ("app/services/rag/sources.py", "pending"): (

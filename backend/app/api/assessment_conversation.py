@@ -3,8 +3,9 @@
 Carved out of `api/assessments.py` on 2026-09-24 (PLAN-p3 WP0), then rebuilt the
 same day (PLAN-p3 WP3) around the conversation ENGINE in
 `services/assessment_conversation/`: the routes resolve who is asking and which
-turn they name, and the engine takes the answer. `api/assessments.py` keeps the
-staff side; `api/assessment_recording.py` holds the session recording routes.
+turn they name, and the engine takes the answer. The staff side is
+`api/assessment_reports.py` (PLAN-p5 WP5-F; `api/assessments.py` is gone);
+`api/assessment_recording.py` holds the session recording routes.
 
 WHAT CHANGED, IN ONE PLACE
 --------------------------
