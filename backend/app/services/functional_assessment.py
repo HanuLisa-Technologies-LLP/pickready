@@ -63,7 +63,6 @@ from app.services.assessment_pipeline.types import (
     RUN_WRITTEN,
     ProvenanceRecorder,
 )
-from app.services.assessment_questions import budget as question_budget
 from app.services.miti.items import UNANSWERED_SCORE
 from app.services.rating import GRADES, grade_for_percent
 from app.services.siddhi import remarks as siddhi_remarks
@@ -77,20 +76,16 @@ __all__ = [
     "PROBE_REMARK_WORDS",
     "RunResult",
     "UNANSWERED_SCORE",
-    "infer_grade_fallback",
     "rating_label",
     "run_assessment",
     "word_count",
 ]
 
-#: The four grades. How many questions a grade is asked is
-#: `assessment_questions.budget`.
-GRADE_NAMES: tuple[str, ...] = question_budget.GRADES
-
 #: Word contracts, owned by Siddhi's writer and re-exported for the readers
 #: that still import them from here.
 PPI_REMARK_WORDS = siddhi_remarks.SKILL_REMARK_WORDS
 PROBE_REMARK_WORDS = siddhi_remarks.PROBE_REMARK_WORDS
+
 
 def rating_label(score: int | float | None) -> str | None:
     """The client-facing grade for an internal 0-100 score.
@@ -105,16 +100,6 @@ def word_count(value: str) -> int:
     return siddhi_remarks.word_count(value)
 
 
-def infer_grade_fallback(job: Job) -> str:
-    """Keyword grade inference. Mirrored exactly by migration 0014's SQL CASE."""
-    title = f"{job.title} {job.level or ''}".lower()
-    if any(term in title for term in ("chief", "cxo", "ceo", "cto", "cfo", "coo")):
-        return "cxo"
-    if any(term in title for term in ("director", "head", "vice president", "vp", "leader")):
-        return "leadership"
-    if any(term in title for term in ("manager", "lead", "supervisor")):
-        return "managerial"
-    return "non_managerial"
 
 
 # ── The orchestrator ─────────────────────────────────────────────────────────
@@ -173,7 +158,6 @@ async def run_assessment(
             f"link {link.id} has an assessment conversation and no issued "
             "questions, so there is nothing the candidate can be graded on"
         )
-    grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
 
     live = await persistence.live_evaluation(session, link.id)
     previous = (
@@ -190,13 +174,14 @@ async def run_assessment(
     async with cost_telemetry.record_for(
         session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
     ):
+        # The transcript is indexed before Miti reads related passages from it.
+        await stage_evidence.ensure_transcript_indexed(session, link.id)
         inputs = await stage_evidence.load_inputs(
             session,
             job=job,
             link=link,
             conversation=conversation,
             questions=questions,
-            grade=grade,
         )
         miti = await grading.grade(
             session, inputs, allow_incomplete=final_attempt, provenance=provenance

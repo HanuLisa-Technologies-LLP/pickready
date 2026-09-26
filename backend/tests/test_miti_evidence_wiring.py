@@ -301,7 +301,6 @@ async def test_a_locator_read_failure_raises_rather_than_scoring_unanswered(
             link=state["link"],
             conversation=SimpleNamespace(id=uuid.uuid4()),
             questions=[question],
-            grade="non_managerial",
         )
     assert not recorder.evidence
 

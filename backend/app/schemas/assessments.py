@@ -148,9 +148,9 @@ class DimensionOut(BaseModel):
     name: str
     description: str | None
     #: One of the four grades. Never a number, a percentage, or a letter grade.
-    #: None exactly when `status` is `not_assessed`: the evaluation could not
-    #: be completed, and no grade is stated for it (migration 0130).
-    grade: str | None
+    #: "Not assessed" exactly when `status` is `not_assessed`: the evaluation
+    #: could not be completed and no grade is stated for it (migration 0130).
+    grade: str
     #: `graded`, `unanswered` or `not_assessed`, the row's stored status.
     status: Literal["graded", "unanswered", "not_assessed"] = "graded"
     #: The sentence beside a `not_assessed` row. Words only.
@@ -380,8 +380,8 @@ class FunctionalReportOut(NumberFreeDelivery):
     ai_score: list[DimensionOut]
     ai_score_snapshot: AiScoreSnapshotOut | None = None
     # ── Tatva Assessment (9.3) ──────────────────────────────────
-    #: None exactly when `overall_status` is `not_assessed`.
-    overall_grade: str | None
+    #: "Not assessed" exactly when `overall_status` is `not_assessed`.
+    overall_grade: str
     overall_status: Literal["graded", "not_assessed"] = "graded"
     overall_summary: str
     must_have: list[DimensionOut]

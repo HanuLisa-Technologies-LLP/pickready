@@ -312,6 +312,9 @@ CLEAN_PACKAGES: tuple[str, ...] = (
     "services/siddhi",
     "services/agents",
     "services/observability",
+    # The grading pipeline's stages (PLAN-p5 WP5-D). A not-assessed skill is
+    # stated as such; nothing here substitutes a score, a grade or a remark.
+    "services/assessment_pipeline",
 )
 
 #: Every file that carries a legacy fallback today, measured by sweeping the
@@ -322,8 +325,8 @@ CLEAN_PACKAGES: tuple[str, ...] = (
 #:                          unparseable response. The single most literal
 #:                          instance of what 4.1 forbids.
 #:   lifecycle_email.py     canned subject lines and bodies when drafting fails.
-#:   functional_assessment  `_fallback_remark_*`, `infer_grade_fallback` and the
-#:                          `deterministic_fallback` scoring mode.
+#:   (functional_assessment left with the grading split, PLAN-p5 WP5-D: the
+#:   keyword grade inference went, the report's grade is the contract's.)
 #:   gap_analysis.py        `_fallback_probes`, which are at least grounded in
 #:                          the candidate's own words rather than generic.
 #:   interviewer.py         `_CHALLENGE_FALLBACK`, wording for a non-answer.
@@ -345,7 +348,6 @@ LEGACY_FALLBACK_FILES: frozenset[str] = frozenset(
         "services/answer_quality.py",
         "services/email_render.py",
         "services/embeddings.py",
-        "services/functional_assessment.py",
         "services/gap_analysis.py",
         "services/interviewer.py",
         "services/jd_generation.py",

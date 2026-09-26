@@ -11,8 +11,9 @@ WHAT CROSSES THE BOUNDARY, AND WHAT DOES NOT
 --------------------------------------------
 * A grade is a WORD, converted here from the internal score. A row the
   evaluation could not complete (`assessment_status = 'not_assessed'`, score
-  NULL since migration 0130) has NO grade and says so in `status_note`; it is
-  never drawn at the bottom band, which would state Not Matching.
+  NULL since migration 0130) states `NOT_ASSESSED_WORD` instead of a grade,
+  with `status_note` saying why; it is never drawn on a radar and never
+  projected to the bottom band, which would state Not Matching.
 * `remark_note` marks a remark a fixed template wrote (the writing model was
   unavailable), and `support_note` is the citation trail's own marker for a
   remark its evidence did not clearly support. Both are the server's words.
@@ -52,6 +53,7 @@ from app.services import (
 from app.services.rating import GRADES, band_index_for, grade_for_percent
 from app.services.siddhi import ai_score as siddhi_ai_score
 from app.services.siddhi import remarks as siddhi_remarks
+from app.services.siddhi.synthesis import NOT_ASSESSED_WORD
 from app.services.siddhi import trail as siddhi_trail
 
 __all__ = [
@@ -94,8 +96,8 @@ REPORT_CATEGORIES: tuple[str, ...] = (
 #: What a reader asking for a report that is not written yet is told.
 REPORT_NOT_READY = "The PRISM Report is not ready yet"
 
-#: The sentence beside a skill the evaluation could not complete, which carries
-#: no grade (the report's word for it is `siddhi.synthesis.NOT_ASSESSED_WORD`).
+#: The sentence beside a skill the evaluation could not complete. Its grade
+#: slot carries `siddhi.synthesis.NOT_ASSESSED_WORD`, never a grade.
 STATUS_NOTE_NOT_ASSESSED = "Not assessed: the evaluation could not be completed"
 
 _STATUS_GRADED = "graded"
@@ -203,7 +205,7 @@ def dimension_out(
     return DimensionOut(
         name=row.name,
         description=row.description,
-        grade=None if not_assessed else (grade_for_percent(row.score) or GRADES[-1]),
+        grade=NOT_ASSESSED_WORD if not_assessed else (grade_for_percent(row.score) or GRADES[-1]),
         status=_STATUS_NOT_ASSESSED if not_assessed else status,
         status_note=STATUS_NOTE_NOT_ASSESSED if not_assessed else None,
         required_level=grade_for_percent(row.required_level),
@@ -237,10 +239,12 @@ def _snapshot_out(ai_score_json: Mapping[str, Any] | None) -> AiScoreSnapshotOut
 
 def _overall(
     report: FunctionalSkillsReport, rows: Iterable[ReportDimension]
-) -> tuple[str | None, str]:
-    """(overall grade word or None, overall status)."""
+) -> tuple[str, str]:
+    """(overall grade word, overall status). A withheld overall (a Must-have
+    not assessed on the final attempt, 0130) states `NOT_ASSESSED_WORD` and is
+    never recomputed from the rows."""
     if report.overall_status == _STATUS_NOT_ASSESSED:
-        return None, _STATUS_NOT_ASSESSED
+        return NOT_ASSESSED_WORD, _STATUS_NOT_ASSESSED
     overall = report.overall_score
     if overall is None and report.overall_status is None:
         # Written before migration 0030, when the overall was not stored.
@@ -252,7 +256,7 @@ def _overall(
         ]
         overall = round(sum(assessed) / len(assessed)) if assessed else 0
     if overall is None:
-        return None, _STATUS_NOT_ASSESSED
+        return NOT_ASSESSED_WORD, _STATUS_NOT_ASSESSED
     return grade_for_percent(overall) or GRADES[-1], _STATUS_GRADED
 
 
