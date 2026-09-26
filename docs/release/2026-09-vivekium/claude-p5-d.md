@@ -127,6 +127,25 @@ import neither `evidence_retrieval` nor `services.rag`
 (`tests/test_evidence_rag_wiring.py`, which also pins the four call sites the
 reachability test cannot see because they live under `app/services`).
 
+- **Scoring indexes the transcript INLINE before Miti reads passages**
+  (`evidence.ensure_transcript_indexed`, called by the orchestrator before
+  the grading stage). Completion dispatches `pickready.index_document` and
+  scoring from one commit, so without it the passage read races the indexer
+  and an empty index reads as "nothing related", recorded nowhere. The
+  indexer is idempotent (an already indexed transcript costs one SELECT); an
+  embedding or prefix outage degrades inside it and is logged, a database
+  failure raises. `REQUIRED_CALLERS` pins the call.
+
+### THE REPORT'S GRADE IS THE CONTRACT'S
+
+`functional_skills_reports.grade` is `MitiResult.contract.grade`, the grade
+LOCKED with the skills when the conversation started (D5), never the job's
+live `assessment_grade`. `functional_assessment.infer_grade_fallback` (a title
+keyword guess substituted for an unknown grade, the b7 inventory's grade
+inference) is DELETED, and `AssessmentInputs` carries no grade.
+`services/assessment_pipeline` joins `test_no_silent_degradation.CLEAN_PACKAGES`
+and `functional_assessment.py` left the legacy fallback inventory.
+
 ### THE CONTRACT DIGEST IS LOGGED TWICE AND MUST MATCH
 
 `tests/test_start_locks_contract.py::test_vaada_and_miti_log_the_same_digest_for_one_conversation`

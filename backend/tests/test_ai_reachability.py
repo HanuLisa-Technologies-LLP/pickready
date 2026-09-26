@@ -335,9 +335,16 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "tolerates an empty list, so it looks like a query with no good match."
     ),
     ("app/services/assessment_pipeline/evidence.py", "backfill_answer_evidence"): (
-        "app/services/functional_assessment.py, the scoring pass. It is how an "
-        "answer the conversation never filed still reaches Miti's ledger; "
-        "without a caller the ledger is written by nothing at scoring time."
+        "app/services/miti/items.py, Miti's item stage in the scoring pass. It "
+        "is how an answer the conversation never filed still reaches Miti's "
+        "ledger; without a caller the ledger is written by nothing at scoring "
+        "time."
+    ),
+    ("app/services/assessment_pipeline/evidence.py", "ensure_transcript_indexed"): (
+        "app/services/functional_assessment.py run_assessment, before Miti's "
+        "grading stage. Without it Miti's transcript passage read races the "
+        "dispatched indexer and can find an empty index, which reads as a "
+        "transcript with nothing related in it and records nothing."
     ),
     # Vivekium release, job setup. Each of these is the only door to a state
     # the product depends on: without a caller the SWOT stays `generating`,

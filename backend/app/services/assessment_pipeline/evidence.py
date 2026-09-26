@@ -12,8 +12,8 @@ candidate's answer in Miti's evidence ledger (`evidence_items`,
   exists while the candidate is still answering. Until this module the ledger
   was written only at scoring time, after the conversation had ended, so the
   loop between the interviewer and the grader was dead by construction.
-* AS A BACKFILL at scoring (`backfill_answer_evidence`, from
-  `functional_assessment`), which covers conversations that finished before
+* AS A BACKFILL at scoring (`backfill_answer_evidence`, from Miti's item
+  stage), which covers conversations that finished before
   the per-answer call existed and any answer whose per-answer write failed.
 
 Both calls write the same rows once. The evidence row is idempotent in the
