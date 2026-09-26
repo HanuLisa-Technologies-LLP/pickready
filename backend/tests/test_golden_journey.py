@@ -189,10 +189,132 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         assert link[0].status == "assessment_invited"
     elif name == "questions_written":
         rows = await _rows(
-            "SELECT question_type FROM candidate_questions WHERE job_candidate_link_id = :l",
+            "SELECT question_type, generated_at FROM candidate_questions "
+            "WHERE job_candidate_link_id = :l ORDER BY ordinal",
             l=str(state.link),
         )
-        assert rows, "no question was written for the invited candidate"
+        kinds = [row.question_type for row in rows]
+        # Every format CONTRACT v4 item 1 names is in this one assessment, and
+        # every question was WRITTEN (a templated row carries no generated_at).
+        assert {"mcq_single", "fill_blank", "coding"} <= set(kinds), kinds
+        assert {"evidence_based", "short_answer"} & set(kinds), kinds
+        assert all(row.generated_at is not None for row in rows), "a question was templated"
+        record = await _rows(
+            "SELECT composition_json FROM assessment_conversations "
+            "WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        composition = record[0].composition_json
+        assert composition["degraded"] == [] and composition["templated"] == [], composition
+    elif name == "proctoring_opened":
+        rows = await _rows(
+            "SELECT outcome, face_descriptor_baseline IS NOT NULL AS has_baseline "
+            "FROM proctoring_sessions WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert len(rows) == 1 and rows[0].outcome == "active" and rows[0].has_baseline
+        consent = await _rows(
+            "SELECT c.consent_status FROM assessment_consents c "
+            "JOIN assessment_conversations a ON a.id = c.conversation_id "
+            "WHERE a.job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert [row.consent_status for row in consent] == ["granted"]
+    elif name == "started":
+        rows = await _rows(
+            "SELECT started_at, skill_snapshot_id, contract_digest, questions_contract_digest "
+            "FROM assessment_conversations WHERE id = :c",
+            c=str(state.conversation),
+        )
+        row = rows[0]
+        assert row.started_at is not None and row.skill_snapshot_id is not None
+        assert row.contract_digest == row.questions_contract_digest, (
+            "the questions were not written against the contract the start locked"
+        )
+        link = await _rows("SELECT status FROM job_candidate_links WHERE id = :l", l=str(state.link))
+        assert link[0].status == "assessment_in_progress"
+    elif name == "voice_transcribed":
+        rows = await _rows(
+            "SELECT status, transcript_text, audio_deleted_at FROM voice_answers WHERE id = :v",
+            v=str(state.responses["voice_id"]),
+        )
+        assert rows[0].status == "transcribed" and rows[0].audio_deleted_at is not None
+        assert rows[0].transcript_text == journey.SPOKEN_ANSWER
+    elif name == "coding_run":
+        rows = await _rows(
+            "SELECT count(*) AS n FROM coding_runs WHERE conversation_id = :c",
+            c=str(state.conversation),
+        )
+        assert rows[0].n == 1
+    elif name == "completed":
+        rows = await _rows(
+            "SELECT status, completed_at, credit_event FROM assessment_conversations WHERE id = :c",
+            c=str(state.conversation),
+        )
+        assert rows[0].status == "completed" and rows[0].completed_at is not None
+        assert rows[0].credit_event == "completed_assessment"
+        answers = await _rows(
+            "SELECT answer_json FROM assessment_answers WHERE conversation_id = :c",
+            c=str(state.conversation),
+        )
+        inputs = [row.answer_json.get("input") for row in answers]
+        assert "voice" in inputs, inputs
+        assert state.answered.get("voice") == 1 and state.answered.get("typed", 0) >= 1
+        assert state.answered.get("mcq") == 1 and state.answered.get("fill_blank") == 1
+        assert state.answered.get("coding") == 1
+    elif name == "coding_executed":
+        rows = await _rows(
+            "SELECT execution_status, review_status FROM coding_submissions "
+            "WHERE conversation_id = :c",
+            c=str(state.conversation),
+        )
+        assert [(row.execution_status, row.review_status) for row in rows] == [
+            ("complete", "complete")
+        ], rows
+    elif name == "graded":
+        rows = await _rows(
+            "SELECT status, superseded_at, contract_digest FROM evaluations WHERE link_id = :l",
+            l=str(state.link),
+        )
+        live = [row for row in rows if row.superseded_at is None]
+        assert len(live) == 1 and live[0].status != "not_assessed", rows
+    elif name == "reported":
+        rows = await _rows(
+            "SELECT id, overall_status, overall_score, scoring_mode, contract_digest, "
+            "must_have_failed FROM functional_skills_reports WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert len(rows) == 1, "exactly one PRISM Report for the application"
+        report = rows[0]
+        assert report.overall_score is not None and report.overall_status != "not_assessed"
+        assert report.must_have_failed is False
+        dimensions = await _rows(
+            "SELECT category, name, assessment_status, remark FROM report_dimensions "
+            "WHERE report_id = :r",
+            r=str(report.id),
+        )
+        assert dimensions and all(row.assessment_status != "not_assessed" for row in dimensions)
+        conversation = await _rows(
+            "SELECT contract_digest FROM assessment_conversations WHERE id = :c",
+            c=str(state.conversation),
+        )
+        assert report.contract_digest == conversation[0].contract_digest
+        link = await _rows("SELECT status FROM job_candidate_links WHERE id = :l", l=str(state.link))
+        assert link[0].status == "assessment_completed"
+    elif name == "proctoring_reported":
+        rows = await _rows(
+            "SELECT r.id FROM proctoring_reports r JOIN proctoring_sessions s "
+            "ON s.id = r.proctoring_session_id WHERE s.job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert len(rows) == 1
+    elif name == "reranked":
+        before = state.responses["ranked_before"]
+        after = state.responses["ranked_after"]
+        assert before["ranking_header"] != after["ranking_header"], (before["ranking_header"], after["ranking_header"])
+    elif name == "profile_read":
+        profile = state.responses["executive_profile"]
+        assert profile.get("proctoring"), "the executive profile carries no proctoring section"
     else:
         raise AssertionError(f"no judge for gate {name!r}")
 
@@ -204,21 +326,41 @@ def test_the_golden_journey() -> None:
     world = asyncio.run(harness_world.build("golden_journey_ready", {}, sessions=sessions))
     reached: list[str] = []
 
+    model = GoldenModel()
+
     def gate(name: str, state: journey.JourneyState) -> None:
-        asyncio.run(_judge(name, state))
+        try:
+            asyncio.run(_judge(name, state))
+        except AssertionError as exc:
+            # A gate that fails because a caller degraded names the model call
+            # nobody scripted, which is almost always the reason.
+            raise AssertionError(
+                f"gate {name!r} failed: {exc}; unscripted model calls so far: "
+                f"{sorted(set(model.unscripted))}"
+            ) from exc
         reached.append(name)
 
-    model = GoldenModel()
     try:
         staff = asyncio.run(_signed_in(world.id("staff"), AUDIENCE_ORG))
         candidate = asyncio.run(_signed_in(world.id("candidate_user"), AUDIENCE_CANDIDATE))
         state = journey.JourneyState(
             tenant=world.id("tenant"), staff=world.id("staff"), candidate=world.id("candidate")
         )
-        with TestClient(app) as http, model.installed(), journey.object_store():
+        with (
+            TestClient(app) as http,
+            model.installed(),
+            journey.deployment(),
+            journey.digest_lines() as digests,
+        ):
             client = _RealClient(http, staff, candidate)
             journey.drive(client, state, gate)
         assert reached == list(journey.GATES)
         assert model.unscripted == [], f"a model call nobody scripted: {model.unscripted}"
+        # THE DIGEST PAIR: Vaada logged the contract it locked at the start and
+        # Miti the one it graded against. One conversation, one digest.
+        by_stage = {stage: (conversation, digest) for stage, conversation, digest in digests}
+        assert set(by_stage) == {"vaada", "miti"}, digests
+        assert by_stage["vaada"] == by_stage["miti"]
+        assert by_stage["vaada"][0] == str(state.conversation)
     finally:
         asyncio.run(harness_world.teardown(world, sessions=sessions))
