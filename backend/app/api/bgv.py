@@ -103,7 +103,7 @@ from app.services import (
 from app.services import capabilities as caps
 from app.services.audit import audit
 from app.services.rate_limit import rate_limit
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
 
@@ -343,8 +343,12 @@ async def append_employer_route(
     )
     await session.flush()
     # The auto-maintenance is DISPATCHED (rule 4): it emails employers, and
-    # a candidate's save must not block on a mail merge.
-    dispatch(
+    # a candidate's save must not block on a mail merge. After the COMMIT,
+    # because the task reads the employment row this request just wrote; a
+    # lost invoke is logged at ERROR by the commit hook and the next history
+    # save runs the same maintenance again.
+    dispatch_after_commit(
+        session,
         "pickready.bgv_auto_maintenance",
         args=[str(candidate_id), result["added_id"]],
     )
@@ -581,7 +585,11 @@ async def _resend_after_correction(
     # Clears `bounced_at` and `reminder_sent_at`, so the corrected request gets
     # its own three days instead of inheriting a clock that already ran out.
     await bgv_delivery.mark_sent(session, verification_id=verification_id, at=now)
-    dispatch(
+    # After the COMMIT: the task resolves the `email_log` row written above,
+    # which a pre-commit invoke could not see. A lost invoke is logged at
+    # ERROR by the commit hook; the correction can be submitted again.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(tenant_id),
@@ -1104,8 +1112,8 @@ async def send(
     """Send the recruiter's edited text to the employer, and record it once.
 
     The message is written to the conversation BEFORE the dispatch, and the
-    dispatch RAISES on failure, so a send that never left the building cannot
-    read as one that did. The conversation row and the `email_log` row are the
+    dispatch runs only once that write COMMITS, so a send that rolled back
+    never leaves the building. The conversation row and the `email_log` row are the
     same event seen from two sides.
     """
     row = await _verification_or_404(session, verification_id, user.tenant_id)
@@ -1179,7 +1187,12 @@ async def send(
         generated_by_ai=False,
         edited_by_human=True,
     )
-    dispatch(
+    # After the COMMIT, for the same reason as the correction path: the task
+    # resolves the `email_log` row above. A lost invoke is logged at ERROR by
+    # the commit hook and leaves the verification pending, so the recruiter
+    # sees it unanswered and can send again.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(user.tenant_id),
@@ -1418,7 +1431,11 @@ async def submit_employer_checkbox_form(
     # shared, per the brief. Sent only on a fully confirmed submission; a
     # partial confirmation goes to the recruiter's queue, not the candidate.
     if new_status == VERIFICATION_VERIFIED and row["email"]:
-        dispatch(
+        # After the COMMIT: a form submission that rolled back must not tell
+        # the candidate it is done. A lost invoke is logged at ERROR; the
+        # verification itself is recorded either way.
+        dispatch_after_commit(
+            session,
             "pickready.send_email",
             args=[
                 str(row["tenant_id"]),

@@ -39,7 +39,7 @@ from app.models.invite import (
     invite_expiry,
 )
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 from app.api.deps import CurrentUser, get_current_user, get_superadmin_db
 from app.models.compliance import DOCUMENT_GROUPS, DOCUMENT_LABELS, ComplianceDocument
 from app.models.enums import Role, UserStatus
@@ -568,7 +568,12 @@ async def set_primary_contact(
             )
         )
         await session.flush()
-        dispatch(
+        # After the COMMIT: the link's token hash is the StaffInvite written
+        # above, and a rolled-back rebind must not mail a working-looking
+        # invitation. A lost invoke is logged at ERROR; setting the contact
+        # again issues a fresh invite.
+        dispatch_after_commit(
+            session,
             "pickready.send_email",
             args=[str(tenant.id), email, "client_invite",
                   {"tenant_name": tenant.name,

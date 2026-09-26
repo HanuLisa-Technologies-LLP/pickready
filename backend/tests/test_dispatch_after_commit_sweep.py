@@ -57,15 +57,9 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     # conversation's readiness helper was deleted with the video interview
     # start, its last caller. The admin console's entries left with the
     # console (PLAN-p7 WP-B6) and support's `_notify` was converted in stage 3.
-    ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
-    ("api/bgv.py", "append_employer_route"): (1, "P6 proposed"),
-    ("api/bgv.py", "send"): (1, "P6 proposed"),
-    ("api/bgv.py", "submit_employer_checkbox_form"): (1, "P6 proposed"),
-    ("api/candidates.py", "schedule_interview"): (1, "P6 proposed"),
-    ("api/companies.py", "_issue_invite"): (1, "P6 proposed"),
-    ("api/outreach.py", "send_outreach"): (1, "P6"),
-    ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
-    ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
+    # EMPTY since the stage 3 final sweeps (PLAN-p7 WP-B8): the four BGV
+    # sends, the interview invitation, the staff and client invitations,
+    # outreach and the candidate's BGV inquiry all dispatch after commit.
 }
 
 #: (file relative to app/, the alias) -> proposed owner phase. The same
@@ -137,9 +131,23 @@ def _found() -> tuple[dict[tuple[str, str], int], set[tuple[str, str]]]:
 
 def test_the_sweep_reads_the_request_path() -> None:
     """A sweep that silently reads nothing passes for ever."""
-    sites, _ = _found()
     assert sum(len(list(root.rglob("*.py"))) for root in SCOPE) > 40
-    assert sites, "no dispatch call found anywhere: the sweep is not reading the tree"
+    # With the legacy list empty there is no bare call left to find, so the
+    # proof that the tree was READ is the converted calls the same walk sees.
+    converted = 0
+    for root in SCOPE:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                    converted += name == "dispatch_after_commit"
+    assert converted > 20, "no dispatch_after_commit call found: the sweep is not reading the tree"
+    # And the scanner itself still recognises a bare call when it sees one.
+    probe = ast.parse("def f():\n    dispatch('pickready.x')\n")
+    call = next(n for n in ast.walk(probe) if isinstance(n, ast.Call))
+    assert _is_bare_dispatch(call, {"dispatch"})
 
 
 def test_no_new_dispatch_before_commit_in_a_request_path() -> None:

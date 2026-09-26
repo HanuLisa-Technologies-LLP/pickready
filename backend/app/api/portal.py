@@ -83,7 +83,7 @@ from app.services import job_posting
 from app.services import job_relevance
 from app.services import telemetry_events
 from app.services.audit import audit
-from app.workers.dispatch import dispatch, dispatch_after_commit
+from app.workers.dispatch import dispatch_after_commit
 from app.services.resume_storage import apply_resume_asset, copy_resume_metadata, store_resume
 
 logger = logging.getLogger(__name__)
@@ -2325,7 +2325,6 @@ async def edit_application(
 from app.models.bgv import (  # noqa: E402 -- section-scoped, matching the projects section style
     DISPATCHABLE_STATUSES as _BGV_DISPATCHABLE,
     MAX_INQUIRIES_PER_CANDIDATE as _BGV_MAX,
-    STATUS_DISPATCH_FAILED as _BGV_DISPATCH_FAILED,
     BGVInquiry,
     BGVShareConsent,
 )
@@ -2519,8 +2518,15 @@ async def dispatch_bgv_inquiry(
     Only `collected` and `dispatch_failed` rows are dispatchable: a second
     email to an HR mailbox that already received one reads as spam and burns
     the candidate's credibility, so re-sending a dispatched inquiry is a 409,
-    not a convenience. An enqueue failure is recorded on the row as
-    `dispatch_failed` and reported as an error, never swallowed.
+    not a convenience.
+
+    The send is handed off only once this request COMMITS (CONTRACT v5).
+    What used to sit here caught an enqueue failure, wrote `dispatch_failed`
+    and then RAISED, and the raise rolled that very write back, so the state
+    it promised the candidate never reached the table. Now a lost invoke is
+    logged at ERROR by the commit hook and leaves the inquiry `collected`,
+    which is dispatchable, so the candidate's Send button still works; a
+    delivery failure inside the task lands in `dispatch_failed` there.
     """
     candidate = await candidate_identity.require_candidate(session, user.user_id)
     inquiry = await session.get(BGVInquiry, inquiry_id)
@@ -2530,21 +2536,9 @@ async def dispatch_bgv_inquiry(
         raise HTTPException(
             status_code=409, detail="This inquiry has already been sent"
         )
-    try:
-        dispatch("pickready.send_bgv_inquiry", args=[str(inquiry.id)])
-    except Exception as exc:
-        # The dispatcher RAISES on an enqueue failure (claude.md 2026-09-05).
-        # Record it where the candidate can see it, then surface the error.
-        inquiry.status = _BGV_DISPATCH_FAILED
-        inquiry.updated_at = datetime.now(timezone.utc)
-        await session.flush()
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "The inquiry could not be queued for delivery, please try "
-                "again"
-            ),
-        ) from exc
+    dispatch_after_commit(
+        session, "pickready.send_bgv_inquiry", args=[str(inquiry.id)]
+    )
     await audit(
         session,
         tenant_id=None,

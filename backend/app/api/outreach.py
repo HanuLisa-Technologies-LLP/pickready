@@ -14,7 +14,6 @@ capability-gated on SEND_OUTREACH and runs on the RLS tenant session
 """
 from __future__ import annotations
 
-import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,9 +43,8 @@ from app.services import outreach_content
 from app.services.audit import audit
 from app.services.yukti import projection
 from app.workers import status as task_status
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -338,27 +336,24 @@ async def send_outreach(
     queued: list[str] = []
     task_ids: list[str] = []
     for rec in recipients:
-        try:
-            task = dispatch(
-                "pickready.send_email",
-                args=[
-                    str(user.tenant_id),
-                    rec.email,
-                    DIRECT_TEMPLATE_NAME,
-                    {"subject": rec.subject, "body": rec.body},
-                ],
-            )
-        except Exception as exc:  # noqa: BLE001 — broker down must not 500 silently
-            logger.exception("outreach.enqueue_failed link_id=%s", rec.link_id)
-            skipped.append(
-                SkippedRecipient(
-                    link_id=rec.link_id,
-                    candidate_id=rec.candidate_id,
-                    name=rec.name,
-                    reason=f"Could not be queued for sending ({type(exc).__name__})",
-                )
-            )
-            continue
+        # After the COMMIT (CONTRACT v5), so the engagement stamp and the audit
+        # row below and the send are one outcome. The invoke is no longer
+        # attempted inside the request, so there is no per-recipient enqueue
+        # failure left to report here: a lost invoke is logged at ERROR by the
+        # commit hook, and the task id returned below reads as PENDING on the
+        # outreach modal's delivery poll, which is where the recruiter looks.
+        # A programming error (unknown task, unserialisable argument) raises,
+        # as it should, before anything is sent.
+        task = dispatch_after_commit(
+            session,
+            "pickready.send_email",
+            args=[
+                str(user.tenant_id),
+                rec.email,
+                DIRECT_TEMPLATE_NAME,
+                {"subject": rec.subject, "body": rec.body},
+            ],
+        )
         queued.append(rec.email)
         task_ids.append(task.id)
         # THE CANDIDATE DID NOT HAVE TO DO ANYTHING FOR THIS TO COUNT. Feature

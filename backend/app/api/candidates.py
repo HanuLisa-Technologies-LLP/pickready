@@ -64,7 +64,7 @@ from app.services.resume_storage import (
     store_resume,
 )
 from app.services.resume_access import issue_resume_token, verify_resume_token
-from app.workers.dispatch import dispatch, dispatch_after_commit
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
 
@@ -706,7 +706,11 @@ async def schedule_interview(
         attendee_emails=[candidate.email] if candidate.email else [],
         description=body.notes or "",
     )
-    dispatch(
+    # After the COMMIT: the invitation names the interview row written above,
+    # and a rolled-back schedule must not send a calendar invite for a slot
+    # that does not exist. A lost invoke is logged at ERROR by the commit hook.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(user.tenant_id), candidate.email, "interview_invite",
