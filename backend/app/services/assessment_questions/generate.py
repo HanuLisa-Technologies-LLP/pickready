@@ -580,12 +580,21 @@ async def generate_candidate_questions(
     resume_excerpt = _resume_excerpt(profile)
     # Project Evidence Intelligence: context only. It moves no weight and no
     # grade, and an empty block for a candidate with no projects changes
-    # nothing.
-    from app.services.projects import context as project_context  # noqa: PLC0415
+    # nothing. Read through the typed tool layer (`extract_project_evidence`,
+    # Vaada's alone, assessment stage only), never `projects.context`
+    # directly. A degraded read is logged by `evidence_retrieval` naming the
+    # tool and the reason, and the questions are written without the block:
+    # projects are optional context, so their absence is never a penalty and
+    # never a reason to refuse an assessment.
+    from app.services import evidence_retrieval  # noqa: PLC0415
 
-    project_evidence = await project_context.candidate_project_context(
-        session, link.candidate_id
+    project = await evidence_retrieval.project_evidence_for_candidate(
+        session,
+        tenant_id=link.tenant_id,
+        link_id=link.id,
+        candidate_id=link.candidate_id,
     )
+    project_evidence = project.text
 
     prose, generated = await _write_prose(
         session,
