@@ -27,7 +27,7 @@ const INSIGHTS = [
   {
     tag: "Decision quality",
     title: "Why a shortlist needs evidence, not another score",
-    body: "A practical framework for making profile, behaviour and technical signals readable together.",
+    body: "A practical approach to making profile, behaviour and technical evidence readable together.",
   },
   {
     tag: "Candidate trust",
@@ -72,10 +72,10 @@ export function EvidenceProfile() {
               AI can rank. A PRISM Report helps your team understand.
             </h2>
             <p className="mt-4 text-pretty text-base">
-              Vivekium Profile Intelligence connects role match, behavioural
-              evidence, technical depth and validation into one readable
-              decision profile. It is our own framework, generated from your job
-              description, not a generic score pasted onto a resume.
+              The Tatva Assessment connects role match, behavioural evidence,
+              technical depth and validation into one readable decision
+              profile. It is our own, built from your JD and SWOT, not a
+              generic score pasted onto a resume.
             </p>
             {/* Flat rows on a hairline grid, not four bordered boxes inside a
                 bordered panel. DESIGN.md section 4: no card inside a card. */}

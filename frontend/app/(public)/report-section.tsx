@@ -12,18 +12,23 @@ import { Badge } from "@/components/ui/badge";
  * (Primary Skills, Secondary Skills) and are now the Tatva Assessment's three,
  * Must-have, Nice-to-have and Behavioural. Neither correction invents anything;
  * both bring the page back onto what the product ships.
+ *
+ * NO RETAKE LINE (the Vivekium release). Every application is assessed against
+ * its own job's locked contract, so there is no retake to describe, and the
+ * resume check is named AI Match here as it is everywhere else a reader meets
+ * it.
  */
 const POINTS = [
-  "An AI Score from the resume, then a Tatva Assessment from the conversation. Shown side by side, never merged.",
+  "An AI Match from the resume, then a Tatva Assessment from the conversation. Shown side by side, never merged.",
   "Must-have, Nice-to-have and Behavioural, each with a 45 to 50 word remark.",
   "Three radar charts, each plotting what the job needs against what the candidate showed.",
-  "Reports are immutable. A retake creates a new report beside the old one.",
+  "Reports are immutable.",
 ];
 
 /** Rated items from the sample card. Word labels only, never a number. */
 const SAMPLE = [
   {
-    dimension: "AI Score, skills match",
+    dimension: "AI Match, skills",
     label: "Highly Matching",
     tone: "rating1",
   },

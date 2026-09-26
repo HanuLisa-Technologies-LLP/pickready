@@ -416,7 +416,7 @@ export function Step8PfiReport() {
         className="grid h-full gap-3 p-4 sm:grid-cols-[1.15fr_.85fr] sm:p-5"
       >
         <div className="min-w-0">
-          <SceneHeader eyebrow="Vivekium intelligence" title="PPI Assessment Report · Ananya Sharma" />
+          <SceneHeader eyebrow="Vivekium intelligence" title="PRISM Report · Ananya Sharma" />
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}

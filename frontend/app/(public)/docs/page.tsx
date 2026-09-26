@@ -27,7 +27,6 @@ import {
   Layers3,
   LockKeyhole,
   Network,
-  RefreshCw,
   Rocket,
   Search,
   ServerCog,
@@ -158,7 +157,7 @@ const FLOW = [
 const PRODUCT_METRICS = [
   { value: "30 + 5", label: "active posting + grace days" },
   { value: "22–45", label: "questions, based on job grade" },
-  { value: "4 + 15", label: "matching parameters + Tatva matrix entries" },
+  { value: "3", label: "Tatva Assessment aspects: Must-have, Nice-to-have, Behavioural" },
   { value: "25", label: "resumes per databank batch" },
   { value: "200", label: "candidates per invitation batch" },
   { value: "5 min", label: "dashboard refresh cadence" },
@@ -333,7 +332,7 @@ export default function DocsPage() {
                 {[
                   ["01", "Job", "Markdown JD + posting lifecycle"],
                   ["02", "Candidate", "Profile snapshot + resume"],
-                  ["03", "Evidence", "AI Score + Tatva Assessment"],
+                  ["03", "Evidence", "AI Match + Tatva Assessment"],
                   ["04", "Decision", "Report + pipeline + history"],
                 ].map(([number, title, detail], index) => (
                   <div
@@ -420,7 +419,7 @@ export default function DocsPage() {
                   </p>
                   <div className="mt-6 grid gap-3 sm:grid-cols-2">
                     {[
-                      "No numeric AI scores shown to users",
+                      "No assessment numbers shown to users",
                       "Every application keeps its own snapshot",
                       "Assessment spend begins with recruiter intent",
                       "Jobs retain candidates across renewal windows",
@@ -553,18 +552,18 @@ export default function DocsPage() {
               {[
                 {
                   icon: Bot,
-                  title: "Parallel analysis",
-                  body: "Technical rubric scoring and Tatva matrix scoring run as independent branches; the application's validation fields flow through unscored. Synthesis waits for both scorers.",
+                  title: "Graded skill by skill",
+                  body: "Each skill is graded on its own evidence; the application's validation fields flow through unscored. The report is written only once every grade is in.",
                 },
                 {
                   icon: FileCheck2,
                   title: "Immutable report",
-                  body: "An AI Score, an Overall grade, Primary and Secondary Skills, Behavioural Competencies, four radar charts and 8-10 interview questions become one durable record.",
+                  body: "An AI Match, an Overall grade, Must-have, Nice-to-have and Behavioural skills, three radar charts and a Gap Analysis & Action Plan become one durable record.",
                 },
                 {
-                  icon: RefreshCw,
-                  title: "Six-month reuse",
-                  body: "Behavioral and technical evidence can carry forward; job-specific matching is always recalculated.",
+                  icon: LockKeyhole,
+                  title: "One contract per assessment",
+                  body: "Every candidate is assessed against the skills locked when their assessment began. Nothing is carried over from another job.",
                 },
               ].map((item) => (
                 <article
