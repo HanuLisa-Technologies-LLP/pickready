@@ -6,8 +6,12 @@ the cutoff was taken, so no stored Updates entry or email names a bare path
 these redirects existed for. Each deletion is pinned here, because a deleted
 alias nobody defends is one somebody re-adds "for safety" in a hotfix.
 
-What was deliberately KEPT is named in
-`docs/release/2026-09-vivekium/claude-final-sweeps.md`, with the reason.
+What was deliberately KEPT, with the reason: `/org` (the org home, a real
+server redirect, not a compatibility alias); `JDGenerateIn.key_requirements`
+(its docstring calls it a deprecated alias, but the live Create Job form still
+sends the AI brief box through it, so it is an input with a writer);
+`TenantCreateIn.domain` and `client_phone` (optional inputs, not projections);
+the `LinkSource` and `resume_storage_provider` CHECK values (stored data).
 """
 from __future__ import annotations
 
