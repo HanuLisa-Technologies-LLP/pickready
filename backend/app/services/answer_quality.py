@@ -20,6 +20,13 @@ hallucinating. It was arithmetic:
   assert "Available evidence demonstrates dependable capability in <name>"
   unconditionally, with no reference to what the candidate actually wrote.
 
+(Both `_llm_score` and `_stable_score` were DELETED in the Vivekium release,
+WP5-B: Miti's item stage grades every answer, and a judging failure is now
+"not assessed" with no score at all. This module still runs first, because an
+answer with nothing in it is `unanswered`, a fact about the candidate, and
+must never reach a judge whose outage would make it look like one about the
+platform.)
+
 So with the LLM chain down, EVERY candidate scored 45..94 and was praised in
 prose no model ever saw. The failure is fully deterministic and reproducible
 offline, which is why it survived prompt tuning: no prompt runs on that path.

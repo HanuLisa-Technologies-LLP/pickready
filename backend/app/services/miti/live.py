@@ -1,187 +1,166 @@
-"""Miti on the live scoring path: stages 2 to 6, against real rows.
+"""Miti on the live scoring path, against real rows. THE sole grading authority.
 
-    G1   frozen scorecard          `hiring.scorecard.require_frozen_matrix`
-    2/3  claims and tiering        read back from the evidence ledger
-    4    five isolated evaluators  `pipeline.build_evaluator_inputs`, concurrent
-    5    triangulation             `evidence.contradictions` -> `triangulation`
-    6    aggregation               deterministic, and where the three caps bind
+    G1   the locked assessment contract   `assessment_contract.load_contract_for_conversation`
+    1b   item evaluation                  `items.evaluate_skills`, every per-skill grade
+    2/3  claims and tiering               read back from the evidence ledger
+    4    five isolated evaluators         `pipeline.build_evaluator_inputs`, concurrent
+    5    triangulation                    `evidence.contradictions` -> `triangulation`
+    6    aggregation of the skill grades  deterministic, and where the three caps bind
+    G4   the human review disposition     the latest `review_dispositions` row
 
-WHAT THIS MODULE IS FOR
--------------------------
-Until now the whole of Part A was reachable from exactly one place,
-`app/scripts/worked_example.py`, and from no route or worker. Every gate was
-real and every gate guarded nothing. This is the module that puts the five
-evaluators, the gates and the band caps on the path a candidate's report is
-actually written from; `services/functional_assessment.synthesis_node` is its
-only caller.
-
-THERE IS NO DEFAULT MATRIX, AND THAT IS THE POINT OF G1
----------------------------------------------------------
-`require_frozen_matrix` IS gate G1: an approved, frozen scorecard or nothing.
-Runbook section 14.1 states the consequence in one line -- "the scorecard was
-not approved -> scoring blocked entirely (Gate G1)" -- and section 4.3 repeats
-it. So this module RAISES when the matrix is missing, unapproved, or when the
-module that owns it has not landed. It does not substitute a generic matrix,
-does not fall back to the job's competency rows, and does not score a candidate
-against criteria no human confirmed. Doing any of those would let the first
-candidate assessed set the criteria for everyone, which is the one thing the
-approval gate exists to prevent.
+WHAT CHANGED IN THE VIVEKIUM RELEASE (WP5-B)
+---------------------------------------------
+* **G1 reads the CONTRACT, not a frozen matrix.** `hiring.scorecard` is no
+  longer imported. The contract is the snapshot the candidate's conversation is
+  bound to, loaded through the one read API, and Miti logs its digest with
+  `assessment_contract.log_digest("miti", ...)`: the same line the conversation
+  logs at its start with `stage=vaada`, so a single log query proves the two
+  readers saw the same contract. A conversation whose stored digest disagrees
+  with its snapshot is REFUSED (`ContractIntegrityError`), as is a started
+  conversation with no binding (`ContractNotBound`); both surface here as
+  `ScorecardUnavailable`, because scoring against a contract nobody can prove
+  is the one the candidate answered is not a thing to degrade into.
+* **Miti grades every skill.** `items.evaluate_skills` produces the ONE
+  per-skill judgement and the aggregation scores categories from it. The
+  numeric threshold map that was always empty here is gone (`caps` reads the
+  grade), and so is the benign-explanation input nothing ever filled.
+* **A model failure is "not assessed".** When a skill cannot be assessed and
+  the caller has not allowed an incomplete run, the five evaluators are NOT
+  run (they would be paid for and thrown away) and the result says
+  `complete=False`. The caller decides what that means for the report.
+* **G4 reads the disposition.** The latest human decision recorded on the
+  application reaches the gate; before this it was a parameter nobody passed.
 
 THE MODEL IS INJECTED, NEVER IMPORTED BY THE PIPELINE
 -------------------------------------------------------
-`pipeline.evaluate` takes its `invoke` as a parameter and this module is where
-the real one is supplied. That keeps `aggregation.py` structurally unable to
-reach a provider through a sibling, which is the property
-`test_miti_pipeline.py` asserts by walking the AST rather than by reading a
-docstring.
+`pipeline.evaluate` takes its `invoke` as a parameter and this module supplies
+the real one, which keeps `aggregation.py` structurally unable to reach a
+provider through a sibling (`test_miti_pipeline.py` walks the AST).
 """
 from __future__ import annotations
 
-import inspect
 import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from app.services import rating
-from app.services.miti import aggregation, dimensions, pipeline, tiering
+from app.services.hiring import gates
+from app.services.miti import dimensions, grades, items, pipeline, tiering
 from app.services.miti.dimensions import EvidenceView
+from app.services.miti.grades import ANSWER_GRADED, ANSWER_NOT_ASSESSED, SkillGrade
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "LiveEvaluation",
+    "MitiResult",
     "ScorecardUnavailable",
     "evaluate_application",
-    "frozen_matrix",
     "gather_evidence",
+    "latest_disposition",
+    "load_contract",
 ]
 
 #: The task type the five evaluators run under. The reasoning tier,
-#: temperature 0.0, and
-#: `config/llm_providers.py` is the closed mapping that says so. Named here
-#: rather than passed in so no caller can route a grading call somewhere else.
+#: temperature 0.0, and `config/llm_providers.py` is the closed mapping that
+#: says so. Named here so no caller can route a grading call somewhere else.
 EVALUATION_TASK = "dimension_evaluation"
+
+#: How the five evaluators' prompt is named in provenance. It is not a registry
+#: prompt: `dimensions.render_prompt` builds it inline from the frozen
+#: `EvaluatorInput`, so the image version is its version.
+EVALUATOR_PROMPT = "miti.dimensions.render_prompt"
 
 
 class ScorecardUnavailable(RuntimeError):
-    """Gate G1 could not even be asked, or it refused.
+    """Gate G1 could not be met: there is no provable contract to grade against.
 
-    A distinct exception rather than a generic one because the caller's
-    response is specific: this is not a transient failure to retry, it is a
-    configuration state a human has to change. Runbook section 14.1 files it
-    under abstention, not under error handling.
+    A distinct exception because the caller's response is specific: this is
+    not a transient failure to retry, it is a state a human (or a defect fix)
+    has to change. Runbook section 14.1 files it under abstention, not under
+    error handling.
     """
-
-
-async def frozen_matrix(session: Any, job_id: Any) -> Any:
-    """The approved, frozen Tatva matrix for this job. GATE G1.
-
-    `app.services.hiring.scorecard` is imported INSIDE this function on
-    purpose. It is owned by another workstream and may not have landed; a
-    module-scope import would take every importer of `miti` down with it, and
-    the honest failure is at the moment a candidate is scored rather than at
-    the moment a worker starts.
-
-    `require_frozen_matrix` may be written sync or async. Both are awaited
-    correctly here rather than assumed, because guessing wrong would produce a
-    coroutine object that reads as a truthy matrix and would be the worst
-    possible failure: scoring against an object with no items at all.
-    """
-    try:
-        from app.services.hiring import scorecard
-    except ImportError as exc:
-        raise ScorecardUnavailable(
-            "app.services.hiring.scorecard is not present, so gate G1 cannot be "
-            "asked whether this job's Tatva matrix is approved and frozen. "
-            "Scoring is blocked (Runbook section 14.1). There is no default "
-            "matrix and there must not be one: scoring against unapproved "
-            "criteria lets the first candidate set the criteria for everyone."
-        ) from exc
-    require = getattr(scorecard, "require_frozen_matrix", None)
-    if require is None:
-        raise ScorecardUnavailable(
-            "app.services.hiring.scorecard exposes no require_frozen_matrix, "
-            "which is the function that IS gate G1."
-        )
-    result = require(session, job_id)
-    if inspect.isawaitable(result):
-        result = await result
-    return result
-
-
-def _matrix_items(matrix: Any) -> list[Any]:
-    items = getattr(matrix, "items", None)
-    if items is None:
-        raise ScorecardUnavailable(
-            "the frozen matrix carries no `items`, so there is nothing to score "
-            "against."
-        )
-    # `items` on a Mapping is a method; a FrozenMatrix's is a sequence. Calling
-    # one and indexing the other are both wrong, so the shape is checked rather
-    # than assumed.
-    if callable(items):
-        raise ScorecardUnavailable(
-            "the frozen matrix's `items` is callable, which means a mapping was "
-            "passed where a FrozenMatrix was expected."
-        )
-    return list(items)
-
-
-def _approved_at(matrix: Any) -> Any:
-    """When a human froze this matrix, for G1's second question.
-
-    G1 asks the TABLE first and the stamp second, in that order, because this
-    codebase has already paid for believing a timestamp: 19 of 35 live jobs
-    carried a generation stamp and zero competency rows. Both are checked, and
-    a matrix that can supply neither name for the stamp is a contract mismatch
-    rather than an unapproved scorecard, so it says so.
-    """
-    for name in ("approved_at", "frozen_at"):
-        value = getattr(matrix, name, None)
-        if value is not None:
-            return value
-    raise ScorecardUnavailable(
-        "the frozen matrix states neither `approved_at` nor `frozen_at`, so "
-        "gate G1 cannot tell an approved scorecard from a draft."
-    )
 
 
 @dataclass
-class LiveEvaluation:
-    """The pipeline's outcome plus what only the live path can know.
+class MitiResult:
+    """Everything Miti concluded about one application.
+
+    `skills` is the per-skill judgement, one per contract skill in contract
+    order. `outcome` is the evaluators, triangulation, aggregation and gates,
+    and is None exactly when the run stopped after the item stage because a
+    skill could not be assessed and the caller did not allow an incomplete
+    run.
 
     `unresolved_evidence` names ledger rows whose text could not be fetched.
     They are EXCLUDED from the evaluators rather than passed as empty strings,
-    and they are named here rather than dropped: an excluded piece of evidence
-    lowers coverage, lowers confidence and can trip section 14.1, all of which
-    are visible consequences. Silently handing an evaluator an empty excerpt
-    would be a grade written from evidence nobody read.
+    and named here rather than dropped, because silently handing an evaluator
+    an empty excerpt would be a grade written from evidence nobody read.
     """
 
-    outcome: pipeline.EvaluationOutcome
+    contract: Any
+    skills: tuple[SkillGrade, ...]
+    outcome: pipeline.EvaluationOutcome | None = None
     unresolved_evidence: list[str] = field(default_factory=list)
     evidence_count: int = 0
-    #: The frozen matrix this ran against. Carried so the caller can COPY its
-    #: version numbers onto the evaluation row rather than joining them later:
-    #: an evaluation is a permanent record of the criteria it was run against,
-    #: and the job's matrix may be re-frozen afterwards.
-    matrix: Any = None
-    #: {competency name: the ledger SOURCE TYPES mapped to it}, from the SAME
-    #: `EvidenceView` objects the five evaluators were handed.
-    #:
-    #: Carried rather than recomputed by the report writer, because a second
-    #: pass over the ledger could legitimately see a different set: evidence is
-    #: written during scoring, and "what did the evaluators actually read" is a
-    #: question only the run that read it can answer. `evidence_confidence`
-    #: turns these into the word beside each rated line, so a confidence that
-    #: disagreed with the evaluators' own inputs would be the report describing
-    #: an evaluation that did not happen.
+    #: {skill name: the ledger SOURCE TYPES mapped to it}, from the SAME
+    #: `EvidenceView` objects the five evaluators were handed. Carried rather
+    #: than recomputed by the report writer, because "what did the evaluators
+    #: actually read" is a question only the run that read it can answer.
     competency_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
-    def aggregate(self) -> aggregation.Aggregate | None:
-        return self.outcome.aggregate
+    def aggregate(self) -> Any:
+        return self.outcome.aggregate if self.outcome is not None else None
+
+    @property
+    def complete(self) -> bool:
+        """No skill ended `not_assessed`."""
+        return all(grade.status != ANSWER_NOT_ASSESSED for grade in self.skills)
+
+    @property
+    def not_assessed_skills(self) -> list[str]:
+        return [grade.name for grade in self.skills if grade.status == ANSWER_NOT_ASSESSED]
+
+    @property
+    def must_have_failed(self) -> bool:
+        """A Must-have skill graded Not Matching, answered or not (O5-1).
+
+        `grades.must_have_failed`, the ONE predicate, computed from the skill
+        grades so it holds even when the evaluators did not run. A
+        `not_assessed` Must-have is not failed.
+        """
+        return grades.must_have_failed(self.skills)
+
+    @property
+    def contract_version(self) -> int:
+        return int(self.contract.version)
+
+    @property
+    def contract_digest(self) -> str:
+        return str(self.contract.digest)
+
+    def model_calls(self) -> tuple[tuple[str, str], ...]:
+        """(task type, prompt) for every model call that RETURNED A USABLE VALUE.
+
+        The report's generation provenance is built from this, never from a
+        list of the prompts a run might have used: a report whose every item
+        was objective or unanswered carries no model at all, and an item whose
+        judgement failed is not a call that produced anything. The five
+        evaluators appear only when at least one of them returned a usable band
+        (their prompt is inline in `dimensions.render_prompt` and versioned by
+        the image, so it is named by its task).
+        """
+        calls: set[tuple[str, str]] = set()
+        for grade in self.skills:
+            for item in grade.items:
+                prompt = items.MODEL_PROMPT_FOR_METHOD.get(item.method)
+                if prompt is not None and item.status == ANSWER_GRADED:
+                    calls.add((items.EVALUATION_TASK, prompt))
+        if self.outcome is not None and any(
+            not result.insufficient_evidence for result in self.outcome.results
+        ):
+            calls.add((EVALUATION_TASK, EVALUATOR_PROMPT))
+        return tuple(sorted(calls))
 
     @property
     def review_reasons(self) -> list[str]:
@@ -194,6 +173,73 @@ class LiveEvaluation:
         return reasons
 
 
+# ── G1 ───────────────────────────────────────────────────────────────────────
+
+
+async def load_contract(session: Any, conversation_id: uuid.UUID) -> Any:
+    """The contract THIS conversation was assessed against. GATE G1.
+
+    Loads through `assessment_contract.load_contract_for_conversation`, logs
+    Miti's digest line, and refuses anything G1 would not pass. Every refusal
+    is `ScorecardUnavailable` with the reason, and nothing is substituted: no
+    live rows, no default contract, no "the job's latest".
+    """
+    from app.services import assessment_contract
+
+    try:
+        contract = await assessment_contract.load_contract_for_conversation(
+            session, conversation_id
+        )
+    except (
+        assessment_contract.ContractIntegrityError,
+        assessment_contract.ContractNotBound,
+    ) as exc:
+        logger.error(
+            "miti.contract_refused conversation_id=%s reason=%s",
+            conversation_id, type(exc).__name__,
+        )
+        raise ScorecardUnavailable(
+            "the contract this candidate was assessed against cannot be proven "
+            f"to be the contract being graded: {exc}"
+        ) from exc
+    assessment_contract.log_digest(assessment_contract.STAGE_MITI, conversation_id, contract)
+    gate = gates.contract_gate(contract)
+    if not gate.passed:
+        raise ScorecardUnavailable("; ".join(gate.reasons))
+    return contract
+
+
+# ── G4 ───────────────────────────────────────────────────────────────────────
+
+
+async def latest_disposition(session: Any, link_id: uuid.UUID) -> tuple[str | None, Any]:
+    """The most recent human review decision on this application.
+
+    (disposition, decided_by), or (None, None) on a first pass, which is
+    correct: a disposition cannot exist before the flags that need one. Read by
+    the LINK, which `review_dispositions` copies since 0062, so a decision
+    survives the evaluation row it was first recorded against.
+    """
+    from sqlalchemy import select
+
+    from app.models.hiring import ReviewDisposition
+
+    row = (
+        await session.execute(
+            select(ReviewDisposition.disposition, ReviewDisposition.decided_by)
+            .where(ReviewDisposition.link_id == link_id)
+            .order_by(ReviewDisposition.created_at.desc(), ReviewDisposition.id.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None, None
+    return str(row[0]), row[1]
+
+
+# ── Stages 2 and 3 ───────────────────────────────────────────────────────────
+
+
 async def gather_evidence(
     session: Any,
     *,
@@ -204,23 +250,17 @@ async def gather_evidence(
 ) -> tuple[list[EvidenceView], dict[str, list[str]], list[str]]:
     """Stages 2 and 3, read back off the ledger. Returns (views, mapping, lost).
 
-    The ledger is written DURING scoring, one row per substantive answer, keyed
-    to the matrix item the question probed. So the claims already exist by the
-    time this runs, and stage 2's extraction has already happened at the point
-    the text was in hand.
+    The ledger is written per answer (during the conversation, and again as an
+    idempotent backfill at scoring), keyed to the skill the question probed.
 
     The text is fetched through `ledger.resolve_text`, which goes back to the
-    source table under the caller's own tenant scope. That is deliberate: the
-    ledger stores a LOCATOR and never the sentence, so that a copy of a
-    candidate's words does not sit in a table readable by anyone who can reach
-    the database, outside the capability that guards the transcript.
+    source table under the caller's own tenant scope. The ledger stores a
+    LOCATOR and never the sentence, so a copy of a candidate's words does not
+    sit in a table readable by anyone who can reach the database.
 
     `subject_names` is the CANDIDATE's own name parts, and every excerpt is
     scrubbed of them before an evaluator sees it. The structural guarantee is
-    that `EvaluatorInput` has no name field; this is defence in depth on top of
-    it, and it is needed because the excerpts are the candidate's own prose. A
-    name carries inferred gender, ethnicity and nationality, and an evaluator
-    that can see one is an evaluator whose output can correlate with one.
+    that `EvaluatorInput` has no name field; this is defence in depth on top.
     """
     from app.services.evidence import ledger
 
@@ -259,233 +299,25 @@ async def gather_evidence(
     return list(views.values()), mapping, lost
 
 
-def _role_context(job: Any) -> str:
+def _role_context(job: Any, grade: str) -> str:
     """One sentence about the ROLE, and nothing about the person.
 
-    Role and Context Fit is unanswerable without it and the other four are
-    sharper with it. It is safe to include for the same reason the candidate's
-    name is not: it says nothing about who is being evaluated.
+    The seniority band is the CONTRACT's grade, locked with the skills, never
+    the job row's current value: a grade changed after the lock must not move
+    the context a locked assessment is evaluated in.
     """
     parts = [str(getattr(job, "title", "") or "").strip()]
-    grade = str(getattr(job, "assessment_grade", "") or "").strip()
     if grade:
         parts.append(f"seniority band {grade.replace('_', ' ')}")
     return ", ".join(part for part in parts if part)
 
 
-def _competency_categories(items: Sequence[Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for item in items:
-        name = str(getattr(item, "competency", "") or "")
-        category = str(getattr(item, "category", "") or "")
-        if not name or not category:
-            raise ScorecardUnavailable(
-                "a frozen matrix item carries no competency name or no "
-                "category, so nothing can be graded against it. Runbook "
-                "section 14.1: a competency with no defined assessment route "
-                "is a configuration rejected back to the recruiter."
-            )
-        out[name] = category
-    return out
-
-
-async def evaluate_application(
-    session: Any,
-    *,
-    job: Any,
-    link: Any,
-    item_scores: Mapping[str, float],
-    subject_names: Sequence[str] = (),
-    invoke: Any = None,
-    review_disposition: str | None = None,
-    review_decided_by: Any = None,
-) -> LiveEvaluation:
-    """Run stages 2 to 6 for one application. RAISES when G1 cannot be met.
-
-    `item_scores` is {matrix item name: internal score}, the per-ITEM result of
-    the product's own rubric scoring. It supplies section 12.1's trigger, which
-    is a named competency failing its minimum -- keyed by ITEM, never by
-    dimension. That distinction was a real defect: keying it on a
-    dimension-to-category table produced an empty Must-have grade for a job
-    whose essentials all sat on one dimension, and the cap had nothing to bind
-    against.
-    """
-    matrix = await frozen_matrix(session, getattr(job, "id", None))
-    items = _matrix_items(matrix)
-    if not items:
-        raise ScorecardUnavailable(
-            "the frozen matrix has no items. A stamp is not evidence that "
-            "generation happened; gate G1 asks the table."
-        )
-    categories = _competency_categories(items)
-
-    views, mapping, lost = await gather_evidence(
-        session,
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        link_id=link.id,
-        subject_names=subject_names,
-    )
-
-    must_haves = [
-        name
-        for name, category in categories.items()
-        if category == aggregation.CATEGORY_MUST_HAVE
-    ]
-    # THE TWO NAME SPACES MUST BE THE SAME ONE. `item_scores` is keyed by the
-    # matrix item names the product scored, and `categories` by the frozen
-    # matrix's. If they have drifted apart, every section 12.1 lookup misses,
-    # every Must-have reads as unscored, and the caps quietly stop binding --
-    # which is the silent failure this whole phase exists to end. So a total
-    # disjunction is refused rather than absorbed. A PARTIAL overlap is not an
-    # error: a Must-have with no answers legitimately has no score, and section
-    # 14.1 reports it Unassessed on the evidence tier.
-    if must_haves and item_scores and not set(must_haves) & set(item_scores):
-        raise ScorecardUnavailable(
-            "the frozen matrix's Must-have names and the scored item names do "
-            "not overlap at all, so no competency threshold could ever be "
-            "evaluated. Matrix: "
-            f"{sorted(must_haves)}; scored: {sorted(item_scores)}."
-        )
-
-    grades: dict[str, str] = {}
-    scores: dict[str, float] = {}
-    for name in must_haves:
-        score = item_scores.get(name)
-        if score is None:
-            # Not scored is not zero. The item has no grade, section 14.1 will
-            # report it Unassessed on the evidence tier, and inventing a grade
-            # here would put a number under a control that must read a fact.
-            continue
-        scores[name] = float(score)
-        grades[name] = rating.grade_for_percent(score) or rating.GRADE_NOT
-
-    dimensions_by_competency: dict[str, str] = {}
-    weights: dict[str, float] = {}
-    for item in items:
-        name = str(item.competency)
-        dimension = getattr(item, "dimension", None)
-        if dimension:
-            dimensions_by_competency[name] = str(dimension)
-        weight = getattr(item, "weight", None)
-        if weight is not None:
-            weights[name] = float(getattr(weight, "value", weight))
-
-    # SECTION 12.1's MINIMUM COMES FROM THE GRADE, NOT FROM THE MATRIX, and the
-    # reason is that today's frozen matrix does not carry one.
-    # `MatrixItem.threshold` is `transformation.Threshold.as_dict()`:
-    # `independence_required` (a count of supporting pieces),
-    # `level` (a MULTIPLIER around 1.0 on an unstated platform floor) and
-    # `max_age_days`. None of those is a minimum SCORE on the 0 to 100 scale
-    # section 12.1 speaks about, and reading `level` as one would compare a
-    # candidate's 0 to 100 score against a number near 1.0 and pass every
-    # candidate silently -- a control that looks implemented and enforces
-    # nothing, which is the exact failure mode this phase exists to end.
-    #
-    # So `must_have_thresholds` is deliberately left empty here and section
-    # 12.1's minimum is the product's published floor for a criterion the
-    # hiring manager declared essential: the item grades Not Matching.
-    # SOURCE: RPN-PHIL-001 section 12.1 (v1.3), "A competency threshold has no
-    # Layer 1 default, and that is deliberate." The Hiring Manager proposes it
-    # at intake and the HR Manager approves it; a platform default would be a
-    # minimum applied to every role regardless of what the role needs, which is
-    # the free assignment section 20.3 forbids one paragraph later.
-    #
-    # SO IT IS EMPTY UNCONDITIONALLY, AND THAT IS A CORRECTION RATHER THAN THE
-    # ORIGINAL DESIGN. This used to be a comprehension over
-    # `float(item.threshold)`, which contradicted every paragraph above it and
-    # could not have worked either way: `item.threshold` is the Threshold
-    # MAPPING, and `float()` of a dict raises `TypeError`, so any frozen matrix
-    # carrying a declared threshold crashed the evaluation outright. Nothing
-    # caught it because `item.threshold` was None on the fixtures.
-    #
-    # That is not silently uncapped: section 12.2's dimension floors and
-    # section 14.1's unassessed-Must-have rule both still apply, and both are
-    # EVIDENCE-based rather than score-based, which is what catches the case a
-    # missing score threshold would otherwise let through. It stays empty until
-    # a distinct, human-approved 0-to-100 control exists to fill it, which is
-    # section 12.1's own instruction: the Hiring Manager proposes that number
-    # and the HR Manager approves it, so the platform must not invent one.
-    thresholds: dict[str, float] = {}
-
-    inputs = pipeline.EvaluationInputs(
-        matrix=categories,
-        competency_dimensions=dimensions_by_competency,
-        competency_weights=weights,
-        evidence=views,
-        evidence_competencies=mapping,
-        role_context=_role_context(job),
-        matrix_items=[_as_dict(item) for item in items],
-        scorecard_approved_at=_approved_at(matrix),
-        must_have_grades=grades,
-        must_have_scores=scores,
-        must_have_thresholds=thresholds,
-        contradiction_report=await _contradictions(session, job=job, link=link),
-        review_disposition=review_disposition,
-        review_decided_by=review_decided_by,
-    )
-    outcome = await pipeline.evaluate(inputs, invoke=invoke or _invoke)
-    if lost:
-        logger.warning(
-            "miti.live.evidence_unresolved link_id=%s count=%s",
-            getattr(link, "id", None), len(lost),
-        )
-    return LiveEvaluation(
-        outcome=outcome,
-        unresolved_evidence=lost,
-        evidence_count=len(views),
-        matrix=matrix,
-        competency_sources=_sources_by_competency(views, mapping),
-    )
-
-
-def _sources_by_competency(
-    views: Sequence[EvidenceView], mapping: Mapping[str, Sequence[str]]
-) -> dict[str, tuple[str, ...]]:
-    """Which KINDS of source stand behind each competency.
-
-    Kinds, never counts and never refs. The report's confidence word is derived
-    from distinct ORIGINATORS, so what it needs is the set of source types; a
-    count would invite somebody to read "four pieces of evidence" as four
-    sources, which is the arithmetic `independence_group_for` exists to stop.
-    """
-    by_ref = {view.ref: view.source_kind for view in views}
-    out: dict[str, set[str]] = {}
-    for ref, competencies in mapping.items():
-        kind = by_ref.get(ref)
-        if not kind:
-            continue
-        for name in competencies:
-            out.setdefault(str(name), set()).add(str(kind))
-    return {name: tuple(sorted(kinds)) for name, kinds in out.items()}
-
-
-def _as_dict(item: Any) -> dict[str, Any]:
-    """A matrix item as G1's `scorecard_gate` reads it.
-
-    `as_dict` when the item offers one, because the owning module knows its own
-    shape better than this one does; a minimal projection otherwise, so a
-    contract change on the other side does not silently produce empty items and
-    a passing gate.
-    """
-    projection = getattr(item, "as_dict", None)
-    if callable(projection):
-        return dict(projection())
-    return {
-        "competency": str(getattr(item, "competency", "")),
-        "category": str(getattr(item, "category", "")),
-        "dimension": str(getattr(item, "dimension", "")),
-        "assessment_method": str(getattr(item, "assessment_method", "")),
-    }
-
-
 async def _contradictions(session: Any, *, job: Any, link: Any) -> Any:
-    """The contradiction report stage 5 triangulates.
+    """The contradiction report stage 5 triangulates, from the same ledger.
 
-    Read from the same ledger the evidence came from. An empty ledger yields an
-    empty report, which is correct: nothing recorded is not the same as nothing
-    disagreeing, and the difference is paid for in coverage and confidence
-    rather than manufactured into a finding here.
+    An empty ledger yields an empty report, which is correct: nothing recorded
+    is not the same as nothing disagreeing, and the difference is paid for in
+    coverage and confidence rather than manufactured into a finding here.
     """
     from app.services.evidence import contradictions, ledger
 
@@ -499,12 +331,140 @@ async def _contradictions(session: Any, *, job: Any, link: Any) -> Any:
     )
 
 
-async def _invoke(task: str, messages: list[dict[str, str]], **kwargs: Any) -> str:
-    """The real model call, injected into the pipeline.
+def _sources_by_competency(
+    views: Sequence[EvidenceView], mapping: Mapping[str, Sequence[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Which KINDS of source stand behind each skill. Kinds, never counts."""
+    by_ref = {view.ref: view.source_kind for view in views}
+    out: dict[str, set[str]] = {}
+    for ref, competencies in mapping.items():
+        kind = by_ref.get(ref)
+        if not kind:
+            continue
+        for name in competencies:
+            out.setdefault(str(name), set()).add(str(kind))
+    return {name: tuple(sorted(kinds)) for name, kinds in out.items()}
 
-    Imported inside the function for the same reason the scorecard is: keeping
-    `llm_router` out of this module's import graph is what lets the AST test
-    over `aggregation.py` and `pipeline.py` mean something.
+
+# ── The entry point ──────────────────────────────────────────────────────────
+
+
+async def evaluate_application(
+    session: Any,
+    *,
+    job: Any,
+    link: Any,
+    conversation_id: uuid.UUID,
+    questions: Sequence[Any],
+    answers: Mapping[str, Sequence[str]],
+    locators: Mapping[str, Sequence[Any]],
+    structured: Mapping[str, Any],
+    subject_names: Sequence[str] = (),
+    allow_incomplete: bool = False,
+    invoke: Any = None,
+    item_invoke: Any = None,
+    passages: items.PassageReader | None = None,
+) -> MitiResult:
+    """Grade one application. RAISES `ScorecardUnavailable` when G1 cannot be met.
+
+    `questions` are this candidate's own `candidate_questions` rows (each with
+    the rubric written with it), `answers` the transcript grouped by question
+    key, `locators` where each answer lives, and `structured` the
+    `assessment_answers` rows keyed by question id.
+
+    `passages` is the Evidence RAG reader the item stage shows a Must-have or
+    Behavioural judgement related passages through
+    (`evidence_retrieval.transcript_passages_for_skill`, injected so Miti never
+    imports retrieval). None is recorded on every skill as `not_requested`.
+
+    `allow_incomplete=False` (the default) stops after the item stage when any
+    skill is not assessed, returning `outcome=None`: the evaluators would be
+    paid for and discarded. A caller writing a final report with skills shown
+    "Not assessed" passes True and gets the full aggregate, with the overall
+    withheld when a Must-have is among them.
+    """
+    contract = await load_contract(session, conversation_id)
+
+    context = items.ItemContext(
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        link_id=link.id,
+        candidate_id=link.candidate_id,
+    )
+    skill_grades = await items.evaluate_skills(
+        session,
+        context=context,
+        skills=contract.skills,
+        questions=questions,
+        answers=answers,
+        locators=locators,
+        structured=structured,
+        invoke=item_invoke or _item_invoke,
+        passages=passages,
+    )
+    result = MitiResult(contract=contract, skills=skill_grades)
+    if not result.complete and not allow_incomplete:
+        logger.warning(
+            "miti.not_assessed link_id=%s conversation_id=%s skills=%d",
+            link.id, conversation_id, len(result.not_assessed_skills),
+        )
+        return result
+
+    views, mapping, lost = await gather_evidence(
+        session,
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        link_id=link.id,
+        subject_names=subject_names,
+    )
+    disposition, decided_by = await latest_disposition(session, link.id)
+    inputs = pipeline.EvaluationInputs(
+        contract=contract,
+        skill_buckets={skill.name: skill.bucket for skill in contract.skills},
+        skill_grades=skill_grades,
+        evidence=views,
+        evidence_competencies=mapping,
+        role_context=_role_context(job, contract.grade),
+        contradiction_report=await _contradictions(session, job=job, link=link),
+        review_disposition=disposition,
+        review_decided_by=decided_by,
+    )
+    result.outcome = await pipeline.evaluate(inputs, invoke=invoke or _invoke)
+    if lost:
+        logger.warning(
+            "miti.live.evidence_unresolved link_id=%s count=%s", link.id, len(lost),
+        )
+    result.unresolved_evidence = lost
+    result.evidence_count = len(views)
+    result.competency_sources = _sources_by_competency(views, mapping)
+    return result
+
+
+async def _item_invoke(
+    task: str,
+    messages: list[dict[str, str]],
+    *,
+    response_format_json: bool = False,
+    session: Any = None,
+) -> str:
+    """The real model call for the item stage, injected into `items`.
+
+    `items.EVALUATION_TASK` routes it (Terra, temperature 0.0). The session is
+    passed so the router attributes the cost to this scoring run.
+    """
+    from app.services import llm_router
+
+    return await llm_router.invoke_llm(
+        task, messages, response_format_json=response_format_json, session=session
+    )
+
+
+async def _invoke(task: str, messages: list[dict[str, str]], **kwargs: Any) -> str:
+    """The real model call for the five evaluators, injected into the pipeline.
+
+    Imported inside the function so `llm_router` stays out of this module's
+    import graph, which is what lets the AST test over `aggregation.py` and
+    `pipeline.py` mean something.
     """
     from app.services import llm_router
 

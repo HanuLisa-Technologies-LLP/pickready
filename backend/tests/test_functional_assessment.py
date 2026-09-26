@@ -149,201 +149,7 @@ def test_answers_are_grouped_by_question_key() -> None:
     assert grouped[competency_id] == ["B1", "B2"]
 
 
-def _competency(category: str, name: str, level: int = 82, ordinal: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), category=category, name=name,
-        description=f"What {name} measures.", required_level=level, ordinal=ordinal,
-    )
-
-
-def _question(competency, prompt: str, rubric: dict | None) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), competency_id=competency.id, prompt=prompt,
-        rubric_json=rubric, ordinal=1,
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_must_have_answer_is_scored_against_its_own_questions_rubric(
-    monkeypatch,
-) -> None:
-    """Spec §8: rubric-based for Must-have and Nice-to-have.
-
-    The rubric that reaches the scorer must be the one written FOR THE QUESTION
-    THE CANDIDATE WAS ASKED. That is the whole invariant that made generating a
-    technical question mid-conversation safe.
-    """
-    seen: list[str] = []
-
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        seen.append(blob)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 82, "band": "75_89"}'
-        return (
-            "Evidence from the candidate's own answer supports solid applied capability here, "
-            "naming the constraint they hit, the option they rejected and the outcome that "
-            "followed, which an interviewer should confirm with one further worked example."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "Python", 95)
-    question = _question(
-        competency,
-        "Explain GIL trade-offs.",
-        {"0_39": "none", "90_100": "exceptional GIL insight"},
-    )
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {
-            str(question.id): [
-                "The GIL serialises bytecode execution, so I used multiprocessing."
-            ]
-        },
-        "transcript": [],
-    })
-    assert out["ppi"][0]["score"] == 82
-    assert out["ppi"][0]["category"] == ppi.CATEGORY_MUST_HAVE
-    assert out["ppi_mode"] == "llm_rubric"
-    # The question's OWN rubric text reached the scorer.
-    assert any("exceptional GIL insight" in blob for blob in seen)
-
-
-@pytest.mark.asyncio
-async def test_a_behavioural_answer_is_judged_not_scored_against_a_stored_rubric(
-    monkeypatch,
-) -> None:
-    """Spec §8: judgement-based for Behavioural.
-
-    A behavioural item carries no rubric of its own, so the scorer must reach
-    for the shared judgement standard instead of skipping the answer.
-    """
-    seen: list[str] = []
-
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        seen.append(blob)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 71}'
-        return (
-            "The candidate describes a delivery they personally owned, naming the constraint "
-            "they hit, the option they rejected and why, and the outcome that followed. An "
-            "interviewer should press for a second example under different pressure."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-
-    competency = _competency(ppi.CATEGORY_BEHAVIOURAL, "Ownership", 82)
-    question = _question(competency, "Tell me about work you saw through.", None)
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {
-            str(question.id): [
-                "I owned the payments migration end to end and stayed on it until "
-                "the last consumer had cut over cleanly."
-            ]
-        },
-        "transcript": [],
-    })
-    assert out["ppi"][0]["score"] == 71
-    assert any("credible situation with clear personal action" in blob for blob in seen)
-
-
-@pytest.mark.asyncio
-async def test_an_unanswered_item_scores_low_and_says_so() -> None:
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "Kafka")
-    question = _question(competency, "Describe a Kafka design.", {})
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {"other": ["hello"]},
-        "transcript": [],
-    })
-    row = out["ppi"][0]
-    assert row["score"] == fa.UNANSWERED_SCORE < 40
-    assert "No substantive answer" in row["remark"]
-    assert 45 <= word_count(row["remark"]) <= 50
-
-
-@pytest.mark.asyncio
-async def test_scoring_falls_back_deterministically_when_llm_is_down(monkeypatch) -> None:
-    async def _boom(*a, **k):
-        raise RuntimeError("no providers")
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "SQL")
-    question = _question(competency, "Explain indexes.", {})
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {str(question.id): ["B-trees keep lookups logarithmic."]},
-        "transcript": [],
-    })
-    assert out["ppi_mode"] == "deterministic_fallback"
-    assert 0 <= out["ppi"][0]["score"] <= 100
-
-
-@pytest.mark.asyncio
-async def test_every_matrix_item_is_scored_in_report_order(monkeypatch) -> None:
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 68}'
-        return (
-            "The candidate's answers describe a specific delivery they personally owned, naming the constraint they hit, "
-            "the option they rejected and why, and the outcome that followed. An interviewer should press for a second "
-            "example to confirm the pattern holds under different pressure and a different team."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    competencies = [
-        _competency(ppi.CATEGORY_MUST_HAVE, "Distributed systems", 95),
-        _competency(ppi.CATEGORY_NICE_TO_HAVE, "Observability", 67),
-        _competency(ppi.CATEGORY_BEHAVIOURAL, "Ownership", 82),
-    ]
-    questions = [
-        _question(row, f"Tell me about {row.name}.", {"0_39": "none", "90_100": "deep"})
-        for row in competencies
-    ]
-    # Real prose, not a placeholder. `services/answer_quality` refuses a
-    # non-answer before it can reach the rubric, so a single-character
-    # placeholder routes to the unanswered branch and scores UNANSWERED_SCORE.
-    answers = {
-        str(question.id): [
-            f"I owned the {competency.name.lower()} work on our payments platform "
-            "and drove it from design through to production rollout.",
-            "The hardest part was migrating live traffic without downtime, so we "
-            "shadowed reads for two weeks before cutting over.",
-        ]
-        for competency, question in zip(competencies, questions)
-    }
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": competencies,
-        "candidate_questions": questions,
-        "answers": answers,
-        "transcript": [],
-    })
-    assert len(out["ppi"]) == 3
-    assert [row["category"] for row in out["ppi"]] == list(ppi.CATEGORIES)
-    assert all(row["score"] == 68 for row in out["ppi"])
-    # The job's requirement travels onto the report row, so the radar can plot
-    # both shapes even after the job's matrix is later edited.
-    assert [row["required_level"] for row in out["ppi"]] == [95, 67, 82]
-    # Every PPI remark is 45-50 words (spec §9.5).
-    assert all(45 <= word_count(row["remark"]) <= 50 for row in out["ppi"])
+# Item scoring moved to Miti in WP5-B: see tests/test_miti_items.py.
 
 
 # ── Validation: captured, never scored (spec §7) ─────────────────────────────
@@ -881,3 +687,62 @@ def test_behavioural_is_never_rubric_scored() -> None:
     """It is graded by judgement because there is no single correct answer to
     weigh it against (spec 8)."""
     assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES
+
+
+# ── The AI Score invents no score (WP5-B) ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (7, 70),
+        (7.9, 79),
+        ("8", 80),
+        (0, 0),
+        (12, 100),
+        (None, None),
+        (True, None),
+        ("not a number", None),
+        (float("nan"), None),
+        (float("inf"), None),
+    ],
+)
+def test_a_matching_score_is_read_never_defaulted(raw, expected) -> None:
+    assert fa._matching_score(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_matching_parameter_is_omitted_rather_than_read_as_five(
+    monkeypatch, caplog
+) -> None:
+    """A parameter the matching run recorded no score for used to read as five
+    of ten, a Not Matching row written from nothing. It is omitted and logged:
+    the snapshot has no reading for it, which is what happened."""
+    from app.services import matching_categories
+
+    async def _categories(session, job_id):
+        return [
+            ("skills_match", "Skills", "d"),
+            ("experience_relevance", "Experience", "d"),
+        ]
+
+    async def _remark(session, name, evidence, minimum, maximum, *, rating=None):
+        return f"remark for {name}"
+
+    monkeypatch.setattr(matching_categories, "resolved_categories", _categories)
+    monkeypatch.setattr(fa, "bounded_remark", _remark)
+    link = SimpleNamespace(
+        id=uuid.uuid4(),
+        match_breakdown_json={"skills_match": {"score": 8, "comment": "Python, SQL"}},
+    )
+    state = {"session": None, "job": SimpleNamespace(id=uuid.uuid4()), "link": link}
+
+    caplog.set_level("WARNING", logger=fa.__name__)
+    rows = await fa._matching_dimensions(state)
+
+    assert [(row["name"], row["score"]) for row in rows] == [("Skills", 80)]
+    assert any(
+        "ai_score_parameter_unscored" in record.getMessage()
+        and "experience_relevance" in record.getMessage()
+        for record in caplog.records
+    )

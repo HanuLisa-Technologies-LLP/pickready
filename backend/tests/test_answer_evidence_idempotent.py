@@ -28,9 +28,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.db import superadmin_scope
-from app.services import functional_assessment as fa
+from app.services.assessment_contract import ContractSkill
 from app.services.assessment_pipeline import evidence as answer_evidence
 from app.services.evidence import ledger
+from app.services.miti import items as miti_items
 
 _ANSWER = "I rebuilt the ingest pipeline on Kafka and cut the nightly batch to minutes."
 _DENIAL = "I have not used Kafka in production, I only read about it."
@@ -261,18 +262,21 @@ async def test_the_scoring_backfill_after_a_per_answer_write_adds_nothing() -> N
         async with factory() as session:
             async with superadmin_scope(session):
                 located = await answer_evidence.answer_records(session, w.link)
-                state = {
-                    "session": session,
-                    "job": SimpleNamespace(id=w.job, tenant_id=w.tenant),
-                    "link": SimpleNamespace(id=w.link, candidate_id=w.candidate),
-                }
-                competency = SimpleNamespace(id=w.skill, name="Kafka", category="must_have")
-                question = SimpleNamespace(id=w.question)
-                await fa._record_answer_evidence(
-                    state, competency, question, located[str(w.question)]
+                # Miti's item stage is the scoring caller since WP5-B.
+                context = miti_items.ItemContext(
+                    tenant_id=w.tenant, job_id=w.job, link_id=w.link,
+                    candidate_id=w.candidate,
                 )
-                await fa._record_answer_evidence(
-                    state, competency, question, located[str(w.question)]
+                skill = ContractSkill(
+                    id=w.skill, name="Kafka", bucket="must_have", priority=1,
+                    evidence_line="",
+                )
+                question = SimpleNamespace(id=w.question)
+                await miti_items._record_evidence(
+                    session, context, skill, question, located[str(w.question)]
+                )
+                await miti_items._record_evidence(
+                    session, context, skill, question, located[str(w.question)]
                 )
                 await session.commit()
         rows = await _ledger(factory, w)

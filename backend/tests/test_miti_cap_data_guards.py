@@ -159,7 +159,7 @@ def test_a_consequence_this_module_cannot_apply_stops_the_build(monkeypatch) -> 
 
 
 def test_an_authenticity_score_below_the_floor_is_held(monkeypatch) -> None:
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DIM_AUTHENTICITY
 
     monkeypatch.setattr(
         caps,
@@ -177,7 +177,7 @@ def test_an_authenticity_score_below_the_floor_is_held(monkeypatch) -> None:
 
 
 def test_an_authenticity_score_above_the_floor_is_not_held(monkeypatch) -> None:
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DIM_AUTHENTICITY
 
     monkeypatch.setattr(
         caps,

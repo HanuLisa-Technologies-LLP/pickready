@@ -339,7 +339,6 @@ LEGACY_FALLBACK_FILES: frozenset[str] = frozenset(
     {
         "api/companies.py",
         "models/assessment.py",
-        "scripts/backfill_functional_reports.py",
         "scripts/eval_report.py",
         "scripts/seed_dev_data.py",
         "scripts/seed_mock_data.py",

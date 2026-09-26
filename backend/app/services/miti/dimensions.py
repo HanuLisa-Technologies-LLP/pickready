@@ -48,15 +48,22 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from app.services.hiring.department_models import (
-    DIM_AUTHENTICITY,
-    DIM_ROLE_FIT,
-    DIM_TRACK_RECORD,
-    DIM_TRAJECTORY,
-    DIM_VERIFIED_COMPETENCE,
-)
-
 __all__ = [
+    "BUCKET_DIMENSION",
+    "CROSS_CUTTING",
+    "DIM_AUTHENTICITY",
+    "DIM_ROLE_FIT",
+    "DIM_TRACK_RECORD",
+    "DIM_TRAJECTORY",
+    "DIM_VERIFIED_COMPETENCE",
+    "DIMENSION_BY_RUNBOOK_ID",
+    "RUNBOOK_ID_BY_DIMENSION",
+    "RubricAnchorsUnavailable",
+    "RubricBand",
+    "dimension_for_bucket",
+    "dimension_rubric_anchors",
+    "rubric_anchor_text",
+    "route_evidence",
     "DIMENSIONS",
     "DIMENSION_LABELS",
     "DIMENSION_QUESTIONS",
@@ -68,6 +75,74 @@ __all__ = [
     "BANDS",
     "band_for",
 ]
+
+# ── The five dimensions, OWNED HERE ─────────────────────────────────────────
+#
+# Moved from `hiring/department_models.py` and `hiring/situations.py` in the
+# Vivekium release (WP5-B). They are Miti's internal vocabulary: the readers
+# are Miti's evaluators, its aggregation and its caps. Keeping them in the
+# Layer 1 department model made the grading authority depend on the
+# matrix-building side of the product, which the skills contract retires. The
+# two hiring modules now import these names from here, so there is still ONE
+# definition of each.
+DIM_VERIFIED_COMPETENCE = "verified_competence"
+DIM_TRACK_RECORD = "track_record_impact"
+DIM_ROLE_FIT = "role_context_fit"
+DIM_AUTHENTICITY = "authenticity_consistency"
+DIM_TRAJECTORY = "trajectory_potential"
+
+#: The Runbook's D1 to D5 against this codebase's names. `runbook_data` keys
+#: its floors and its anchors by the Runbook's identifiers, so this is the one
+#: translation between the two.
+DIMENSION_BY_RUNBOOK_ID: dict[str, str] = {
+    "D1": DIM_VERIFIED_COMPETENCE,
+    "D2": DIM_TRACK_RECORD,
+    "D3": DIM_ROLE_FIT,
+    "D4": DIM_AUTHENTICITY,
+    "D5": DIM_TRAJECTORY,
+}
+RUNBOOK_ID_BY_DIMENSION: dict[str, str] = {
+    name: rid for rid, name in DIMENSION_BY_RUNBOOK_ID.items()
+}
+
+#: WHICH DIMENSION EVALUATES WHICH SKILL, decided here and nowhere else.
+#:
+#: The skills contract carries a bucket and no dimension: the recruitment team
+#: writes skills, not Runbook dimensions, and the column that held a per-skill
+#: dimension is no longer written by the live path. So routing is a property of
+#: the BUCKET, and it is deterministic:
+#:
+#:   * a Must-have or Nice-to-have skill asks CAN THEY DO IT, which is
+#:     Verified Competence;
+#:   * a Behavioural skill asks HOW THEY WORK HERE, which is Role and Context
+#:     Fit.
+#:
+#: The other three are CROSS-CUTTING: Track Record, Trajectory and Authenticity
+#: each read every skill, because what has happened because of a person, where
+#: they are heading and whether their account holds together are questions
+#: about the whole record rather than about one bucket of it.
+BUCKET_DIMENSION: dict[str, str] = {
+    "must_have": DIM_VERIFIED_COMPETENCE,
+    "nice_to_have": DIM_VERIFIED_COMPETENCE,
+    "behavioural": DIM_ROLE_FIT,
+}
+CROSS_CUTTING: tuple[str, ...] = (DIM_TRACK_RECORD, DIM_TRAJECTORY, DIM_AUTHENTICITY)
+
+
+def dimension_for_bucket(bucket: str) -> str:
+    """The dimension that evaluates a skill in `bucket`. Raises for an unknown one.
+
+    Raised rather than defaulted: a skill routed to no evaluator is a skill only
+    the cross-cutting three ever read, which would look like an evaluation of it
+    and would not be one.
+    """
+    try:
+        return BUCKET_DIMENSION[bucket]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown skill bucket {bucket!r}; expected one of {sorted(BUCKET_DIMENSION)}"
+        ) from exc
+
 
 DIMENSIONS: tuple[str, ...] = (
     DIM_VERIFIED_COMPETENCE,
@@ -162,6 +237,60 @@ BANDS: tuple[tuple[str, int], ...] = (
 _BAND_SCORES: dict[str, int] = dict(BANDS)
 
 
+class RubricAnchorsUnavailable(RuntimeError):
+    """`runbook_data/dimensions.yaml` carries no anchor table for a dimension.
+
+    Raised rather than substituted: an evaluator with no anchor produces a band
+    nobody can defend, and a generic substitute would look exactly like a real
+    one in the prompt.
+    """
+
+
+@dataclass(frozen=True)
+class RubricBand:
+    """One row of a section 9.x scoring-anchor table."""
+
+    #: The band as the Runbook prints it, e.g. "75-89". Kept as a string
+    #: alongside the numbers so a citation can quote the document verbatim.
+    band: str
+    low: int
+    high: int
+    meaning: str
+
+
+def dimension_rubric_anchors(runbook_dimension_id: str) -> tuple[RubricBand, ...]:
+    """Section 9.x's six scoring anchors for one dimension. Raises if absent.
+
+    `runbook_dimension_id` is D1..D5, the Runbook's own naming; use
+    `RUNBOOK_ID_BY_DIMENSION` to convert from this codebase's names.
+
+    Read from `runbook_data/dimensions.yaml` directly (moved here from
+    `hiring/department_models.py` in WP5-B), inside the function so this module
+    stays importable without touching the filesystem. The anchors carry
+    NUMBERS, which is correct and stays internal: `services/rating.py` converts
+    to the four words a client reads, and no caller may render one.
+    """
+    from app.services.hiring import runbook_data
+
+    table = (runbook_data.dimensions().get("dimensions") or {}).get(runbook_dimension_id)
+    anchors = table.get("rubric_anchors") if isinstance(table, Mapping) else None
+    if not isinstance(anchors, list) or not anchors:
+        raise RubricAnchorsUnavailable(
+            f"runbook_data/dimensions.yaml has no rubric_anchors for "
+            f"{runbook_dimension_id!r}. Sections 9.1 to 9.5 state them once per "
+            f"dimension and they are not restated in code."
+        )
+    return tuple(
+        RubricBand(
+            band=str(row["band"]),
+            low=int(row["low"]),
+            high=int(row["high"]),
+            meaning=str(row["meaning"]),
+        )
+        for row in anchors
+    )
+
+
 def rubric_anchor_text(dimension: str) -> str:
     """Section 9.x's six scoring anchors for ONE dimension, as prompt text.
 
@@ -179,13 +308,10 @@ def rubric_anchor_text(dimension: str) -> str:
     happened before, meant four of them were anchored against a rubric written
     for a question they were not asked.
 
-    Raises through `department_models` if the anchors are missing: an evaluator
+    Raises `RubricAnchorsUnavailable` if the anchors are missing: an evaluator
     with no anchor produces a band nobody can defend, and a generic substitute
     would look exactly like a real one in the prompt.
     """
-    from app.services.hiring.department_models import dimension_rubric_anchors
-    from app.services.hiring.situations import RUNBOOK_ID_BY_DIMENSION
-
     runbook_id = RUNBOOK_ID_BY_DIMENSION.get(dimension)
     if runbook_id is None:
         raise ValueError(
