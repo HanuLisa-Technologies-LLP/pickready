@@ -82,6 +82,9 @@ class InMemoryObjectStore:
     clock: Clock = field(default_factory=Clock)
     objects: dict[str, _StoredBytes] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
+    #: Key -> (ServerSideEncryption, SSEKMSKeyId) as the last PUT sent them, so
+    #: a scenario can assert a media write carried the bucket policy's aws:kms.
+    encryption: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         self.calls.append("head_object")
@@ -105,9 +108,11 @@ class InMemoryObjectStore:
         ContentType: str = "application/octet-stream",
         Metadata: Mapping[str, str] | None = None,
         ServerSideEncryption: str | None = None,
+        SSEKMSKeyId: str | None = None,
         IfNoneMatch: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append("put_object")
+        self.encryption[Key] = (ServerSideEncryption, SSEKMSKeyId)
         if IfNoneMatch is not None and Key in self.objects:
             raise _client_error(
                 "PreconditionFailed",

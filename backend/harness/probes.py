@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from app.services import conversation_guardrails as guard
 from app.services.siddhi import numbers
@@ -44,6 +44,8 @@ from harness.world import World, WorldError
 
 __all__ = [
     "ProbeError",
+    "em_dash_hits",
+    "number_hits",
     "prohibited_names",
     "read_output",
     "read_prohibited",
@@ -748,6 +750,33 @@ EM_DASH = chr(8212)
 
 _PAGINATION = re.compile(r"(?:^|_)(?:page|page_size|total_pages)(?:$|_)")
 
+#: A fill-in-the-blank's BLANK POSITION, `blanks[i].index`: which gap in the
+#: template an input fills. It is an ordering coordinate the fill-blank editor
+#: renders (as a word, "Blank one", `fill-blank-answer.tsx`) and cannot render
+#: any other way, the bar `ORDER_COORDINATE_FIELDS` states. Matched on the
+#: whole path rather than added there, so a key called `index` anywhere else in
+#: any other payload is still judged; first reached by the golden journey
+#: (CONTRACT v4 item 1), the first scenario to serve a fill-in-the-blank.
+_BLANK_POSITION = re.compile(r"\.blanks\[\d+\]\.index$")
+
+#: The monitoring thresholds the server hands the candidate's browser on the
+#: proctoring session, so the two never disagree about a number (2026-09-02:
+#: "every threshold is a proctoring_* setting ... served to the browser on the
+#: session response"). They describe the DEVICE CHECK, never the candidate, and
+#: the set is read from the product's own `proctoring.config.CLIENT_FIELDS`,
+#: so a field added there is exempt only under the `config` object of a
+#: proctoring route, and nowhere else.
+_PROCTORING_ROUTE = "/api/v2/proctoring/"
+
+
+def _proctoring_client_config(path: str, violation_path: str) -> bool:
+    from app.services.proctoring.config import CLIENT_FIELDS  # noqa: PLC0415
+
+    if not path.startswith(_PROCTORING_ROUTE):
+        return False
+    parent, _, leaf = violation_path.rpartition(".")
+    return parent.endswith(".config") and leaf in CLIENT_FIELDS
+
 
 def _strings(value: Any, path: str = "") -> list[tuple[str, str]]:
     if isinstance(value, str):
@@ -765,8 +794,8 @@ def _strings(value: Any, path: str = "") -> list[tuple[str, str]]:
     return []
 
 
-def _a_number_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
-    """Rule 1, over every payload that actually crossed the boundary.
+def number_hits(bodies: Iterable[tuple[str, Any]]) -> list[str]:
+    """Rule 1, over every (path, payload) that actually crossed the boundary.
 
     TWO HALVES, BOTH BORROWED FROM THE PRODUCT'S OWN ENFORCEMENT rather than
     rewritten here:
@@ -787,9 +816,13 @@ def _a_number_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
     A delivered PRISM Report is judged by the FULL ban instead, through the
     product's own chokepoint, because a report states words and every number in
     one is a violation.
+
+    Public, and the ONE implementation: the scenario probe below and
+    `tests/test_golden_journey.py` both judge through it, so the harness and the
+    suite cannot disagree about what a number reaching a client is.
     """
     hits: list[str] = []
-    for path, body in ctx.iter_bodies():
+    for path, body in bodies:
         if not isinstance(body, (Mapping, list)):
             if isinstance(body, str) and guard.contains_forbidden_number(body):
                 hits.append(f"{path}: prose states a number about an assessment")
@@ -808,20 +841,36 @@ def _a_number_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
                 leaf in SANCTIONED_NUMERIC_FIELDS
                 or leaf in ORDER_COORDINATE_FIELDS
                 or _PAGINATION.search(leaf)
+                or _BLANK_POSITION.search(violation.path)
+                or _proctoring_client_config(path, violation.path)
             ):
                 continue
             hits.append(f"{path}: {violation}")
+    return hits
+
+
+def _a_number_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
+    """Rule 1, over every payload that actually crossed the boundary
+    (`number_hits`)."""
+    hits = number_hits(ctx.iter_bodies())
     return bool(hits), "; ".join(hits[:6]) or "no number reached a client payload"
 
 
-def _an_em_dash_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
-    hits = [
+def em_dash_hits(bodies: Iterable[tuple[str, Any]]) -> list[str]:
+    """Rule 7, over every (path, payload) that crossed the boundary. The one
+    implementation, shared with `tests/test_golden_journey.py` like
+    `number_hits`."""
+    return [
         f"{path}.{field}"
-        for path, body in ctx.iter_bodies()
+        for path, body in bodies
         if isinstance(body, (Mapping, list))
         for field, text in _strings(body)
         if EM_DASH in text
     ]
+
+
+def _an_em_dash_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
+    hits = em_dash_hits(ctx.iter_bodies())
     return bool(hits), "; ".join(hits[:6]) or "no em dash reached a client payload"
 
 

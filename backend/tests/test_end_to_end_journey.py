@@ -27,15 +27,16 @@ of the three, so the journey was proving a path production never took, and the
 package was deleted. The stages now record against the provenance ledger
 directly, the gates are the `hiring.gates` functions the live scorer calls, and
 "what was this candidate assessed against" is answered by the skills snapshot
-`assessment_contract.lock_contract` writes when the conversation starts. The
-full golden journey (HTTP, a real assessment, Miti, Siddhi, Yukti) is rebuilt by
-the release's golden-journey work; this file keeps the cross-cutting half
-honest until then.
+`assessment_contract.lock_contract` writes when the conversation starts.
 
-It does NOT drive the HTTP API. The routes for job setup, scoring and report
-delivery are being built alongside this, and a test that reached into them would
-be asserting somebody else's contract from the outside while it was still
-moving. The HTTP-level journey belongs with the routers.
+TWO JOURNEYS, AND THEY ARE NOT DUPLICATES. `tests/test_golden_journey.py`
+(CONTRACT v4 item 1) is the HTTP journey: one candidate over the real routes
+and real sessions, from job creation to the recruiter reading the PRISM Report,
+with only the model, the code sandbox and Transcribe doubled. THIS file keeps
+what that one does not reach: every situation type (the golden journey runs
+one), and the cross-cutting provenance ledger, A2A contracts and gate
+arithmetic asserted row by row. It does not drive the HTTP API; the golden
+journey does.
 
 A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED
 ------------------------------------------------

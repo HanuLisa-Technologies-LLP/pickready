@@ -1546,6 +1546,88 @@ def _weigh_the_coding_evidence_over_the_wait(
     ctx.stage("coding_evidence_weighed")
 
 
+class _JourneyClient:
+    """The golden journey's `Client`, over the harness `Application`.
+
+    Every call is an ordinary recorded observation, so the prohibited-outcome
+    probes (a number, an em dash) sweep every payload the journey received.
+    """
+
+    def __init__(self, app_client: Application, ctx: ScenarioContext) -> None:
+        self._app = app_client
+        self._ctx = ctx
+
+    def as_staff(self) -> None:
+        self._app.as_staff()
+
+    def as_candidate(self, who: str = "candidate") -> None:
+        self._app.as_candidate(user_key=f"{who}_user")
+
+    def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
+        observed = self._app.request(self._ctx, step, method, path, **kwargs)
+        return observed.status, observed.body
+
+
+def _drive_the_golden_journey(app_client: Application, ctx: ScenarioContext) -> None:
+    """The golden journey (CONTRACT v4 item 1), the SAME sequence
+    `tests/test_golden_journey.py` drives (`harness.golden_journey.drive`).
+
+    Each gate becomes a trajectory stage, and the ids the journey creates are
+    handed to the world as each gate is reached, so the scenario's state
+    assertions read the rows the journey wrote. The doubles are installed for
+    this step only: the model at the router, the code sandbox at its provider
+    seam, Transcribe at its one function, and the in-memory object store. A
+    step never asserts; what the journey observed is recorded as facts.
+    """
+    from harness import golden_journey as journey  # noqa: PLC0415
+    from harness.doubles.golden_model import GoldenModel  # noqa: PLC0415
+
+    world = ctx.world
+    state = journey.JourneyState(
+        tenant=world.id("tenant"),
+        staff=world.id("staff"),
+        candidate=world.id("candidate"),
+        rival=world.id("rival"),
+    )
+    model = GoldenModel()
+
+    def gate(name: str, reached: journey.JourneyState) -> None:
+        for key, value in (
+            ("job", reached.job),
+            ("link", reached.link),
+            ("rival_link", reached.rival_link),
+            ("conversation", reached.conversation),
+        ):
+            if value is not None:
+                world.ids[key] = value
+        ctx.stage(name)
+
+    try:
+        with (
+            model.installed(),
+            journey.deployment(),
+            journey.digest_lines() as digests,
+        ):
+            journey.drive(_JourneyClient(app_client, ctx), state, gate)
+    except journey.JourneyError as exc:
+        ctx.facts["golden_journey_stopped"] = str(exc)[:400]
+        ctx.stage("golden_journey_stopped")
+        return
+    finally:
+        ctx.facts["golden_unscripted_model_calls"] = sorted(set(model.unscripted))
+        ctx.facts["golden_answered"] = dict(state.answered)
+    pairs = {stage: (conversation, digest) for stage, conversation, digest in digests}
+    ctx.facts["golden_digest_stages"] = sorted(pairs)
+    ctx.facts["golden_digests_match"] = (
+        len(pairs) == 2 and len(set(pairs.values())) == 1
+        and pairs.get("vaada", ("", ""))[0] == str(state.conversation)
+    )
+    before = [row["link_id"] for row in state.responses["ranked_before"]["results"]]
+    after = [row["link_id"] for row in state.responses["ranked_after"]["results"]]
+    ctx.facts["golden_rival_ranked_first_before"] = before[:1] == [str(state.rival_link)]
+    ctx.facts["golden_assessed_ranked_first_after"] = after[:1] == [str(state.link)]
+
+
 _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     "probe_health": _probe_health,
     "create_job": _create_job,
@@ -1593,6 +1675,7 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
         _execute_the_coding_submission_against_an_echoing_program
     ),
     "weigh_the_coding_evidence_over_the_wait": _weigh_the_coding_evidence_over_the_wait,
+    "drive_the_golden_journey": _drive_the_golden_journey,
 }
 
 
