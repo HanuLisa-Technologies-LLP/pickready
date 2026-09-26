@@ -641,17 +641,53 @@ def test_an_employment_gap_reaches_no_control(monkeypatch) -> None:
     exists: one wrong section number in a citation once pointed the legitimate
     disqualifier list at the prohibited one.
     """
+    import ast
     import re
 
     from app.services.miti import caps
 
-    source = (inspect.getsource(caps) + inspect.getsource(aggregation)).lower()
+    # CODE, not prose: every identifier and every non-docstring string
+    # literal. A comment recording that a citation once "authorised filtering
+    # on age" is the history of this rule, not a control reading age. Until
+    # 2026-09-26 the pattern below carried literal backspace characters where
+    # the word boundaries belonged, so it matched nothing and passed on any
+    # source at all.
+    words: list[str] = []
+    for module in (caps, aggregation):
+        tree = ast.parse(inspect.getsource(module))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                words.append(node.id)
+            elif isinstance(node, ast.Attribute):
+                words.append(node.attr)
+            elif isinstance(node, ast.arg):
+                words.append(node.arg)
+            elif isinstance(node, ast.keyword) and node.arg:
+                words.append(node.arg)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                words.append(node.name)
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                words.append(node.value)
+    source = "\n".join(words).lower()
     # WORD BOUNDARIES, not substrings, and this is the same lesson the
     # disqualifier matcher learned the hard way: a substring match refused
     # "must hold a valid CA licence" because "hold" contains "old", while
     # accepting "no candidates over 45" because it contains no listed word.
     for banned in ("tenure", "employment_gap", "gap_months", "career_break", "age"):
-        assert not re.search(rf"{banned}", source), banned
+        assert not re.search(rf"\b{banned}\b", source), banned
 
 
 # -- 7. NO FLAG AUTO-REJECTS ------------------------------------------------
