@@ -127,6 +127,11 @@ CREDENTIAL_NAMES = (
     # function anything on the open internet can reach. That copy is not in
     # scope here: this sweep reads `common_environment` in the ECS composition.
     "INBOUND_WEBHOOK_SECRET",
+    # The code sandbox's API token. Anyone holding it can run arbitrary code
+    # on the sandbox host, so it is mounted (pilot stage B: the API, the task
+    # worker and the agent, from `module.code_sandbox`) and never a plain
+    # environment value on any task definition.
+    "JUDGE0_AUTH_TOKEN",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]

@@ -140,6 +140,19 @@ variable "services" {
     stop_timeout        = optional(number, null)
     min_healthy_percent = optional(number, 100)
     max_percent         = optional(number, 200)
+    #: Security groups this ONE service carries beside the shared ECS group.
+    #: The code sandbox's client group is the case: the API submits candidate
+    #: code and must reach the sandbox; the frontend and the analysis service
+    #: must not, so a cluster-wide list would be the wrong width. Empty by
+    #: default. An `on_demand` entry has no service to carry it: its network
+    #: configuration is the trigger's `ECS_SECURITY_GROUP_IDS`.
+    extra_security_group_ids = optional(list(string), [])
+    #: IAM policies attached to this service's EXECUTION role beyond its
+    #: secret policy, for a mounted secret another module owns (the sandbox
+    #: token lives in `code_sandbox`, not in `secrets`). The execution role is
+    #: what fetches and injects a `secrets` entry, so that is where the read
+    #: has to be. Keyed by position, never by ARN. Empty by default.
+    extra_execution_policy_arns = optional(list(string), [])
   }))
 
   validation {

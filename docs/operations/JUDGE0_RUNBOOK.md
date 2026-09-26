@@ -135,18 +135,29 @@ Verify on the host, without logging in:
 2. `judge0-health status=up` appears within five minutes and
    `*-judge0-down` stays OK.
 
-### Stage B: client wiring (NOT in this change)
-Still with `CODE_EXECUTION_BACKEND=disabled`:
-- attach `module.code_sandbox[0].client_security_group_id` to the API service
-  (the ecs module needs an optional per-service `extra_security_group_ids`,
-  default empty), to the in-VPC Lambdas (`security_group_ids`), and append it
-  to the trigger's `ECS_SECURITY_GROUP_IDS` for the on-demand agent. NOT to the
-  frontend or the analysis service;
-- mount `token_secret_arn` as `JUDGE0_AUTH_TOKEN` on the API, the task worker
-  and the agent, and attach `token_read_policy_arn` to their roles;
-- set `JUDGE0_URL` from the `sandbox_url` output.
-The plan should show a rolling deployment of the API service and Lambda
-configuration updates, and nothing else.
+### Stage B: client wiring
+`terraform.tfvars`: `judge0_clients_enabled = true` (it needs
+`judge0_enabled`; a check block warns otherwise). Still with
+`CODE_EXECUTION_BACKEND=disabled`. It is its own switch so that A1 and A2 stay
+plans that touch no running service. Wired in `environments/pilot/main.tf`
+through the `local.judge0_*` values, every one of them empty while the switch
+is off:
+- `module.code_sandbox[0].client_security_group_id` on the API service (the
+  ecs module's per-service `extra_security_group_ids`), on the task worker
+  Lambda only (the lambda module's per-function `extra_security_group_ids`;
+  the two drafting Lambdas never execute code), and appended to the trigger's
+  `ECS_SECURITY_GROUP_IDS` for the on-demand agent. NOT the frontend, the
+  analysis service, the migration job or the drafting Lambdas;
+- `token_secret_arn` mounted as `JUDGE0_AUTH_TOKEN` on the API, the task
+  worker and the agent, with `token_read_policy_arn` on the role that reads
+  it: the EXECUTION role for the two ECS entries (the ECS agent injects the
+  secret; `extra_execution_policy_arns`), the function role for the task
+  worker (its cold-start fetch; `extra_policy_arns`);
+- `JUDGE0_URL` from the `sandbox_url` output on the same three.
+The plan shows three policy attachments, a rolling deployment of the API
+service, a new agent task definition revision, and configuration updates to
+the task worker and the trigger. Nothing is destroyed. The offline plan
+(`infra/plan-offline.sh`) turns this switch on, so CI plans every attachment.
 
 ### Stage V: verify the sandbox
 Invoke the operator verification task (Phase 4 WP-4B2,
@@ -215,8 +226,6 @@ before trusting the new host.
 
 ## 5. What this change does not include
 
-- Stage B wiring (client security group on the callers, the token mount, the
-  URL); the ecs module's per-service extra security groups.
 - The verification task and the application probe (`WP-4B2`), and their log
   metric filters on the task worker and API log groups.
 - The staging and production environments (they carry no sandbox).

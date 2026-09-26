@@ -361,4 +361,79 @@ def test_the_offline_plan_exercises_the_whole_module() -> None:
     tfvars = (REPO / "infra" / "environments" / "offline-plan.tfvars").read_text(encoding="utf-8")
     assert re.search(r"^judge0_enabled\s*=\s*true", tfvars, re.MULTILINE)
     assert re.search(r"^judge0_instance_enabled\s*=\s*true", tfvars, re.MULTILINE)
+    assert re.search(r"^judge0_clients_enabled\s*=\s*true", tfvars, re.MULTILINE)
     assert re.search(r'^judge0_ami_id\s*=\s*"ami-0+"', tfvars, re.MULTILINE)
+
+
+# ── Stage B: the callers ─────────────────────────────────────────────────────
+
+
+def _service_entry(pilot: str, marker: str) -> str:
+    """One entry of the `ecs` module's `services` or the `lambda` module's
+    `functions`, by its opening line, up to the next entry at the same indent.
+    Searched from the module call, because the load balancer's target map
+    also has an `api = {`."""
+    module = 'module "lambda"' if marker.lstrip().startswith('"') else 'module "ecs"'
+    start = pilot.index(marker, pilot.index(module))
+    indent = marker[: len(marker) - len(marker.lstrip())]
+    rest = pilot[start + len(marker) :]
+    end = re.search(rf"\n{indent}\S", rest)
+    return marker + (rest[: end.start()] if end else rest)
+
+
+def test_the_caller_wiring_is_its_own_switch_and_off_by_default() -> None:
+    """Stages A1 and A2 must stay plans that touch no running service, so the
+    caller wiring cannot ride on `judge0_enabled`: it has its own switch, off
+    by default, and it needs the module."""
+    variables = (PILOT / "variables.tf").read_text(encoding="utf-8")
+    body = variables[variables.index('variable "judge0_clients_enabled"') :]
+    assert re.search(r"default\s*=\s*false", body[: body.index("\n}") + 2])
+    pilot = _code((PILOT / "main.tf").read_text(encoding="utf-8"))
+    assert "judge0_clients = var.judge0_enabled && var.judge0_clients_enabled" in pilot
+    for name in (
+        "judge0_client_security_group_ids",
+        "judge0_token_policy_arns",
+        "judge0_client_secrets",
+        "judge0_client_environment",
+    ):
+        definition = re.search(rf"^\s*{name}\s*=\s*(.+)$", pilot, re.MULTILINE)
+        assert definition, name
+        assert definition.group(1).startswith("local.judge0_clients ?"), name
+
+
+def test_exactly_the_three_callers_are_wired_and_nothing_else() -> None:
+    """The API service, the task worker and (through the trigger) the agent.
+    Never the frontend, the analysis service or the drafting Lambdas."""
+    pilot = _code((PILOT / "main.tf").read_text(encoding="utf-8"))
+    wired = {
+        "api": _service_entry(pilot, "    api = {"),
+        "agent": _service_entry(pilot, "    agent = {"),
+        "task-worker": _service_entry(pilot, '    "task-worker" = {'),
+    }
+    for name, entry in wired.items():
+        assert "local.judge0_client_secrets" in entry, name
+        assert "local.judge0_client_environment" in entry, name
+        assert "local.judge0_token_policy_arns" in entry, name
+    assert "local.judge0_client_security_group_ids" in wired["api"]
+    assert "local.judge0_client_security_group_ids" in wired["task-worker"]
+    trigger = _service_entry(pilot, '    "assessment-trigger" = {')
+    assert "local.judge0_client_security_group_ids" in trigger
+    for name in ("frontend", "analysis", "migrate"):
+        assert "judge0" not in _service_entry(pilot, f"    {name} = {{"), name
+    for name in ('"jd-gen"', '"company-profile"'):
+        assert "judge0" not in _service_entry(pilot, f"    {name} = {{"), name
+
+
+def test_the_module_extensions_are_empty_by_default() -> None:
+    """A service or function that sets nothing gets exactly what it had."""
+    for module, fields in (
+        ("ecs", ("extra_security_group_ids", "extra_execution_policy_arns")),
+        ("lambda", ("extra_security_group_ids", "extra_policy_arns")),
+    ):
+        variables = (REPO / "infra" / "modules" / module / "variables.tf").read_text(
+            encoding="utf-8"
+        )
+        for field in fields:
+            assert re.search(
+                rf"{field}\s*=\s*optional\(list\(string\),\s*\[\]\)", variables
+            ), (module, field)

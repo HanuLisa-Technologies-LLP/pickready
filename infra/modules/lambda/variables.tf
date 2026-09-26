@@ -138,6 +138,19 @@ variable "functions" {
     # and never deletes (the lifecycle rule owns expiry, and a function that
     # could delete could destroy a reply before anybody read it).
     s3_read_object_arns = optional(list(string), [])
+    #: Security groups this ONE function carries on top of the module-wide
+    #: `security_group_ids`. The code sandbox's client group is the case: the
+    #: task worker scores coding answers and must reach the sandbox, and the
+    #: two drafting agents never execute code, so a module-wide list would
+    #: hand them a network path their work does not need. Empty by default,
+    #: which is a no-op on every function that does not set it.
+    extra_security_group_ids = optional(list(string), [])
+    #: IAM policies attached to this function's role beyond its secret policy,
+    #: for a grant that belongs to another module (the sandbox token's read
+    #: policy lives in `code_sandbox`, not in `secrets`). Keyed by position,
+    #: never by ARN, because an ARN created in the same apply cannot key a
+    #: `for_each`. Empty by default.
+    extra_policy_arns = optional(list(string), [])
   }))
 
   validation {

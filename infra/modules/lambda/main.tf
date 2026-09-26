@@ -221,6 +221,23 @@ resource "aws_iam_role_policy_attachment" "secrets" {
   policy_arn = var.secret_policy_arns[each.value]
 }
 
+# A grant another module owns (the code sandbox token's read policy). Keyed by
+# "<function>/<position>": the position is known at plan time even when the
+# ARN is created in the same apply, and an ARN key would not be.
+resource "aws_iam_role_policy_attachment" "extra" {
+  for_each = merge([
+    for name, fn in var.functions : {
+      for index, arn in fn.extra_policy_arns : "${name}/${index}" => {
+        function = name
+        arn      = arn
+      }
+    }
+  ]...)
+
+  role       = aws_iam_role.this[each.value.function].name
+  policy_arn = each.value.arn
+}
+
 # ecs:RunTask and PassRole, for exactly one function.
 #
 # THREE THINGS ARE NAMED, and each closes a different hole:
@@ -410,7 +427,7 @@ resource "aws_lambda_function" "this" {
     for_each = each.value.in_vpc ? [1] : []
     content {
       subnet_ids         = var.vpc_subnet_ids
-      security_group_ids = var.security_group_ids
+      security_group_ids = concat(var.security_group_ids, each.value.extra_security_group_ids)
     }
   }
 
