@@ -623,6 +623,29 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: NULL reading as the column above.
     claim_evidence_json: Mapped[dict | None] = mapped_column(JSONB)
     synthesized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: A Must-have skill was graded Not Matching, answered or not (O5-1), the
+    #: ONE predicate `miti.grades.must_have_failed`. Added and backfilled by
+    #: 0122; written on every insert since 0130. The ranking blend reads it.
+    must_have_failed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: 0130. `graded`, or `not_assessed` when a Must-have could not be assessed
+    #: on the final attempt, in which case `overall_score` is NULL. NULL on a
+    #: report written before 0130.
+    overall_status: Mapped[str | None] = mapped_column(String(16))
+    #: 0130. The AI Score snapshot frozen onto the report
+    #: (`siddhi.ai_score.AiScoreSnapshot.as_json`): words and tags, no number.
+    ai_score_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. INTERNAL: which models, prompts and templates produced the text
+    #: (`assessment_pipeline.types.ProvenanceRecorder.as_json`). Never served.
+    generation_provenance_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. Miti's per-bucket grade WORDS (`Aggregate.category_grades`), so a
+    #: reader draws the Overall chart from the grading authority rather than
+    #: recomputing an unweighted mean of the rows.
+    category_grades_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. The locked contract this report was graded against, copied.
+    contract_version: Mapped[int | None] = mapped_column(Integer)
+    contract_digest: Mapped[str | None] = mapped_column(String(64))
 
 
 class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):
@@ -653,10 +676,19 @@ class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: INTERNAL. NULL exactly when `assessment_status` is `not_assessed`
+    #: (0130, CHECK-enforced): a skill nobody could grade carries no number.
+    score: Mapped[int | None] = mapped_column(Integer)
     required_level: Mapped[int | None] = mapped_column(Integer)
     remark: Mapped[str] = mapped_column(Text, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 0130: `graded | unanswered | not_assessed`, Miti's skill status.
+    assessment_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="graded", server_default="graded"
+    )
+    #: 0130: how the remark was written, `model | template | catalogue`. NULL
+    #: on rows written before 0130: never reconstructed.
+    remark_provenance: Mapped[str | None] = mapped_column(String(12))
     #: EVIDENCE CONFIDENCE (0107): `high | moderate | low | insufficient`, the
     #: aggregator's own four words. It reports how well corroborated this line's
     #: evidence base is and it MOVES NOTHING: `score` above was decided before

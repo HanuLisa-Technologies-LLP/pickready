@@ -276,11 +276,29 @@ async def download_report_pdf(
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
     tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
-    # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
-    # startup path so ordinary requests do not pay its import cost.
-    from app.services.report_pdf import render_report_pdf
+    # GATE G4, THEN THE PDF (Vivekium release, P5-D7). A report flagged for
+    # human review is not downloaded until a person has recorded a decision on
+    # it. The on-screen report above is deliberately NOT gated: it is where
+    # that person reads the report. `prism_pdf` takes the clearance G4 mints,
+    # so the renderer is unreachable from here without the gate having run.
+    from app.services.siddhi import delivery
 
-    payload = render_report_pdf(
+    report_row = (
+        await session.execute(
+            select(FunctionalSkillsReport).where(
+                FunctionalSkillsReport.job_candidate_link_id == link_id
+            )
+        )
+    ).scalars().first()
+    try:
+        clearance = await delivery.gate_delivery(session, report_row)
+    except delivery.DeliveryBlocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=delivery.PDF_BLOCKED_REASON,
+        ) from None
+    payload = delivery.prism_pdf(
+        clearance,
         report_out,
         candidate_name=candidate_name,
         job_title=job_title,

@@ -432,48 +432,6 @@ resource "aws_cloudwatch_metric_alarm" "redis_evictions" {
   tags          = merge(var.tags, { CacheCluster = each.value })
 }
 
-# ── A PRISM statement withheld for human review (PLAN-p5 P5-D8, WP5-C) ──────
-#
-# Siddhi no longer fails the scoring task over a statement it cannot cite: it
-# WITHHOLDS the statement, writes the report flagged for review, and logs
-# `prism.statement_withheld_for_review` at ERROR from the scoring task, which
-# runs on the on-demand agent. The flag reaches a person only when somebody
-# opens the report; this alarm is what reaches one before then. A withheld
-# statement is a writer that produced a sentence it could not trace, so ONE is
-# worth a page: it is either a prompt regression or a wiring defect, and both
-# repeat on every report until fixed. The token is `siddhi.report.
-# WITHHELD_LOG_EVENT`, and `tests/test_prism_withheld_alarm.py` pins the two
-# together, because renaming one without the other stops the count in silence.
-
-resource "aws_cloudwatch_log_metric_filter" "prism_statement_withheld" {
-  name           = "${local.name}-prism-statement-withheld"
-  log_group_name = var.agent_log_group_name
-  pattern        = "\"prism.statement_withheld_for_review\""
-
-  metric_transformation {
-    name          = "PrismStatementWithheld"
-    namespace     = "ReadyPick/${var.environment}"
-    value         = "1"
-    default_value = "0"
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "prism_statement_withheld" {
-  alarm_name          = "${local.name}-prism-statement-withheld"
-  alarm_description   = "A PRISM Report statement could not be traced to the candidate's evidence and was withheld; the report was written flagged for human review. Read the report's review findings and the agent log line for the section and item."
-  namespace           = "ReadyPick/${var.environment}"
-  metric_name         = aws_cloudwatch_log_metric_filter.prism_statement_withheld.metric_transformation[0].name
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 0
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-
-  alarm_actions = [var.alarm_topic_arn]
-  tags          = var.tags
-}
-
 # ── One dashboard ────────────────────────────────────────────────────────────
 #
 # The five things above, on one page, so the first question during an incident
