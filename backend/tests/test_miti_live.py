@@ -673,6 +673,8 @@ def test_an_employment_gap_reaches_no_control(monkeypatch) -> None:
                 words.append(node.arg)
             elif isinstance(node, ast.keyword) and node.arg:
                 words.append(node.arg)
+            elif isinstance(node, ast.alias):
+                words.extend(name for name in (node.name, node.asname) if name)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 words.append(node.name)
             elif (
@@ -681,13 +683,17 @@ def test_an_employment_gap_reaches_no_control(monkeypatch) -> None:
                 and id(node) not in docstrings
             ):
                 words.append(node.value)
-    source = "\n".join(words).lower()
+    # An underscore separates words here. `\b` counts it as a word character,
+    # so without this `tenure_months` or `max_age` would slip past a boundary
+    # match on "tenure" or "age".
+    source = "\n".join(words).lower().replace("_", " ")
     # WORD BOUNDARIES, not substrings, and this is the same lesson the
     # disqualifier matcher learned the hard way: a substring match refused
     # "must hold a valid CA licence" because "hold" contains "old", while
     # accepting "no candidates over 45" because it contains no listed word.
     for banned in ("tenure", "employment_gap", "gap_months", "career_break", "age"):
-        assert not re.search(rf"\b{banned}\b", source), banned
+        phrase = banned.replace("_", " ")
+        assert not re.search(rf"\b{phrase}\b", source), banned
 
 
 # -- 7. NO FLAG AUTO-REJECTS ------------------------------------------------
