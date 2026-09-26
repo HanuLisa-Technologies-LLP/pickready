@@ -249,12 +249,15 @@ def _overall(
     if overall is None and report.overall_status is None:
         # Written before migration 0030, when the overall was not stored.
         # Recomputed from the rows it was written with rather than shown blank.
+        # A report with no assessed row has nothing to recompute from, and it
+        # says so: a zero substituted here would state Not Matching about a
+        # candidate nobody graded.
         assessed = [
             row.score
             for row in rows
             if row.category != CATEGORY_MATCHING and row.score is not None
         ]
-        overall = round(sum(assessed) / len(assessed)) if assessed else 0
+        overall = round(sum(assessed) / len(assessed)) if assessed else None
     if overall is None:
         return NOT_ASSESSED_WORD, _STATUS_NOT_ASSESSED
     return grade_for_percent(overall) or GRADES[-1], _STATUS_GRADED
