@@ -45,7 +45,7 @@ from app.api import (
     assessment_coding,
     assessment_conversation,
     assessment_recording,
-    assessments,
+    assessment_reports,
     auth,
     bd,
     billing,
@@ -67,7 +67,10 @@ from app.api import (
 
 ROUTERS = {
     "admin": admin,
-    "assessments": assessments,
+    # The PRISM Report, its PDF, its citations and the transcript (PLAN-p5
+    # WP5-F): what was left of `assessments` once everything else was carved
+    # out of it, moved whole with every URL unchanged.
+    "assessment_reports": assessment_reports,
     # Carved out of `assessments` on 2026-09-24 (PLAN-p3 WP0). Listed so the
     # moved routes stay under this sweep rather than leaving it with the move.
     "assessment_conversation": assessment_conversation,

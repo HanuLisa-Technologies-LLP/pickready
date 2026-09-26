@@ -102,11 +102,11 @@ def test_the_preset_bank_routes_are_gone() -> None:
     404s, and a 404 is indistinguishable from a typo in a test. This checks that
     nothing is REGISTERED, which is the actual claim.
     """
-    from app.api import assessment_conversation, assessment_recording, assessments
+    from app.api import assessment_conversation, assessment_recording, assessment_reports
 
     paths = {
         route.path
-        for module in (assessments, assessment_conversation, assessment_recording)
+        for module in (assessment_reports, assessment_conversation, assessment_recording)
         for route in module.router.routes
     }
     assert "/jobs/{job_id}/questions" not in paths
