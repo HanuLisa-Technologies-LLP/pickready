@@ -8,16 +8,17 @@
     nowhere else. It must be technically impossible for it to enter a delivered
     report."
 
-FOUR FORMATS, AND EACH ONE IS A SEPARATE PIECE OF CODE THAT COULD LEAK
-------------------------------------------------------------------------
+TWO FORMATS, AND EACH ONE IS A SEPARATE PIECE OF CODE THAT COULD LEAK
+-----------------------------------------------------------------------
   json        `FunctionalReportOut`, the API response the screen reads
-  pdf         `report_pdf.render_report_pdf`, the copy that gets forwarded
-  email_body  the notification, which travels further than any other surface
-  attachment  the PDF again, under a client-visible filename
+  pdf         `report_pdf.render_report_pdf`, the copy that gets forwarded,
+              reached through `siddhi.delivery.prism_pdf` behind gate G4
 
-They are tested separately rather than through one wrapper because that is how
-they are CALLED: the download route reaches the renderer directly, so a check
-that only lived in a delivery wrapper would be a check the live route skips.
+The email-body and attachment exports had no consumer and were deleted in the
+Vivekium release (P5-D7); the text-level ban they used is still tested below,
+because a future email that quotes a report would reach for exactly it. The
+renderer runs the ban on its own input, so a check that lived only in a
+delivery wrapper cannot be skipped by calling the renderer directly.
 
 WHAT THIS FILE ASSERTS THAT A GREP COULD NOT
 -----------------------------------------------
@@ -28,6 +29,8 @@ clean payload from a walker that stopped at the first level, so
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import io
 import uuid
 from datetime import datetime, timezone
@@ -42,7 +45,37 @@ from app.services import report_pdf
 from app.services.siddhi import delivery, numbers
 
 GENERATED_AT = datetime(2026, 8, 29, tzinfo=timezone.utc)
-EM_DASH = chr(8212)
+
+
+class _NoRow:
+    def scalars(self):
+        return self
+
+    def first(self):
+        return None
+
+
+class _NoDispositions:
+    """The narrowest session G4 needs: it answers the one disposition query."""
+
+    async def execute(self, statement):  # noqa: ANN001 - a stub, not an engine
+        return _NoRow()
+
+
+class _UnflaggedReport:
+    id = "report-1"
+    job_candidate_link_id = "link-1"
+    needs_human_review = False
+
+
+def _cleared() -> delivery.DeliveryClearance:
+    """A real clearance, minted by the real gate over an unflagged report.
+
+    The PDF renderer refuses anything else, so a test that needs a PDF has to
+    go through G4 exactly as the route does.
+    """
+    return asyncio.run(delivery.gate_delivery(_NoDispositions(), _UnflaggedReport()))
+
 
 
 def _dimension(name: str) -> dict:
@@ -222,8 +255,10 @@ def test_the_proctoring_section_reaches_every_export_format() -> None:
     payload["proctoring"] = _proctoring_section()
     report = FunctionalReportOut(**payload)
 
-    assert delivery.prism_json(report)["proctoring"]["candidate"] == "Fixture Candidate"
+    numbers.assert_clean(report, where="prism.json")
+    assert report.model_dump()["proctoring"]["candidate"] == "Fixture Candidate"
     pdf = delivery.prism_pdf(
+        _cleared(),
         report,
         candidate_name="Fixture Candidate",
         job_title="Platform Engineer",
@@ -245,6 +280,7 @@ def test_a_report_with_no_proctoring_section_still_renders_the_heading() -> None
     report = FunctionalReportOut(**_payload())
     assert report.proctoring is None
     pdf = delivery.prism_pdf(
+        _cleared(),
         report,
         candidate_name="Fixture Candidate",
         job_title="Platform Engineer",
@@ -263,11 +299,15 @@ def test_a_clean_report_serialises_in_every_export_format() -> None:
     """The ban must not be so blunt that a real report cannot be delivered.
 
     Asserted first, because a check that refuses everything passes every leak
-    test and ships nothing.
+    test and ships nothing. Two formats leave the building: the JSON response
+    (checked by the serialiser-level scan) and the PDF (behind G4). The email
+    body and the attachment exports had no consumer and were deleted (P5-D7).
     """
     report = _report_out()
-    assert delivery.prism_json(report)["overall_grade"] == "Matching"
+    numbers.assert_clean(report, where="prism.json")
+    assert report.model_dump()["overall_grade"] == "Matching"
     pdf = delivery.prism_pdf(
+        _cleared(),
         report,
         candidate_name="Fixture Candidate",
         job_title="Platform Engineer",
@@ -275,93 +315,23 @@ def test_a_clean_report_serialises_in_every_export_format() -> None:
         generated_at=GENERATED_AT,
     )
     assert pdf.startswith(b"%PDF-")
-    body = delivery.prism_email_body(
-        report, candidate_name="Fixture Candidate", job_title="Platform Engineer"
-    )
-    assert "PRISM Report" in body
-    filename, attached, media = delivery.prism_attachment(
-        report,
+
+
+@pytest.mark.asyncio
+async def test_the_pdf_path_runs_the_gate_first() -> None:
+    """In the order the rules have to happen in: G4 mints the clearance, and
+    only a clearance renders a PDF, which runs the number ban on its input."""
+    clearance = await delivery.gate_delivery(_NoDispositions(), _UnflaggedReport())
+    assert clearance.as_dict()["gate"] == "G4_human_review"
+    pdf = delivery.prism_pdf(
+        clearance,
+        _report_out(),
         candidate_name="Fixture Candidate",
         job_title="Platform Engineer",
         tenant_name="Fixture Tenant",
         generated_at=GENERATED_AT,
     )
-    assert filename == "PRISM-Report-Fixture-Candidate.pdf"
-    assert media == "application/pdf"
-    assert attached.startswith(b"%PDF-")
-
-
-@pytest.mark.asyncio
-async def test_delivery_runs_the_gate_first_then_every_format() -> None:
-    """One call, in the order the rules have to happen in: G4, then the four
-    exports, each checked as it is produced."""
-
-    class _Result:
-        def scalars(self):
-            return self
-
-        def first(self):
-            return None
-
-    class _Session:
-        async def execute(self, statement):  # noqa: ANN001 - a stub, not an engine
-            return _Result()
-
-    class _Report:
-        id = "report-1"
-        job_candidate_link_id = "link-1"
-        needs_human_review = False
-        synthesized_at = GENERATED_AT
-
-    delivered = await delivery.deliver(
-        _Session(),
-        _Report(),
-        _report_out(),
-        candidate_name="Fixture Candidate",
-        job_title="Platform Engineer",
-        tenant_name="Fixture Tenant",
-    )
-    assert delivered["clearance"]["gate"] == "G4_human_review"
-    assert delivered["json"]["overall_grade"] == "Matching"
-    assert delivered["pdf"].startswith(b"%PDF-")
-    assert "PRISM Report" in delivered["email_body"]
-    assert delivered["attachment"]["media_type"] == "application/pdf"
-
-
-@pytest.mark.asyncio
-async def test_a_report_with_no_synthesis_timestamp_is_not_dated_by_the_delivery() -> None:
-    """Dating the document `now` would put a date on a client's permanent record
-    that no stage of the pipeline ever wrote."""
-
-    class _Result:
-        def scalars(self):
-            return self
-
-        def first(self):
-            return None
-
-    class _Session:
-        async def execute(self, statement):  # noqa: ANN001 - a stub, not an engine
-            return _Result()
-
-    class _Report:
-        id = "report-1"
-        job_candidate_link_id = "link-1"
-        needs_human_review = False
-        synthesized_at = None
-
-    payload = _payload()
-    payload.pop("synthesized_at")
-    with pytest.raises(delivery.DeliveryBlocked) as caught:
-        await delivery.deliver(
-            _Session(),
-            _Report(),
-            payload,
-            candidate_name="Fixture Candidate",
-            job_title="Platform Engineer",
-            tenant_name="Fixture Tenant",
-        )
-    assert "no synthesis timestamp" in str(caught.value)
+    assert pdf.startswith(b"%PDF-")
 
 
 # ── The walk actually walks ──────────────────────────────────────────────────
@@ -450,10 +420,15 @@ def test_a_declared_score_field_makes_the_response_model_refuse_to_construct() -
     assert "numeric_field" in str(caught.value)
 
 
-def test_the_ready_pick_score_cannot_enter_the_pdf_or_the_attachment() -> None:
+def test_the_ready_pick_score_cannot_enter_the_pdf() -> None:
+    """Refused by the renderer itself AND through the gated PDF path, which is
+    the same renderer: a clearance from G4 licenses nothing the ban forbids."""
     payload = _payload()
     payload["ready_pick_score"] = 82
-    for call in (report_pdf.render_report_pdf, delivery.prism_pdf):
+    for call in (
+        report_pdf.render_report_pdf,
+        functools.partial(delivery.prism_pdf, _cleared()),
+    ):
         with pytest.raises(numbers.NumberInDeliveredReport):
             call(
                 payload,
@@ -543,18 +518,6 @@ def test_a_score_in_an_email_body_is_refused() -> None:
         )
 
 
-def test_the_email_body_states_that_a_report_exists_and_nothing_it_contains() -> None:
-    """An email is forwarded further than any other surface in this product, and
-    a grade quoted in one outlives every access control on the document."""
-    body = delivery.prism_email_body(
-        _report_out(), candidate_name="Fixture Candidate", job_title="Platform Engineer"
-    )
-    for grade in ("Highly Matching", "Moderately Matching", "Not Matching"):
-        assert grade not in body
-    assert "Matching" not in body
-    assert EM_DASH not in body
-
-
 # ── The two exemptions, both narrow ──────────────────────────────────────────
 
 
@@ -574,6 +537,7 @@ def test_the_band_index_never_appears_as_a_character_on_the_page() -> None:
     The moment it appears as text it is a disclosed score."""
     text = _pdf_text(
         delivery.prism_pdf(
+            _cleared(),
             _report_out(),
             candidate_name="Fixture Candidate",
             job_title="Platform Engineer",

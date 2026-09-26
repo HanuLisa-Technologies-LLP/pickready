@@ -656,6 +656,30 @@ class Settings(BaseSettings):
     #: own `GET /languages` by the operator verification task.
     judge0_language_ids: str = "python:71,java:62,cpp:54,javascript:63"
 
+    # ── Siddhi citation support (Vivekium release, WP5-C) ──────────────────
+    #: The cosine similarity, between a report statement and the passage it
+    #: cites, at or above which the SEMANTIC tier of `siddhi.support` calls the
+    #: statement supported. Consulted only when the deterministic anchor finds
+    #: no shared content term, so it rescues a paraphrase and never overrides an
+    #: invented term. ASSUMPTION (owner question O5-4, accepted in CONTRACT v2):
+    #: 0.55 over voyage-4 document vectors; reversible here without a deploy of
+    #: new code.
+    siddhi_support_similarity_min: float = 0.55
+
+    @model_validator(mode="after")
+    def _siddhi_support_similarity_in_range(self) -> "Settings":
+        """A cosine floor outside (0, 1] is a verdict decided by configuration.
+
+        Above one nothing can reach it, so every paraphrase is `unsupported`
+        and every report goes to review; at or below zero every unrelated
+        sentence is `supported`. Both would look like the check working.
+        """
+        if not 0.0 < self.siddhi_support_similarity_min <= 1.0:
+            raise ValueError(
+                "SIDDHI_SUPPORT_SIMILARITY_MIN must be above 0 and at most 1"
+            )
+        return self
+
     # ── Coding question generation (Phase 4, `assessment_formats/coding_generation`)
     #
     # A coding question is accepted only after its model-written reference

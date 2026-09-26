@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.functional_assessment import invented_terms
+from app.services.siddhi.remarks import invented_terms
 
 EVIDENCE = (
     "Candidate described migrating a Kafka ingestion pipeline at Northwind, "
@@ -145,9 +145,9 @@ def test_the_check_is_a_rejection_reason_and_not_merely_available() -> None:
     """
     import inspect
 
-    from app.services import functional_assessment
+    from app.services.siddhi import remarks
 
-    source = inspect.getsource(functional_assessment.bounded_remark)
+    source = inspect.getsource(remarks.bounded_remark)
     assert "invented_terms(" in source, "the check is defined but never called"
     assert "invented_term" in source, "there is no defect code for it"
 
@@ -157,9 +157,9 @@ def test_the_rejection_tells_the_model_what_to_stop_naming() -> None:
     is not actionable; "do not name Kubernetes" is."""
     import inspect
 
-    from app.services import functional_assessment
+    from app.services.siddhi import remarks
 
-    source = inspect.getsource(functional_assessment.bounded_remark)
+    source = inspect.getsource(remarks.bounded_remark)
     assert "do not name anything the candidate did not mention" in source
     assert "join(fabricated" in source, "the offending terms are not fed back"
 
