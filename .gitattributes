@@ -11,3 +11,8 @@ Dockerfile text eol=lf
 docker-entrypoint.sh text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+# Terraform templates render into EC2 user data that bash runs on Linux. A
+# CRLF checkout on a Windows operator's machine would ship "\r" into every
+# line of the host's bootstrap and the first command would already fail.
+*.tftpl text eol=lf
+graphify-out/graph.json merge=graphify

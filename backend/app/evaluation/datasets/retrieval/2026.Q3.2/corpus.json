@@ -1,0 +1,1059 @@
+{
+ "set": "retrieval",
+ "version": "2026.Q3.2",
+ "artefact": "corpus",
+ "provenance": "hand_authored_fixture",
+ "why_not_production": "The only deployed environment, readypick-pilot, holds three tenants and thirty jobs and ZERO candidates, profiles, applications and reports (docs/verification/AI_UPGRADE_BASELINE.md, 2026-09-09). context_chunks holds zero rows because services/rag/index.index_document has no caller. A production corpus therefore cannot be drawn, and this corpus is hand authored so the retrieval metrics have a fixed corpus to hold constant, which is the BrowseComp-Plus idea W7.1 is built on. It is NOT a production sample and no case in this set claims to be.",
+ "chunks": [
+  {
+   "chunk_id": "c001",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Backend Engineer, payments. Must have production Kafka experience and be able to reason about consumer group rebalancing under partition change."
+  },
+  {
+   "chunk_id": "c002",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: exposure to Postgres logical replication and to schema migrations executed without downtime."
+  },
+  {
+   "chunk_id": "c003",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: the engineer is expected to raise a risk before it becomes an incident rather than after."
+  },
+  {
+   "chunk_id": "c004",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Reduced payment settlement lag from nineteen minutes to under four by resizing the Kafka consumer group and pinning partition assignment to the settlement key."
+  },
+  {
+   "chunk_id": "c005",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Strong team player with a proven track record of delivering high quality software in fast paced environments."
+  },
+  {
+   "chunk_id": "c006",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Ran a Postgres major version upgrade across eleven databases using logical replication, with a documented cutover and a tested rollback."
+  },
+  {
+   "chunk_id": "c007",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Familiar with distributed systems, microservices, cloud platforms and modern engineering practices."
+  },
+  {
+   "chunk_id": "c008",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When the consumer group stalled we found the rebalance was triggered by a slow poll rather than by a broker failure, so we raised max poll interval and cut the batch size."
+  },
+  {
+   "chunk_id": "c009",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I flagged the replication lag to the on call channel two days before the release because the write volume was already tracking above what we had load tested."
+  },
+  {
+   "chunk_id": "c010",
+   "job_grade": "non_managerial",
+   "source_kind": "project",
+   "evidence_tier": "E2",
+   "text": "Public repository: a partition assignor implementation with property tests covering rebalance under broker restart and under consumer restart."
+  },
+  {
+   "chunk_id": "c011",
+   "job_grade": "non_managerial",
+   "source_kind": "project",
+   "evidence_tier": "E2",
+   "text": "Public repository: a migration runner that refuses a migration lacking a down step, with a test suite exercising interrupted migrations."
+  },
+  {
+   "chunk_id": "c012",
+   "job_grade": "non_managerial",
+   "source_kind": "reference",
+   "evidence_tier": "E5",
+   "text": "Former platform lead confirms the settlement latency work was owned end to end by this engineer and that the rollback plan was exercised in staging."
+  },
+  {
+   "chunk_id": "c013",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Expert in Kafka, Kubernetes, Terraform, Go, Rust, Python, TypeScript, GraphQL and machine learning."
+  },
+  {
+   "chunk_id": "c014",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have not used logical replication myself. I have read the runbook for it and I would want a second pair of eyes the first time."
+  },
+  {
+   "chunk_id": "c015",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Wrote the incident review for a four hour payment outage, including the two contributing changes and the detection gap that let it run for ninety minutes."
+  },
+  {
+   "chunk_id": "c016",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The hardest part was telling the product owner that the date was wrong. I brought the revised estimate and the two things I had cut, not just the bad news."
+  },
+  {
+   "chunk_id": "c017",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Engineering Manager, platform. Must have run a team through a reorganisation while keeping delivery commitments visible and honest."
+  },
+  {
+   "chunk_id": "c018",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: has built a hiring loop and can describe how it changed the shape of the team."
+  },
+  {
+   "chunk_id": "c019",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: gives a direct report difficult feedback early rather than letting it accumulate to a review cycle."
+  },
+  {
+   "chunk_id": "c020",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Merged two platform teams of six and four, kept the roadmap public through the merge, and lost one person over eight months against a company average of three."
+  },
+  {
+   "chunk_id": "c021",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Passionate people leader focused on empowering teams to deliver world class outcomes."
+  },
+  {
+   "chunk_id": "c022",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Rebuilt the backend hiring loop around a paired debugging exercise, cutting time to offer from forty one days to twenty three across nineteen hires."
+  },
+  {
+   "chunk_id": "c023",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I told him in the first week that the design reviews were not landing, gave him two specific examples, and we agreed a check in every Friday rather than waiting for the cycle."
+  },
+  {
+   "chunk_id": "c024",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "During the merge I published the delivery dates I believed rather than the ones I had been given, and I said which two I expected to miss."
+  },
+  {
+   "chunk_id": "c025",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The hiring loop change was mostly my manager's idea. My part was running the calibration sessions and writing the rubric."
+  },
+  {
+   "chunk_id": "c026",
+   "job_grade": "managerial",
+   "source_kind": "reference",
+   "evidence_tier": "E5",
+   "text": "The previous director confirms the two team merge and that attrition through it was one person, and adds that the roadmap was published weekly throughout."
+  },
+  {
+   "chunk_id": "c027",
+   "job_grade": "managerial",
+   "source_kind": "project",
+   "evidence_tier": "E2",
+   "text": "Public write up: the paired debugging exercise used in the hiring loop, with the rubric and the calibration notes."
+  },
+  {
+   "chunk_id": "c028",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Managed large cross functional teams and drove significant improvements in velocity and morale."
+  },
+  {
+   "chunk_id": "c029",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have never run a reorganisation. I have been through two as a lead and I watched how the second one handled the people who were reassigned."
+  },
+  {
+   "chunk_id": "c030",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Introduced a weekly written delivery note naming what slipped and why, which the two teams kept using after the merge closed."
+  },
+  {
+   "chunk_id": "c031",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The feedback I regret is the one I saved for the review. By then he had repeated it four times and it read as an ambush."
+  },
+  {
+   "chunk_id": "c032",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "VP Engineering. Must have owned a multi year platform migration with a stated cost and a stated benefit, both measured after the fact."
+  },
+  {
+   "chunk_id": "c033",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: has run an engineering budget through a contraction and can name what was protected and what was cut."
+  },
+  {
+   "chunk_id": "c034",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: publishes a decision that later proved wrong together with what the decision rested on."
+  },
+  {
+   "chunk_id": "c035",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Led a three year migration off a shared monolith database, measured at fourteen engineer years spent against a reduction in change failure rate from eleven percent to three."
+  },
+  {
+   "chunk_id": "c036",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Held headcount flat through a nineteen percent budget reduction by ending two internal tools programmes and moving their owners onto the migration."
+  },
+  {
+   "chunk_id": "c037",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Visionary technology leader with a track record of driving transformational change at scale."
+  },
+  {
+   "chunk_id": "c038",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The build versus buy call on the feature store was wrong. We spent eleven months on it and I wrote up the two assumptions that did not hold, one of which I had been warned about."
+  },
+  {
+   "chunk_id": "c039",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "In the contraction I protected the on call rotation and the migration, and I cut the internal developer portal, which was the thing I personally wanted most."
+  },
+  {
+   "chunk_id": "c040",
+   "job_grade": "leadership",
+   "source_kind": "reference",
+   "evidence_tier": "E5",
+   "text": "The former chief executive confirms the migration ran three years, confirms the change failure numbers were reported to the board quarterly, and confirms the feature store write up was circulated."
+  },
+  {
+   "chunk_id": "c041",
+   "job_grade": "leadership",
+   "source_kind": "project",
+   "evidence_tier": "E2",
+   "text": "Published conference talk with the migration's cost model, including the engineer year accounting and what it excluded."
+  },
+  {
+   "chunk_id": "c042",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Responsible for engineering strategy, architecture, delivery, hiring, culture, security and vendor relationships."
+  },
+  {
+   "chunk_id": "c043",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I did not own the budget. I proposed the reductions and the chief financial officer decided which of them happened."
+  },
+  {
+   "chunk_id": "c044",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Ran a quarterly written review naming every architectural decision reversed that quarter and the evidence that reversed it."
+  },
+  {
+   "chunk_id": "c045",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The migration's benefit case rested on change failure rate, and I would use lead time instead now, because change failure rate moved partly for reasons the migration did not cause."
+  },
+  {
+   "chunk_id": "c046",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Chief Technology Officer. Must have carried a technology position into a board decision that went against the executive team's preference."
+  },
+  {
+   "chunk_id": "c047",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: has taken a company through a regulated audit of its data handling."
+  },
+  {
+   "chunk_id": "c048",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: separates what the company knows from what it believes when reporting to a board."
+  },
+  {
+   "chunk_id": "c049",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Argued against the proposed acquisition of a data vendor on integration grounds, lost the first vote, and was asked to run the integration review that reversed it four months later."
+  },
+  {
+   "chunk_id": "c050",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Took the company through its first external audit of candidate data handling, closing eleven findings of which three required a schema change."
+  },
+  {
+   "chunk_id": "c051",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Seasoned executive with deep expertise across the technology landscape and a passion for innovation."
+  },
+  {
+   "chunk_id": "c052",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I told the board we had one quarter of evidence and three quarters of assumption, and I labelled which of the four numbers on the slide was which."
+  },
+  {
+   "chunk_id": "c053",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The audit found we were retaining raw assessment media past what the consent covered. We deleted it and changed the pipeline so deletion happens after the verification, not before it."
+  },
+  {
+   "chunk_id": "c054",
+   "job_grade": "cxo",
+   "source_kind": "reference",
+   "evidence_tier": "E5",
+   "text": "The board chair confirms the acquisition position was carried against the executive team's preference and that the integration review was commissioned as a result."
+  },
+  {
+   "chunk_id": "c055",
+   "job_grade": "cxo",
+   "source_kind": "project",
+   "evidence_tier": "E2",
+   "text": "Published post on separating measured from assumed numbers in a board pack, with the template the company adopted."
+  },
+  {
+   "chunk_id": "c056",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Board level technology leadership including strategy, governance, risk, compliance and organisational design."
+  },
+  {
+   "chunk_id": "c057",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I was not in the room for the audit close. My head of data ran it and I read the findings afterwards."
+  },
+  {
+   "chunk_id": "c058",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "Losing the first vote was the right outcome for the process even though I thought the decision was wrong, and I said so at the time rather than afterwards."
+  },
+  {
+   "chunk_id": "c059",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Instituted a board reporting standard in which every figure carries its source and its measurement window, adopted across three functions."
+  },
+  {
+   "chunk_id": "c060",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Recognised thought leader in artificial intelligence, cloud transformation and data driven decision making."
+  },
+  {
+   "chunk_id": "c061",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Data Platform Engineer. Must have production Airflow experience: authoring DAGs, backfills, and on-call ownership of failed runs."
+  },
+  {
+   "chunk_id": "c062",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have for the data platform role: dbt model refactoring and exposure to Spark structured streaming."
+  },
+  {
+   "chunk_id": "c063",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural expectation: the engineer documents a pipeline before handing it over and flags data-quality regressions to the owning analyst first."
+  },
+  {
+   "chunk_id": "c064",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Cut the nightly warehouse build from six hours to ninety minutes by splitting one monolithic Airflow DAG into eleven task groups with per-table sensors."
+  },
+  {
+   "chunk_id": "c065",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Migrated one hundred and forty dbt models to contract-checked schemas; downstream dashboard breakage reports fell to zero over the following quarter."
+  },
+  {
+   "chunk_id": "c066",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Passionate about big data and modern data stacks. Familiar with all major pipeline tools."
+  },
+  {
+   "chunk_id": "c067",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Wrote a Spark job that deduplicated the clickstream table at four billion rows a day, holding executor memory under the cluster ceiling."
+  },
+  {
+   "chunk_id": "c068",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When the backfill double-counted revenue I stopped the DAG, wrote the idempotency key into the merge, and re-ran the affected partitions only. The finance report was correct by the Monday close."
+  },
+  {
+   "chunk_id": "c069",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have not used Spark streaming in production. My streaming work was Kafka consumers writing to the warehouse in micro-batches."
+  },
+  {
+   "chunk_id": "c070",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I raised the schema drift with the analyst who owned the model before touching it, because a silent fix would have moved her numbers without her knowing."
+  },
+  {
+   "chunk_id": "c071",
+   "job_grade": "non_managerial",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Reference check, former lead: he owned the Airflow estate for two years and his backfills were the ones nobody had to re-run."
+  },
+  {
+   "chunk_id": "c072",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E2",
+   "text": "GitHub project: an open-source dbt package for slowly changing dimensions, forty-one stars, used by two companies I know of."
+  },
+  {
+   "chunk_id": "c073",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Android Engineer, consumer app. Must have Kotlin and Jetpack Compose in production; crash-free sessions above ninety-nine point five percent is the bar."
+  },
+  {
+   "chunk_id": "c074",
+   "job_grade": "non_managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: Play Store staged rollouts, baseline profiles, and startup-time tracing."
+  },
+  {
+   "chunk_id": "c075",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Took the checkout screen from XML views to Compose behind a feature flag; scroll jank on low-end devices fell by half as measured in the vitals dashboard."
+  },
+  {
+   "chunk_id": "c076",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Reduced cold start from three point two seconds to one point four by deferring three SDK initialisations and adding a baseline profile."
+  },
+  {
+   "chunk_id": "c077",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Android enthusiast since university. Strong knowledge of the full Android ecosystem."
+  },
+  {
+   "chunk_id": "c078",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The crash was a coroutine cancelled mid-write to DataStore. I reproduced it with a turbine test, moved the write into a NonCancellable block, and the crash rate for that screen went to zero in the next release."
+  },
+  {
+   "chunk_id": "c079",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have never shipped a staged rollout myself; releases at my company went to one hundred percent in one step and the platform team owned the button."
+  },
+  {
+   "chunk_id": "c080",
+   "job_grade": "non_managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I profiled the startup trace before touching anything, because the slow frame everyone blamed was not the one the trace showed."
+  },
+  {
+   "chunk_id": "c081",
+   "job_grade": "non_managerial",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Play Console vitals attached to the application: crash-free sessions ninety-nine point seven percent across the last three releases."
+  },
+  {
+   "chunk_id": "c082",
+   "job_grade": "non_managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E2",
+   "text": "Side project APK included: a habit tracker in Compose with a widget, published under my own developer account."
+  },
+  {
+   "chunk_id": "c083",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Engineering Manager, platform team. Must have run an incident process: postmortems that produce owned actions, not documents."
+  },
+  {
+   "chunk_id": "c084",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: experience forecasting delivery with historical cycle-time data rather than story points."
+  },
+  {
+   "chunk_id": "c085",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: the manager gives corrective feedback within the week, not at the review."
+  },
+  {
+   "chunk_id": "c086",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Rebuilt the on-call rotation for a nine-person team: paging volume fell forty percent in two quarters, tracked in the incident tool, and no engineer left the team that year."
+  },
+  {
+   "chunk_id": "c087",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Ran forty-one postmortems over two years; the repeat-incident rate for causes with a named owner fell to one in ten."
+  },
+  {
+   "chunk_id": "c088",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Servant leader who believes people are the real product. Experienced in all aspects of engineering management."
+  },
+  {
+   "chunk_id": "c089",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "One engineer was missing every estimate. I sat with him through a week of work, found the interruptions were review requests from another team, moved that queue, and his throughput recovered without a performance plan."
+  },
+  {
+   "chunk_id": "c090",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I told the director the migration would slip two sprints the day I knew, with the cycle-time data that said so, and offered the cut list rather than a heroic promise."
+  },
+  {
+   "chunk_id": "c091",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have not run a formal hiring loop end to end; my last company had a central recruiting function that owned the process and I only interviewed."
+  },
+  {
+   "chunk_id": "c092",
+   "job_grade": "managerial",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Upward feedback excerpt, verified: three of four direct reports named his postmortem facilitation as the thing they would keep."
+  },
+  {
+   "chunk_id": "c093",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Introduced cycle-time forecasting; the last six quarterly commitments landed within one sprint of the forecast."
+  },
+  {
+   "chunk_id": "c094",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When two seniors both wanted the tech-lead seat I split the domain by service boundary, wrote the split down, and revisited it with them after a quarter. One of them still disagrees, and the team shipped."
+  },
+  {
+   "chunk_id": "c095",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Sales Operations Manager. Must have owned CRM pipeline hygiene: stage definitions, exit criteria, and a forecast the CFO can stand behind."
+  },
+  {
+   "chunk_id": "c096",
+   "job_grade": "managerial",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: commission plan modelling and territory rebalancing."
+  },
+  {
+   "chunk_id": "c097",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Rewrote the pipeline stages with exit criteria the reps agreed to; forecast accuracy moved from plus-minus forty percent to plus-minus twelve over three quarters."
+  },
+  {
+   "chunk_id": "c098",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Rebalanced fourteen territories using two years of closed-won data; the bottom quartile of reps closed the gap to median by a third."
+  },
+  {
+   "chunk_id": "c099",
+   "job_grade": "managerial",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Results-driven revenue operations professional with a passion for data."
+  },
+  {
+   "chunk_id": "c100",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The forecast was inflated because stale opportunities never died. I added a ninety-day no-activity sweep that moved them to a parking stage the forecast ignores, and told sales leadership exactly what would disappear before I ran it."
+  },
+  {
+   "chunk_id": "c101",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have no experience with commission modelling; finance owned the plan at both my companies and I supplied the attainment data."
+  },
+  {
+   "chunk_id": "c102",
+   "job_grade": "managerial",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Verified by the former CRO in writing: forecast accuracy figures as stated, and she would rehire him."
+  },
+  {
+   "chunk_id": "c103",
+   "job_grade": "managerial",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I trained the reps on the new stages myself, one pod at a time, because a memo would have changed the fields and not the behaviour."
+  },
+  {
+   "chunk_id": "c104",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Head of Design. Must have built and scaled a design system that product teams actually adopted, and grown a team through at least one reorganisation."
+  },
+  {
+   "chunk_id": "c105",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: design research practice built from nothing; pricing-page experimentation experience."
+  },
+  {
+   "chunk_id": "c106",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: defends craft quality in the roadmap conversation without becoming the blocker the roadmap routes around."
+  },
+  {
+   "chunk_id": "c107",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Grew design from four to nineteen across three product lines; regretted attrition over three years was two people, both relocations."
+  },
+  {
+   "chunk_id": "c108",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Shipped the design system to eighty percent component adoption in eighteen months, measured by automated audit of the production bundles."
+  },
+  {
+   "chunk_id": "c109",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Award-winning design leader passionate about user-centred everything."
+  },
+  {
+   "chunk_id": "c110",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "Two product teams forked the button. I did not mandate; I sat both leads down with the audit numbers, agreed one owner, and put a deprecation date on the fork. Adoption is how you know it worked."
+  },
+  {
+   "chunk_id": "c111",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have never built a research practice from zero; I inherited two researchers and scaled from there, which is a different problem."
+  },
+  {
+   "chunk_id": "c112",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When the CEO wanted the redesign in half the time I put the two cut options on one page, priced in support tickets, and let him choose with the cost visible."
+  },
+  {
+   "chunk_id": "c113",
+   "job_grade": "leadership",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Reference, former CPO: the design system claim is real, and the adoption number matches what our tooling reported."
+  },
+  {
+   "chunk_id": "c114",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Ran the reorganisation from platform-aligned to journey-aligned squads; time-to-first-design-review halved."
+  },
+  {
+   "chunk_id": "c115",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "VP Engineering. Must have led a platform migration measured in years, not sprints, and negotiated the vendor contracts under it."
+  },
+  {
+   "chunk_id": "c116",
+   "job_grade": "leadership",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: an engineering brand people cite when they apply; a budget line survived through a downturn."
+  },
+  {
+   "chunk_id": "c117",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Led the datacentre-to-cloud migration of two hundred services over twenty-six months, with the parallel-run bill capped and published monthly to the board."
+  },
+  {
+   "chunk_id": "c118",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Renegotiated the observability contract at renewal: forty percent unit-cost reduction against the prior term, with an exit clause we later used."
+  },
+  {
+   "chunk_id": "c119",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Visionary technology executive with a track record of transformation at scale."
+  },
+  {
+   "chunk_id": "c120",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "Halfway through the migration the vendor deprecated the instance family we had sized for. I froze new movement for a month, re-benchmarked, and burned the contingency I had defended in the original plan. We landed four weeks late and inside budget."
+  },
+  {
+   "chunk_id": "c121",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have not carried a budget through a downturn; my tenure was all growth years and the cuts happened after I left."
+  },
+  {
+   "chunk_id": "c122",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I publish the postmortem of my own decisions once a quarter to the whole org, including the one where my build-versus-buy call cost us a year."
+  },
+  {
+   "chunk_id": "c123",
+   "job_grade": "leadership",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Board minutes excerpt, verified: the migration cost tracking was presented monthly as described."
+  },
+  {
+   "chunk_id": "c124",
+   "job_grade": "leadership",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Two of my staff engineers keynoted industry conferences on work we open-sourced; both cite it in their hiring funnels."
+  },
+  {
+   "chunk_id": "c125",
+   "job_grade": "leadership",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The hardest call was stopping the second datacentre exit halfway to fund the security remediation. I made the trade explicit to both teams rather than letting the roadmap quietly absorb it."
+  },
+  {
+   "chunk_id": "c126",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Chief Financial Officer. Must have taken a company through an external audit cycle with zero material findings, and owned treasury policy."
+  },
+  {
+   "chunk_id": "c127",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: fundraising across at least two instruments; transfer-pricing exposure."
+  },
+  {
+   "chunk_id": "c128",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural: tells the board the bad number the week it is known."
+  },
+  {
+   "chunk_id": "c129",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Closed four consecutive annual audits with no material weakness; the one significant deficiency in year one was remediated and retested within the same cycle."
+  },
+  {
+   "chunk_id": "c130",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Rewrote treasury policy after a counterparty scare: diversified across three banks with exposure ceilings, board-ratified, and stress-tested quarterly."
+  },
+  {
+   "chunk_id": "c131",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Strategic finance leader and trusted business partner to CEOs."
+  },
+  {
+   "chunk_id": "c132",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "We found the revenue recognition error ourselves in month ten. I took it to the audit committee before the auditors found it, with the restatement quantified and the control fix already running."
+  },
+  {
+   "chunk_id": "c133",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have not led a debt raise; both my raises were equity and the venture debt line predated me."
+  },
+  {
+   "chunk_id": "c134",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When the CEO wanted the aggressive booking treatment I wrote him the memo saying no with the accounting literature attached, and I kept a copy."
+  },
+  {
+   "chunk_id": "c135",
+   "job_grade": "cxo",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Audit partner reference, verified: four clean opinions as stated, and the committee minutes reflect the self-reported restatement."
+  },
+  {
+   "chunk_id": "c136",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Raised a Series C and a venture debt extension in the same year; the debt covenants have never been within twenty percent of breach."
+  },
+  {
+   "chunk_id": "c137",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I brief the board on cash runway monthly with the same model finance uses internally, because two models is how surprises happen."
+  },
+  {
+   "chunk_id": "c138",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Chief Product Officer. Must have run a product portfolio through a deliberate kill decision: sunset a line, keep the customers."
+  },
+  {
+   "chunk_id": "c139",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Nice to have: a discovery practice the sales team quotes; pricing migration at scale."
+  },
+  {
+   "chunk_id": "c140",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Sunset the legacy reporting product over fourteen months: ninety-two percent of its revenue migrated to the replacement, with churn from the sunset itself under three percent."
+  },
+  {
+   "chunk_id": "c141",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Built the discovery practice: every funded bet now carries recorded customer evidence, and the two bets that failed last year failed in discovery, not in build."
+  },
+  {
+   "chunk_id": "c142",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E0",
+   "text": "Product visionary obsessed with customer delight and outcomes over outputs."
+  },
+  {
+   "chunk_id": "c143",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "The kill decision was mine to recommend. I put the maintenance cost, the migration path, and the churn model on one page, and I told the two biggest customers myself before the announcement."
+  },
+  {
+   "chunk_id": "c144",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "I have never run a pricing migration; pricing sat with the CRO at my last two companies and I supplied the packaging."
+  },
+  {
+   "chunk_id": "c145",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "When the board pushed the AI feature for the earnings narrative I shipped a scoped assistant with a measured activation target instead of the platform rewrite they described, and I said so in the deck."
+  },
+  {
+   "chunk_id": "c146",
+   "job_grade": "cxo",
+   "source_kind": "report",
+   "evidence_tier": "E5",
+   "text": "Reference, former CEO: the sunset numbers are accurate and the customer calls happened as described."
+  },
+  {
+   "chunk_id": "c147",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E1",
+   "text": "Introduced quarterly portfolio reviews where every line owner argues the kill case for their own product before arguing the invest case."
+  },
+  {
+   "chunk_id": "c148",
+   "job_grade": "cxo",
+   "source_kind": "transcript",
+   "evidence_tier": "E3",
+   "text": "Discovery evidence is recorded interviews and usage cohorts, not opinion decks; I rejected a funded bet from my own favourite team for arriving without either."
+  },
+  {
+   "chunk_id": "c149",
+   "job_grade": "cxo",
+   "source_kind": "jd",
+   "evidence_tier": "E0",
+   "text": "Behavioural expectation for the CPO: disagrees with the CEO in the room and commits outside it."
+  },
+  {
+   "chunk_id": "c150",
+   "job_grade": "cxo",
+   "source_kind": "resume",
+   "evidence_tier": "E2",
+   "text": "Attached portfolio one-pager: the kill-case template used in quarterly reviews, redacted."
+  }
+ ]
+}

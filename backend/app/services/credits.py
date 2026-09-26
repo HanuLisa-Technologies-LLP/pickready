@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -32,7 +33,9 @@ log = logging.getLogger(__name__)
 
 from app.models.billing import (
     CONSUMPTION_SUBUNITS,
+    CREDIT_VALIDITY_MONTHS,
     EVENT_COMPLETED,
+    EVENT_EXPIRY,
     EVENT_GRANT,
     EVENT_INCOMPLETE,
     EVENT_NO_SHOW,
@@ -42,9 +45,19 @@ from app.models.billing import (
     CreditLedgerEntry,
     consumption_subunits,
 )
+from app.services import credit_lots
+
+#: How far ahead the billing page and the usage summary call a lot "expiring
+#: soon". Thirty days because a customer who needs to use or replace credits
+#: has to be told while there is still a hiring cycle left to use them in; a
+#: seven-day notice on a three-month window is an invoice, not a warning.
+EXPIRING_SOON_DAYS = 30
 
 __all__ = [
     "SUBUNITS_PER_CREDIT",
+    "CREDIT_VALIDITY_MONTHS",
+    "EVENT_EXPIRY",
+    "write_entry",
     "CONSUMPTION_SUBUNITS",
     "STEM_CONSUMPTION_SUBUNITS",
     "consumption_subunits",
@@ -59,7 +72,6 @@ __all__ = [
     "consume",
     "credits_from_subunits",
     "grant",
-    "has_credit_headroom",
     "has_positive_balance",
     "is_demo_tenant",
     "LOW_BALANCE_FRACTION",
@@ -86,8 +98,31 @@ class BalanceSummary:
     #: event_type -> sub-units consumed, this billing month.
     month_by_event: dict[str, int]
     #: Sub-units carried in from before this month's first grant.
+    #:
+    #: NAME KEPT DELIBERATELY. This field predates the three-month expiry by
+    #: two months, is serialised as `rollover_subunits`/`rollover_credits`,
+    #: is typed in `frontend/lib/types.ts` and is rendered on the billing page
+    #: as "Carried over from last month". It has NOTHING to do with the
+    #: three-month validity window, and re-pointing a shipped field at a new
+    #: meaning would silently change a number a customer is already reading.
+    #: The expiry story is told by the separate `lots` / `non_expiring_*` /
+    #: `expiring_soon_*` fields below.
     rollover_subunits: int
     in_deficit: bool
+    #: Sub-units removed by lots reaching their expiry, ever. Its own line
+    #: rather than part of `consumed_subunits`, because the billing page labels
+    #: that figure "Used to date" and folding expiry into it would bill the
+    #: customer in the UI for assessments nobody ran.
+    expired_subunits: int = 0
+    #: The part of the balance that never expires: the credits granted before
+    #: change request 25, which keep the promise printed on their invoices.
+    non_expiring_subunits: int = 0
+    #: The part of the balance sitting in lots that expire within
+    #: `EXPIRING_SOON_DAYS`, and the earliest of those expiry dates.
+    expiring_soon_subunits: int = 0
+    next_expiry_at: datetime | None = None
+    #: Every live lot, oldest first, for the expiry table on the billing page.
+    lots: tuple[credit_lots.LotView, ...] = ()
     #: A permanent demonstration company. The billing page still renders every
     #: figure above -- usage is real and the statement adds up -- but the
     #: BALANCE is presented as unlimited rather than as the ledger sum, which
@@ -165,7 +200,7 @@ async def balance_subunits(session: AsyncSession, tenant_id: uuid.UUID) -> int:
     return int(total or 0)
 
 
-async def _write(
+async def write_entry(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -177,6 +212,12 @@ async def _write(
     metadata: dict[str, Any] | None = None,
 ) -> CreditLedgerEntry | None:
     """Append one entry, or return None if this exact event was already written.
+
+    Public rather than private because `credit_lots.expire_due` writes the
+    `expiry` debit through it. That is deliberate and is the point of the whole
+    design: expiry is a LEDGER EVENT like any other, written the same way, with
+    the same idempotency guard, so the balance never needs a second definition
+    that knows about lots.
 
     The dedupe is the UNIQUE constraint, not a prior SELECT: two workers racing
     the same event would both see "not present" and both insert. A SAVEPOINT
@@ -202,26 +243,6 @@ async def _write(
     return entry
 
 
-async def _sync_deficit(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """Recompute `tenants.credit_deficit` from the ledger. Returns the flag.
-
-    Written with raw SQL against `tenants` because that table is global (no RLS
-    policy keyed to app.tenant_id), so it is reachable from the tenant-scoped
-    session that just wrote the ledger entry as well as from the webhook's
-    bypass scope.
-    """
-    balance = await balance_subunits(session, tenant_id)
-    # A demonstration tenant is never in deficit, whatever the ledger sums to.
-    # The flag drives the dunning email and the portal's deficit banner, so
-    # letting it go true here would have a demo company chased for payment.
-    in_deficit = balance < 0 and not await is_demo_tenant(session, tenant_id)
-    await session.execute(
-        text("UPDATE tenants SET credit_deficit = :flag WHERE id = :tid"),
-        {"flag": in_deficit, "tid": str(tenant_id)},
-    )
-    return in_deficit
-
-
 async def grant(
     session: AsyncSession,
     *,
@@ -231,15 +252,24 @@ async def grant(
     plan_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> bool:
-    """Add a month's allotment. Returns False when already granted.
+    """Add a month's allotment or a purchased pack. False when already granted.
 
-    Unused credits roll over and nothing expires (spec §3.1), which is why a
-    grant is a plain positive entry and there is no expiry sweep anywhere in
-    this module.
+    SUPERSEDES the original "nothing ever expires" rule, NARROWLY. Every grant
+    written from here opens a `credit_lots` row carrying a three-month expiry,
+    per the owner's change-request-25 ruling. The ruling is "new grants only",
+    and the enforcement of that half is NOT here: it is migration 0111, which
+    backfilled every grant that already existed as a lot with a NULL expiry.
+    Credits sold under the old promise keep it, because that promise is printed
+    on tax invoices already issued.
+
+    The lot is opened in the SAME transaction as the ledger entry, and only for
+    the call that actually wrote one. A redelivered webhook gets `entry is
+    None` from the idempotency guard and returns before reaching the lot, so a
+    replayed grant cannot mint a second batch of expiring credits.
     """
     if subunits <= 0:
         raise ValueError("A grant must be positive")
-    entry = await _write(
+    entry = await write_entry(
         session,
         tenant_id=tenant_id,
         event_type=EVENT_GRANT,
@@ -250,7 +280,12 @@ async def grant(
     )
     if entry is None:
         return False
-    await _sync_deficit(session, tenant_id)
+    await credit_lots.open_lot(
+        session,
+        tenant_id=tenant_id,
+        ledger_entry_id=entry.id,
+        subunits=subunits,
+    )
     # Master Directive Part 5 Rule 5: every purchase resets BOTH warning
     # flags, so Warning 1 fires again when the new combined balance drops back
     # to 20 and Warning 2 again at 10.
@@ -278,9 +313,9 @@ async def consume(
 
     The deduction is NEVER refused (spec §3.3). A completed assessment cannot be
     un-completed, so blocking the charge would simply lose the revenue while the
-    customer keeps the work. The balance is allowed to go negative and the
-    tenant is flagged; what gets blocked is the NEXT invitation
-    (`has_credit_headroom`), which is a thing a human can still choose not to do.
+    customer keeps the work. The balance is allowed to go negative; what gets
+    blocked is the NEXT start (`has_positive_balance`, `can_start_assessment`),
+    which is a thing a human can still choose not to do.
 
     `role_classification` is the Job record's STEM flag (Master Directive
     Part 5 Rule 9): STEM bills 90 sub-units for a completed report and 30 for
@@ -291,7 +326,11 @@ async def consume(
     cost = consumption_subunits(event_type, role_classification)
     if cost is None:
         raise ValueError(f"{event_type} is not a billable consumption event")
-    entry = await _write(
+    # Materialise any expiry BEFORE the charge, so the warning tiers this
+    # deduction triggers are computed against a balance that
+    # does not still contain credits the customer can no longer spend.
+    await credit_lots.expire_due(session, tenant_id)
+    entry = await write_entry(
         session,
         tenant_id=tenant_id,
         event_type=event_type,
@@ -305,7 +344,22 @@ async def consume(
     )
     if entry is None:
         return False
-    await _sync_deficit(session, tenant_id)
+    # FIFO draw-down. The ledger debit above is written in FULL whatever the
+    # lots hold, because the charge is never refused; `drawn` being short is
+    # the customer spending into the negative, which is a recorded state and
+    # not an error. Recorded rather than silent: an uncovered charge that left
+    # no trace would be indistinguishable from one the lots paid for.
+    drawn = await credit_lots.draw_fifo(
+        session,
+        tenant_id=tenant_id,
+        ledger_entry_id=entry.id,
+        subunits=cost,
+    )
+    if drawn < cost:
+        log.info(
+            "credits.charge_exceeded_lots tenant=%s event=%s cost=%s drawn=%s",
+            tenant_id, event_type, cost, drawn,
+        )
     await _sync_warning_flags(session, tenant_id)
     return True
 
@@ -315,8 +369,7 @@ async def is_demo_tenant(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
 
     Read straight from `tenants`, which is a global table with no RLS policy, so
     this answers correctly from a tenant-scoped session and from a webhook's
-    bypass scope alike -- the same reason `_sync_deficit` writes there with raw
-    SQL.
+    bypass scope alike.
 
     Exemption covers refusals and alarms ONLY. Usage is still written to the
     ledger, because the requirement is that the billing UI and the billing logic
@@ -336,8 +389,9 @@ async def can_start_assessment(
     tenant_id: uuid.UUID,
     *,
     role_classification: str | None,
+    count: int = 1,
 ) -> tuple[bool, Decimal, Decimal]:
-    """May an assessment START against a job of this classification?
+    """May `count` assessments START against a job of this classification?
 
     Master Directive Part 5 §2.3: the pool must hold the FULL cost of the
     report the assessment will produce — 1.5 credits for a STEM job, 1.0 for
@@ -350,15 +404,36 @@ async def can_start_assessment(
     message can state the role type, the credits required, and the current
     balance, exactly as §2.3 requires. A demonstration tenant is always
     allowed, same as every other billing refusal.
+
+    `count` IS THE WHOLE BATCH (PLAN-p3 3.2). The invitation route used to
+    ask about ONE report and then invite every ticked applicant, so a balance
+    holding one assessment let a recruiter invite two hundred people, each of
+    whom would then be charged at completion into a deficit nobody chose.
+    The batch is now asked for `count x cost` in ONE question and refused in
+    ONE sentence naming the shortfall. The START of each assessment is where
+    this is asked again with the default of one (PLAN-p3 3.2 step 5, owned by
+    the start route in `api/assessment_conversation`), because two batches
+    that each fit the balance are not jointly covered by it, and the start is
+    the last moment the work is still a choice.
     """
     from app.models.billing import EVENT_COMPLETED
 
-    required = consumption_subunits(EVENT_COMPLETED, role_classification)
-    assert required is not None  # EVENT_COMPLETED is always billable
+    if count < 1:
+        # A programming error: an empty batch starts nothing and asks nothing,
+        # and "zero assessments are affordable" would read as a green light.
+        raise ValueError(f"count must be at least one, got {count}")
+    unit = consumption_subunits(EVENT_COMPLETED, role_classification)
+    assert unit is not None  # EVENT_COMPLETED is always billable
+    required = unit * count
     if await is_demo_tenant(session, tenant_id):
         return True, credits_from_subunits(required), credits_from_subunits(
             await balance_subunits(session, tenant_id)
         )
+    # Repair-on-read, the pattern the framework GETs already use: a gate that
+    # summed a balance still carrying expired credits would START an assessment
+    # the customer cannot pay for, and the first anyone would hear of it is the
+    # deduction that takes them negative.
+    await credit_lots.expire_due(session, tenant_id)
     balance = await balance_subunits(session, tenant_id)
     return (
         balance >= required,
@@ -367,32 +442,16 @@ async def can_start_assessment(
     )
 
 
-async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """May this customer send NEW assessment invitations?
-
-    False once the balance is negative. It stays false until a grant (the next
-    billing cycle, or an upgrade) brings it back to zero or above — the ledger
-    itself is the recovery condition, so nothing has to remember to clear a flag.
-
-    A demonstration tenant is always true. Checked FIRST, before the balance is
-    summed: a demo company that has run assessments has a negative ledger like
-    any other, and asking the balance first would gate the one set of accounts
-    that must never be gated.
-    """
-    if await is_demo_tenant(session, tenant_id):
-        return True
-    return await balance_subunits(session, tenant_id) >= 0
-
-
 # ── Zero-balance gating (spec §11) ───────────────────────────────────────────
-# `has_credit_headroom` above answers "may this customer send NEW invitations?"
-# and goes false at a NEGATIVE balance, because a completed assessment is
-# charged even into the negative: the work is already done and refusing the
-# charge would only lose the revenue.
+# A completed assessment is charged even into the negative: the work is already
+# done and refusing the charge would only lose the revenue. There used to be a
+# second, NEGATIVE-balance gate here ("may this customer send new
+# invitations?"); it lost its last caller to the zero-balance gate below and
+# was deleted with the stored deficit flag it paired with (Vivekium release,
+# migration 0128).
 #
-# Draft v4 adds a stricter, separate question with a different threshold. Two
-# actions are blocked the instant the pool reads ZERO, before the balance can go
-# negative at all:
+# Draft v4's question has a different threshold. Two actions are blocked the
+# instant the pool reads ZERO, before the balance can go negative at all:
 #
 #   * creating a job;
 #   * advancing any candidate into the assessment stage, across every job,
@@ -532,18 +591,25 @@ async def has_positive_balance(session: AsyncSession, tenant_id: uuid.UUID) -> b
     nothing left to spend, and letting one more assessment start would be a
     credit spent from an empty pool.
 
-    A demonstration tenant is always true, checked FIRST, for the same reason as
-    `has_credit_headroom`: a demo company that has run assessments has a
-    negative ledger like any other, and asking the balance first would gate the
-    one set of accounts that must never be gated.
+    A demonstration tenant is always true, checked FIRST: a demo company that
+    has run assessments has a negative ledger like any other, and asking the
+    balance first would gate the one set of accounts that must never be gated.
     """
     if await is_demo_tenant(session, tenant_id):
         return True
+    await credit_lots.expire_due(session, tenant_id)
     return await balance_subunits(session, tenant_id) > 0
 
 
 async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSummary:
-    """Balance, this month's usage by event type, and the rollover figure."""
+    """Balance, this month's usage by event type, the rollover, and the lots.
+
+    Expires anything due BEFORE reading, so the balance on the billing page is
+    exact at the moment it is rendered rather than exact only as often as the
+    sweep runs. The write is idempotent and is a no-op indexed scan in the
+    normal case; the sweep exists for tenants nobody is looking at.
+    """
+    await credit_lots.expire_due(session, tenant_id)
     rows = (
         await session.execute(
             select(
@@ -555,7 +621,12 @@ async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSumma
         )
     ).all()
     granted = sum(int(total) for event, total in rows if event == EVENT_GRANT)
-    consumed = -sum(int(total) for event, total in rows if event != EVENT_GRANT)
+    expired = -sum(int(total) for event, total in rows if event == EVENT_EXPIRY)
+    consumed = -sum(
+        int(total)
+        for event, total in rows
+        if event not in (EVENT_GRANT, EVENT_EXPIRY)
+    )
 
     # "This month" is the calendar month, matching the monthly billing cycle.
     month_rows = (
@@ -593,9 +664,19 @@ async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSumma
         or 0
     )
 
-    balance = granted - consumed
+    balance = granted - consumed - expired
     demo = await is_demo_tenant(session, tenant_id)
     in_deficit = balance < 0 and not demo
+
+    lots = await credit_lots.live_lots(session, tenant_id)
+    non_expiring = sum(lot.remaining_subunits for lot in lots if lot.expires_at is None)
+    horizon = datetime.now(timezone.utc) + timedelta(days=EXPIRING_SOON_DAYS)
+    expiring_soon = sum(
+        lot.remaining_subunits
+        for lot in lots
+        if lot.expires_at is not None and lot.expires_at <= horizon
+    )
+    dated = [lot.expires_at for lot in lots if lot.expires_at is not None]
     return BalanceSummary(
         balance_subunits=balance,
         granted_subunits=granted,
@@ -604,4 +685,9 @@ async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSumma
         rollover_subunits=rollover,
         in_deficit=in_deficit,
         unlimited=demo,
+        expired_subunits=expired,
+        non_expiring_subunits=non_expiring,
+        expiring_soon_subunits=expiring_soon,
+        next_expiry_at=min(dated) if dated else None,
+        lots=tuple(lots),
     )

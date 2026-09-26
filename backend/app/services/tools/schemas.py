@@ -6,10 +6,11 @@ Each one names exactly the fields an agent is allowed to reason over, and
 nothing else. That is doing real work in two places:
 
   Compensation.  `JobFacts` has no compensation field and no free-form escape
-  hatch that could carry one. ESD 16 says the re-rank chain never receives
-  compensation data; today that is enforced by `matching._strip_compensation`
-  at one call site. Making it a property of the SHAPE means the next agent that
-  reads a JD inherits the guarantee instead of having to remember it.
+  hatch that could carry one. ESD 16 says the ranking model never receives
+  compensation data; the one implementation of stripping it from a dict and
+  from prose is `services/compensation_guard`. Making it a property of the
+  SHAPE as well means the next agent that reads a JD inherits the guarantee
+  instead of having to remember it.
 
   Numbers.  `ReportableGrade` is the four words of `services.rating` and cannot
   hold a score. A tool that returned `overall_score: 87` would put a number one
@@ -27,7 +28,7 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services import rating
 
@@ -205,6 +206,23 @@ class RetrievalRequest(_Strict):
     section_types: tuple[str, ...] = ()
     top_k: int = Field(default=5, ge=1, le=20)
     max_tokens: int = Field(default=2000, ge=100, le=8000)
+    #: ANSWER message ids whose exchanges must not come back. Miti judging a
+    #: skill reads passages from the candidate's OTHER answers: the skill's own
+    #: answers are already the thing being graded, and retrieving them again
+    #: would count one answer as its own corroboration. Transcript retrieval
+    #: only, refused for any other source type, because a resume or a JD has no
+    #: answer to exclude and a caller naming one has confused two retrievals.
+    exclude_answer_message_ids: tuple[uuid.UUID, ...] = Field(
+        default=(), max_length=200
+    )
+
+    @model_validator(mode="after")
+    def _exclusions_are_transcript_only(self) -> "RetrievalRequest":
+        if self.exclude_answer_message_ids and self.source_type != "assessment":
+            raise ValueError(
+                "exclude_answer_message_ids applies to assessment transcripts only"
+            )
+        return self
 
 
 class RetrievedPiece(_Strict):
@@ -227,3 +245,28 @@ class RetrievedContext(_Strict):
     tokens: int = 0
     dropped: int = 0
     compressed: bool = False
+
+
+# ── extract_project_evidence ─────────────────────────────────────────────────
+
+
+class ProjectEvidenceRequest(_Strict):
+    """Whose project evidence. A candidate, because projects are candidate-owned
+    and tenant-free; the APPLICATION the call is for travels in the policy
+    context, which is where the tenant boundary is checked."""
+
+    candidate_id: uuid.UUID
+
+
+class ProjectEvidence(_Strict):
+    """The DERIVED project evidence block, as question writing reads it.
+
+    Text rather than structure because its one consumer puts it in a prompt,
+    and the block is already the reduced, labelled form
+    (`projects.context.candidate_project_context`). Empty when the candidate
+    has no project whose evidence is ready, which is a normal state and never
+    a penalty: absence is not quality either way.
+    """
+
+    candidate_id: uuid.UUID
+    text: str = ""

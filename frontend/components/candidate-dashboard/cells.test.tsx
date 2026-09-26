@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 
 /**
- * Column 4's six states, column 5's pending state, and the two action columns.
+ * Column 4's states, column 5's pending state, and the two action columns.
  *
  * The theme running through every test here: an ABSENT value must be visibly
  * absent. Four of the eight columns are filled by agents whose output may not
  * exist yet, and the way that fails is not a crash. It is a cell that looks
- * like an answer.
+ * like an answer. And no cell renders a number (D3).
  */
 
 import * as React from "react";
@@ -16,18 +16,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import {
-  BAND_NOT_RECOMMENDED,
-  BAND_PENDING,
-  BAND_READY,
-  BAND_STRONG,
-  BAND_UNDER_REVIEW,
-  BAND_CLASS,
-} from "./band";
+  GRADE_CLASS,
+  STATE_HIGHLY,
+  STATE_MATCHING,
+  STATE_NOT,
+  STATE_NOT_ASSESSED,
+  STATE_NOT_CHECKED,
+  STATE_UNDER_REVIEW,
+} from "./grade";
 import {
   CandidateCell,
   NoteCell,
   ProfileButton,
-  ReadyPickScoreCell,
+  ReadyPickGradeCell,
   StageCell,
   TeamReviewButton,
 } from "./cells";
@@ -38,30 +39,41 @@ afterEach(cleanup);
 const wrap = (node: React.ReactNode) =>
   render(<TooltipProvider>{node}</TooltipProvider>);
 
-describe("Ready Pick Score", () => {
-  it("shows the number, because D8 licenses exactly this one", () => {
-    // The other half of the no-numbers rule, and the half a well-meaning
-    // sweep would delete. spec-doc6 D8 carved this exception deliberately.
+describe("Vivekium Grade", () => {
+  it("shows the grade word and no number (D3)", () => {
+    // spec-doc6 D8 once licensed a 0-100 number here. D3 removed it with no
+    // exception: the cell is the word the server chose, and nothing else.
     wrap(
-      <ReadyPickScoreCell
+      <ReadyPickGradeCell
         row={row({
-          ready_pick_score: 87,
-          band: BAND_STRONG,
-          band_label: "Ready to Pick, Strong",
+          ranking_state: STATE_HIGHLY,
+          ranking_label: "Highly Matching",
+          ranking_note: "Tatva Assessment and resume check.",
           confidence_indicator: "filled",
+          confidence_label: "High confidence",
         })}
       />
     );
-    expect(screen.getByText("87")).toBeTruthy();
-    expect(screen.getByText("Ready to Pick, Strong")).toBeTruthy();
+    const cell = screen.getByTestId("ready-pick-grade");
+    expect(cell.getAttribute("data-state")).toBe(STATE_HIGHLY);
+    expect(cell.textContent).toContain("Highly Matching");
+    expect(cell.textContent).not.toMatch(/\d/);
   });
 
-  it("shows no number when no profile has been written, and never a zero", () => {
-    wrap(<ReadyPickScoreCell row={row()} />);
-    const cell = screen.getByTestId("ready-pick-score");
-    expect(cell.getAttribute("data-band")).toBe(BAND_PENDING);
-    expect(cell.textContent).not.toMatch(/\d/);
-    expect(cell.textContent).toContain("Pending Ready Pick Profile");
+  it("shows no grade when nothing has read the resume, and never the weakest", () => {
+    wrap(<ReadyPickGradeCell row={row()} />);
+    const cell = screen.getByTestId("ready-pick-grade");
+    expect(cell.getAttribute("data-state")).toBe(STATE_NOT_CHECKED);
+    expect(cell.textContent).toContain("Not checked yet");
+    expect(cell.textContent).not.toContain("Not Matching");
+    expect(cell.className).not.toContain(GRADE_CLASS[STATE_NOT].split(" ")[1]);
+  });
+
+  it("paints both gradeless states neutral, never in the grade ramp", () => {
+    for (const state of [STATE_NOT_CHECKED, STATE_NOT_ASSESSED]) {
+      expect(GRADE_CLASS[state]).toContain("bg-muted");
+      expect(GRADE_CLASS[state]).not.toContain("rating");
+    }
   });
 
   it("announces Under Review with its meaning, not as a colour", () => {
@@ -69,49 +81,32 @@ describe("Ready Pick Score", () => {
     // words tells a screen-reader user nothing about why the control beside it
     // is locked.
     wrap(
-      <ReadyPickScoreCell
+      <ReadyPickGradeCell
         row={row({
-          band: BAND_UNDER_REVIEW,
-          band_label: "Under Review",
-          band_screen_reader_label:
+          ranking_state: STATE_UNDER_REVIEW,
+          ranking_label: "Under Review",
+          ranking_screen_reader_label:
             "Status: Under Review, awaiting integrity disposition",
           under_integrity_review: true,
         })}
       />
     );
-    expect(
-      screen.getByText(/awaiting integrity disposition/)
-    ).toBeTruthy();
+    expect(screen.getByText(/awaiting integrity disposition/)).toBeTruthy();
   });
 
-  it("colours Under Review differently from Not Recommended", () => {
-    // spec-doc6 C30. The document groups both under one red, which would
-    // render "we have not finished checking" and "we think this person is
-    // weak" identically. A flag is not a rejection.
-    expect(BAND_CLASS[BAND_UNDER_REVIEW]).not.toEqual(
-      BAND_CLASS[BAND_NOT_RECOMMENDED]
-    );
-    expect(BAND_CLASS[BAND_UNDER_REVIEW]).toContain("warning");
-  });
-
-  it("never invents a score range", () => {
-    // The specification asks for `82 [76 to 88]`. Nothing in the engine
-    // publishes an interval, and a bracket computed here would be a number
-    // with no provenance printed beside one that has some.
-    wrap(
-      <ReadyPickScoreCell
-        row={row({ ready_pick_score: 82, band: BAND_READY, band_label: "Ready to Pick" })}
-      />
-    );
-    expect(screen.getByTestId("ready-pick-score").textContent).not.toContain("[");
+  it("colours Under Review differently from Not Matching", () => {
+    // spec-doc6 C30. A flag is not a rejection: "we have not finished
+    // checking" and "we think this person is weak" must not look alike.
+    expect(GRADE_CLASS[STATE_UNDER_REVIEW]).not.toEqual(GRADE_CLASS[STATE_NOT]);
+    expect(GRADE_CLASS[STATE_UNDER_REVIEW]).toContain("warning");
   });
 
   it("carries the confidence in words beside the dot", () => {
     wrap(
-      <ReadyPickScoreCell
+      <ReadyPickGradeCell
         row={row({
-          ready_pick_score: 65,
-          band: BAND_READY,
+          ranking_state: STATE_MATCHING,
+          ranking_label: "Matching",
           confidence_indicator: "outline",
           confidence_label: "Low confidence",
         })}
@@ -121,10 +116,10 @@ describe("Ready Pick Score", () => {
   });
 });
 
-describe("Ready Pick Note", () => {
+describe("Vivekium Note", () => {
   it("renders the pending sentence rather than an empty cell", () => {
     wrap(<NoteCell row={row()} />);
-    expect(screen.getAllByText("Ready Pick Profile not written yet.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Vivekium Profile not written yet.").length).toBeGreaterThan(0);
   });
 
   it("is never bold and never coloured", () => {
@@ -140,7 +135,7 @@ describe("Ready Pick Note", () => {
   });
 });
 
-describe("Ready Pick Profile button", () => {
+describe("Vivekium Profile button", () => {
   it("is disabled with an explanation before a profile exists", () => {
     wrap(<ProfileButton row={row()} onOpen={() => undefined} />);
     const button = screen.getByRole("button", { name: /not available/i });
@@ -148,7 +143,7 @@ describe("Ready Pick Profile button", () => {
   });
 
   it("names the PRISM Report as a different document in its explanation", () => {
-    // spec-doc6 C15: the row's pending state refers to the Ready Pick Profile,
+    // spec-doc6 C15: the row's pending state refers to the Vivekium Profile,
     // not to the delivered PRISM Report.
     expect(row().profile_pending_reason).toContain("PRISM Report");
   });
@@ -163,7 +158,7 @@ describe("Ready Pick Profile button", () => {
         onOpen={() => undefined}
       />
     );
-    const button = screen.getByRole("button", { name: /Open the Ready Pick Profile/i });
+    const button = screen.getByRole("button", { name: /Open the Vivekium Profile/i });
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 });

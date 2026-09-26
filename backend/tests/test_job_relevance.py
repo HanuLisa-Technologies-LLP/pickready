@@ -19,7 +19,7 @@ def _job(title: str, skills: list[str] | None = None, **jd) -> SimpleNamespace:
     return SimpleNamespace(
         id=title,
         title=title,
-        level=None,
+        assessment_grade="non_managerial",
         department=None,
         jd_json={"skills": skills or [], **jd},
     )

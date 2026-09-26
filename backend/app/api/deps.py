@@ -10,27 +10,27 @@
   bypass scope AND writes an audit_log row for the cross-tenant access
   (FR-11.3).
 """
+import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 import jwt as pyjwt
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.db import get_session_factory, superadmin_scope, tenant_scope
 from app.core.security import (
-    ALGORITHM,
     AUDIENCE_CANDIDATE,
     AUDIENCE_ORG,
     AUDIENCE_OWNER,
     decode_token,
 )
 from app.models.enums import Role
-from app.services import rbac
+from app.services import auth_sessions, rbac
 from app.services.audit import audit
+
+logger = logging.getLogger(__name__)
 
 ACCESS_COOKIE = "pr_access"
 REFRESH_COOKIE = "pr_refresh"
@@ -43,24 +43,32 @@ REFRESH_COOKIE_PATH = "/api/v1/auth"
 # question, for anything that can see cookies at path "/": "is there still a
 # refresh token behind this browser?"
 #
-# It exists because of a real defect. The access cookie is deleted by the
-# browser the moment its 15-minute Max-Age lapses, and the refresh cookie is
-# path-scoped to /api/v1/auth, so it is NOT sent to a page request like
-# /org/jobs. The Next.js middleware, which gates every portal route on cookie
-# presence, therefore saw an idle-but-perfectly-refreshable user as signed out
-# and redirected them to /login before a single API call was made. No amount of
-# silent refresh in the API client can rescue that, because the bounce happens
-# during navigation, above the API client.
+# It originally covered the gap after an access cookie's Max-Age expired, while
+# the path-scoped refresh cookie was invisible to the Next.js route gate. Both
+# access and hint are now browser-session cookies. The hint remains for clients
+# already using it, and carries no authentication authority.
 #
-# The hint cookie lives exactly as long as the refresh token, is path "/", stays
+# The hint cookie lives for the browser session, is path "/", stays
 # HttpOnly (Next middleware reads request cookies server-side, so it never needs
 # JavaScript access), and its value is a constant. Knowing it grants nothing.
 SESSION_HINT_COOKIE = "pr_session"
 SESSION_HINT_VALUE = "1"
 
-# Outreach links stay valid this long (candidate must respond within it).
-# ASSUMPTION: 14 days — PRD sets no explicit outreach-link TTL.
-OUTREACH_TOKEN_TTL_DAYS = 14
+# ── Real user activity ───────────────────────────────────────────────────────
+# The ONE signal that renews the thirty-minute idle deadline. The browser sends
+# `X-User-Activity: 1` only within a few seconds of a real pointer, key or touch
+# event (`frontend/lib/user-activity.ts`), so a request fired by a timer, a
+# poll or a refresh that repairs a poll's 401 carries no header and renews
+# nothing. See `services/auth_sessions` for why "every request renews" was the
+# bug. The value is a constant, not a claim about identity: forging it only
+# keeps the forger's OWN session alive, which a real click would also do.
+ACTIVITY_HEADER = "X-User-Activity"
+ACTIVITY_HEADER_VALUE = "1"
+
+
+def is_user_activity(request) -> bool:
+    """Whether this request says a person just interacted with the page."""
+    return request.headers.get(ACTIVITY_HEADER) == ACTIVITY_HEADER_VALUE
 
 
 # ── Cookie hardening (single source of truth) ────────────────────────────────
@@ -68,10 +76,9 @@ OUTREACH_TOKEN_TTL_DAYS = 14
 # ASSUMPTION: secure is disabled in development so the cookies work over plain
 # http://localhost; it is forced on in production. SameSite=Strict is acceptable
 # because this is a first-party SPA (no cross-site POST-back flow needs the
-# cookie). Access token lives `jwt_access_ttl_minutes` (15), refresh lives
-# `jwt_refresh_ttl_days`. Refresh tokens MUST be rotated on every use — the
-# refresh handler should mint a NEW refresh token and call set_auth_cookies,
-# not just reissue the access cookie.
+# cookie). JWT access expires in fifteen minutes; Redis expires the session
+# after thirty minutes idle, regardless of browser cookie lifetime. Refresh
+# rotation is checked atomically by the server-side session store.
 
 
 def _cookie_kwargs() -> dict:
@@ -93,34 +100,21 @@ def _cookie_kwargs() -> dict:
 
 
 def set_access_cookie(response, access: str) -> None:
-    from app.core.config import get_settings
-
-    settings = get_settings()
     response.set_cookie(
-        ACCESS_COOKIE, access, max_age=settings.jwt_access_ttl_minutes * 60,
+        ACCESS_COOKIE, access,
         path="/", **_cookie_kwargs(),
     )
 
 
 def set_auth_cookies(response, access: str, refresh: str) -> None:
-    """Set all THREE cookies. Call on login and on every refresh (rotation).
-
-    The hint cookie is rewritten alongside the refresh token so its lifetime
-    slides forward exactly as the refresh token's does. If it ever outlived the
-    refresh token the middleware would let a genuinely dead session through, and
-    the user would land on a portal page that immediately fails to load.
-    """
-    from app.core.config import get_settings
-
-    settings = get_settings()
+    """Set three browser-session cookies on login and refresh."""
     set_access_cookie(response, access)
-    refresh_max_age = settings.jwt_refresh_ttl_days * 86400
     response.set_cookie(
-        REFRESH_COOKIE, refresh, max_age=refresh_max_age,
+        REFRESH_COOKIE, refresh,
         path=REFRESH_COOKIE_PATH, **_cookie_kwargs(),
     )
     response.set_cookie(
-        SESSION_HINT_COOKIE, SESSION_HINT_VALUE, max_age=refresh_max_age,
+        SESSION_HINT_COOKIE, SESSION_HINT_VALUE,
         path="/", **_cookie_kwargs(),
     )
 
@@ -193,6 +187,68 @@ def _decode_or_401(token: str, audience: str | list[str]) -> dict:
     return payload
 
 
+async def _authenticated_user(
+    request: Request, token: str, audience: str | list[str]
+) -> CurrentUser:
+    payload = _decode_or_401(token, audience)
+    user = _payload_to_user(payload)
+    sid = payload.get("sid")
+    if sid:
+        if not await auth_sessions.validate(
+            sid, user.user_id, touch=is_user_activity(request)
+        ):
+            raise _unauthorized("Session expired or revoked")
+    elif request.cookies.get(ACCESS_COOKIE) == token:
+        # Existing cookie JWTs without a server record cannot be revoked.
+        # Explicit Authorization bearer tokens remain for service clients.
+        raise _unauthorized("Session expired or revoked")
+    return user
+
+
+async def authenticate_socket_token(
+    token: str | None, audience: str
+) -> CurrentUser | None:
+    """The principal behind a WebSocket's access token, or None.
+
+    The REST dependencies above raise; a socket handler closes with a policy
+    code instead, so this answers None for every refusal. It applies the SAME
+    session rule as `_authenticated_user`, which the conversation socket used
+    to skip: it decoded the JWT and never asked the session store, so a signed
+    out or revoked session kept streaming until the fifteen-minute token ran
+    out. A socket token MUST carry a `sid`: only browsers open sockets, and a
+    browser token without one is the unrevocable legacy cookie the REST path
+    already refuses.
+
+    `touch=False`, always. An open socket is the most passive thing a tab can
+    do, and letting it renew would be the polling bug by another door.
+    """
+    if not token:
+        return None
+    try:
+        payload = decode_token(token, audience=audience)
+    except pyjwt.PyJWTError:
+        return None
+    if payload.get("type") != "access" or not payload.get("sid"):
+        return None
+    try:
+        user = _payload_to_user(payload)
+    except (KeyError, ValueError):
+        return None
+    try:
+        live = await auth_sessions.validate(payload["sid"], user.user_id, touch=False)
+    except HTTPException as exc:
+        # The session store could not answer (503). A socket REFUSES rather
+        # than falling open, the posture every REST route takes; logged so an
+        # outage is not read as a wave of signed-out users.
+        logger.warning(
+            "socket_session_check_unavailable status=%s", exc.status_code
+        )
+        return None
+    if not live:
+        return None
+    return user
+
+
 # The two "internal" (staff-facing) audiences. get_current_user authenticates
 # either; the DB-session dependencies below then gate the specific portal so an
 # owner token can't act on org endpoints and vice versa.
@@ -208,7 +264,7 @@ async def get_current_user(request: Request) -> CurrentUser:
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
-    return _payload_to_user(_decode_or_401(token, _INTERNAL_AUDIENCES))
+    return await _authenticated_user(request, token, _INTERNAL_AUDIENCES)
 
 
 async def get_current_candidate(request: Request) -> CurrentUser:
@@ -216,7 +272,7 @@ async def get_current_candidate(request: Request) -> CurrentUser:
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
-    user = _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
+    user = await _authenticated_user(request, token, AUDIENCE_CANDIDATE)
     if user.role != Role.candidate:
         raise _unauthorized("candidate session required")
     return user
@@ -239,9 +295,11 @@ async def get_optional_candidate(request: Request) -> CurrentUser | None:
     if not token:
         return None
     try:
-        user = _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
-    except HTTPException:
-        return None
+        user = await _authenticated_user(request, token, AUDIENCE_CANDIDATE)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
     if user.role != Role.candidate:
         return None
     return user
@@ -253,11 +311,13 @@ async def get_current_any(request: Request) -> CurrentUser:
     if not token:
         raise _unauthorized()
     try:
-        return _payload_to_user(
-            _decode_or_401(token, [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE])
+        return await _authenticated_user(
+            request, token, [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE]
         )
-    except HTTPException:
-        raise _unauthorized("invalid session")
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise _unauthorized("invalid session") from exc
+        raise
 
 
 # ── DB sessions ──────────────────────────────────────────────────────────────
@@ -369,39 +429,3 @@ def require_capability(capability: str):
 
     return dependency
 
-
-# ── Outreach tokens (signed, stateless) ──────────────────────────────────────
-# The candidate outreach link (FR-6.1) is a signed JWT carrying
-# {profile_id, job_id, purpose: "outreach"} under the candidate audience.
-# There is no DB column for an outreach token, so the signature is the
-# integrity guarantee; single-use is enforced at submit time by rejecting a
-# profile whose aspects are already completed (see portal.py).
-
-def make_outreach_token(profile_id: uuid.UUID | str, job_id: uuid.UUID | str) -> str:
-    settings = get_settings()
-    now = datetime.now(timezone.utc)
-    payload = {
-        "profile_id": str(profile_id),
-        "job_id": str(job_id),
-        "purpose": "outreach",
-        "aud": AUDIENCE_CANDIDATE,
-        "iat": now,
-        "exp": now + timedelta(days=OUTREACH_TOKEN_TTL_DAYS),
-        "type": "outreach",
-    }
-    return pyjwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
-
-
-def decode_outreach_token(token: str) -> dict:
-    """Returns {profile_id, job_id} or raises HTTPException(404) — public
-    endpoints must not leak why a token is invalid."""
-    try:
-        payload = pyjwt.decode(
-            token, get_settings().jwt_secret, algorithms=[ALGORITHM],
-            audience=AUDIENCE_CANDIDATE,
-        )
-    except pyjwt.PyJWTError as exc:
-        raise HTTPException(status_code=404, detail="Invalid or expired link") from exc
-    if payload.get("purpose") != "outreach":
-        raise HTTPException(status_code=404, detail="Invalid or expired link")
-    return payload

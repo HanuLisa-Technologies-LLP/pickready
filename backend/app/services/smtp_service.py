@@ -1,11 +1,11 @@
 """Outbound email over Gmail SMTP.
 
 This module owns ONLY the SMTP transport + SMTP-specific failure
-classification. The resilience taxonomy itself is shared with the SMS path and
-is imported from ``app.services.sms_service`` — we do not re-implement
+classification. The resilience taxonomy itself is shared with the SES
+transport and is imported from ``app.services.delivery_errors`` (moved there
+from the retired SMS module on 2026-09-24): we do not re-implement
 PermanentDeliveryError / TransientDeliveryError here, we reuse them so the
-task's retry policy and audit logic behave identically for email
-and SMS.
+task's retry policy and audit logic behave identically for every transport.
 
 Configured entirely by ``SMTP_*`` environment variables and permanently
 validated as Gmail on port 587 with STARTTLS and an app password.
@@ -35,7 +35,7 @@ from email.utils import formataddr, make_msgid
 import aiosmtplib
 
 from app.core.config import get_settings
-from app.services.sms_service import (
+from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
 )

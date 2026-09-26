@@ -1,0 +1,41 @@
+id: regression.an_assessment_url_is_not_a_number_about_a_candidate
+version: 1
+tier: regression
+description: >
+  The outbound number guard lets an assessment link and an ordinary technical
+  question through while still refusing a score, a percentile and a match
+  percentage. Before the 2026-09-09 fix `contains_forbidden_number` read
+  `.../assessments/d7be...` as an assessment word beside a number, so
+  `lifecycle_email` rejected EVERY AI-drafted invitation and reminder and both
+  went out from the deterministic template with `generated_by_ai=False`, on
+  every send, with nothing failing and nothing logged. A guard that mangles a
+  real message fails invisibly, so both directions are asserted here: a guard
+  that refused everything would pass a one-sided test and be just as broken.
+tags: [guardrails, no-numbers, email, "2026-09-09"]
+
+given:
+  world: no_state
+
+workload:
+  - sweep_outbound_copy
+  - probe_health
+
+expect:
+  output:
+    - facts.number_guard_allows.assessment_link == true
+    - facts.number_guard_allows.technical_question == true
+    - facts.number_guard_allows.bare_percentage == true
+    - facts.number_guard_refuses.score_out_of == true
+    - facts.number_guard_refuses.percentile == true
+    - facts.number_guard_refuses.match_percentage == true
+    - status.probe_health == [200, 200]
+  trajectory:
+    - outbound_copy_swept
+    - health_probed
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - safety_and_policy
+    - no_numbers_to_client

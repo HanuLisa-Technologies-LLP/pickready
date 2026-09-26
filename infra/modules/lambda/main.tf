@@ -47,19 +47,61 @@ locals {
   runtask_functions = {
     for name, fn in var.functions : name => fn if length(fn.run_task_role_arns) > 0
   }
+
+  # Functions that dispatch to another Lambda. Empty for every function that
+  # does not, so the grant and its policy simply do not exist for them.
+  invoking_functions = {
+    for name, fn in var.functions : name => fn
+    if length(fn.invokable_function_keys) > 0
+  }
   # KEYED ON A LITERAL, not on an ARN. `secret_policy_key` is a static string
   # in the composition, so this map's key set is known at plan time; a filter on
   # the ARN itself would be a for_each Terraform cannot evaluate until apply.
+  # Functions that read objects from a bucket. Empty for every function that
+  # does not, so neither the grant nor its policy exists for them.
+  s3_reading_functions = {
+    for name, fn in var.functions : name => fn
+    if length(fn.s3_read_object_arns) > 0
+  }
   secret_functions = {
     for name, fn in var.functions :
     name => fn.secret_policy_key if fn.secret_policy_key != null
   }
 
-  function_environment = {
+  # SPLIT IN TWO, AND THE SPLIT IS A BOUNDARY RATHER THAN A WORKAROUND.
+  #
+  # `declared_environment` is what the composition wrote plus the ARNs of the
+  # secrets the function fetches for itself. Nothing in it is a credential, and
+  # it is what the `dynamic` block below gates on -- which it must gate on
+  # something, because an `environment` block with no variables is one Lambda
+  # refuses.
+  #
+  # `function_environment` is that, plus the one kind of value this module
+  # otherwise forbids here: a credential that has to arrive as a plain
+  # environment variable because its reader cannot fetch a secret. It is
+  # referenced ONLY as a resource argument, so nothing derived from a
+  # credential is ever used to decide the SHAPE of the graph.
+  #
+  # BE EXACT ABOUT WHAT TERRAFORM ACTUALLY REFUSES, because the looser claim is
+  # the one that gets repeated. Measured on 1.9.8: a value whose whole
+  # collection is marked sensitive is refused as a `for_each` ("Sensitive
+  # values, or values derived from sensitive values, cannot be used as for_each
+  # arguments") since an instance key made of a secret would print it in every
+  # address Terraform logs. A map with a sensitive LEAF is NOT refused, and
+  # `length()` of one is not marked either. So this split is not what makes the
+  # module plan; it is what keeps the credential out of `var.functions`, whose
+  # own documentation says a credential must never go there, and out of every
+  # value the graph's shape is computed from.
+  declared_environment = {
     for name, fn in var.functions : name => merge(
       fn.environment,
       length(fn.secrets) == 0 ? {} : { READYPICK_SECRETS = jsonencode(fn.secrets) },
     )
+  }
+
+  function_environment = {
+    for name, declared in local.declared_environment :
+    name => merge(declared, lookup(var.function_secret_environment, name, {}))
   }
 }
 
@@ -179,6 +221,23 @@ resource "aws_iam_role_policy_attachment" "secrets" {
   policy_arn = var.secret_policy_arns[each.value]
 }
 
+# A grant another module owns (the code sandbox token's read policy). Keyed by
+# "<function>/<position>": the position is known at plan time even when the
+# ARN is created in the same apply, and an ARN key would not be.
+resource "aws_iam_role_policy_attachment" "extra" {
+  for_each = merge([
+    for name, fn in var.functions : {
+      for index, arn in fn.extra_policy_arns : "${name}/${index}" => {
+        function = name
+        arn      = arn
+      }
+    }
+  ]...)
+
+  role       = aws_iam_role.this[each.value.function].name
+  policy_arn = each.value.arn
+}
+
 # ecs:RunTask and PassRole, for exactly one function.
 #
 # THREE THINGS ARE NAMED, and each closes a different hole:
@@ -232,6 +291,71 @@ resource "aws_iam_role_policy" "run_task" {
   name   = "run-task"
   role   = aws_iam_role.this[each.key].id
   policy = data.aws_iam_policy_document.run_task[each.key].json
+}
+
+# ── Lambda invoking Lambda ───────────────────────────────────────────────────
+#
+# A `Route.LAMBDA` task that dispatches another `Route.LAMBDA` task is one
+# function invoking another, and because one function serves every short task,
+# it is `readypick-task-worker` invoking ITSELF.
+#
+# Nothing in this product needed that until `pickready.reconcile_context_index`
+# had to queue one `pickready.index_document` per unindexed document. Every
+# earlier sweep dispatched to `Route.ECS`, which goes through the `ecs:RunTask`
+# grant above -- a different permission -- so the gap stayed invisible until
+# the sweep ran in production and came back with AccessDeniedException.
+#
+# `dispatch` RAISING rather than swallowing is what made it visible at all: the
+# sweep failed loudly instead of reporting a queue it had not written to.
+#
+# The ARN is composed from `local.function_names` rather than read off
+# `aws_lambda_function.this[...].arn`, which keeps this a pure local and avoids
+# a graph cycle. It is deliberately NOT added to the function's `depends_on`
+# for the same reason: the ROLE must exist before the function, the policy on
+# it need not.
+data "aws_partition" "current" {}
+
+
+data "aws_iam_policy_document" "invoke_function" {
+  for_each = local.invoking_functions
+
+  statement {
+    sid     = "InvokeOnlyTheNamedFunctions"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      for key in each.value.invokable_function_keys :
+      "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${var.account_id}:function:${local.function_names[key]}"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "invoke_function" {
+  for_each = local.invoking_functions
+
+  name   = "invoke-function"
+  role   = aws_iam_role.this[each.key].id
+  policy = data.aws_iam_policy_document.invoke_function[each.key].json
+}
+
+# Reading one object out of a named bucket, by prefix.
+data "aws_iam_policy_document" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  statement {
+    sid       = "ReadOnlyTheNamedObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = each.value.s3_read_object_arns
+  }
+}
+
+resource "aws_iam_role_policy" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  name   = "read-objects"
+  role   = aws_iam_role.this[each.key].id
+  policy = data.aws_iam_policy_document.read_objects[each.key].json
 }
 
 # Publishing a permanently failed asynchronous invocation.
@@ -303,7 +427,7 @@ resource "aws_lambda_function" "this" {
     for_each = each.value.in_vpc ? [1] : []
     content {
       subnet_ids         = var.vpc_subnet_ids
-      security_group_ids = var.security_group_ids
+      security_group_ids = concat(var.security_group_ids, each.value.extra_security_group_ids)
     }
   }
 
@@ -312,7 +436,7 @@ resource "aws_lambda_function" "this" {
   # `app.workers.secrets_bootstrap` for why the function fetches them itself
   # rather than having them injected, which is what ECS does and Lambda cannot.
   dynamic "environment" {
-    for_each = length(local.function_environment[each.key]) > 0 ? [each.key] : []
+    for_each = length(local.declared_environment[each.key]) > 0 ? [each.key] : []
     content {
       variables = local.function_environment[environment.value]
     }
@@ -365,6 +489,38 @@ resource "aws_lambda_function_event_invoke_config" "this" {
   destination_config {
     on_failure {
       destination = var.failure_topic_arn
+    }
+  }
+}
+
+# ── A secret environment variable that would be dropped in silence ───────────
+#
+# `function_secret_environment` is merged into a function's environment, and the
+# block that carries it is gated on the function having a DECLARED environment
+# variable -- see `local.declared_environment` for why the gate cannot ask about
+# the secret half itself. Two mistakes are therefore invisible: naming a
+# function that does not exist, and naming one whose whole environment is the
+# secret. Both produce a function running without the value, which for a shared
+# secret means one side of a handshake silently missing.
+#
+# Same argument `modules/secrets` makes about a writer with no read entry: a
+# silently dropped grant is worse than an error.
+resource "terraform_data" "validate_secret_environment" {
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for name in keys(var.function_secret_environment) :
+        contains(keys(var.functions), name)
+      ])
+      error_message = "function_secret_environment names a function that does not exist, so the value would be dropped in silence."
+    }
+
+    precondition {
+      condition = alltrue([
+        for name in keys(var.function_secret_environment) :
+        length(lookup(local.declared_environment, name, {})) > 0
+      ])
+      error_message = "function_secret_environment names a function with no declared environment variables. The environment block is gated on those, so the secret value would never reach the function."
     }
   }
 }

@@ -1,0 +1,53 @@
+id: regression.a_writer_outage_saves_nothing_and_names_no_skill
+version: 1
+tier: regression
+description: >
+  When Sutra's context writer is unavailable, Save Skills answers 503 with a
+  sentence that names NO skill and changes nothing: no saved stamp, no
+  context, no evidence line, no lifecycle move, no audit row. The 2026-09-23
+  finding this carries over: the matrix freeze read the FIRST refusal of a
+  degraded run and told the reviewer to edit that one criterion, blaming an
+  arbitrary criterion for a provider outage, so they edited until the provider
+  came back. An outage is not a badly written skill, and the reviewer must be
+  told so in words they cannot mistake for a verdict on their list.
+tags: [skills, outage, degradation, sutra, "2026-09-23"]
+
+given:
+  world: job_with_drafted_skills
+
+faults:
+  - model_failure: {kind: unavailable}
+
+workload:
+  - attempt_to_save_the_skills
+
+expect:
+  state:
+    - jobs.framework_approved == false
+    - jobs.lifecycle_state == DRAFT
+    - jobs.assessment_context_writer is null
+    - job_competencies.with_evidence_count == 0
+    - audit_log.count:job_skills_saved == 0
+  output:
+    - status.attempt_to_save_the_skills == 503
+    - body.attempt_to_save_the_skills.detail contains Nothing was changed
+    # Every skill on the job, by name, is absent from the sentence.
+    - body.attempt_to_save_the_skills.detail not contains Python
+    - body.attempt_to_save_the_skills.detail not contains PostgreSQL
+    - body.attempt_to_save_the_skills.detail not contains Incident response
+    - body.attempt_to_save_the_skills.detail not contains Kafka
+    - degradations.count == 1
+    - degradations.kinds == [skills_context_unavailable]
+  trajectory:
+    - skills_save_refused_for_an_outage
+  prohibited:
+    # Silent survival is a finding, not a pass (HARNESS.md section 4).
+    - a_fault_went_unrecorded
+    - a_model_credential_was_configured
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - degradation_honesty
+    - recovery
+    - state_correctness
+    - safety_and_policy

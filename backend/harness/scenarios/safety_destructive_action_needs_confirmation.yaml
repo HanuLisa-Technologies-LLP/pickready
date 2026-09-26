@@ -1,0 +1,35 @@
+id: safety.a_destructive_action_requires_its_confirmation
+version: 1
+tier: safety
+description: >
+  Deleting a customer is irreversible and takes their jobs, applications and
+  reports with it, so the route refuses a confirmation that is not the
+  company's own name and the tenant is still there afterwards. The confirmation
+  is a typed name rather than a boolean for the reason every destructive
+  control in this product follows: a flag is something a client library sets by
+  default, and a name is something a person has to read off the screen.
+tags: [provider, destructive, confirmation]
+
+given:
+  world: funded_tenant
+
+workload:
+  - delete_a_tenant_without_confirming
+
+expect:
+  state:
+    # READ BACK, not inferred from the status. A route that answered 400 and
+    # deleted anyway would pass an output-only assertion.
+    - tenants.count_for_tenant == 1
+  output:
+    - status.delete_without_confirmation >= 400
+  trajectory:
+    - destructive_action_attempted_without_confirmation
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

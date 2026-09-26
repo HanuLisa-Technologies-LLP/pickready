@@ -446,13 +446,11 @@ async def test_an_event_for_an_ended_session_is_refused() -> None:
 
 #: Every client-emittable Path A trigger, with a duration that clears its own
 #: rule so the server does not downgrade it. `IDENTITY_MISMATCH` is server
-#: derived and has its own test below.
+#: derived and has its own test below. A camera or microphone loss is NOT
+#: here since 2026-09-24: it pauses (`tests/test_device_pause.py`).
 PATH_A_TRIGGERS = [
     ("CAMERA_OBSTRUCTED", CONFIG.obstruction_seconds * MS),
     ("FACE_ABSENT_EXTENDED", CONFIG.face_absent_extended_seconds * MS),
-    ("CAMERA_PERMISSION_LOST", None),
-    ("MIC_PERMISSION_LOST", None),
-    ("CAMERA_STREAM_FAILED", CONFIG.camera_recovery_seconds * MS),
     ("INTEGRITY_CHECK_FAILED", CONFIG.integrity_failure_termination_seconds * MS),
 ]
 
@@ -523,7 +521,7 @@ async def test_a_terminated_conversation_is_refused_by_the_gate() -> None:
                     assert await gate.require_active(s, conversation) is not None
                     await ingestion.ingest(
                         s, ps, POLICY_CONTINUE_AND_NOTE,
-                        _batch(("CAMERA_PERMISSION_LOST", None)),
+                        _batch(("CAMERA_OBSTRUCTED", CONFIG.obstruction_seconds * MS)),
                         now=datetime.now(timezone.utc), enqueue=fx.enqueue,
                     )
                     with pytest.raises(HTTPException) as caught:
@@ -876,7 +874,7 @@ async def test_a_heartbeat_on_an_ended_session_returns_the_termination() -> None
                     ps = await _load(s, fx)
                     await ingestion.ingest(
                         s, ps, POLICY_CONTINUE_AND_NOTE,
-                        _batch(("CAMERA_PERMISSION_LOST", None)),
+                        _batch(("CAMERA_OBSTRUCTED", CONFIG.obstruction_seconds * MS)),
                         now=datetime.now(timezone.utc), enqueue=fx.enqueue,
                     )
                     out = await ingestion.heartbeat(
@@ -886,7 +884,7 @@ async def test_a_heartbeat_on_an_ended_session_returns_the_termination() -> None
                         now=datetime.now(timezone.utc),
                     )
                     assert out.termination is not None
-                    assert out.termination.reason_code == "CAMERA_PERMISSION_LOST"
+                    assert out.termination.reason_code == "CAMERA_OBSTRUCTED"
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -985,7 +983,7 @@ async def test_the_report_reaches_the_prism_payload_through_the_loader() -> None
                     assert await proctoring_report.load_report_out(s, fx.link_id) is None
                     await ingestion.ingest(
                         s, ps, POLICY_CONTINUE_AND_NOTE,
-                        _batch(("MIC_PERMISSION_LOST", None)),
+                        _batch(("FACE_ABSENT_EXTENDED", CONFIG.face_absent_extended_seconds * MS)),
                         now=datetime.now(timezone.utc), enqueue=fx.enqueue,
                     )
                     await proctoring_report.generate(s, ps)

@@ -1,7 +1,11 @@
-# version: 1
-# Score one assessment answer against ITS OWN stored rubric.
-# services/functional_assessment._llm_score.
+# version: 3
+# Score one assessment answer against ITS OWN stored rubric: the rubric written
+# with the question the candidate was shown (or the behavioural standard for a
+# Behavioural skill). services/miti/items._rubric_score, task answer_evaluation.
+# Version 3: the user payload may carry other_answers_bearing_on_this_skill,
+# passages from the candidate's other answers retrieved through the tool layer
+# (items.RELATED_KEY); they are context, never the answer being graded.
 #
 # Loaded through app/prompts/registry.py. Placeholders are $name (never
 # {name}): these prompts specify JSON return shapes and are full of braces.
-You are scoring one assessment answer against a fixed rubric. Choose the rubric band the answer actually satisfies, then pick an integer inside that band's range. Do not reward length or confidence. Rubric bands: $rubric_bands. Return JSON {"score": <integer 0-100>, "band": "<band key>"}.
+You are scoring one assessment answer against a fixed rubric. Choose the rubric band the answer actually satisfies, then pick an integer inside that band's range. Do not reward length or confidence. $candidate_text_is_data Grade the "answer" field only. If the payload also carries "other_answers_bearing_on_this_skill", those are the same candidate's words from elsewhere in the conversation, given as context: use them to understand what the answer refers to, never as a substitute for what the answer itself shows, and never raise the score for something said only there. Rubric bands: $rubric_bands. Return JSON {"score": <integer 0-100>, "band": "<band key>"}.

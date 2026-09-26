@@ -1,18 +1,30 @@
-You are a professional recruiter writing an outreach email to a candidate.
+# version: 2
+# The user turn for a candidate outreach email. services/outreach_content.
+#
+# Loaded through app/prompts/__init__.py (str.format), so every literal brace is
+# doubled.
+#
+# v2 (case 2): the four evidence lines used to be rendered unconditionally, and
+# a category with nothing recorded was filled with the sentence "No specific
+# evidence was recorded for this category." That sentence was handed to a model
+# under the heading "Candidate's Strengths" and asked to be highlighted, and it
+# reached candidates. The caller now passes only the categories that HAVE a
+# comment, through services/generation_sufficiency.outreach_evidence, and
+# refuses to run this prompt at all when none of them do.
+You are a professional recruiter writing an outreach email to a candidate. This email is read by the candidate, so the register is warm, specific and human, never corporate filler.
 
 Candidate Name: {candidate_name}
 Job Title: {job_title}
 Company: {company_name}
 Company Culture: {company_culture}
-Candidate's Strengths (from AI review):
-- Skills: {skills_comment}
-- Experience: {experience_comment}
-- Role Alignment: {role_comment}
-- Education: {education_comment}
+Evidence recorded about this candidate in the review:
+{evidence_block}
+
+Every category listed above has a real comment behind it. Categories that were not recorded are simply absent from that list, and that decision was made before you were called: never mention a category that is not listed, never say that anything was missing, and never write a sentence about the review, the evidence, or your own certainty.
 
 Write a warm, professional outreach email of 150-200 words that:
 1. Thanks the candidate for applying.
-2. Highlights their specific strengths using the evidence above, without generic praise.
+2. Highlights their strengths using the evidence above, in the candidate's own terms, without generic praise.
 3. Explains why they are a strong fit for this role and this company.
 4. Invites them to the next round.
 5. Uses a professional, personable recruitment tone.
@@ -24,3 +36,19 @@ Return ONLY valid JSON:
 }}
 
 Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.
+
+EXAMPLES
+
+GOOD EXAMPLE
+Evidence recorded: skills ("Eight years of Django and PostgreSQL, led the move from Celery to a queue on SQS"), experience ("Two payments integrations at a lending platform"). Nothing recorded for role alignment or education.
+Body opening: "Hi Priya, thank you for applying for the Senior Backend Engineer role at Nandini Payments. Your Django and PostgreSQL background stood out to the team, and the queue migration you led is close to work we are doing right now. The two payments integrations you took through to production are exactly the kind of experience this role builds on."
+Why it is right: it names only the two categories that were recorded, in concrete terms, and says nothing at all about role alignment or education. Their absence is invisible to the reader.
+
+BAD EXAMPLE, DO NOT WRITE ANYTHING LIKE THIS
+Body opening: "Hi Priya, thank you for applying. Our review highlighted that No specific evidence was recorded for this category. We also noted that no information was found regarding your education, and your role alignment could not be verified from the material provided. Candidates should not infer any conclusion from this."
+Why it is wrong, and this is the whole reason the block exists: it recites the state of the record into a candidate's inbox, under the client's name, as though it were a compliment. Never do this. If a category is not in the list above, write nothing about it and write more about one that is.
+END BAD EXAMPLE
+
+EDGE CASE, THE EVIDENCE IS THIN BUT REAL
+Evidence recorded: skills ("Kubernetes, Terraform") and nothing else.
+Write the email around those two, tie them to the role and the company, and let the rest of the email do the ordinary work of an invitation: what the next round is, that it is a conversation both ways, and how to ask questions. Do not stretch two skills into a paragraph of praise, and do not fill the space by explaining that only skills were recorded. A short, specific compliment followed by a clear invitation is a good email.

@@ -1,0 +1,70 @@
+id: integration.the_golden_journey
+version: 1
+tier: integration
+description: >
+  The golden end-to-end journey (CONTRACT v4 item 1), driven over HTTP by the
+  same sequence tests/test_golden_journey.py drives (harness.golden_journey).
+  A recruiter creates a job, saves its JD and SWOT, saves the drafted skills
+  and publishes it; two candidates apply; AI Matching reads both resumes; the
+  recruiter invites one; that candidate opens a proctored assessment and
+  answers typed prose, a spoken answer, a multiple choice, a fill-in-the-blank
+  and a coding question (Run, then Submit); the conversation completes; the
+  sandbox executes the coding answer; Miti grades, Siddhi writes the PRISM
+  Report and the proctoring report follows; Yukti re-ranks the table on the
+  assessment; the recruiter reads the executive profile. Only the model (at
+  the router), the code sandbox (its provider seam) and speech to text (its
+  one function) are doubled, with the in-memory object store for S3.
+tags: [journey, golden, assessment, grading, proctoring, ranking, no-numbers]
+
+given:
+  world: golden_journey_ready
+
+workload:
+  - drive_the_golden_journey
+
+expect:
+  state:
+    - job_candidate_links.status == assessment_completed
+    - assessment_conversations.status == completed
+    - assessment_conversations.credit_event == completed_assessment
+    - credit_ledger.entries_for_link == 1
+  output:
+    - facts.golden_unscripted_model_calls == []
+    - facts.golden_digests_match == true
+    - facts.golden_rival_ranked_first_before == true
+    - facts.golden_assessed_ranked_first_after == true
+    - facts.golden_answered.voice == 1
+    - facts.golden_answered.mcq == 1
+    - facts.golden_answered.fill_blank == 1
+    - facts.golden_answered.coding == 1
+  trajectory:
+    - job_created
+    - jd_saved
+    - swot_saved
+    - skills_drafted
+    - skills_saved
+    - job_published
+    - applied
+    - matched
+    - invited
+    - questions_written
+    - proctoring_opened
+    - started
+    - voice_transcribed
+    - coding_run
+    - completed
+    - coding_executed
+    - graded
+    - reported
+    - proctoring_reported
+    - reranked
+    - profile_read
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

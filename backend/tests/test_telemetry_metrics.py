@@ -360,13 +360,26 @@ async def test_empty_tenant_reports_no_data_not_a_verdict() -> None:
                 text("SELECT set_config('app.bypass_rls', 'on', false)")
             )
             tenant_id = await _tenant(session)
-            result = await metrics.overview(session, tenant_id)
-            for name, metric in result["metrics"].items():
+            readings = {
+                "candidate_stagnation_rate": await metrics.candidate_stagnation_rate(
+                    session, tenant_id
+                ),
+                "profile_review_latency": await metrics.profile_review_latency(
+                    session, tenant_id
+                ),
+                "profile_review_sla": await metrics.profile_review_sla(
+                    session, tenant_id
+                ),
+                "sourcing_precision": await metrics.sourcing_precision(
+                    session, tenant_id
+                ),
+                "time_to_fill": await metrics.time_to_fill_segments(
+                    session, tenant_id
+                ),
+            }
+            for name, metric in readings.items():
                 assert metric["value"] is None, name
                 assert metric["status"] is None, name
-            # The blocked metrics are named, not silently absent.
-            assert "join_realization_rate" in result["unavailable"]
-            assert "selectivity_ratio" in result["unavailable"]
             await session.rollback()
     finally:
         await engine.dispose()

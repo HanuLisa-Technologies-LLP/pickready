@@ -70,6 +70,33 @@ variable "services" {
     filesystem for the sake of one directory. Fargate has no tmpfs, so this is
     a task volume rather than a memory one.
 
+    `writable_paths_uid` IS REQUIRED WHENEVER THE IMAGE RUNS AS NON-ROOT, and
+    leaving it out fails silently rather than loudly. A Fargate task volume is
+    bind-mounted as an EMPTY root-owned 0755 directory: it does NOT inherit the
+    image directory's ownership or mode, so mounting one over `/tmp` REPLACES
+    the base image's world-writable 1777 with something uid 10001 cannot create
+    a file in.
+
+    Measured on this exact task definition, not assumed:
+
+        uid=10001(pickready) gid=10001(pickready)
+        drwxr-xr-x. 2 root root 4096 /tmp
+        touch: cannot touch '/tmp/probe': Permission denied
+
+    That is what broke Google and password sign-in on the live site. Verifying
+    a Firebase ID token fetches Google's signing certificates, and `google-auth`
+    caches that response through `cachecontrol`, which needs a
+    NamedTemporaryFile. With nowhere to write it, verification raised
+    FileNotFoundError deep inside the library, where the route could not tell it
+    apart from a bad credential and answered 401 "Invalid Firebase session".
+    The search went to Firebase's authorized-domain list, which was never it.
+
+    Set, this prepends a tiny init container running as root that chowns each
+    writable path to that uid and exits; the application container waits on it
+    with `dependsOn ... SUCCESS`. The alternative -- dropping `readonly_root`
+    -- would hand the internet-facing service a writable root filesystem to fix
+    one scratch directory.
+
     `discoverable = true` registers the service in the Cloud Map namespace, so
     another task reaches it at `<service>.<namespace>`. For a service with no
     load balancer that is the only way it is addressable at all.
@@ -107,11 +134,25 @@ variable "services" {
     needs_s3            = optional(bool, false)
     readonly_root       = optional(bool, false)
     writable_paths      = optional(list(string), [])
+    writable_paths_uid  = optional(string, null)
     discoverable        = optional(bool, false)
     on_demand           = optional(bool, false)
     stop_timeout        = optional(number, null)
     min_healthy_percent = optional(number, 100)
     max_percent         = optional(number, 200)
+    #: Security groups this ONE service carries beside the shared ECS group.
+    #: The code sandbox's client group is the case: the API submits candidate
+    #: code and must reach the sandbox; the frontend and the analysis service
+    #: must not, so a cluster-wide list would be the wrong width. Empty by
+    #: default. An `on_demand` entry has no service to carry it: its network
+    #: configuration is the trigger's `ECS_SECURITY_GROUP_IDS`.
+    extra_security_group_ids = optional(list(string), [])
+    #: IAM policies attached to this service's EXECUTION role beyond its
+    #: secret policy, for a mounted secret another module owns (the sandbox
+    #: token lives in `code_sandbox`, not in `secrets`). The execution role is
+    #: what fetches and injects a `secrets` entry, so that is where the read
+    #: has to be. Keyed by position, never by ARN. Empty by default.
+    extra_execution_policy_arns = optional(list(string), [])
   }))
 
   validation {
@@ -186,6 +227,12 @@ variable "services" {
 variable "secret_policy_arns" {
   description = "{service -> the IAM policy from the `secrets` module}. Indexed rather than looked up with a default: a service with no scoped policy must fail the plan rather than run with none."
   type        = map(string)
+}
+
+variable "secret_writer_policy_arns" {
+  description = "{service -> the IAM policy granting PutSecretValue on that service's writable secrets}. Attached to the TASK role, not the execution role: the execution role injects secrets before the container starts, while writing is done by the application's own SDK. Defaulted and looked up rather than indexed, because almost every service writes nothing and must not fail a plan for it."
+  type        = map(string)
+  default     = {}
 }
 
 variable "s3_policy_arn" {

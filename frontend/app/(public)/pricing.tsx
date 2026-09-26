@@ -18,11 +18,13 @@ import { cn } from "@/lib/utils";
  * Public pricing (Master Directive Part 5).
  *
  * The model this section sells is the credit model and nothing else: Rs. 600
- * per credit, purchased in packs, consumed per completed ReadyPick
+ * per credit, purchased in packs, consumed per completed Vivekium
  * Intelligence Report - 1.0 credit for a Non-STEM role, 1.5 for a STEM role,
  * classified by the platform. No monthly subscription exists, no annual plan
- * exists, and credits never expire (Rule 4 is a stated promise, so the page
- * states it).
+ * exists. Credits bought now stay valid for three months from purchase
+ * (change request 25, new grants only); credits granted before expiry was
+ * introduced keep the never-expire promise their invoices printed, and the
+ * page states both so neither reads as a promise the product breaks.
  *
  * The figures here are the DIRECTIVE'S OWN fixed numbers, written as
  * constants: Part 5 fixes the price per credit, the pack sizes and the bonus
@@ -83,9 +85,9 @@ const MODEL_COPY = [
   {
     title: "How credits work",
     body: [
-      "One credit costs Rs. 600, plus 18% GST. A completed ReadyPick Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
+      "One credit costs Rs. 600, plus 18% GST. A completed Vivekium Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
       "A candidate who starts an assessment and never finishes consumes a third of the role's rate. A candidate who never opens the invitation consumes a fifteenth of a credit. Reviewing a profile carried over from an earlier posting uses a twentieth.",
-      "Credits never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and whatever you do not use waits for the next role.",
+      "Credits you buy stay valid for three months from purchase, and credits granted before expiry was introduced never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and use them on any role while they are valid.",
     ],
   },
   {
@@ -103,10 +105,10 @@ const INCLUDED = [
   "Unlimited team members, no per seat fee",
   "Four parameter AI matching",
   "Technical questions written per candidate",
-  "ReadyPick Profile Intelligence",
+  "Vivekium Profile Intelligence",
   "One continuous candidate conversation",
   "Full PRISM Report",
-  "Four radar charts, no numbers on them",
+  "Three radar charts, no numbers on them",
   "Candidate databank",
   "Ten stage hiring pipeline",
   "AI drafted lifecycle emails",
@@ -134,13 +136,20 @@ export function Pricing() {
   }, [router, user]);
 
   return (
-    <section id="pricing" className="relative scroll-mt-24 py-24 sm:py-28">
+    <section
+      id="pricing"
+      className="relative scroll-mt-24 py-20 lg:py-24"
+      aria-labelledby="pricing-title"
+    >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="max-w-2xl">
           <Badge variant="brand" className="px-3 py-1 text-xs font-semibold">
             Pricing
           </Badge>
-          <h2 className="mt-5 text-balance text-3xl font-bold leading-tight sm:text-4xl">
+          <h2
+            id="pricing-title"
+            className="mt-5 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+          >
             One rate. {formatInr(PRICE_PER_CREDIT_INR)} per credit.
           </h2>
           <p className="mt-5 text-pretty text-lg leading-8">
@@ -157,7 +166,10 @@ export function Pricing() {
               key={pack.slug}
               delay={0.04 * index}
               className={cn(
-                "flex h-full flex-col border bg-surface p-6 shadow-card transition-transform duration-200 motion-safe:hover:-translate-y-1",
+                // Flat at rest, and the pointer is answered with the border
+                // rather than with a lift: DESIGN.md section 6 keeps cards at
+                // level 0, and a price is not a thing to be playful about.
+                "flex h-full flex-col border bg-surface transition-colors duration-150 p-6 hover:border-field-hover",
                 pack.recommended
                   ? "border-brand-600 ring-1 ring-brand-600/30"
                   : "border-border",
@@ -181,10 +193,10 @@ export function Pricing() {
                   + {pack.bonus} bonus credits free
                 </p>
               ) : (
-                <p className="mt-1 text-sm leading-6 opacity-70">{pack.note}</p>
+                <p className="mt-1 text-sm">{pack.note}</p>
               )}
 
-              <dl className="mt-5 space-y-2 text-sm leading-6">
+              <dl className="mt-5 space-y-2 text-sm">
                 <div className="flex items-baseline justify-between gap-3">
                   <dt>Price</dt>
                   <dd className="font-semibold">
@@ -224,7 +236,7 @@ export function Pricing() {
           ))}
         </div>
 
-        <Reveal delay={0.05} className="mt-5 text-sm leading-6 opacity-80">
+        <Reveal delay={0.05} className="mt-5 text-sm">
           <p>
             Prices exclude 18% GST. A one-time account setup fee of{" "}
             {formatInr(5000)} applies to your first purchase and is currently
@@ -238,7 +250,7 @@ export function Pricing() {
             promising a button that cannot exist. */}
         <Reveal
           delay={0.05}
-          className="mt-5 flex flex-col gap-5 border border-border bg-surface p-7 shadow-card sm:flex-row sm:items-center sm:justify-between"
+          className="mt-5 flex flex-col gap-5 border border-border bg-surface p-7 sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="max-w-2xl">
             <p className="text-lg font-semibold">Enterprise</p>
@@ -252,7 +264,7 @@ export function Pricing() {
             <a
               href="mailto:manjuchro@gmail.com?subject=Enterprise%20credits"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >
               Contact us
             </a>
@@ -279,7 +291,7 @@ export function Pricing() {
           >
             {INCLUDED.map((item) => (
               <StaggerItem as="li" key={item}>
-                <span className="flex items-start gap-2.5 text-sm leading-6">
+                <span className="flex items-start gap-2.5 text-sm">
                   <Check
                     className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
                     aria-hidden="true"
@@ -297,7 +309,7 @@ export function Pricing() {
             <Reveal
               key={block.title}
               delay={0.05 * index}
-              className="border border-border bg-surface p-7 shadow-card"
+              className="border border-border bg-surface p-7"
             >
               <h3 className="text-base font-semibold">{block.title}</h3>
               <div className="mt-3 space-y-4">

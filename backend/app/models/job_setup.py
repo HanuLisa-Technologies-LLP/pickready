@@ -89,8 +89,10 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     # phase recomputed from the arrays would send a manager who genuinely had
     # nothing more to add back round to the same question forever.
 
-    #: Which block of §18.2's timeline the session is in. See
-    #: `swot_intake.PHASES`.
+    #: Which block of §18.2's timeline the session is in. The vocabulary lives
+    #: in migration 0064 and the CHECK constraint it created: the module that
+    #: defined it went with the retired Role Intake conversation on
+    #: 2026-09-20, and this table now holds only that conversation's history.
     phase: Mapped[str] = mapped_column(
         String(20), nullable=False, default="areas", server_default="areas"
     )
@@ -103,8 +105,9 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     situation_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    #: `swot_quality.HIGH_VALUE_PROBES` keys already put to the manager. §18.3's
-    #: seven, asked once each and in order.
+    #: The §18.3 probe keys already put to the manager, as the retired intake
+    #: conversation stored them. History only: the intake and its quality
+    #: module are deleted and nothing writes this column.
     probes_asked: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
@@ -112,7 +115,7 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     #: accepts it, and NULL means the question has not been put -- which is a
     #: different state from "no" and must never be read as a pass.
     best_performer_excluded: Mapped[bool | None] = mapped_column(Boolean)
-    #: The last `swot_quality.review` verdict, as `QualityReport.as_dict()`.
+    #: The retired intake's last quality verdict. History only.
     quality_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
@@ -171,6 +174,10 @@ SWOT_ANALYSIS_NOT_GENERATED = "not_generated"
 SWOT_ANALYSIS_GENERATED = "generated"
 SWOT_ANALYSIS_FAILED = "failed"
 SWOT_ANALYSIS_EDITED = "edited"
+#: A generation has been requested and dispatched and has not finished (0118).
+#: The request commits this state and the worker moves it on; a row still here
+#: after the stale window reads as failed without a write.
+SWOT_ANALYSIS_GENERATING = "generating"
 
 #: The four quadrants of the analysis document, in render order.
 SWOT_ANALYSIS_SECTIONS: tuple[str, ...] = (
@@ -241,6 +248,9 @@ class JobSwotAnalysis(Base, UUIDPKMixin, CreatedAtMixin):
     #: Cleared on the next success, because a stale error under fresh content
     #: reads as a fresh error.
     generation_error: Mapped[str | None] = mapped_column(Text)
+    #: When the in-flight generation was requested (0118). Read with the stale
+    #: window to tell a slow worker from one that never reported back.
+    generation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     human_edited: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

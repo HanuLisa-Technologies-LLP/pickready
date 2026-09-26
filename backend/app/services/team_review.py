@@ -32,7 +32,7 @@ not "medium"; it is "I am not deciding yet".
 
 THE OVERRIDE-RATE MAPPING IS THE REASON THIS MODULE EXISTS AT ALL
 ------------------------------------------------------------------
-spec-doc6 §8.2 requires measuring recruiter deviation from the Ready Pick Score
+spec-doc6 §8.2 requires measuring recruiter deviation from the Vivekium Score
 (the Dashboard Specification targets under 15%). That measurement needs the two
 vocabularies to be COMPARABLE, which is a weaker and better requirement than
 identical: they stay distinct on screen, and comparison happens here, once, in

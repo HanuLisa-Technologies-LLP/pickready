@@ -386,7 +386,7 @@ SECRETS = [
 def test_a_pasted_secret_is_redacted_and_the_answer_still_counts(
     answer: str, secret: str
 ) -> None:
-    """Redaction protects the CANDIDATE: prompts are traced to LangSmith and a
+    """Redaction protects the CANDIDATE: prompts are sent to a vendor and a
     pasted key must not be stored or sent onward. It is not a rule the
     candidate broke, so the turn is not refused for it."""
     result = inspect_answer(answer)
@@ -544,3 +544,54 @@ def test_agent_output_is_idempotent() -> None:
     text = "That was a strong answer. You scored 82. What broke first?"
     once = inspect_agent_output(text)
     assert inspect_agent_output(once) == once
+
+
+# ── A URL is an address, not a sentence about a candidate ────────────────────
+#
+# THIS DEFECT WAS LIVE AND SILENT. Every assessment link this product sends is
+# `.../portal/assessments/<uuid>`, and the forward number pattern read
+# "assessments" as the assessment term and the first hex pair of the uuid as
+# the number, comfortably inside its window. So `contains_forbidden_number`
+# answered True for a correctly formed link, `lifecycle_email._evaluate`
+# rejected the AI draft on every attempt, and BOTH the invitation and the
+# reminder went out from the deterministic template with `generated_by_ai=False`
+# on every send. Nothing raised, nothing logged, and the emails still arrived,
+# so the only observable symptom was that a feature quietly did not exist.
+#
+# Both directions are asserted. Loosening the guard to fix the false positive
+# would be worse than the defect: the whole point of the module is that a
+# number about a candidate never reaches one.
+
+_ASSESSMENT_LINK = (
+    "https://app.readypick.ai/portal/assessments/"
+    "d7beb3c8-26bb-4d7a-b62b-daaadd53636f"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Your assessment is ready. Open it here: {_ASSESSMENT_LINK}",
+        f"{_ASSESSMENT_LINK}",
+        "Start here: https://example.test/assessments/9",
+        "See www.example.test/portal/assessments/4c2 for the next step.",
+    ],
+)
+def test_a_link_is_not_a_number_about_the_candidate(text: str) -> None:
+    assert contains_forbidden_number(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The leak sits BESIDE the link. Masking preserves offsets precisely so
+        # this still falls inside the same window it would without the URL.
+        f"Open {_ASSESSMENT_LINK} and note you scored 87 on the assessment.",
+        f"You scored 87 on the assessment. Details: {_ASSESSMENT_LINK}",
+        "Your assessment rating is 4",
+        "She rated 7 out of 10",
+        "You are in the top 12% of applicants",
+    ],
+)
+def test_masking_a_link_does_not_let_a_real_number_through(text: str) -> None:
+    assert contains_forbidden_number(text) is True

@@ -15,6 +15,7 @@ import { Save } from "lucide-react";
 
 import { apiGet, apiPut } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
+import type { ConsentItemStatus } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,6 +75,12 @@ export interface ProfileFormPayload {
   complete: boolean;
   missing: string[];
   updated_at?: string | null;
+  /** Stage A of the consent catalogue with this candidate's stamps. The
+   *  wording is the SERVER's; this screen renders it and authors none of it. */
+  consent_items?: ConsentItemStatus[];
+  /** The Stage A keys still outstanding. The profile cannot be reported
+   *  complete while this is non-empty (vivekium feature 6). */
+  consent_missing?: string[];
 }
 
 function fieldLabel(field: FormFieldDef): string {
@@ -104,12 +111,21 @@ function EducationTable({
     // Wide on desktop, horizontally scrollable on a phone, the page body must
     // never scroll sideways.
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[46rem] border-collapse text-sm">
+      <table
+        aria-label="Education history"
+        className="w-full min-w-[46rem] border-collapse text-sm"
+      >
         <thead>
           <tr>
-            <th className="border-b p-2 text-left font-semibold">Education Level</th>
+            <th scope="col" className="border-b p-2 text-left font-semibold">
+              Education Level
+            </th>
             {columns.map((column) => (
-              <th key={column.key} className="border-b p-2 text-left font-semibold">
+              <th
+                scope="col"
+                key={column.key}
+                className="border-b p-2 text-left font-semibold"
+              >
                 {column.label}
               </th>
             ))}
@@ -260,6 +276,21 @@ function Field({
     }
   })();
 
+  // The message was already announced; it was not ATTACHED. A reader that
+  // tabs back to the field afterwards heard the label and nothing about why
+  // the field is red, so the fix is the association rather than a second
+  // announcement. Cloning puts it on whichever control this branch built,
+  // including the `role="radiogroup"` wrapper, which is the element a reader
+  // treats as the field.
+  const described = React.isValidElement(body)
+    ? React.cloneElement(body as React.ReactElement<Record<string, unknown>>, {
+        ...(invalid
+          ? { "aria-invalid": true, "aria-describedby": `${id}-error` }
+          : {}),
+        ...(field.required ? { "aria-required": true } : {}),
+      })
+    : body;
+
   return (
     <div className="space-y-1.5">
       <Label id={`${id}-label`} htmlFor={id}>
@@ -267,9 +298,13 @@ function Field({
         {field.required ? " *" : ""}
       </Label>
       {field.hint ? <p className="text-xs">{field.hint}</p> : null}
-      {body}
+      {described}
       {invalid ? (
-        <p role="alert" className="text-sm font-medium text-destructive">
+        <p
+          id={`${id}-error`}
+          role="alert"
+          className="text-sm font-medium text-destructive"
+        >
           This answer is required.
         </p>
       ) : null}
@@ -294,6 +329,9 @@ export function CandidateProfileForm({
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [dirty, setDirty] = React.useState(false);
+  // Stage A ticks made in THIS sitting. Consent already given lives in the
+  // server's stamps and is never re-asked, so this holds only new agreements.
+  const [consentTicks, setConsentTicks] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     apiGet<ProfileFormPayload>("/portal/me/profile-form")
@@ -317,9 +355,11 @@ export function CandidateProfileForm({
     try {
       const saved = await apiPut<ProfileFormPayload>("/portal/me/profile-form", {
         answers,
+        consent_keys: Object.keys(consentTicks).filter((key) => consentTicks[key]),
       });
       setPayload(saved);
       setAnswers(saved.answers ?? {});
+      setConsentTicks({});
       setDirty(false);
       onSaved?.(saved);
       toast({
@@ -365,6 +405,7 @@ export function CandidateProfileForm({
   // Only flag a required answer once the server has said it's missing, so an
   // untouched form doesn't open covered in red.
   const missing = new Set(dirty ? [] : payload.missing);
+  const consentItems = payload.consent_items ?? [];
 
   return (
     <form onSubmit={save} noValidate className="space-y-6">
@@ -415,6 +456,57 @@ export function CandidateProfileForm({
           </CardContent>
         </Card>
       ))}
+
+      {consentItems.length > 0 ? (
+        // Registration consent (vivekium feature 6, Stage A). Each item is a
+        // tick of its own and is stamped separately server-side; an item
+        // already agreed to shows its date and is not asked again. The
+        // wording is the server's, verbatim.
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Your consent</CardTitle>
+            <CardDescription>
+              Your profile is complete once you have agreed to the required
+              items. Each one is recorded separately with the date you agreed.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {consentItems.map((item) =>
+              item.consented_at ? (
+                <div key={item.key} className="text-sm leading-6">
+                  <p>{item.text}</p>
+                  <p className="mt-1 font-medium">
+                    Agreed on {new Date(item.consented_at).toLocaleDateString()}
+                  </p>
+                </div>
+              ) : (
+                <label key={item.key} className="flex cursor-pointer gap-3 text-sm leading-6">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0"
+                    checked={Boolean(consentTicks[item.key])}
+                    disabled={saving}
+                    onChange={(event) =>
+                      setConsentTicks((current) => ({
+                        ...current,
+                        [item.key]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>
+                    {item.text}
+                    {/* Said plainly, because a consent a candidate believes
+                        is compulsory is not one they freely gave. */}
+                    {item.required ? null : (
+                      <span className="font-medium"> This one is optional.</span>
+                    )}
+                  </span>
+                </label>
+              )
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {error ? (
         <p role="alert" className="text-sm font-medium text-destructive">

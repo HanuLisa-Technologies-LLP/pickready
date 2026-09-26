@@ -1,12 +1,12 @@
-# ReadyPick — DESIGN.md
+# Vivekium — DESIGN.md
 
-The design system for ReadyPick's product surfaces. Authored from the brand
+The design system for Vivekium's product surfaces. Authored from the brand
 foundation in spec-doc5 §C.1, in the nine-section structure the
 `awesome-design-md` collection uses.
 
 **On the borrowed structure.** `github.com/voltagent/awesome-design-md` is a
 library of *other companies'* extracted design systems — Stripe, Linear, Vercel.
-There is no ReadyPick entry and none was copied. What is borrowed is the
+There is no Vivekium entry and none was copied. What is borrowed is the
 nine-section format. Linear and Vercel were read for **restraint**, not for
 palette: they are the closest comparable feel to what an evidence-driven
 enterprise HR platform should project, and neither of their colour systems
@@ -21,7 +21,7 @@ them disagreeing.
 
 ## 1. Visual Theme & Atmosphere
 
-ReadyPick is a B2B enterprise hiring-intelligence platform sold to CHROs and
+Vivekium is a B2B enterprise hiring-intelligence platform sold to CHROs and
 hiring managers, positioned against traditional executive search. Every screen
 is read by somebody making a decision about a person's career, often with the
 candidate's own words on the same page.
@@ -58,15 +58,24 @@ Sampled from `logo300.jpeg` by weighted centroid over each colour cluster —
 not estimated, and not read off a single pixel, because the source is JPEG and
 a single pixel is compression noise.
 
-| Role | Hex | Measured centroid | Cluster size | spec-doc5 §C.1 |
-|---|---|---|---|---|
-| **Primary — Navy** | `#012654` | `#012653` | 102,974 px | `#012654` (Δ 0,0,−1) |
-| **Secondary — Teal** | `#00888A` | `#01888C` | 48,891 px | `#00888A` (Δ +1,0,+2) |
-| Background | `#FFFFFF` | — | 87% of the mark | Off-white / white |
+| Role | Hex (shipped) | Original sampled centroid | Cluster size |
+|---|---|---|---|
+| **Primary — Navy** | `#0A2642` | `#012653` | 102,974 px |
+| **Secondary — Teal** | `#0D968B` | `#01888C` | 48,891 px |
+| Background | `#FFFFFF` | — | 87% of the mark |
 
-Both measurements land inside the spec's stated ±2 per channel. The spec's
-values are used verbatim, since they are inside the measured cluster and are the
-number the client stated.
+**Read the two columns as history, not as a discrepancy.** The right-hand column
+is the weighted centroid measured from `logo300.jpeg`, which is where this
+palette began and which spec-doc5 §C.1 recorded as `#012654` / `#00888A`. The
+left-hand column is what the product actually ships: the Master Implementation
+Directive Part 1 §3 moved the anchors to a slightly warmer, less saturated navy
+and a greener teal, `app/globals.css` was changed to match, and this file was
+not. It documented the pre-directive hexes for two releases.
+
+**The shipped values are the truth.** They are computed from the HSL triples in
+`app/globals.css`, which are the strings the browser actually resolves, rather
+than transcribed by hand, and every ratio in the ramps below is computed the
+same way.
 
 ### The ramps
 
@@ -76,27 +85,29 @@ rather than drifting toward a generic blue.
 
 | Token | Hex | Contrast on white | Use |
 |---|---|---|---|
-| `navy-50` | `#EFF4FB` | 1.11 | Selected row, subtle fill |
-| `navy-100` | `#D7E4F4` | 1.29 | Hover fill on a navy surface |
-| `navy-200` | `#A7C3E7` | 1.81 | Borders on navy fills |
-| `navy-400` | `#0360D4` | 5.79 | Link on white, focus ring |
-| `navy-500` | `#02408D` | 9.90 | Hover on primary |
-| **`navy-600`** | **`#012654`** | **14.93** | **Primary action, active nav, brand mark** |
-| `navy-700` | `#011E42` | 16.59 | Pressed |
-| `navy-900` | `#000E1E` | 19.42 | Dark-theme canvas |
+| `navy-50` | `#EFF5FB` | 1.10 | Selected row, subtle fill |
+| `navy-100` | `#D7E6F4` | 1.28 | Hover fill on a navy surface |
+| `navy-200` | `#A6C7E7` | 1.76 | Borders on navy fills |
+| `navy-400` | `#1361AE` | 6.27 | Link on white, focus ring |
+| `navy-500` | `#114274` | 10.19 | Hover on primary |
+| **`navy-600`** | **`#0A2642`** | **15.30** | **Primary action, active nav, brand mark** |
+| `navy-700` | `#081C31` | 17.21 | Pressed |
+| `navy-900` | `#030D16` | 19.58 | Dark-theme canvas |
 
 | Token | Hex | Contrast on white | Use |
 |---|---|---|---|
-| `teal-50` | `#EBFAFA` | 1.07 | Evidence-supported fill |
-| `teal-100` | `#CEF2F3` | 1.19 | Accent fill |
-| `teal-400` | `#00C9CC` | 2.05 | Dark-theme accent, chart series 2 |
-| `teal-500` | `#009799` | 3.57 | Large text only (≥ 24px) |
-| **`teal-600`** | **`#00888A`** | **4.30** | **Fills, rules, icons — see the warning** |
-| `teal-700` | `#006F70` | 5.99 | **Teal text on white uses this** |
-| `teal-900` | `#003738` | 13.10 | Dark-theme teal text |
+| `teal-50` | `#EBFAF9` | 1.07 | Evidence-supported fill |
+| `teal-100` | `#CEF3F0` | 1.19 | Accent fill |
+| `teal-400` | `#10B2A5` | 2.64 | Dark-theme accent, chart series 2 |
+| `teal-500` | `#0EA093` | 3.26 | Large text only (≥ 24px) |
+| **`teal-600`** | **`#0D968B`** | **3.65** | **Fills, rules, icons — see the warning** |
+| `teal-700` | `#096C64` | 6.29 | **Teal text on white uses this** |
+| `teal-900` | `#043430` | 13.71 | Dark-theme teal text |
 
-> **The brand teal does not pass AA for body text on white.** `#00888A` measures
-> **4.30:1**, below the 4.5:1 WCAG AA needs for normal text. This is a measured
+> **The brand teal does not pass AA for body text on white.** `#0D968B` measures
+> **3.65:1**, below the 4.5:1 WCAG AA needs for normal text, and the directive's
+> greener anchor made it WORSE rather than better: the original `#00888A`
+> measured 4.30. This is a measured
 > fact about the brand colour, not a preference, and it is the single most
 > important line in this file because the mistake it prevents — teal labels on
 > white cards — is the one a designer reaches for first.
@@ -145,13 +156,31 @@ rather than drifting toward a generic blue.
 | Display | Fraunces | 600 | 40/44, −0.02em |
 | Page title | Inter Tight | 620 | 28/34, −0.015em |
 | Section | Inter Tight | 600 | 20/28 |
-| Body | Inter Tight | 400 | 15/24 |
-| Small / label | Inter Tight | 500 | 13/18, +0.01em |
-| Reference code, IDs | JetBrains Mono | 500 | 13/18 |
+| Body | Inter Tight | 400 | 15/26 |
+| Small / label | Inter Tight | 500 | 13/20, +0.01em |
+| Reference code, IDs | JetBrains Mono | 500 | 13/20 |
+
+**The leading lives in the scale, not at the call site (2026-09-19).** Body was
+15/24 and small 13/18, and read congested in anything longer than a label. The
+line heights moved up in `tailwind.config.ts` (sm 26px, xs 20px, base 28px, lg
+30px) and the explicit `leading-6` / `leading-5` utilities that had been pinning
+the old heights beside `text-sm` / `text-xs` were removed, so the scale is the
+one place the rhythm is stated. A `leading-*` that survives next to a size is
+DELIBERATE: it is tighter or looser than the scale on purpose, and the dense
+candidate tables keep their density. The same pass gave prose a little more
+air: the page-header description sits at `mt-3` and `CardHeader` at
+`space-y-2`. Letter spacing did not move, body copy nowhere used
+`tracking-tight`; it stays a heading treatment.
 
 **Not Inter-as-default.** Impeccable flags default Inter as a slop tell and it is
 right about the reason: it is the typeface a UI reaches for when nobody chose
-one. **Inter Tight** is the working face — tighter, more editorial, and it holds
+one. **This section described an intention rather than the product until
+2026-09-17**: `app/layout.tsx` loaded plain `Inter` for body, UI and display
+alike, citing a DESIGN_BRIEF this file had already superseded, so the one tell
+the design authority names explicitly was the one the product shipped. All three
+faces are now loaded through next/font, which self-hosts and subsets them, so
+nothing is fetched from Google at runtime and `font-src 'self'` in the CSP is
+complete. **Inter Tight** is the working face — tighter, more editorial, and it holds
 a dense table better at 13px. **Fraunces** appears on display type only, where
 the product has one chance to look like it was designed. **JetBrains Mono**
 carries the COMPANY-JOB-CANDIDATE reference code, which must be select-all and
@@ -174,12 +203,20 @@ emails, page titles, generated JD text or seeded content. A standing rule since
 
 ## 4. Component Stylings
 
-**Buttons.** Height 36 (`sm` 32, `lg` 40). Radius 8. Primary is navy-600 with
-white text; hover navy-500; pressed navy-700. Secondary is a navy-600 outline on
+**Radius is ZERO, everywhere.** This supersedes the "radius 8" and "radius 12"
+this section used to state. The Master Implementation Directive Part 1 §7 moved
+the product to sharp rectangular geometry and `tailwind.config.ts` pins the whole
+scale (`sm` through `3xl`) to `0px`, so a `rounded-2xl` left at a call site
+renders square rather than quietly reintroducing soft corners. `rounded-full`
+keeps its default and is reserved for genuinely circular marks, an avatar or a
+status dot, and is NEVER a pill container.
+
+**Buttons.** Height 36 (`sm` 32, `lg` 40). Primary is navy-600 with white text;
+hover navy-500; pressed navy-700. Secondary is a navy-600 outline on
 transparent. Ghost has no border until hover. Destructive is the destructive
 token, never red-tinted navy.
 
-**Cards.** Radius 12, 1px border, `--surface` background, no shadow at rest.
+**Cards.** 1px border, `--surface` background, no shadow at rest.
 **No card inside a card** — Impeccable flags nesting and the reason is real: two
 borders 16px apart read as a rendering fault. A grouping inside a card is a
 horizontal rule and a heading.
@@ -194,7 +231,7 @@ Matching `teal-50`, Moderately Matching `navy-50`, Not Matching a neutral fill
 with a `--warning` left rule. **The word is always present** — never the fill
 alone.
 
-**Form fields.** Height 36, radius 8, and the border is `--field-border`
+**Form fields.** Height 36, and the border is `--field-border`
 (navy-tinted) rather than the divider hairline. A control boundary below 3:1
 against its surface is invisible, which WCAG 1.4.11 states and a user discovers
 by not finding the field. Verified by `scripts/check-contrast.mjs` from the
@@ -234,17 +271,30 @@ documented in `.impeccable-exceptions.md` with their reason.
 
 Four levels, and three of them are borders.
 
-| Level | Treatment | Use |
+| Level | Tailwind token | Use |
 |---|---|---|
-| 0 | 1px border, no shadow | Cards, panels, table containers — the default |
-| 1 | `0 1px 2px rgb(1 38 84 / 0.06)` | Dropdown, popover, hovering row |
-| 2 | `0 8px 24px rgb(1 38 84 / 0.10)` | Dialog, sheet |
-| 3 | `0 16px 48px rgb(1 38 84 / 0.16)` | The landing hero only |
+| 0 | `shadow-card` (effectively flat) | Cards, panels, table containers — the default |
+| 1 | `shadow-overlay` | Dropdown, popover, select menu, combobox |
+| 2 | `shadow-modal` | Dialog, alert dialog, sheet, toast |
+| 3 | `shadow-hero` | The landing hero only |
+
+**Elevation is for things that FLOAT, and for nothing else.** Two rules are in
+tension here and both are kept: Part 1 §7 says structure comes from borders, not
+elevation, which is why a card is still effectively flat; and a dialog carrying
+the same shadow as the card behind it does not read as being ABOVE the page,
+which is a spatial failure rather than a decorative one.
+
+**This table describes what shipped only after 2026-09-17.** Before then every
+one of these names resolved to the same near-flat card value, and the overlay
+primitives had quietly fallen back to Tailwind's stock `shadow-lg` / `shadow-md`,
+which are neutral BLACK. That is the specific mistake the next rule names.
 
 **Shadows are tinted navy, never black.** A neutral-black shadow over a
-navy-tinted canvas reads as dirt. In dark mode elevation is a lighter surface
-rather than a shadow — a shadow on a near-black canvas is invisible and the
-attempt to make it visible produces a halo.
+navy-tinted canvas reads as dirt. Every token above is built on
+`hsl(var(--navy-600) / a)`. In dark mode elevation is a lighter surface rather
+than a shadow, because a shadow on a near-black canvas is invisible and the
+attempt to make it visible produces a halo; the tokens stay declared and simply
+do very little there.
 
 ---
 
@@ -301,14 +351,14 @@ are a pure CSS variable swap; no component branches on theme.
 
 ## 9. Agent Prompt Guide
 
-For an agent generating or modifying a ReadyPick surface:
+For an agent generating or modifying a Vivekium surface:
 
 > Build for a B2B enterprise hiring-intelligence platform sold to CHROs.
-> Confident and precise, never playful. Navy `#012654` for structure — primary
-> actions, navigation, the frame. Teal `#00888A` for evidence — what is
+> Confident and precise, never playful. Navy `#0A2642` for structure — primary
+> actions, navigation, the frame. Teal `#0D968B` for evidence — what is
 > corroborated, what is cited. Never purple, never violet, never a two-hue
-> gradient. Teal text on white must be `#006F70`, because the brand teal
-> measures 4.30:1 and fails AA for body text. Inter Tight for UI, Fraunces for
+> gradient. Teal text on white must be `#096C64`, because the brand teal
+> measures 3.65:1 and fails AA for body text. Inter Tight for UI, Fraunces for
 > display, JetBrains Mono for reference codes — never default Inter. Text is
 > never grey; grey is for borders and muted backgrounds only. Cards are a 1px
 > border and no shadow at rest, and never nested. No icon tile above a heading.

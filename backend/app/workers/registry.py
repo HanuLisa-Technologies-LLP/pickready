@@ -33,20 +33,49 @@ RETRIES LIVE HERE, IN ONE PLACE
 `max_attempts` and `backoff_seconds` replace Celery's `autoretry_for` /
 `retry_backoff` / `max_retries`. They are declared per task because the right
 answer differs per task and always did: delivery is worth retrying because SMTP
-fails transiently, and `compile_tatva_matrix` is not, because it refuses on a
-missing Company DNA artifact and no amount of waiting supplies one.
+fails transiently, and a SWOT generation is not, because a failed draft is a
+state the team retries from the tab and a second model call would only repeat
+it.
 
 The retry loop runs INSIDE the invocation (see `runtime.run_task`), and the
 Lambda's own asynchronous retry is set to zero in Terraform. Two retry
 mechanisms stacked would multiply: three in-process attempts under two platform
 attempts is nine sends of one email, and a duplicate invitation is worse than a
 failure somebody can see.
+
+EVERY TASK SAYS HOW IT REACHES DATA
+-----------------------------------
+`rls` is a REQUIRED keyword with no default, so a task that does not declare
+its row-level-security scope is refused at import rather than quietly running
+across every tenant. Two values, and only two:
+
+  "tenant"  the body opens `runtime.tenant_worker_session(tenant_id)`, so the
+            Postgres policy, not a WHERE clause, is what keeps the run inside
+            one customer. A task is declared this way only once a test has run
+            its body against real Postgres under the RLS role and read back the
+            same rows the bypass session wrote (`tests/test_worker_tenant_session`).
+  "bypass"  the body keeps `runtime.worker_session()`, and `rls_reason` says WHY
+            in words: it sweeps every tenant, it reads a tenant-free table
+            (`candidates`, `profiles`, `candidate_employments`, the consent
+            tables), or it has not yet been proven under a tenant session. A
+            bypass with no reason is refused, because an undeclared escape hatch
+            is indistinguishable from an accidental one.
+
+The declaration is BINDING, not decorative: the same test walks every body and
+fails a "tenant" task that opens the bypass session, and a "bypass" task that
+opens the tenant one.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Literal
+
+#: The two row-level-security scopes a task may declare. See the module docstring.
+RLS_TENANT = "tenant"
+RLS_BYPASS = "bypass"
+RLS_SCOPES = frozenset({RLS_TENANT, RLS_BYPASS})
+RlsScope = Literal["tenant", "bypass"]
 
 
 class Route(str, Enum):
@@ -92,6 +121,13 @@ class TaskSpec:
     bind: bool
     #: A one-line description, used by the operator-facing task listing.
     summary: str
+    #: How the body reaches data: "tenant" or "bypass" (see the module
+    #: docstring). `task()` refuses a registration without one; the default
+    #: exists only so a hand-built spec in a runtime test need not invent a
+    #: scope, and None there reads as "undeclared", never as bypass.
+    rls: str | None = None
+    #: Why a "bypass" task needs the escape hatch, in words. Empty for "tenant".
+    rls_reason: str = ""
 
 
 _REGISTRY: dict[str, TaskSpec] = {}
@@ -101,6 +137,8 @@ def task(
     *,
     name: str,
     route: Route,
+    rls: RlsScope,
+    rls_reason: str = "",
     max_attempts: int = 1,
     max_attempts_setting: str | None = None,
     backoff_seconds: float = 2.0,
@@ -121,6 +159,20 @@ def task(
             raise ValueError(f"duplicate task name: {name}")
         if max_attempts < 1:
             raise ValueError(f"{name}: max_attempts must be at least 1")
+        if rls not in RLS_SCOPES:
+            raise ValueError(
+                f"{name}: rls must be one of {sorted(RLS_SCOPES)}, got {rls!r}"
+            )
+        if rls == RLS_BYPASS and not rls_reason.strip():
+            raise ValueError(
+                f"{name}: rls='bypass' needs an rls_reason saying why this task "
+                "may read across tenants"
+            )
+        if rls == RLS_TENANT and rls_reason.strip():
+            raise ValueError(
+                f"{name}: rls='tenant' takes no rls_reason; the tenant session "
+                "is the rule, only the escape hatch needs a justification"
+            )
         _REGISTRY[name] = TaskSpec(
             name=name,
             fn=fn,
@@ -132,6 +184,8 @@ def task(
             retry_on=retry_on,
             bind=bind,
             summary=summary or (fn.__doc__ or "").strip().split("\n")[0],
+            rls=rls,
+            rls_reason=rls_reason.strip(),
         )
         return fn
 

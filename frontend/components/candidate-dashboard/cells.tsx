@@ -3,10 +3,10 @@
 /**
  * The eight columns' cells. One component per column, in the specified order.
  *
- * Split out of the table so each cell's rule is testable on its own: the
- * Pre-Screen Grade's styling rule, the Ready Pick Score's pending and
- * under-review states, and the Note's truncation are each a property of one
- * component rather than of a row.
+ * Split out of the table so each cell's rule is testable on its own: AI
+ * Match's muted styling rule, the Vivekium Grade's gradeless and under-review
+ * states, and the Note's truncation are each a property of one component
+ * rather than of a row. No cell renders a number: every word is the server's.
  */
 
 import * as React from "react";
@@ -21,13 +21,13 @@ import {
 } from "@/components/ui/tooltip";
 
 import {
-  BANDS_WITHOUT_A_SCORE,
-  BAND_CLASS,
-  BAND_PENDING,
-  BAND_UNDER_REVIEW,
+  AI_MATCH_CLASS,
   CONFIDENCE_DOT_CLASS,
-  PRE_SCREEN_CLASS,
-} from "./band";
+  GRADE_CLASS,
+  STATES_WITHOUT_A_GRADE,
+  STATE_NOT_CHECKED,
+  STATE_UNDER_REVIEW,
+} from "./grade";
 import type { DashboardRow } from "./types";
 
 /* ── Column 1: Candidate ─────────────────────────────────────────────────── */
@@ -52,7 +52,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
     <div className="min-w-0">
       <p className="truncate text-[13.5px] font-bold leading-5">{row.full_name}</p>
       <span className="group inline-flex items-center gap-1">
-        <span className="select-all font-mono text-[11px] leading-4 text-foreground/80">
+        <span className="select-all font-mono text-[11px] leading-4">
           {row.system_id}
         </span>
         <button
@@ -69,7 +69,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
           {copied ? "Candidate code copied" : ""}
         </span>
       </span>
-      <p className="truncate text-[11px] leading-4 text-foreground/80">
+      <p className="truncate text-[11px] leading-4">
         {row.job_title}
       </p>
     </div>
@@ -86,63 +86,55 @@ export function SourceCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 3: Pre-Screen Grade ──────────────────────────────────────────── */
+/* ── Column 3: AI Match ──────────────────────────────────────────────────── */
 
 /**
  * MUTED / OUTLINE ONLY. Never a solid fill, never a brand colour, never bold.
  *
- * See `band.ts` for why. The class list is a single constant so there is one
+ * Yukti's reading of the resume alone: an early signal, not a verdict. See
+ * `grade.ts` for why. The class list is a single constant so there is one
  * place to read it and one place a test can check it.
  */
-export function PreScreenGradeCell({ row }: { row: DashboardRow }) {
-  const graded = row.pre_screen_grade !== null;
+export function AiMatchCell({ row }: { row: DashboardRow }) {
+  const graded = !STATES_WITHOUT_A_GRADE.has(row.ai_match_state);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
-          data-testid="pre-screen-grade"
-          data-graded={graded ? "true" : "false"}
-          className={cn(PRE_SCREEN_CLASS, !graded && "border-dashed")}
+          data-testid="ai-match"
+          data-state={row.ai_match_state}
+          className={cn(AI_MATCH_CLASS, !graded && "border-dashed")}
         >
-          {/* An ungraded row says so in words. It is NOT rendered as `Hold`,
-              which is a graded outcome meaning a person should look. */}
-          {graded ? row.pre_screen_grade : "Not graded"}
-          <span className="sr-only"> {row.pre_screen_label}</span>
+          <span aria-hidden="true">{row.ai_match_label}</span>
+          {/* The whole meaning, spoken: the word, that it is the resume only,
+              and why when there is no word. */}
+          <span className="sr-only">{row.ai_match_screen_reader_label}</span>
         </span>
       </TooltipTrigger>
-      <TooltipContent className="max-w-xs">{row.pre_screen_label}</TooltipContent>
+      <TooltipContent className="max-w-xs">{row.ai_match_note}</TooltipContent>
     </Tooltip>
   );
 }
 
-/* ── Column 4: Ready Pick Score ──────────────────────────────────────────── */
+/* ── Column 4: Vivekium Grade ────────────────────────────────────────────── */
 
-export function ReadyPickScoreCell({ row }: { row: DashboardRow }) {
-  const scoreless = BANDS_WITHOUT_A_SCORE.has(row.band);
+export function ReadyPickGradeCell({ row }: { row: DashboardRow }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
-          data-testid="ready-pick-score"
-          data-band={row.band}
+          data-testid="ready-pick-grade"
+          data-state={row.ranking_state}
           className={cn(
             "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1",
-            BAND_CLASS[row.band] ?? BAND_CLASS[BAND_PENDING]
+            GRADE_CLASS[row.ranking_state] ?? GRADE_CLASS[STATE_NOT_CHECKED]
           )}
         >
-          {row.band === BAND_UNDER_REVIEW ? (
+          {row.ranking_state === STATE_UNDER_REVIEW ? (
             <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           ) : null}
-          <span className="font-mono text-[15px] font-bold leading-5">
-            {/* The Dashboard specification draws this placeholder as an em
-                dash. An em dash (U+2014) is forbidden in every string in this
-                product, so it is rendered as an en dash (U+2013) instead. The
-                forbidden character is deliberately not written in this comment:
-                the repo-wide sweep reads source, not intent. */}
-            {row.ready_pick_score === null ? "–" : row.ready_pick_score}
-          </span>
-          <span className="truncate text-[11px] font-bold leading-4">
-            {row.band_label}
+          <span aria-hidden="true" className="truncate text-[12px] font-bold leading-4">
+            {row.ranking_label}
           </span>
           <span
             aria-hidden="true"
@@ -153,23 +145,20 @@ export function ReadyPickScoreCell({ row }: { row: DashboardRow }) {
           />
           {/* The whole meaning, spoken. Colour and a dot carry none of it. */}
           <span className="sr-only">
-            {row.band_screen_reader_label}. {row.confidence_label}.
+            {row.ranking_screen_reader_label} {row.confidence_label}.
           </span>
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs space-y-1">
-        <p className="font-semibold">{row.band_label}</p>
+        <p className="font-semibold">{row.ranking_label}</p>
+        <p>{row.ranking_note}</p>
         <p>{row.confidence_label}</p>
-        {/* No fabricated interval. The specification asks for `82 [76 to 88]`
-            and nothing in the engine publishes one; a bracket invented here
-            would be a number with no provenance beside one that has some. */}
-        <p>{scoreless ? row.band_screen_reader_label : row.score_range_note}</p>
       </TooltipContent>
     </Tooltip>
   );
 }
 
-/* ── Column 5: Ready Pick Note ───────────────────────────────────────────── */
+/* ── Column 5: Vivekium Note ───────────────────────────────────────────── */
 
 export function NoteCell({ row }: { row: DashboardRow }) {
   return (
@@ -193,7 +182,7 @@ export function NoteCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 6: Ready Pick Profile ────────────────────────────────────────── */
+/* ── Column 6: Vivekium Profile ────────────────────────────────────────── */
 
 export function ProfileButton({
   row,
@@ -213,11 +202,11 @@ export function ProfileButton({
       className={cn("h-8", !available && "cursor-not-allowed")}
       aria-label={
         available
-          ? `Open the Ready Pick Profile for ${row.full_name}`
-          : `Ready Pick Profile not available for ${row.full_name}`
+          ? `Open the Vivekium Profile for ${row.full_name}`
+          : `Vivekium Profile not available for ${row.full_name}`
       }
     >
-      {available ? "Ready Pick Profile" : "Awaiting Profile"}
+      {available ? "Vivekium Profile" : "Awaiting Profile"}
     </Button>
   );
   if (available) return button;

@@ -1,442 +1,129 @@
-"""Composition: the ratio is enforced in code, and an invalid mix is never served.
+"""Composition: the budgeted mix is served exactly, and a shortfall is a record.
 
-    "The AI's assessment-composition logic must enforce this ratio. If a
-     generated assessment is mostly MCQs, that is a bug, not a configuration
-     choice." (spec section 1)
-
-    "Implement composition validation. After the AI generates an assessment,
-     validate it against these rules before serving it to the candidate. If
-     validation fails, regenerate. A generated assessment that is 70% MCQ must
-     be rejected by the system, not served." (spec section 3.2)
-
-So the assertions here are of three kinds, and the third is the one that
-actually protects the candidate:
-
-  1. `compose` produces a valid mix for every role and grade the product has.
-  2. `validate` REJECTS each of the six rules being broken, one at a time. A
-     validator is only worth having if each rule fails on its own; one that
-     passed everything would satisfy point 1 forever.
-  3. Whatever the model does or fails to do, what is SERVED is valid:
-     regeneration is attempted, and the deterministic fallback that follows it
-     is asserted to satisfy the validator by construction rather than by luck.
+SUPERSEDES the 2026-09-02 composition (evidence majority by weight and time,
+supporting share by grade, a per-grade duration the allocations were scaled
+to fit). Appendix B of the Vivekium release fixes the mix by COUNT instead:
+70/20/10 prose, coding and objective for a coding role, prose and objective
+otherwise, one question per skill above the grade's floor
+(`assessment_questions.budget`). The budget and the placement are pinned in
+`tests/test_question_budget_and_mix.py`; this module pins each rule the
+validator enforces, one at a time, because a validator is only worth having
+if every rule fails on its own, and the payload shapes every format stores.
 """
 from __future__ import annotations
 
 import uuid
-from types import SimpleNamespace
 
 import pytest
 
-from app.services import ppi
+from app.services.assessment_contract import ContractSkill
 from app.services.assessment_formats import composition
-from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
-
-GRADES = ("non_managerial", "managerial", "leadership", "cxo")
-CLASSIFICATIONS = ("STEM", "NON_STEM", None)
+from app.services.assessment_questions import budget
 
 
-def _competency(category: str, ordinal: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        category=category,
-        name=f"{category}-{ordinal}",
-        description=f"What {category}-{ordinal} measures.",
-        ordinal=ordinal,
-    )
-
-
-def _matrix(per_aspect: int = 5) -> list[SimpleNamespace]:
+def _skills(must: int = 2, nice: int = 1, behavioural: int = 2) -> list[ContractSkill]:
     return [
-        _competency(category, index + 1)
-        for category in ppi.CATEGORIES
-        for index in range(per_aspect)
+        ContractSkill(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, f"{bucket}-{priority}"),
+            name=f"{bucket} {priority}",
+            bucket=bucket,
+            priority=priority,
+            evidence_line=f"Evidence for {bucket} {priority}.",
+        )
+        for bucket, count in (("must_have", must), ("nice_to_have", nice), ("behavioural", behavioural))
+        for priority in range(1, count + 1)
     ]
 
 
-def _allocation(size: int, per_aspect: int = 5) -> list[SimpleNamespace]:
-    """What `ppi._allocate` hands the composer: one row per question, every
-    item probed at least once and the remainder repeating items."""
-    return ppi._allocate(_matrix(per_aspect), size, "non_managerial")
-
-
-def _anchor(slot: composition.Slot) -> None:
-    slot.resume_anchor = f"led the {slot.index} migration at a previous employer"
-
-
-def _anchor_all(slots: list[composition.Slot]) -> list[composition.Slot]:
+def _served(*, coding: bool = True, grade: str = "non_managerial") -> tuple[list[composition.Slot], budget.Mix, list[ContractSkill]]:
+    """A composition as the writers would leave it: every slot filled."""
+    skills = _skills()
+    total = budget.question_budget(grade, len(skills))
+    mix = budget.mix(total, coding=coding)
+    slots = composition.compose(composition.allocate(skills, total, stem=True), mix=mix, grade=grade)
     for slot in slots:
         if slot.question_type == types.EVIDENCE_BASED:
-            _anchor(slot)
-    return slots
+            slot.resume_anchor = f"Led the {slot.index} migration at a previous employer"
+        elif slot.question_type == types.CODING:
+            slot.coding_draft = object()
+        elif composition.family_of(slot.question_type) == composition.FAMILY_OBJECTIVE:
+            slot.payload = dict(_PAYLOADS[slot.question_type])
+    return slots, mix, skills
 
 
-# ── What `compose` produces ──────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("grade", GRADES)
-@pytest.mark.parametrize("classification", CLASSIFICATIONS)
-@pytest.mark.parametrize("size", (12, 18, 25))
-def test_every_composed_assessment_passes_its_own_validator(grade, classification, size) -> None:
-    """The property that matters: for every role this product can post, the
-    mix the composer decides is one the validator accepts."""
-    slots = composition.compose(_allocation(size), grade=grade, role_classification=classification)
-    assert len(slots) == size
-    _anchor_all(slots)
-    assert composition.validate(slots, grade, classification) == []
-
-
-@pytest.mark.parametrize("grade", GRADES)
-def test_evidence_carries_the_majority_of_weight_and_time(grade) -> None:
-    conf = format_config.get_config()
-    slots = composition.compose(_allocation(18), grade=grade, role_classification="STEM")
-    text = [slot for slot in slots if slot.question_type in types.TEXT_TYPES]
-    weight = sum(slot.weight for slot in text) / sum(slot.weight for slot in slots)
-    time = sum(slot.time_allocation_seconds for slot in text) / sum(
-        slot.time_allocation_seconds for slot in slots
-    )
-    assert weight >= conf.evidence_min_share
-    assert time >= conf.evidence_min_share
-
-
-@pytest.mark.parametrize("grade", GRADES)
-@pytest.mark.parametrize("classification", CLASSIFICATIONS)
-def test_evidence_dominates_the_part_that_can_be_anchored(grade, classification) -> None:
-    """Rule 1b, and the reason it exists beside rule 1.
-
-    Rule 1 counts SHORT_ANSWER on the evidence side, which is argued at the
-    point it is implemented. The consequence is that a large behavioural
-    dimension can leave EVIDENCE_BASED a minority of the whole assessment
-    while rule 1 passes: measured 2026-09-03, a managerial STEM role is 35.9%
-    evidence by weight.
-
-    On the Must-have and Nice-to-have slots there is no such argument. Every
-    one of them can be anchored to a resume claim, so the specification's
-    sentence has one reading, and this is where an assessment quietly filling
-    up with MCQs would show. Measured on the same run, the composer delivers
-    73.7% to 90.9% here, so the floor has real headroom.
-    """
-    conf = format_config.get_config()
-    slots = composition.compose(
-        _allocation(18), grade=grade, role_classification=classification
-    )
-    rubric_scored = [slot for slot in slots if slot.category != "behavioural"]
-    assert rubric_scored, "the matrix must have something anchorable in it"
-    evidence = [
-        slot for slot in rubric_scored if slot.question_type == types.EVIDENCE_BASED
-    ]
-    share = sum(slot.weight for slot in evidence) / sum(
-        slot.weight for slot in rubric_scored
-    )
-    assert share >= conf.evidence_min_share, (
-        f"{grade}/{classification}: evidence carries {share:.1%} of the "
-        "anchorable weight"
-    )
-
-
-def test_an_anchorable_half_filled_with_mcqs_is_rejected() -> None:
-    """The failure rule 1b catches and rule 1 does not.
-
-    Behavioural short answers carry the whole assessment past rule 1 while
-    every Must-have and Nice-to-have slot has become a supporting format. That
-    is section 1's "mostly MCQs is a bug, not a configuration choice", hidden
-    behind a dimension that is prose by product decision.
-    """
-    slots = composition.compose(_allocation(18), grade="managerial", role_classification="STEM")
-    for slot in slots:
-        if slot.category != "behavioural":
-            composition._apply_type(slot, types.MCQ_SINGLE)
-            slot.resume_anchor = None
-    failures = composition.validate(slots, grade="managerial", role_classification="STEM")
-    assert any("can be anchored" in failure for failure in failures), failures
-
-
-@pytest.mark.parametrize("grade", GRADES)
-def test_the_supporting_formats_are_a_bounded_minority_of_the_count(grade) -> None:
-    conf = format_config.get_config()
-    slots = composition.compose(_allocation(20), grade=grade, role_classification="STEM")
-    supporting = [slot for slot in slots if slot.question_type in types.SUPPORTING_TYPES]
-    assert len(supporting) <= 20 * conf.supporting_share_for(grade)
-    assert len(supporting) * 2 < len(slots)
-
-
-def test_a_senior_role_skews_further_toward_evidence() -> None:
-    """Rule 4: "Senior roles skew further toward evidence and away from
-    recall-style MCQs"."""
-    junior = composition.compose(_allocation(20), grade="non_managerial", role_classification="STEM")
-    senior = composition.compose(_allocation(20), grade="leadership", role_classification="STEM")
-    junior_supporting = [s for s in junior if s.question_type in types.SUPPORTING_TYPES]
-    senior_supporting = [s for s in senior if s.question_type in types.SUPPORTING_TYPES]
-    assert len(senior_supporting) < len(junior_supporting)
-    # And the most recall-shaped format is not offered at all at a senior grade.
-    assert types.MCQ_SINGLE not in {slot.question_type for slot in senior_supporting}
-
-
-def test_only_a_stem_role_is_asked_to_write_code() -> None:
-    """Rule 4: "Engineering roles may include coding; non-technical roles must
-    not"."""
-    for grade in GRADES:
-        assert types.CODING in composition.supporting_types_for(grade, "STEM")
-        for classification in ("NON_STEM", None, "unknown"):
-            assert types.CODING not in composition.supporting_types_for(grade, classification)
-            slots = composition.compose(
-                _allocation(20), grade=grade, role_classification=classification
-            )
-            assert types.CODING not in {slot.question_type for slot in slots}
-
-
-def test_a_behavioural_competency_is_always_answered_in_prose() -> None:
-    """A checkbox cannot establish a behaviour, and a behavioural item is
-    graded by judgement across everything said about it."""
-    for grade in GRADES:
-        slots = composition.compose(_allocation(25), grade=grade, role_classification="STEM")
-        behavioural = [slot for slot in slots if slot.category == ppi.CATEGORY_BEHAVIOURAL]
-        assert behavioural
-        assert {slot.question_type for slot in behavioural} == {types.SHORT_ANSWER}
-
-
-def test_no_item_is_asked_the_same_structured_format_twice() -> None:
-    slots = composition.compose(_allocation(25), grade="non_managerial", role_classification="STEM")
-    pairs = [
-        (slot.competency_id, slot.question_type)
-        for slot in slots
-        if slot.question_type in types.SUPPORTING_TYPES
-    ]
-    assert len(pairs) == len(set(pairs))
-
-
-def test_every_item_keeps_at_least_one_open_ended_probe() -> None:
-    """An item probed once must not have its only question turned into a
-    checkbox: the report grades that item, and an MCQ cannot establish it."""
-    allocation = _allocation(18)
-    slots = composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    by_item: dict[uuid.UUID, list[str]] = {}
-    for slot in slots:
-        by_item.setdefault(slot.competency_id, []).append(slot.question_type)
-    for item_id, formats in by_item.items():
-        if len(formats) == 1 and formats[0] in types.SUPPORTING_TYPES:
-            # Permitted only where the budget forced it, and never for the
-            # aspect the role cannot be performed without.
-            category = next(slot.category for slot in slots if slot.competency_id == item_id)
-            assert category == ppi.CATEGORY_NICE_TO_HAVE, formats
-
-
-def test_the_assessment_fits_the_role_duration() -> None:
-    conf = format_config.get_config()
-    for grade in GRADES:
-        slots = composition.compose(_allocation(25), grade=grade, role_classification="STEM")
-        assert sum(slot.time_allocation_seconds for slot in slots) <= conf.duration_for(grade)
-
-
-def test_the_format_mix_is_the_same_for_two_candidates_on_one_job() -> None:
-    """The comparability guarantee. What varies per candidate is the CONTENT
-    the model writes into each slot, never which formats there are."""
-    allocation = _allocation(18)
-    first = composition.compose(allocation, grade="managerial", role_classification="STEM")
-    second = composition.compose(allocation, grade="managerial", role_classification="STEM")
-    assert [slot.question_type for slot in first] == [slot.question_type for slot in second]
-    assert [slot.time_allocation_seconds for slot in first] == [
-        slot.time_allocation_seconds for slot in second
-    ]
-
-
-# ── What `validate` refuses, one rule at a time ──────────────────────────────
-
-
-def _valid_slots(size: int = 18) -> list[composition.Slot]:
-    return _anchor_all(
-        composition.compose(_allocation(size), grade="non_managerial", role_classification="STEM")
-    )
-
-
-def _hand_built(counts: dict[str, int]) -> list[composition.Slot]:
-    """An assessment with exactly this format mix, weighted and timed from
-    the config. Built by hand rather than by mutating a composed one, so the
-    arithmetic each rule reads is visible in the test."""
-    conf = format_config.get_config()
-    slots: list[composition.Slot] = []
-    for question_type, count in counts.items():
-        for _ in range(count):
-            index = len(slots)
-            slot = composition.Slot(
-                index=index,
-                competency_id=uuid.uuid4(),
-                category=(
-                    ppi.CATEGORY_MUST_HAVE
-                    if question_type != types.SHORT_ANSWER
-                    else ppi.CATEGORY_BEHAVIOURAL
-                ),
-                question_type=question_type,
-                weight=conf.weight_by_type[question_type],
-                time_allocation_seconds=conf.time_seconds_by_type[question_type],
-            )
-            if question_type == types.EVIDENCE_BASED:
-                _anchor(slot)
-            slots.append(slot)
-    return slots
-
-
-def test_an_assessment_the_supporting_formats_dominate_is_rejected() -> None:
-    """THE HEADLINE RULE, in the form that breaks every measure of it at once:
-    five coding questions against four evidence questions carries most of the
-    weight AND most of the time on the supporting side."""
-    slots = _hand_built({types.EVIDENCE_BASED: 4, types.CODING: 5})
-    failures = composition.validate(slots, "non_managerial", "STEM")
-    assert any("majority of the assessment's weight" in reason for reason in failures)
-    assert any("majority of the assessment's time" in reason for reason in failures)
-    assert any("share of the question count" in reason for reason in failures)
-
-
-def test_a_mostly_mcq_assessment_is_rejected_even_though_it_is_quick() -> None:
-    """WHY THE COUNT RULE EXISTS BESIDE THE WEIGHT AND TIME RULES.
-
-    Eleven MCQs against four evidence questions is the "70% MCQ" assessment
-    the specification says must be rejected -- and because an MCQ is quick,
-    the four evidence questions still carry most of the assessment's MINUTES.
-    A validator that only measured time and weight would serve it. The count
-    rule is what catches it, and this test is the reason that rule is not
-    redundant.
-    """
-    slots = _hand_built({types.EVIDENCE_BASED: 4, types.MCQ_SINGLE: 11})
-    text_time = sum(
-        slot.time_allocation_seconds
-        for slot in slots
-        if slot.question_type in types.TEXT_TYPES
-    )
-    total_time = sum(slot.time_allocation_seconds for slot in slots)
-    assert text_time / total_time >= format_config.get_config().evidence_min_share, (
-        "this fixture is meant to pass the time rule and fail the count rule"
-    )
-    failures = composition.validate(slots, "non_managerial", "STEM")
-    assert any("share of the question count" in reason for reason in failures)
-    assert any("minority of the assessment" in reason for reason in failures)
-
-
-def test_an_unanchored_evidence_question_is_rejected() -> None:
-    """Rule 2. An evidence question with no anchor is the generic "tell me
-    about a challenge" the format exists to forbid."""
-    slots = _valid_slots()
-    evidence = next(slot for slot in slots if slot.question_type == types.EVIDENCE_BASED)
-    evidence.resume_anchor = None
-    assert any("not anchored" in reason for reason in composition.validate(slots, "non_managerial", "STEM"))
-    # And a one-word "anchor" is not an anchor.
-    evidence.resume_anchor = "Kafka"
-    assert any("not anchored" in reason for reason in composition.validate(slots, "non_managerial", "STEM"))
-
-
-def test_two_questions_probing_the_same_resume_item_are_rejected() -> None:
-    """Rule 5. The candidate would visibly be asked about one project twice."""
-    slots = _valid_slots()
-    evidence = [slot for slot in slots if slot.question_type == types.EVIDENCE_BASED]
-    evidence[1].resume_anchor = evidence[0].resume_anchor
-    assert any(
-        "same resume item" in reason for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
-    # Whitespace and case are not a way around it.
-    evidence[1].resume_anchor = f"  {evidence[0].resume_anchor.upper()}  "
-    assert any(
-        "same resume item" in reason for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
-
-
-def test_two_structured_questions_of_one_format_on_one_item_are_rejected() -> None:
-    conf = format_config.get_config()
-    slots = _valid_slots(25)
-    supporting = [slot for slot in slots if slot.question_type in types.SUPPORTING_TYPES]
-    assert len(supporting) >= 2
-    supporting[1].competency_id = supporting[0].competency_id
-    supporting[1].question_type = supporting[0].question_type
-    supporting[1].weight = conf.weight_by_type[supporting[0].question_type]
-    assert any(
-        "same format probe the same competency" in reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
-
-
-def test_a_coding_question_on_a_non_technical_role_is_rejected() -> None:
-    conf = format_config.get_config()
-    slots = _valid_slots()
-    slots[0].question_type = types.CODING
-    slots[0].weight = conf.weight_by_type[types.CODING]
-    slots[0].time_allocation_seconds = conf.time_seconds_by_type[types.CODING]
-    slots[0].resume_anchor = None
-    assert any(
-        "not permitted for this role" in reason
-        for reason in composition.validate(slots, "non_managerial", "NON_STEM")
-    )
-
-
-def test_a_structured_behavioural_question_is_rejected() -> None:
-    slots = _valid_slots()
-    behavioural = next(slot for slot in slots if slot.category == ppi.CATEGORY_BEHAVIOURAL)
-    behavioural.question_type = types.MCQ_SINGLE
-    behavioural.resume_anchor = None
-    assert any(
-        "answered in prose only" in reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
-
-
-def test_an_assessment_longer_than_the_role_duration_is_rejected() -> None:
-    conf = format_config.get_config()
-    slots = _valid_slots()
-    slots[0].time_allocation_seconds = conf.duration_for("non_managerial") + 1
-    assert any(
-        "does not fit the role's duration" in reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
+def test_a_served_composition_validates() -> None:
+    slots, mix, skills = _served()
+    assert composition.validate(slots, mix=mix, skills=skills) == []
 
 
 def test_an_empty_assessment_is_rejected() -> None:
-    assert composition.validate([], "non_managerial", "STEM") == ["the assessment has no questions"]
+    assert composition.validate([], mix=budget.Mix(0, 0, 0), skills=[]) == [
+        "the assessment has no questions"
+    ]
 
 
-# ── The deterministic fallback ───────────────────────────────────────────────
+def test_an_unanchored_evidence_question_is_rejected() -> None:
+    slots, mix, skills = _served()
+    next(slot for slot in slots if slot.question_type == types.EVIDENCE_BASED).resume_anchor = "led"
+    assert any("not anchored" in failure for failure in composition.validate(slots, mix=mix, skills=skills))
 
 
-@pytest.mark.parametrize("grade", GRADES)
-@pytest.mark.parametrize("classification", ("STEM", "NON_STEM"))
-@pytest.mark.parametrize("size", (12, 20, 25))
-def test_the_fallback_is_always_valid(grade, classification, size) -> None:
-    """WHAT IS SERVED IS ALWAYS VALID. The fallback is the last thing between
-    a failed generation and a candidate, so its validity is asserted rather
-    than argued: no supporting rows, no unanchored evidence rows, nothing for
-    a rule to catch.
-    """
-    slots = composition.compose(_allocation(size), grade=grade, role_classification=classification)
-    # Nothing was anchored and nothing was filled: the worst case, a model
-    # that produced nothing usable at all.
-    composition.fall_back(slots, grade)
-    assert {slot.question_type for slot in slots} == {types.SHORT_ANSWER}
-    assert all(slot.resume_anchor is None for slot in slots)
-    assert all(slot.payload == {} for slot in slots)
-    assert composition.validate(slots, grade, classification) == []
+def test_two_questions_probing_the_same_resume_item_are_rejected() -> None:
+    slots, mix, skills = _served()
+    evidence = [slot for slot in slots if slot.question_type == types.EVIDENCE_BASED]
+    evidence[1].resume_anchor = evidence[0].resume_anchor
+    assert "two questions probe the same resume item" in composition.validate(slots, mix=mix, skills=skills)
+
+
+def test_a_structured_behavioural_question_is_rejected() -> None:
+    slots, mix, skills = _served()
+    behavioural = next(slot for slot in slots if slot.category == "behavioural")
+    behavioural.question_type = types.MCQ_SINGLE
+    behavioural.planned_family = composition.FAMILY_OBJECTIVE
+    assert "a behavioural skill is answered in prose only" in composition.validate(
+        slots, mix=mix, skills=skills
+    )
+
+
+def test_a_coding_question_on_a_role_planned_without_coding_is_rejected() -> None:
+    slots, mix, skills = _served(coding=False)
+    target = next(slot for slot in slots if slot.question_type == types.EVIDENCE_BASED)
+    target.question_type = types.CODING
+    target.coding_draft = object()
+    failures = composition.validate(slots, mix=mix, skills=skills)
+    assert "this role is not given coding questions" in failures
+
+
+def test_an_objective_question_with_no_valid_payload_is_rejected() -> None:
+    slots, mix, skills = _served()
+    next(slot for slot in slots if slot.planned_family == composition.FAMILY_OBJECTIVE).payload = {}
+    assert any("no valid payload" in failure for failure in composition.validate(slots, mix=mix, skills=skills))
+
+
+def test_a_plan_that_is_not_the_budgeted_mix_is_rejected() -> None:
+    slots, _, skills = _served()
+    wrong = budget.Mix(prose=len(slots), coding=0, objective=0)
+    assert any("is not the budgeted mix" in failure for failure in composition.validate(slots, mix=wrong, skills=skills))
 
 
 def test_the_fallback_keeps_an_anchored_evidence_question() -> None:
-    """It reverts what the model could not do, not what it did. An anchored
-    evidence question is the format the whole assessment is built around."""
-    slots = composition.compose(_allocation(18), grade="non_managerial", role_classification="STEM")
-    _anchor_all(slots)
-    composition.fall_back(slots, "non_managerial")
-    kept = [slot for slot in slots if slot.question_type == types.EVIDENCE_BASED]
-    assert kept, "an anchored evidence question was thrown away"
-    assert all(slot.resume_anchor for slot in kept)
-    assert composition.validate(slots, "non_managerial", "STEM") == []
+    slots, mix, skills = _served()
+    anchored = next(slot for slot in slots if slot.question_type == types.EVIDENCE_BASED)
+    composition.fall_back(slots, [f"prose {slot.index}" for slot in slots], generated=[True] * len(slots))
+    assert anchored.question_type == types.EVIDENCE_BASED
+    assert anchored.resume_anchor
+    assert composition.validate(slots, mix=mix, skills=skills) == []
 
 
-def test_reverting_a_slot_drops_its_payload_and_its_anchor() -> None:
-    """A short-answer row carrying an anchor would claim a provenance it does
-    not have, and one carrying a payload would be a question with an answer
-    key nobody reads."""
-    slots = composition.compose(_allocation(18), grade="non_managerial", role_classification="STEM")
-    slot = next(s for s in slots if s.question_type in types.SUPPORTING_TYPES)
-    slot.payload = {"options": []}
-    slot.rubric = {"misconceptions": {}}
-    slot.resume_anchor = "something"
-    composition.revert_to_text(slot)
+def test_degrading_a_slot_drops_its_payload_anchor_and_draft() -> None:
+    slots, _, _ = _served()
+    slot = next(slot for slot in slots if slot.question_type == types.CODING)
+    slot.rubric = {"criteria": []}
+    composition.degrade_to_prose(slot, "generation_failed", "Tell me.", generated=False)
     assert slot.question_type == types.SHORT_ANSWER
     assert slot.payload == {} and slot.rubric is None and slot.resume_anchor is None
+    assert slot.coding_draft is None and slot.generated is False
 
 
 # ── Payload serialisation, every type ────────────────────────────────────────

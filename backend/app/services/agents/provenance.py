@@ -26,9 +26,9 @@ spec-doc6 4.1. Not per agent, not per task, not per dispatch: one id for
 the whole flow. `Envelope.child` copies it rather than re-minting, which is what
 makes a sub-task joinable to its parent's flow instead of merely adjacent to it.
 
-It is DERIVED from the row the flow belongs to -- `job-<job id hex>` for a
-hiring flow, `dna-<artifact id hex>` for a Company DNA intake, which begins
-before any job exists. Derivation rather than a fresh uuid buys two things. The
+It is DERIVED from the row the flow belongs to: `job-<job id hex>` for a
+hiring flow, which is every flow this product issues today. Derivation
+rather than a fresh uuid buys two things. The
 id is stable across a re-run, so a rescore joins to the same flow instead of
 opening a second one that looks like a different candidate. And it is
 RECONSTRUCTIBLE: given a job row, an operator can compute the id and query the
@@ -82,7 +82,6 @@ __all__ = [
     "STAGE_SCORING",
     "STAGE_SWOT",
     "StageRecord",
-    "correlation_for_dna",
     "correlation_for_job",
     "is_correlation_id",
     "log_fields",
@@ -102,10 +101,15 @@ A2A_CONTRACT_FIELDS: tuple[str, ...] = (
     "correlation_id",
 )
 
-#: What a flow can be anchored to. A hiring flow is anchored to its job; a
-#: Company DNA intake begins before any job exists and is anchored to the
-#: artifact instead. Two kinds and no more: a third would mean a flow whose
-#: anchor a reader has to guess at.
+#: What a flow can be anchored to. Everything issued today is anchored to its
+#: job, and `job` is the only kind anything ISSUES.
+#:
+#: `dna` is retained as a RECOGNISED kind with no issuer. A client-level intake
+#: that began before any job existed used to be anchored to its own artifact,
+#: and `agent_execution_traces` and audit rows written before 2026-09-09 still
+#: carry those ids. Dropping the kind would make `is_correlation_id` answer
+#: False for a stored value that is perfectly well formed, which is a reader
+#: silently deciding that history is corrupt.
 CORRELATION_KINDS: tuple[str, ...] = ("job", "dna")
 
 _HEX = frozenset("0123456789abcdef")
@@ -129,16 +133,6 @@ def correlation_for_job(job_id: Any) -> str:
     `jobs.correlation_id` for every job that predates the flow.
     """
     return _correlation("job", job_id)
-
-
-def correlation_for_dna(company_dna_id: Any) -> str:
-    """The correlation id for a Company DNA intake session.
-
-    A separate anchor because Layer 2 intake happens before any job exists, and
-    an intake correlated to a job would have to pick one arbitrarily out of
-    every job that client will ever post.
-    """
-    return _correlation("dna", company_dna_id)
 
 
 def is_correlation_id(value: Any) -> bool:
@@ -330,7 +324,7 @@ class Ledger:
         """Everything wrong with this flow's provenance. Empty is healthy.
 
         A list rather than an exception because a reader wants all of it at
-        once, the same posture `orchestration_checks.structural_invariants`
+        once, the same posture `import_graph.structural_invariants`
         takes.
         """
         out: list[str] = []

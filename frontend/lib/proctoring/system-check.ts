@@ -195,6 +195,11 @@ export async function runSystemCheck(
           lastFrame = frame;
         },
         identityChecks: false,
+        // No session exists yet, so there is no pause to open: a camera that
+        // drops during the check simply produces no frames, and the check
+        // fails with the fix instruction for that.
+        onLost: () => undefined,
+        onRecovered: () => undefined,
         navigator: nav,
         document: win.document,
       });

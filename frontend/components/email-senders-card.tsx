@@ -3,26 +3,34 @@
 // Corporate email senders (Corporate Email System spec, 2026-09-05).
 //
 // The org Settings surface for registering business mailboxes as authorized
-// automated-email senders. The flow the dialogs drive is the spec's own:
-// add sender -> business email check (server-side blocklist, errors surfaced
-// verbatim) -> six-digit code sent to the mailbox -> POC enters the code ->
-// ownership verified -> the client Super Admin authorizes -> Active.
+// automated-email senders. The flow: add sender -> business email check
+// (server-side blocklist, errors surfaced verbatim) -> the client Super Admin
+// authorizes -> Active. The six-digit mailbox code this comment used to
+// describe was withdrawn on 2026-09-08 (see the note at the end of the file),
+// and the Add dialog kept promising it until the vivekium release.
 //
 // Status is always a WORD CHIP, never an icon alone and never a number. The
 // server says what the caller may do (can_manage / can_authorize), so this
 // renders only reachable controls instead of guessing at roles.
+//
+// THE DEFAULT SENDER (vivekium release, Phase 6)
+// `email_log.sender_id` was never written, so a company that registered and
+// approved a corporate mailbox still had every email leave from the platform
+// mailbox. The server now resolves a sender for EVERY candidate email: the one
+// a recruiter picked, else the tenant's default, else the platform mailbox.
+// This card is where the default is chosen. Only an ACTIVE sender can hold it,
+// and the server clears it when the sender stops being active, so a revoked
+// mailbox can never keep sending by default.
 
 import * as React from "react";
 import { Mail, Plus } from "lucide-react";
 
-import { ApiError, apiGet, apiPost } from "@/lib/api";
+import { ApiError, apiDelete, apiGet, apiPost } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import type {
   EmailSender,
   EmailSenderList,
-  EmailSenderOtpIssue,
   EmailSenderStatus,
-  EmailSenderVerifyResult,
 } from "@/lib/types";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,18 +46,94 @@ import { FormField } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/components/ui/toast";
-import { InlineError, Section } from "@/components/page-primitives";
+import { EmptyState, InlineError, Section } from "@/components/page-primitives";
 
 const STATUS_CHIP: Record<
   EmailSenderStatus,
   { label: string; variant: BadgeProps["variant"] }
 > = {
-  pending_verification: { label: "Awaiting verification", variant: "outline" },
-  email_verified: { label: "Verified", variant: "secondary" },
+  // WORDS THE CLIENT'S SUPER ADMIN ACTUALLY USES. Every one of these
+  // describes the company's own decision; none names a provider, an identity
+  // or a verification mechanism.
+  pending_verification: { label: "Awaiting approval", variant: "outline" },
   active: { label: "Active", variant: "brand" },
-  verification_expired: { label: "Verification expired", variant: "muted" },
-  disabled: { label: "Disabled", variant: "muted" },
-  revoked: { label: "Revoked", variant: "destructive" },
+  disabled: { label: "Paused", variant: "muted" },
+  revoked: { label: "Removed", variant: "destructive" },
+  rejected: { label: "Rejected", variant: "destructive" },
+  // Legacy, from before the mailbox code was withdrawn. Rows still carry
+  // these, and a status with no chip renders as an empty badge.
+  email_verified: { label: "Awaiting approval", variant: "outline" },
+  verification_expired: { label: "Awaiting approval", variant: "outline" },
+};
+
+// The states a Super Admin decision is still outstanding on. The two OTP
+// states are here because rows written before the code was withdrawn still
+// carry them, and those senders must remain decidable rather than stranded.
+const AWAITING_DECISION = [
+  "pending_verification",
+  "email_verified",
+  "verification_expired",
+];
+
+// Every control on a sender row, as data: where it posts, and the two
+// sentences the person is told. Written out whole rather than built from a
+// verb, because "Could not " + "Approved".toLowerCase() is how this card used
+// to tell somebody it "could not approved this sender".
+type SenderAction =
+  | "approve"
+  | "reject"
+  | "disable"
+  | "enable"
+  | "revoke"
+  | "makeDefault"
+  | "clearDefault";
+
+const SENDER_ACTIONS: Record<
+  SenderAction,
+  { path: string; method: "post" | "delete"; done: string; failed: string }
+> = {
+  approve: {
+    path: "approve",
+    method: "post",
+    done: "Approved",
+    failed: "Could not approve this sender",
+  },
+  reject: {
+    path: "reject",
+    method: "post",
+    done: "Rejected",
+    failed: "Could not reject this sender",
+  },
+  disable: {
+    path: "disable",
+    method: "post",
+    done: "Paused",
+    failed: "Could not pause this sender",
+  },
+  enable: {
+    path: "enable",
+    method: "post",
+    done: "Enabled",
+    failed: "Could not enable this sender",
+  },
+  revoke: {
+    path: "revoke",
+    method: "post",
+    done: "Removed",
+    failed: "Could not remove this sender",
+  },
+  makeDefault: {
+    path: "default",
+    method: "post",
+    done: "Default sender set",
+    failed: "Could not make this the default sender",
+  },
+  clearDefault: {
+    path: "default",
+    method: "delete",
+    done: "Default sender cleared",
+    failed: "Could not stop using this as the default sender",
+  },
 };
 
 export function EmailSendersCard() {
@@ -61,8 +145,6 @@ export function EmailSendersCard() {
   const [hidden, setHidden] = React.useState(false);
 
   const [addOpen, setAddOpen] = React.useState(false);
-  const [otpSender, setOtpSender] = React.useState<EmailSender | null>(null);
-  const [cooldownUntil, setCooldownUntil] = React.useState(0);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = React.useState<string | null>(
     null
@@ -85,46 +167,27 @@ export function EmailSendersCard() {
     void load();
   }, [load]);
 
-  const armCooldown = (seconds: number) => {
-    setCooldownUntil(Date.now() + seconds * 1000);
-  };
-
-  const act = async (sender: EmailSender, action: string, label: string) => {
+  const act = async (sender: EmailSender, action: SenderAction) => {
+    const spec = SENDER_ACTIONS[action];
     setBusyId(sender.id);
     try {
-      await apiPost<EmailSender>(`/email-senders/${sender.id}/${action}`);
-      toast({ title: `${label}: ${sender.email}` });
+      const path = `/email-senders/${sender.id}/${spec.path}`;
+      if (spec.method === "delete") {
+        await apiDelete<EmailSender>(path);
+      } else {
+        await apiPost<EmailSender>(path);
+      }
+      toast({ title: `${spec.done}: ${sender.email}` });
       await load();
     } catch (error) {
       toast({
-        title: `Could not ${label.toLowerCase()} this sender`,
+        title: spec.failed,
         description: apiErrorMessage(error),
         variant: "destructive",
       });
     } finally {
       setBusyId(null);
       setConfirmRevokeId(null);
-    }
-  };
-
-  const resend = async (sender: EmailSender, openDialog: boolean) => {
-    setBusyId(sender.id);
-    try {
-      const issued = await apiPost<EmailSenderOtpIssue>(
-        `/email-senders/${sender.id}/resend-otp`
-      );
-      armCooldown(issued.resend_cooldown_seconds);
-      toast({ title: `Code sent to ${sender.email}` });
-      await load();
-      if (openDialog) setOtpSender({ ...sender, status: issued.status });
-    } catch (error) {
-      toast({
-        title: "Could not send a code",
-        description: apiErrorMessage(error),
-        variant: "destructive",
-      });
-    } finally {
-      setBusyId(null);
     }
   };
 
@@ -136,7 +199,7 @@ export function EmailSendersCard() {
   return (
     <Section
       title="Email senders"
-      description="Business mailboxes your company has authorized for automated recruitment email. ReadyPick never asks for a mailbox password: ownership is proven by a code sent to the address."
+      description="Business mailboxes your company has authorized to send recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it. Email that does not name a sender goes out from your default sender, or from the Vivekium mailbox when none is set."
       actions={
         <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" aria-hidden="true" /> Add sender
@@ -147,13 +210,12 @@ export function EmailSendersCard() {
       {loadError ? <InlineError>{loadError}</InlineError> : null}
 
       {data && senders.length === 0 ? (
-        <div className="flex items-center gap-3 rounded-xl border border-border bg-secondary px-4 py-3 text-sm">
-          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>
-            No senders yet. Add a business address like hr@yourcompany.com to
-            send automated email under your own identity.
-          </span>
-        </div>
+        <EmptyState
+          icon={Mail}
+          title="No senders yet"
+          description="Add a business address like hr@yourcompany.com to send automated email under your own identity."
+          className="py-10"
+        />
       ) : null}
 
       {senders.map((sender, index) => {
@@ -169,37 +231,53 @@ export function EmailSendersCard() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={chip.variant}>{chip.label}</Badge>
-                {sender.status === "pending_verification" ? (
+                {sender.is_default ? (
+                  <Badge variant="outline">Default sender</Badge>
+                ) : null}
+                {canAuthorize &&
+                sender.status === "active" &&
+                !sender.is_default ? (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => setOtpSender(sender)}
+                    onClick={() => void act(sender, "makeDefault")}
                   >
-                    Enter code
+                    Make default
                   </Button>
                 ) : null}
-                {sender.status === "verification_expired" ? (
+                {canAuthorize && sender.is_default ? (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => void resend(sender, true)}
+                    onClick={() => void act(sender, "clearDefault")}
                   >
-                    Send a new code
+                    Stop using as default
                   </Button>
                 ) : null}
-                {canAuthorize && sender.status === "email_verified" ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void act(sender, "authorize", "Authorized")}
-                  >
-                    Authorize
-                  </Button>
+                {canAuthorize && AWAITING_DECISION.includes(sender.status) ? (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void act(sender, "approve")}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void act(sender, "reject")}
+                    >
+                      Reject
+                    </Button>
+                  </>
                 ) : null}
                 {canAuthorize && sender.status === "active" ? (
                   <Button
@@ -207,7 +285,7 @@ export function EmailSendersCard() {
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => void act(sender, "disable", "Disabled")}
+                    onClick={() => void act(sender, "disable")}
                   >
                     Disable
                   </Button>
@@ -218,22 +296,20 @@ export function EmailSendersCard() {
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => void act(sender, "enable", "Enabled")}
+                    onClick={() => void act(sender, "enable")}
                   >
                     Enable
                   </Button>
                 ) : null}
                 {canAuthorize &&
-                ["active", "disabled", "email_verified"].includes(
-                  sender.status
-                ) ? (
+                ["active", "disabled"].includes(sender.status) ? (
                   confirmRevokeId === sender.id ? (
                     <Button
                       type="button"
                       variant="destructive"
                       size="sm"
                       disabled={busy}
-                      onClick={() => void act(sender, "revoke", "Revoked")}
+                      onClick={() => void act(sender, "revoke")}
                     >
                       Confirm revoke
                     </Button>
@@ -258,21 +334,12 @@ export function EmailSendersCard() {
       <AddSenderDialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        onCreated={(sender, issued) => {
+        onCreated={() => {
           setAddOpen(false);
-          armCooldown(issued.resend_cooldown_seconds);
           void load();
-          setOtpSender(sender);
         }}
       />
 
-      <VerifyOtpDialog
-        sender={otpSender}
-        cooldownUntil={cooldownUntil}
-        onResend={(sender) => void resend(sender, false)}
-        onClose={() => setOtpSender(null)}
-        onSettled={() => void load()}
-      />
     </Section>
   );
 }
@@ -284,7 +351,7 @@ function AddSenderDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreated: (sender: EmailSender, issued: EmailSenderOtpIssue) => void;
+  onCreated: (sender: EmailSender) => void;
 }) {
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -308,23 +375,14 @@ function AddSenderDialog({
     setSaving(true);
     setError(null);
     try {
-      const issued = await apiPost<EmailSenderOtpIssue>("/email-senders", {
-        name: name.trim(),
-        email: email.trim(),
-      });
+      // The server returns the sender it created, including whether the
+      // address can actually send. Reusing that beats reconstructing a row
+      // here from what was typed: the eligibility half cannot be guessed.
       onCreated(
-        {
-          id: issued.sender_id,
+        await apiPost<EmailSender>("/email-senders", {
           name: name.trim(),
-          email: email.trim().toLowerCase(),
-          status: issued.status,
-          email_verified: false,
-          authorized_by: null,
-          authorized_at: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        issued
+          email: email.trim(),
+        })
       );
     } catch (err) {
       // The blocklist refusal names the domain; show it verbatim.
@@ -340,8 +398,8 @@ function AddSenderDialog({
         <DialogHeader>
           <DialogTitle>Add a sender</DialogTitle>
           <DialogDescription>
-            A six-digit code will be sent to this address to prove your company
-            controls the mailbox. Personal email providers are not accepted.
+            Personal email providers are not accepted. The address stays
+            pending until your Super Admin approves it.
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={submit} noValidate>
@@ -377,7 +435,7 @@ function AddSenderDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? "Sending code" : "Add and send code"}
+              {saving ? "Adding" : "Add sender"}
             </Button>
           </DialogFooter>
         </form>
@@ -386,138 +444,8 @@ function AddSenderDialog({
   );
 }
 
-function VerifyOtpDialog({
-  sender,
-  cooldownUntil,
-  onResend,
-  onClose,
-  onSettled,
-}: {
-  sender: EmailSender | null;
-  cooldownUntil: number;
-  onResend: (sender: EmailSender) => void;
-  onClose: () => void;
-  onSettled: () => void;
-}) {
-  const { toast } = useToast();
-  const [code, setCode] = React.useState("");
-  const [checking, setChecking] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [secondsLeft, setSecondsLeft] = React.useState(0);
-
-  React.useEffect(() => {
-    if (sender) {
-      setCode("");
-      setError(null);
-    }
-  }, [sender]);
-
-  // The resend countdown, ticking once a second while the dialog is open.
-  React.useEffect(() => {
-    if (!sender) return;
-    const tick = () =>
-      setSecondsLeft(Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000)));
-    tick();
-    const interval = window.setInterval(tick, 1000);
-    return () => window.clearInterval(interval);
-  }, [sender, cooldownUntil]);
-
-  if (!sender) return null;
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!/^[0-9]{6}$/.test(code)) {
-      setError("Enter the six-digit code from the email.");
-      return;
-    }
-    setChecking(true);
-    setError(null);
-    try {
-      const result = await apiPost<EmailSenderVerifyResult>(
-        `/email-senders/${sender.id}/verify-otp`,
-        { code }
-      );
-      if (result.verified) {
-        toast({ title: `${sender.email} verified` });
-        onSettled();
-        onClose();
-        return;
-      }
-      if (result.reason === "mismatch") {
-        setError(
-          result.attempts_remaining === 1
-            ? "That code is not correct. One attempt left."
-            : `That code is not correct. ${result.attempts_remaining} attempts left.`
-        );
-      } else if (result.reason === "expired") {
-        setError("That code has expired. Send a new one to try again.");
-        onSettled();
-      } else if (result.reason === "attempts_exhausted") {
-        setError("Too many incorrect attempts. Send a new code to try again.");
-      } else {
-        setError("No code is outstanding for this sender. Send a new one.");
-      }
-    } catch (err) {
-      setError(apiErrorMessage(err));
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  return (
-    <Dialog open onOpenChange={(next) => (!next ? onClose() : null)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Verify {sender.email}</DialogTitle>
-          <DialogDescription>
-            Enter the six-digit code that was emailed to this mailbox. The code
-            expires after a few minutes and allows three attempts.
-          </DialogDescription>
-        </DialogHeader>
-        <form className="space-y-4" onSubmit={submit} noValidate>
-          <FormField label="Verification code" htmlFor="sender-otp" required>
-            <Input
-              id="sender-otp"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={code}
-              disabled={checking}
-              onChange={(e) =>
-                setCode(e.target.value.replace(/[^0-9]/g, "").slice(0, 6))
-              }
-              placeholder="123456"
-              className="text-center text-lg tracking-[0.5em]"
-            />
-          </FormField>
-          {error ? <InlineError>{error}</InlineError> : null}
-          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={checking || secondsLeft > 0}
-              onClick={() => onResend(sender)}
-            >
-              {secondsLeft > 0
-                ? `Resend code in ${secondsLeft}s`
-                : "Resend code"}
-            </Button>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={checking}
-                onClick={onClose}
-              >
-                Close
-              </Button>
-              <Button type="submit" disabled={checking || code.length !== 6}>
-                {checking ? "Checking" : "Verify"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
+// The mailbox verification dialog was REMOVED on 2026-09-08 with the sender
+// OTP. SES refuses to send as any identity the account has not verified, so a
+// code typed into this portal re-proved on registration what AWS enforces on
+// every send. What replaced it is not another dialog: the row now reports
+// whether the address can actually send, in plain words.

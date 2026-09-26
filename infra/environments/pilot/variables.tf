@@ -175,3 +175,208 @@ variable "reserve_lambda_concurrency" {
   type        = bool
   default     = false
 }
+
+# ── Speech to text ───────────────────────────────────────────────────────────
+
+variable "transcribe_enabled" {
+  description = <<-EOT
+    Whether this environment calls Amazon Transcribe at all.
+
+    It transcribes SPOKEN ANSWERS only, from the task worker Lambda (the
+    session recording is never transcribed; the video-interview mode that
+    transcribed whole recordings is deleted). OFF is a real answer, not a
+    broken one: the product does not offer the microphone and every answer is
+    typed. Never a fabricated transcript. Turning it on costs roughly USD
+    0.024 per audio minute in ap-south-1.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "transcribe_region" {
+  description = <<-EOT
+    The region Transcribe jobs run in, which is NOT necessarily `region`.
+
+    ap-south-2 has no Transcribe endpoint at all, so a deployment there calls
+    ap-south-1. Where the deployment region does have the service, set this to
+    the same value and the working bucket becomes a same-region bucket.
+
+    NO DEFAULT, for the same reason `region` has none: a region literal in
+    executable Terraform is an assumption the next environment inherits
+    without anybody deciding it, and `tests/test_deploy_secret_hygiene.py`
+    fails the build over exactly that. The value lives in terraform.tfvars.
+  EOT
+  type        = string
+}
+
+variable "transcribe_bucket_name" {
+  description = <<-EOT
+    The working bucket in `transcribe_region`. A Transcribe job reads its media
+    from, and writes its output to, a bucket in its own region, so this exists
+    only because the two regions differ.
+
+    NAMED, NOT DERIVED, the same rule `storage_bucket_name` follows: S3 names
+    are global across every AWS account.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "razorpay_key_id" {
+  description = <<-EOT
+    The Razorpay publishable key id, handed to the browser on the subscribe
+    and purchase responses. PUBLIC by design and therefore a variable rather than
+    a secret; its partner, RAZORPAY_KEY_SECRET, is server-side only and is
+    mounted from Secrets Manager. Empty disables checkout, which the billing
+    page reports honestly rather than rendering a button that cannot work.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "platform_from_email" {
+  description = <<-EOT
+    The From address for platform mail under the SES transport.
+
+    SES sends only for an identity the ACCOUNT has verified, so this is not a
+    free-text display address: an unverified value is refused per message with
+    MailFromDomainNotVerifiedException, which the delivery layer classifies as
+    permanent and does not retry.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "frontend_image_tag" {
+  description = <<-EOT
+    The frontend image tag, when it differs from `image_tag`.
+
+    IT DOES, AND PRETENDING OTHERWISE DEREGISTERS A LIVE TASK DEFINITION. The
+    two images are built from the same commit by the same pipeline and normally
+    carry the same tag, but the frontend has been deployed out of band at least
+    once, and a single variable then plans the frontend BACK to the backend's
+    tag. Because Terraform models a task definition change as delete-then-
+    create, that apply deregisters the exact revision the running service
+    points at: the tasks already up survive, and the service can no longer
+    replace one that dies.
+
+    Empty means "the same as `image_tag`", which is the normal case.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "analysis_image_tag" {
+  description = <<-EOT
+    The proctoring analysis image tag, when it differs from `image_tag`.
+
+    It differs whenever a release changes the backend or the frontend but not
+    `analysis-service/`, which is most of them: that image carries torch and
+    pyannote and takes far longer to build than everything else combined.
+    Pinning the tag it is ACTUALLY running is more honest than adding a new
+    tag to the same digest, which would claim a rebuild that never happened
+    and quietly absorb any base-image drift into a name that says otherwise.
+
+    Empty means "the same as `image_tag`", which is right whenever the
+    analysis service is genuinely rebuilt in the same release.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "ses_receiving_regions" {
+  description = <<-EOT
+    Every region where SES can RECEIVE mail. A SMALLER SET than the regions it
+    can send from, and this deployment sits in one of the gaps: the pilot's own
+    region sends perfectly well and has no inbound-smtp endpoint at all.
+
+    NO DEFAULT, like every other account-specific value in this tree. Which
+    regions can receive changes whenever AWS adds one, and a default would be
+    this file guessing at it. The way that guess fails is silent: an MX record
+    pointing at a hostname that does not resolve, and every employer's reply
+    bouncing at their own mail server with nothing logged here.
+  EOT
+  type        = list(string)
+}
+
+variable "monthly_budget_usd" {
+  description = <<-EOT
+    The monthly cost ceiling, in US dollars, that `aws_budgets_budget.monthly`
+    notifies against.
+
+    THE DEFAULT IS NOT AN ESTIMATE OF WHAT THIS ENVIRONMENT COSTS. Nobody has
+    measured that, and inventing a number here would be worse than leaving the
+    budget out: a limit chosen to look plausible is one that nobody questions
+    and that silently stops notifying the month the environment legitimately
+    grows past it.
+
+    It is set LOW on purpose. An unset budget that alerts early is noisy and
+    visible; an unset budget that alerts late is a surprise invoice. THE OWNER
+    MUST SET A REAL NUMBER for each environment, in that environment's
+    `terraform.tfvars`, once one month of actual spend exists to set it from.
+    Until then, treat the notification as "the default is still in place"
+    rather than as "this environment is overspending".
+  EOT
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.monthly_budget_usd > 0
+    error_message = "A budget of zero or less notifies on the first cent of spend, every month, for ever, which is how a billing alert gets muted."
+  }
+}
+
+# ── The code sandbox (Judge0 CE) ─────────────────────────────────────────────
+#
+# Both switches default to FALSE, so an apply with defaults creates nothing.
+# docs/operations/JUDGE0_RUNBOOK.md is the staged rollout these drive.
+
+variable "judge0_enabled" {
+  description = "Create the code sandbox's network, groups, role, registries, token and alarms (runbook stage A1). The instance itself needs `judge0_instance_enabled` as well."
+  type        = bool
+  default     = false
+}
+
+variable "judge0_instance_enabled" {
+  description = "Create the sandbox instance (stage A2). Needs `judge0_enabled`, a pinned `judge0_ami_id`, and the three image digests printed by scripts/mirror-judge0-images.sh."
+  type        = bool
+  default     = false
+}
+
+variable "judge0_clients_enabled" {
+  description = "Wire the callers to the sandbox (stage B): the client security group on the API service, the task worker Lambda and the on-demand agent, JUDGE0_AUTH_TOKEN mounted with its read policy, and JUDGE0_URL. Needs `judge0_enabled`. Its own switch so stages A1 and A2 stay plans that touch no running service, as the runbook requires. CODE_EXECUTION_BACKEND stays disabled until stage C."
+  type        = bool
+  default     = false
+}
+
+variable "judge0_ami_id" {
+  description = "Amazon Linux 2023 x86_64 AMI id for the sandbox host, PINNED. Never a lookup: a newly published image must not replace the host in an apply nobody meant as a replacement. Empty until stage A2."
+  type        = string
+  default     = ""
+}
+
+variable "judge0_instance_type" {
+  description = "t3.medium is the reviewed size (4 GiB: Judge0 server, two workers, Postgres, Redis and a JVM compile)."
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "judge0_image_digests" {
+  description = "{judge0, judge0-postgres, judge0-redis} -> sha256 digest in this environment's mirror registries. Empty until stage A2."
+  type        = map(string)
+  default     = {}
+}
+
+# ── The native arm64 image builder ───────────────────────────────────────────
+
+variable "image_builder_enabled" {
+  description = "Create the CodeBuild image builder (infra/modules/image_builder). TRUE by default because it is purely additive: a bucket, a log group, a role and a project that no existing resource references. scripts/build-images-remote.sh is how it is used."
+  type        = bool
+  default     = true
+}
+
+variable "image_builder_bucket_name" {
+  description = "The builder's source-archive bucket. Empty means <project>-<environment>-image-builds-<account id>, which is this account's in practice; set it only if that name is ever taken, which fails the apply loudly rather than silently."
+  type        = string
+  default     = ""
+}

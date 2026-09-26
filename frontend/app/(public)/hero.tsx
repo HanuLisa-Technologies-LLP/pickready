@@ -1,12 +1,21 @@
 import Link from "next/link";
-import { ArrowRight, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, ShieldCheck } from "lucide-react";
 
-import { DotPattern, Marquee } from "@/components/magicui";
+import { DotPattern } from "@/components/magicui";
 import { FadeIn, Pressable, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-/** The capabilities that scroll under the hero. Words, never client names. */
+/**
+ * The capabilities under the hero. Words, never client names, and never a
+ * number.
+ *
+ * These used to scroll past in a Magic UI marquee. DESIGN.md section 1 is
+ * explicit that nothing decorative moves, and an infinite 38 second loop is
+ * decoration: it carries no transition and it asks the reader to wait for a
+ * word to come round again. The same eight words in a hairline grid say more,
+ * hold still, and read at 375px.
+ */
 const CAPABILITIES = [
   "Resume parsing",
   "Semantic matching",
@@ -24,10 +33,18 @@ export function Hero() {
       className="relative overflow-hidden"
       aria-labelledby="landing-title"
     >
-      {/* Ambient brand light. Decorative, so it is hidden from assistive tech. */}
+      {/*
+        Depth comes from STRUCTURE, not from ambient light.
+
+        This block used to hold two large blurred colour fields, one of them
+        drifting on an 18 second loop. Both are removed. They were the
+        "glowing blob" tell, they broke DESIGN.md's "nothing decorative
+        moves", and a hero that glows undercuts the one claim the product
+        makes, which is that it is precise. What is left is a dot lattice
+        under a radial mask: a measured grid, stationary, hidden from
+        assistive tech.
+      */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-40 left-1/2 h-[38rem] w-[38rem] -translate-x-1/2 rounded-full bg-brand-600/20 blur-[120px] motion-safe:animate-aurora-drift" />
-        <div className="absolute -right-24 top-40 h-80 w-80 rounded-full bg-brand-500/15 blur-[100px]" />
         <DotPattern
           width={22}
           height={22}
@@ -36,33 +53,34 @@ export function Hero() {
         />
       </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-16 sm:pt-24 lg:px-10 lg:pb-28">
-        <div className="grid items-center gap-14 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+      <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 sm:pt-20 lg:px-10 lg:pb-24">
+        <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-14">
           <FadeIn className="max-w-2xl">
-            {/* Master directive §0: no 3D model or brand mark may sit over or
-                above the hero headline. The headline leads; the brand mark
-                lives in the site header only. */}
-            <Badge
-              variant="brand"
-              className="gap-1.5 px-3 py-1 text-xs font-semibold"
-            >
-              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-              AI hiring, built on evidence
-            </Badge>
+            {/* Master directive section 0: no 3D model or brand mark may sit
+                over or above the hero headline. The headline leads; the brand
+                mark lives in the site header only.
+
+                WHO the product is for, said before the promise rather than
+                left to be inferred from it. The sparkle icon that used to sit
+                here is gone: an AI badge with a sparkle on it is the decoration
+                every AI product ships, and it competes with the sentence. */}
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+              For in-house hiring teams and recruitment partners
+            </p>
 
             {/* The product tagline, set by the client. It is the h1: it is the
                 promise the whole page then evidences, not a decoration above
-                one. */}
+                one. Fraunces (font-display) is the one place the product gets
+                display type, per DESIGN.md section 3. */}
             <h1
               id="landing-title"
-              className="mt-6 text-balance text-3xl font-bold leading-[1.08] sm:text-4xl lg:text-[3.25rem] lg:leading-[1.05]"
+              className="mt-5 text-balance font-display text-[2.125rem] font-semibold leading-[1.06] tracking-[-0.02em] text-navy-600 sm:text-[2.75rem] lg:text-[3.375rem]"
             >
-              Know Every Candidate{" "}
-              <span className="text-gradient-brand">Before You Meet Them</span>
+              Know Every Candidate Before You Meet Them
             </h1>
 
             <p className="mt-6 max-w-xl text-pretty text-lg leading-8">
-              ReadyPick reads every applicant against the role, runs a
+              Vivekium reads every applicant against the role, runs a
               structured assessment built from the job itself, and hands your
               team one readable report per candidate. Plain language, no scores
               to argue about.
@@ -87,9 +105,9 @@ export function Hero() {
               </Pressable>
             </div>
 
-            <p className="mt-6 flex items-start gap-2 text-sm">
+            <p className="mt-7 flex items-start gap-2 text-sm">
               <ShieldCheck
-                className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
+                className="mt-0.5 h-4 w-4 shrink-0 text-teal-700"
                 aria-hidden="true"
               />
               Candidate data stays inside your workspace, with an audit trail on
@@ -103,25 +121,31 @@ export function Hero() {
         </div>
       </div>
 
-      <div className="relative border-y border-border/70 bg-surface/40 py-4">
-        <Marquee pauseOnHover className="[--duration:38s] [--gap:2.5rem]">
-          {CAPABILITIES.map((item) => (
-            <span
-              key={item}
-              className="whitespace-nowrap text-sm font-medium tracking-tight opacity-70"
-            >
-              {item}
-            </span>
-          ))}
-        </Marquee>
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-canvas to-transparent"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-canvas to-transparent"
-        />
+      {/* The capability rail. `gap-px` over a border-coloured parent draws the
+          hairlines, so the grid is one shared rule rather than eight boxes.
+          Two columns at 375px, four from `sm`. */}
+      <div className="relative border-y border-border bg-surface/50">
+        <div className="mx-auto max-w-6xl px-6 py-7 lg:px-10">
+          <p
+            id="hero-capabilities-label"
+            className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600"
+          >
+            In the product today
+          </p>
+          <ul
+            aria-labelledby="hero-capabilities-label"
+            className="mt-5 grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-4"
+          >
+            {CAPABILITIES.map((item) => (
+              <li
+                key={item}
+                className="bg-canvas px-4 py-3 text-xs font-medium"
+              >
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     </section>
   );
@@ -142,22 +166,30 @@ const PANEL_ROWS = [
 function HeroPanel() {
   return (
     <div className="relative mx-auto w-full max-w-md lg:max-w-none">
-      <div className="relative overflow-hidden border border-border bg-surface shadow-card">
-        <div className="flex items-center justify-between gap-3 border-b border-border/70 px-5 py-4">
+      {/* `shadow-hero` is DESIGN.md's level 3, and it is documented as
+          existing for this one surface. Every other card on the page stays at
+          level 0, a border and nothing else. */}
+      <div className="relative overflow-hidden border border-border bg-surface shadow-hero">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">
               Senior Data Engineer
             </p>
-            <p className="text-xs opacity-70">Applicants ranked by fit</p>
+            {/* No `opacity-*` on text anywhere in this file. Hierarchy is
+                size and weight; DESIGN.md section 3 keeps every text token at
+                full ink. */}
+            <p className="text-xs">Applicants ranked by fit</p>
           </div>
           <Badge variant="brand">Live</Badge>
         </div>
 
-        <Stagger as="ul" className="divide-y divide-border/70" delay={0.15}>
+        <Stagger as="ul" className="divide-y divide-border" delay={0.15}>
           {PANEL_ROWS.map((row) => (
             <StaggerItem as="li" key={row.name}>
               <div className="flex items-center justify-between gap-3 px-5 py-3.5">
                 <div className="flex min-w-0 items-center gap-3">
+                  {/* Genuinely circular, so `rounded-full` is the right
+                      shape here rather than a pill container. */}
                   <span
                     aria-hidden="true"
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-100 text-xs font-bold text-accent-foreground"
@@ -176,7 +208,7 @@ function HeroPanel() {
           ))}
         </Stagger>
 
-        <div className="border-t border-border/70 px-5 py-4 text-xs opacity-70">
+        <div className="border-t border-border px-5 py-4 text-xs font-medium">
           Rated in words, never in numbers.
         </div>
       </div>

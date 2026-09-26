@@ -1,0 +1,19 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): POST /submissions/batch answers 201 with one {token} object per submitted entry, in request order.",
+    "observed": false,
+    "notes": "Two entries. The tokens are UUIDs of the documented shape; nothing here was issued by a real host."
+  },
+  "status": 201,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": [
+    {
+      "token": "d85cd024-1548-4165-96c7-7bc88673f194"
+    },
+    {
+      "token": "3b2c1a90-7d4e-4f0a-9c1e-2a5b6c7d8e9f"
+    }
+  ]
+}

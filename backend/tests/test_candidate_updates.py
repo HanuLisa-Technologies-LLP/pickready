@@ -205,6 +205,28 @@ async def test_a_link_that_needs_an_identifier_it_lacks_is_dropped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_message_entry_links_to_its_thread_or_to_nothing() -> None:
+    """The message notification (Phase 6) links to the one thread it is
+    about; without the thread's id the link is dropped, never rendered as
+    `/portal/messages?conversation=` with nothing after it."""
+    without = await cu.record(
+        _Session(), kind=cu.MESSAGE_RECEIVED, candidate_id=uuid.uuid4()
+    )
+    assert without.link_path is None
+
+    thread = uuid.uuid4()
+    with_thread = await cu.record(
+        _Session(),
+        kind=cu.MESSAGE_RECEIVED,
+        candidate_id=uuid.uuid4(),
+        company_name="Acme",
+        conversation_id=thread,
+    )
+    assert with_thread.link_path == f"/portal/messages?conversation={thread}"
+    assert with_thread.body.startswith("Acme sent you a message.")
+
+
+@pytest.mark.asyncio
 async def test_every_stored_link_is_relative() -> None:
     """A stored path must never become an off-site link.
 

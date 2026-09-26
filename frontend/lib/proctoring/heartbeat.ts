@@ -12,6 +12,12 @@
  * A failed post is not retried early: the following beat is the retry, and a
  * gap that opens because the network was down is exactly what the server is
  * supposed to record.
+ *
+ * Each answer also carries the server's clock and the device pause (Phase 3,
+ * 2026-09-24). Both are handed to `onResult` with the moments the request left
+ * and the answer arrived, so the session can place the server's grace deadline
+ * on this device's clock: the countdown a candidate watches is the server's
+ * deadline, not one this client started.
  */
 import type { HeartbeatIn, HeartbeatOut, MonitoringStatus, TerminationOut } from "./api";
 import { isSessionEnded } from "./api";
@@ -24,6 +30,10 @@ export interface HeartbeatOptions {
   identityMatched: () => boolean | null;
   onTermination: (termination: TerminationOut) => void;
   onSessionEnded: (message: string) => void;
+  /** Every successful answer, with this device's clock when the request was
+   *  sent and when the answer arrived. */
+  onResult?: (result: HeartbeatOut, sentAtMs: number, receivedAtMs: number) => void;
+  now?: () => number;
 }
 
 export interface HeartbeatHandle {
@@ -36,14 +46,18 @@ export function startHeartbeat(options: HeartbeatOptions): HeartbeatHandle {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let nextIntervalMs = options.intervalMs;
+  const now = options.now ?? Date.now;
 
   const beat = async () => {
     if (stopped) return;
     try {
+      const sentAt = now();
       const result = await options.post({
         identity_matched: options.identityMatched(),
         monitoring: options.monitoring(),
       });
+      if (stopped) return;
+      options.onResult?.(result, sentAt, now());
       if (result.interval_seconds > 0) nextIntervalMs = result.interval_seconds * 1000;
       if (result.termination) {
         stop();

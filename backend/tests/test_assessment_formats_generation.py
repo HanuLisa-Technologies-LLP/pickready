@@ -12,8 +12,12 @@
 A prompt cannot enforce any of those, so each is a deterministic criterion
 inside the loop, and each is tested by handing the loop an output that breaks
 exactly one of them. The last section drives the whole regenerate-then-fall-
-back cycle in `ppi._compose_formats`, which is the thing that actually decides
-what a candidate is served.
+back cycle in `question_generation._fill_and_validate`, which is the thing
+that actually decides what a candidate is served.
+
+THE WRITERS ARE GIVEN THE CONTRACT, NEVER THE JOB DESCRIPTION (2026-09-25).
+The skill, its evidence line and Sutra's role summary describe the role; the
+job description is recruiter-edited text that can carry compensation.
 """
 from __future__ import annotations
 
@@ -24,9 +28,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import agent_loop, llm_router, ppi
+from app.services.assessment_contract import AssessmentContract, ContractSkill
 from app.services.assessment_formats import composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
+from app.services.assessment_questions import budget
+from app.services.assessment_questions import generate as question_generation
+
+ROLE_SUMMARY = "Runs the payment services behind checkout and settlement."
 
 RESUME = (
     "Senior Engineer, Northwind Payments (2022 to 2026). Led the checkout "
@@ -52,26 +61,29 @@ def _job() -> SimpleNamespace:
     )
 
 
-def _competency(category: str = ppi.CATEGORY_MUST_HAVE, ordinal: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), category=category, name=f"Item {ordinal}",
-        description=f"What item {ordinal} measures.", ordinal=ordinal,
+def _skill(bucket: str = ppi.CATEGORY_MUST_HAVE, priority: int = 1) -> ContractSkill:
+    return ContractSkill(
+        id=uuid.uuid4(), name=f"Item {priority}", bucket=bucket, priority=priority,
+        evidence_line=f"Has shown item {priority} in production work.",
+    )
+
+
+def _slot(index: int, skill: ContractSkill, question_type: str) -> composition.Slot:
+    conf = format_config.get_config()
+    return composition.Slot(
+        index=index,
+        competency_id=skill.id,
+        category=skill.bucket,
+        skill_name=skill.name,
+        question_type=question_type,
+        planned_family=composition.family_of(question_type),
+        weight=conf.weight_by_type[question_type],
+        time_allocation_seconds=conf.time_seconds_by_type[question_type],
     )
 
 
 def _slots(count: int = 2) -> list[composition.Slot]:
-    conf = format_config.get_config()
-    return [
-        composition.Slot(
-            index=index,
-            competency_id=uuid.uuid4(),
-            category=ppi.CATEGORY_MUST_HAVE,
-            question_type=types.EVIDENCE_BASED,
-            weight=conf.weight_by_type[types.EVIDENCE_BASED],
-            time_allocation_seconds=conf.time_seconds_by_type[types.EVIDENCE_BASED],
-        )
-        for index in range(count)
-    ]
+    return [_slot(index, _skill(priority=index + 1), types.EVIDENCE_BASED) for index in range(count)]
 
 
 def _anchor_response(items: list[dict]) -> str:
@@ -110,18 +122,22 @@ def _responder(monkeypatch, responses: list[str]):
 
 
 async def _anchor(slots, *, job=None, resume=RESUME):
-    competencies = {slot.competency_id: _competency(ordinal=slot.index + 1) for slot in slots}
-    for slot, competency in zip(slots, competencies.values()):
-        competencies[slot.competency_id] = competency
+    skills = {
+        slot.competency_id: ContractSkill(
+            id=slot.competency_id, name=slot.skill_name, bucket=slot.category,
+            priority=slot.index + 1, evidence_line=f"Evidence for {slot.skill_name}.",
+        )
+        for slot in slots
+    }
     return await generation.anchor_evidence(
         None,
         job=job or _job(),
         slots=slots,
-        competencies=competencies,
+        skills=skills,
+        role_summary=ROLE_SUMMARY,
         resume_text=resume,
         resume_excerpt=resume[:200],
         project_evidence="",
-        hiring_context="{}",
     )
 
 
@@ -164,13 +180,18 @@ async def test_an_anchored_batch_is_accepted_with_its_sub_type_and_locator(monke
 
 
 @pytest.mark.asyncio
-async def test_the_resume_and_the_hiring_context_reach_the_writer(monkeypatch) -> None:
-    """Spec 2.1 lists all of them as generation inputs, "not a subset"."""
+async def test_the_resume_and_the_contract_reach_the_writer_and_the_jd_does_not(monkeypatch) -> None:
+    """The resume is what an anchor is quoted from; the skill, its evidence
+    line and the role summary are what the question probes. The job
+    description never reaches the prompt: it is recruiter-edited text that
+    can carry compensation."""
     sent = _responder(monkeypatch, [_anchor_response(_good_anchor_items())])
     await _anchor(_slots())
     assert ANCHOR_ONE in sent[0]
-    assert "Own the payment services." in sent[0]
+    assert ROLE_SUMMARY in sent[0]
+    assert "Evidence for Item 1." in sent[0]
     assert "Backend Engineer" in sent[0]
+    assert "Own the payment services." not in sent[0]
 
 
 @pytest.mark.asyncio
@@ -275,15 +296,7 @@ async def test_two_candidates_are_anchored_to_their_own_resumes(monkeypatch) -> 
 
 
 def _structured_slot(question_type: str) -> composition.Slot:
-    conf = format_config.get_config()
-    return composition.Slot(
-        index=0,
-        competency_id=uuid.uuid4(),
-        category=ppi.CATEGORY_MUST_HAVE,
-        question_type=question_type,
-        weight=conf.weight_by_type[question_type],
-        time_allocation_seconds=conf.time_seconds_by_type[question_type],
-    )
+    return _slot(0, _skill(), question_type)
 
 
 def _mcq_response(**overrides) -> str:
@@ -311,7 +324,8 @@ def _mcq_response(**overrides) -> str:
 async def _write(slot, monkeypatch, responses):
     sent = _responder(monkeypatch, responses)
     result = await generation.write_structured(
-        None, job=_job(), competency=_competency(), slot=slot, resume_excerpt=RESUME
+        None, job=_job(), skill=_skill(), role_summary=ROLE_SUMMARY, slot=slot,
+        resume_excerpt=RESUME,
     )
     return result, sent
 
@@ -369,28 +383,15 @@ async def test_a_payload_that_is_not_valid_for_its_type_is_rejected(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_coding_question_keeps_its_expected_approach_off_the_prompt(monkeypatch) -> None:
-    response = json.dumps({
-        "prompt": "Remove duplicates from a list, preserving first-seen order.",
-        "payload": {
-            "language": "python",
-            "starter_code": "def solve(items):",
-            "constraints": "No external libraries.",
-            "expected_approach": "Track seen elements in a set and scan once.",
-            "language_options": ["python", "javascript"],
-        },
-    })
-    slot = _structured_slot(types.CODING)
-    result, _sent = await _write(slot, monkeypatch, [response])
-    assert not result.degraded
-    assert result.value.payload["expected_approach"].startswith("Track seen")
-    assert "expected_approach" not in result.value.prompt
-    # The reader's criteria travel with the question, so the evaluator reads
-    # the same rubric the question was written against.
-    assert set(result.value.rubric["criteria"]) == {
-        "correctness_of_approach", "code_quality", "edge_case_handling",
-        "efficiency_awareness", "idiomatic_use",
-    }
+async def test_the_objective_writer_refuses_a_coding_slot() -> None:
+    """A coding question is EXECUTED: `coding_generation` writes it and proves
+    its tests in the sandbox. The read-the-code writer this module used to
+    carry is deleted, and asking for one is a caller defect, not a degradation."""
+    with pytest.raises(ValueError):
+        await generation.write_structured(
+            None, job=_job(), skill=_skill(), role_summary=ROLE_SUMMARY,
+            slot=_structured_slot(types.CODING), resume_excerpt=RESUME,
+        )
 
 
 @pytest.mark.asyncio
@@ -401,7 +402,8 @@ async def test_an_unavailable_provider_leaves_the_slot_unfilled(monkeypatch) -> 
     monkeypatch.setattr(llm_router, "invoke_llm", _boom)
     slot = _structured_slot(types.MCQ_SINGLE)
     result = await generation.write_structured(
-        None, job=_job(), competency=_competency(), slot=slot, resume_excerpt=RESUME
+        None, job=_job(), skill=_skill(), role_summary=ROLE_SUMMARY, slot=slot,
+        resume_excerpt=RESUME,
     )
     assert result.degraded
     assert result.value is None
@@ -410,34 +412,35 @@ async def test_an_unavailable_provider_leaves_the_slot_unfilled(monkeypatch) -> 
 # ── Regenerate, then fall back (spec 3.2) ────────────────────────────────────
 
 
-class _FakeResult:
-    def scalars(self):
-        return self
-
-    def first(self):
-        return None
-
-
-class _FakeSession:
-    """Enough session for `_hiring_context`, which is the only query the
-    composer makes."""
-
-    async def execute(self, *args, **kwargs):
-        return _FakeResult()
-
-
-def _allocation(size: int = 15) -> list[SimpleNamespace]:
-    matrix = [
-        _competency(category, index + 1)
-        for category in ppi.CATEGORIES
-        for index in range(5)
-    ]
-    return ppi._allocate(matrix, size, "non_managerial")
+def _contract() -> AssessmentContract:
+    skills = tuple(
+        ContractSkill(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, f"{bucket}-{n}"), name=f"{bucket} {n}",
+            bucket=bucket, priority=n, evidence_line=f"Evidence for {bucket} {n}.",
+        )
+        for bucket in ppi.CATEGORIES
+        for n in range(1, 6)
+    )
+    return AssessmentContract(
+        job_id=uuid.uuid4(), version=0, locked=False, skills=skills,
+        role_summary=ROLE_SUMMARY, digest="d" * 64, grade="non_managerial", locked_at=None,
+    )
 
 
-async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
-    """Drive `ppi._compose_formats` with scripted generation results."""
-    allocation = _allocation(size)
+async def _compose(monkeypatch, *, anchor_batches, structured_ok=True):
+    """Drive `question_generation._fill_and_validate` with scripted writers,
+    over a job with no coding (so every structured slot is objective)."""
+    contract = _contract()
+    skills = {skill.id: skill for skill in contract.skills}
+    total = budget.question_budget(contract.grade, len(contract.skills))
+    mix = budget.mix(total, coding=False)
+    slots = composition.compose(
+        composition.allocate(contract.skills, total, stem=True), mix=mix, grade=contract.grade
+    )
+    prose = [f"Stored question {index}." for index in range(len(slots))]
+    for slot in slots:
+        slot.prompt = prose[slot.index]
+        slot.generated = True
     calls = {"anchor": 0, "structured": 0}
     batches = list(anchor_batches)
 
@@ -446,9 +449,9 @@ async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
         wanted = batches[min(calls["anchor"] - 1, len(batches) - 1)]
         anchored = {}
         if wanted:
-            for position, slot in enumerate(
-                [slot for slot in slots if slot.question_type == types.EVIDENCE_BASED]
-            ):
+            for slot in slots:
+                if slot.question_type != types.EVIDENCE_BASED:
+                    continue
                 anchored[slot.index] = generation.AnchoredQuestion(
                     index=slot.index,
                     prompt=f"You did the thing at position {slot.index}. What did you own?",
@@ -461,10 +464,17 @@ async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
         calls["structured"] += 1
         if not structured_ok:
             return agent_loop.LoopResult(value=None, degraded=True)
+        options = json.loads(_mcq_response())["payload"]["options"]
+        payload = {
+            types.MCQ_SINGLE: {"options": options, "correct_option_id": "a"},
+            types.MCQ_MULTI: {"options": options, "correct_option_ids": ["a", "b"], "scoring": "partial"},
+            types.FILL_BLANK: {"template": "The ___ pattern.",
+                               "blanks": [{"index": 0, "accepted": ["observer"], "case_sensitive": False}]},
+        }[slot.question_type]
         return agent_loop.LoopResult(
             value=generation.StructuredQuestion(
                 prompt=f"A structured question for slot {slot.index}.",
-                payload=json.loads(_mcq_response())["payload"],
+                payload=payload,
                 rubric={"misconceptions": {}},
             ),
             degraded=False,
@@ -472,79 +482,60 @@ async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
 
     monkeypatch.setattr(generation, "anchor_evidence", _anchor_evidence)
     monkeypatch.setattr(generation, "write_structured", _write_structured)
-    slots = await ppi._compose_formats(
-        _FakeSession(),
-        _job(),
-        allocation,
-        grade="non_managerial",
-        base_prompts=[f"Stored question {index}." for index in range(len(allocation))],
-        profile=None,
-        project_evidence_block="",
+    await question_generation._fill_and_validate(
+        None,
+        job=_job(),
+        contract=contract,
+        slots=slots,
+        skills=skills,
+        mix=mix,
+        prose=prose,
+        generated=[True] * len(slots),
+        resume_text=RESUME,
+        resume_excerpt=RESUME[:200],
+        project_evidence="",
     )
-    return slots, calls
+    return slots, calls, mix, contract
 
 
 @pytest.mark.asyncio
 async def test_a_composition_that_validates_is_served_after_one_pass(monkeypatch) -> None:
-    slots, calls = await _compose(monkeypatch, anchor_batches=[True])
+    slots, calls, mix, contract = await _compose(monkeypatch, anchor_batches=[True])
     assert calls["anchor"] == 1
-    assert composition.validate(slots, "non_managerial", "STEM") == []
+    assert composition.validate(slots, mix=mix, skills=contract.skills) == []
     assert any(slot.question_type == types.EVIDENCE_BASED for slot in slots)
-    assert any(slot.question_type in types.SUPPORTING_TYPES for slot in slots)
+    assert any(slot.planned_family == composition.FAMILY_OBJECTIVE for slot in slots)
 
 
 @pytest.mark.asyncio
 async def test_a_failed_validation_regenerates_rather_than_being_served(monkeypatch) -> None:
     """"If validation fails, regenerate." The first pass anchors nothing, so
-    every evidence row breaks rule 2; the second pass fixes it."""
-    slots, calls = await _compose(monkeypatch, anchor_batches=[False, True])
+    every evidence row is unanchored; the second pass fixes it."""
+    slots, calls, mix, contract = await _compose(monkeypatch, anchor_batches=[False, True])
     assert calls["anchor"] == 2, "the invalid composition was served without a retry"
-    assert composition.validate(slots, "non_managerial", "STEM") == []
-    assert all(
-        slot.resume_anchor
-        for slot in slots
-        if slot.question_type == types.EVIDENCE_BASED
-    )
+    assert composition.validate(slots, mix=mix, skills=contract.skills) == []
+    assert all(slot.resume_anchor for slot in slots if slot.question_type == types.EVIDENCE_BASED)
 
 
 @pytest.mark.asyncio
-async def test_a_structured_slot_is_written_once_across_every_attempt(monkeypatch) -> None:
+async def test_an_objective_slot_is_written_once_across_every_attempt(monkeypatch) -> None:
     """A regeneration re-anchors; it does not pay for the payloads again."""
-    _slots_out, calls = await _compose(monkeypatch, anchor_batches=[False, True])
-    supporting = [
-        slot
-        for slot in composition.compose(
-            _allocation(15), grade="non_managerial", role_classification="STEM"
-        )
-        if slot.question_type in types.SUPPORTING_TYPES
-    ]
-    assert calls["structured"] == len(supporting)
+    slots, calls, mix, _contract_ = await _compose(monkeypatch, anchor_batches=[False, True])
+    assert calls["structured"] == mix.objective
 
 
 @pytest.mark.asyncio
 async def test_after_every_attempt_fails_the_fallback_is_what_is_served(monkeypatch) -> None:
     """THE PROPERTY THAT PROTECTS THE CANDIDATE. Whatever the model does, what
-    is served validates, and it is the text question already written for each
-    item rather than invented content."""
+    is served validates: every slot asks the prose question already written for
+    its skill, and every objective slot that could not be written says why."""
     conf = format_config.get_config()
-    slots, calls = await _compose(monkeypatch, anchor_batches=[False], structured_ok=False)
+    slots, calls, mix, contract = await _compose(monkeypatch, anchor_batches=[False], structured_ok=False)
     assert calls["anchor"] == conf.composition_attempts
     assert {slot.question_type for slot in slots} == {types.SHORT_ANSWER}
     assert all(slot.resume_anchor is None for slot in slots)
-    assert [slot.prompt for slot in slots] == [
-        f"Stored question {index}." for index in range(len(slots))
-    ]
-    assert composition.validate(slots, "non_managerial", "STEM") == []
-
-
-@pytest.mark.asyncio
-async def test_a_structured_slot_the_model_could_not_fill_asks_its_text_question(
-    monkeypatch,
-) -> None:
-    """A structured row with no payload would be a question with no answer
-    key, so the slot reverts rather than being served empty."""
-    slots, _calls = await _compose(monkeypatch, anchor_batches=[True], structured_ok=False)
-    assert all(
-        slot.payload or slot.question_type in types.TEXT_TYPES for slot in slots
-    )
-    assert composition.validate(slots, "non_managerial", "STEM") == []
+    assert [slot.prompt for slot in slots] == [f"Stored question {index}." for index in range(len(slots))]
+    assert [slot.degradation for slot in slots if slot.degradation] == [
+        "objective_generation_failed"
+    ] * mix.objective
+    assert composition.validate(slots, mix=mix, skills=contract.skills) == []

@@ -103,6 +103,54 @@ export function describeResumeUrl(url: string): ResumeDescriptor {
 }
 
 /**
+ * The authorized proxy URL for opening a resume in a NEW TAB.
+ *
+ * The brief's Resume Link column is a direct tap that opens the resume in a
+ * tab, which means the href has to be something a browser can navigate to on
+ * its own. It is never the storage object: that is an `s3://` reference no
+ * browser fetches, and a bucket name and an object key must not cross an API
+ * boundary. It is the same pair of authenticated routes the modal already
+ * uses, so there is one answer to "which endpoint serves this document"
+ * rather than two that can disagree:
+ *
+ *   word -> resume-preview, which renders the DOCX server-side as HTML,
+ *           because a browser cannot display a Word document and a tab
+ *           handed the raw bytes silently turns the tap into a download.
+ *   everything else -> resume-file, which streams the bytes and lets the
+ *           browser's own PDF and image viewers do their job.
+ *
+ * Both re-authorize, both mint a short-lived token on the redirect, and both
+ * are same-origin, so the session cookie rides along exactly as it does for
+ * the Download link beside them.
+ *
+ * Returns null when there is no profile to read through, which is the row
+ * that has no resume: the caller renders a disabled control rather than an
+ * href that 404s.
+ */
+export function resumeTabUrl({
+  profileId,
+  resumeFileName,
+  resumeMimeType,
+}: {
+  profileId?: string | null;
+  resumeFileName?: string | null;
+  resumeMimeType?: string | null;
+}): string | null {
+  if (!profileId) return null;
+  const named = resumeFileName?.trim();
+  // The filename decides when it actually carries an extension; otherwise the
+  // recorded MIME type does, because a private object name has none. Same
+  // precedence the modal applies, for the same reason.
+  const fromName = named ? describeResumeUrl(named) : null;
+  const kind =
+    fromName && fromName.extension
+      ? fromName.kind
+      : (kindFromMimeType(resumeMimeType) ?? "framable");
+  const endpoint = kind === "word" ? "resume-preview" : "resume-file";
+  return `${API_BASE}/candidates/profiles/${profileId}/${endpoint}`;
+}
+
+/**
  * LEGACY ROWS ONLY. Private documents live in S3 today and are served through
  * an authenticated route, so this branch fires for nothing written since the
  * storage migration. It is kept because a profile row written before it still
@@ -140,7 +188,7 @@ function FallbackPanel({
         <Icon className="h-6 w-6 text-foreground" />
       </span>
       <h3 className="text-base font-semibold text-foreground">{title}</h3>
-      <p className="max-w-md text-sm leading-6">
+      <p className="max-w-md text-sm">
         {message}
       </p>
       <p className="max-w-md break-all font-mono text-xs">
@@ -283,7 +331,7 @@ export function ResumeViewer({
       <FallbackPanel
         tone="error"
         title="Word preview could not be loaded"
-        message="ReadyPick could not convert this document for the in-app viewer. Download the original file and try again later."
+        message="Vivekium could not convert this document for the in-app viewer. Download the original file and try again later."
         fileName={descriptor.fileName}
       >
         {actions}
@@ -395,7 +443,7 @@ export function ResumeViewer({
 
         <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-6 py-3">
           <p className="text-xs">
-            Viewing inside ReadyPick, the file is never opened as a bare
+            Viewing inside Vivekium, the file is never opened as a bare
             storage link.
           </p>
           {actions}

@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"  # host 6380 — 6379 is commonly taken; in-network stays redis:6379
+      - "6380:6379"  # host 6380: 6379 is commonly taken; in-network stays redis:6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,14 +32,12 @@ services:
 
   backend:
     build: ../backend
-    # env_file delivers the ENTIRE ../.env into the container, so all secrets —
-    # FIREBASE_SERVICE_ACCOUNT_JSON, SMTP_HOST / SMTP_PORT / SMTP_USER /
-    # SMTP_PASSWORD / SMTP_FROM_EMAIL / SMTP_FROM_NAME / SMTP_STARTTLS / SMTP_SSL
-    # (Gmail SMTP email), CLOUDINARY_URL,
-    # MSG91_API_KEY / MSG91_SENDER_ID, JWT_*, LLM keys — reach the API. The
-    # `environment` block below only overrides the two hostnames that differ
-    # inside the compose network; do NOT add SMTP_*/secret overrides here — an
-    # explicit key with an empty value would MASK the real one from ../.env.
+    # env_file delivers the ENTIRE ../.env into the container, so all secrets
+    # (FIREBASE_SERVICE_ACCOUNT_JSON, the SMTP_* Gmail settings, JWT_*, the
+    # model and embedding keys) reach the API. The `environment` block below
+    # only overrides the two hostnames that differ inside the compose network;
+    # do NOT add SMTP_*/secret overrides here: an explicit key with an empty
+    # value would MASK the real one from ../.env.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
@@ -146,9 +144,10 @@ services:
       target: deps
     working_dir: /app
     # No env_file here on purpose. The Razorpay Key ID that Checkout needs in
-    # the browser is served by GET /billing/config instead of being inlined at
-    # build time, so the frontend container never holds the .env at all and
-    # RAZORPAY_KEY_SECRET has no path into the bundle.
+    # the browser arrives at runtime on the API's own subscribe and purchase
+    # responses instead of being inlined at build time, so the frontend
+    # container never holds the .env at all and RAZORPAY_KEY_SECRET has no
+    # path into the bundle.
     environment:
       # Same-origin API proxy, identical to production. The browser calls
       # /api/* on the Next server and next.config.js forwards it here, which is
@@ -170,7 +169,7 @@ services:
       # deliberately not part of the ../frontend bind mount. Next's dev server
       # writes chunks here constantly; over a Windows bind mount through WSL2
       # those writes can land partially or out of order, and the dev server then
-      # serves HTML referencing chunk URLs whose files are missing — the
+      # serves HTML referencing chunk URLs whose files are missing, the
       # "GET /_next/static/chunks/main-app.js 404" storm that made the app look
       # broken until both containers were restarted.
       - frontend_next_dev:/app/.next-dev

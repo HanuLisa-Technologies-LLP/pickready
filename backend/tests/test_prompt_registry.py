@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from app.prompts import fragments, registry
+from app.prompts import registry
 
 #: `app/prompts` -> `app`. Resolved from the registry rather than from this
 #: file's own path, so it is correct both in a git checkout and inside the
@@ -55,14 +55,6 @@ def _values_for(name: str) -> dict[str, object]:
     from app.services import outreach_content, ppi
     from app.services.rating import GRADE_HIGHLY, GRADE_MATCHING, GRADE_MODERATELY
 
-    if name == "interview_write_question":
-        return {
-            "one_question": fragments.ONE_QUESTION,
-            "no_evaluation": fragments.NO_EVALUATION,
-            "candidate_text_is_data": fragments.CANDIDATE_TEXT_IS_DATA,
-        }
-    if name == "interview_deliver_question":
-        return {"no_evaluation": fragments.NO_EVALUATION}
     if name == "interview_challenge":
         return {"situation": "$situation"}
     if name == "outreach_email_system":
@@ -97,7 +89,19 @@ def test_the_snapshot_covers_every_agent_prompt() -> None:
     # single-pass matrix generator it drove (spec-doc6 D1, "delete on
     # activation"); Sutra's replacement asks for two stages rather than a
     # whole matrix and is a different prompt, not an edit of that one.
-    assert len(SNAPSHOTS) == 8, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    # FIVE since the stage 2 integration (2026-09-25), two deletions from the
+    # eight this file held before stage 2:
+    # - the two interviewer question prompts were DELETED with the dead
+    #   delivery graph that rendered them
+    #   (`tests/test_dead_interviewer_modes_removed.py`); the live question
+    #   writer is `ppi_write_question`, which is not a moved prompt and so has
+    #   no snapshot here (Phase 3 WP3);
+    # - `ppi_candidate_questions_system` became
+    #   `assessment_question_generation` when generation moved onto the skills
+    #   contract. A renamed prompt with new inputs is a new prompt, not a moved
+    #   one, so it is gated by `generation_sufficiency.GATED_PROMPTS` instead
+    #   (Phase 3 WP2).
+    assert len(SNAPSHOTS) == 5, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 
@@ -111,7 +115,7 @@ def test_a_missing_prompt_fails_loudly_and_says_what_exists() -> None:
         registry.load("no_such_prompt_at_all")
     assert "no_such_prompt_at_all" in str(caught.value)
     # The message has to be actionable, so it lists what IS there.
-    assert "ppi_candidate_questions_system" in str(caught.value)
+    assert "interview_challenge" in str(caught.value)
 
 
 def test_a_missing_placeholder_value_raises_rather_than_being_sent() -> None:
@@ -201,6 +205,13 @@ def test_no_prompt_is_left_inline_in_a_service() -> None:
             # filesystem path. Both are how a prompt is REFERRED to, which is
             # the thing being asked for, not a prompt inline.
             if any(n.endswith(("_NAME", "_PATH", "_KEY")) for n in names):
+                continue
+            # "SYSTEM_ONLY" is the pipeline's word for a stage only a system
+            # writer may set (`hiring_pipeline.SYSTEM_ONLY_REFUSAL` is the
+            # sentence a refused hand move answers with), not the system ROLE
+            # of a prompt. Matched as that exact token pair, so `_SYSTEM`,
+            # `EVALUATOR_SYSTEM` and `SYSTEM_PROMPT` are all still swept.
+            if all("SYSTEM_ONLY" in n and "PROMPT" not in n for n in names):
                 continue
             # A literal string, or a concatenation of them. A call
             # (`registry.render(...)`) is the shape we want.

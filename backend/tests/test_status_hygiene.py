@@ -256,7 +256,7 @@ async def test_a_job_is_created_while_hygiene_items_exist(monkeypatch) -> None:
     OTHER gate on create is out of scope here and tested in its own module."""
     from app.api import jobs as jobs_api
     from app.models.enums import JobStatus, Role
-    from app.schemas.jobs import JDIn, JobCreateIn
+    from app.schemas.jobs import JobCreateIn
     from app.services import credits
     from app.services.hiring import company_requirements
 
@@ -282,21 +282,19 @@ async def test_a_job_is_created_while_hygiene_items_exist(monkeypatch) -> None:
 
     monkeypatch.setattr(credits, "has_positive_balance", _funded)
 
-    async def _dna_complete(session, tenant_id):
+    async def _profile_complete(session, tenant_id):
         return True
 
-    monkeypatch.setattr(company_requirements, "is_complete", _dna_complete)
+    monkeypatch.setattr(company_requirements, "is_complete", _profile_complete)
 
     async def _fake_audit(session, **kwargs):
         return None
 
-    async def _fake_publish(session, job):
-        job.status = JobStatus.ratified
-        job.ratified_at = datetime.now(timezone.utc)
+    async def _fake_assign(session, job, user_id, role):
+        return True
 
-    monkeypatch.setattr(jobs_api, "audit", _fake_audit)
-    monkeypatch.setattr(jobs_api.fsm, "apply_direct_publish", _fake_publish)
-    monkeypatch.setattr(jobs_api, "dispatch", lambda *a, **k: None)
+    monkeypatch.setattr(jobs_api, "record_action", _fake_audit)
+    monkeypatch.setattr(jobs_api.rbac, "assign_creator", _fake_assign)
     monkeypatch.setattr(
         jobs_api,
         "get_settings",
@@ -354,10 +352,11 @@ async def test_a_job_is_created_while_hygiene_items_exist(monkeypatch) -> None:
         JobCreateIn(
             title="Backend Engineer",
             grade="non_managerial",
-            jd=JDIn(role="Own APIs", skills=["Python"]),
+            jd_markdown="## Role\n\nOwn APIs.\n\n## Skills\n\n- Python\n",
         ),
         user=user,
         session=_FakeSession(),
     )
-    assert out.status == JobStatus.ratified
-    assert out.public_url is not None
+    # Create saves a DRAFT (Vivekium release); the point here is only that
+    # the hygiene summary did not stop it.
+    assert out.status == JobStatus.draft

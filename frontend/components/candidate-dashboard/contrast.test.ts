@@ -1,5 +1,5 @@
 /**
- * Contrast assertions for the dashboard's band colours, in BOTH themes.
+ * Contrast assertions for the dashboard's grade colours, in BOTH themes.
  *
  * WHY THIS EXISTS SEPARATELY FROM `scripts/check-contrast.mjs`
  * -------------------------------------------------------------
@@ -14,7 +14,7 @@
  * the dark theme's is a pale tint), so a pair checked in one theme tells you
  * nothing about the other, and the failure mode is a pale green pill on a pale
  * green background that nobody notices until somebody with the dark theme on
- * tries to read a score.
+ * tries to read a grade.
  *
  * The triples are read out of `app/globals.css`, the same strings the browser
  * resolves, so this cannot pass against a copy that has drifted.
@@ -102,41 +102,42 @@ function darkToken(name: string): [number, number, number] {
   return DARK[name] ?? LIGHT[name];
 }
 
-//: The pairs column 4 actually paints. `bg-rating-N-bg` with `text-rating-N`.
-const BAND_PAIRS: Array<[string, string, string]> = [
-  ["Ready to Pick, Strong", "rating-1", "rating-1-bg"],
-  ["Ready to Pick", "rating-2", "rating-2-bg"],
-  ["Consider with Reservations", "rating-3", "rating-3-bg"],
-  ["Not Recommended", "rating-5", "rating-5-bg"],
+//: The pairs column 4 actually paints (`grade.ts` GRADE_CLASS): `bg-rating-N-bg`
+//: with `text-rating-N`, one per grade word.
+const GRADE_PAIRS: Array<[string, string, string]> = [
+  ["Highly Matching", "rating-1", "rating-1-bg"],
+  ["Matching", "rating-2", "rating-2-bg"],
+  ["Moderately Matching", "rating-3", "rating-3-bg"],
+  ["Not Matching", "rating-5", "rating-5-bg"],
 ];
 
-//: WCAG 1.4.3. The band label is 11px bold, which is not "large text" under
+//: WCAG 1.4.3. The grade label is 12px bold, which is not "large text" under
 //: 1.4.3's definition (18.66px bold / 24px regular), so the full 4.5 applies.
 const TEXT_MINIMUM = 4.5;
 
-describe("the Ready Pick Score band, light theme", () => {
-  it.each(BAND_PAIRS)("%s is readable", (_label, fg, bg) => {
+describe("the Vivekium Grade, light theme", () => {
+  it.each(GRADE_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(ratio(LIGHT[`${fg}-fg`], LIGHT[bg])).toBeGreaterThanOrEqual(
       TEXT_MINIMUM
     );
   });
 
-  it("Under Review is readable and is not the Not Recommended red", () => {
+  it("Under Review is readable and is not the Not Matching red", () => {
     expect(
       ratio(LIGHT["warning-foreground"] ?? [0, 0, 100], LIGHT.warning)
     ).toBeGreaterThanOrEqual(TEXT_MINIMUM);
     expect(LIGHT.warning).not.toEqual(LIGHT["rating-5-fg"]);
   });
 
-  it("the pending band paints ink on the muted surface, never grey on grey", () => {
+  it("the gradeless states paint ink on the muted surface, never grey on grey", () => {
     // Text is never grey in this product, enforced at the token: `--ink` is
     // what `--muted-foreground` resolves to. This asserts the CONSEQUENCE.
     expect(ratio(LIGHT.ink, LIGHT.muted)).toBeGreaterThanOrEqual(TEXT_MINIMUM);
   });
 });
 
-describe("the Ready Pick Score band, dark theme", () => {
-  it.each(BAND_PAIRS)("%s is readable", (_label, fg, bg) => {
+describe("the Vivekium Grade, dark theme", () => {
+  it.each(GRADE_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(
       ratio(darkToken(`${fg}-fg`), darkToken(bg))
     ).toBeGreaterThanOrEqual(TEXT_MINIMUM);
@@ -148,7 +149,7 @@ describe("the Ready Pick Score band, dark theme", () => {
     ).toBeGreaterThanOrEqual(TEXT_MINIMUM);
   });
 
-  it("the pending band paints ink on the muted surface", () => {
+  it("the gradeless states paint ink on the muted surface", () => {
     expect(ratio(darkToken("ink"), darkToken("muted"))).toBeGreaterThanOrEqual(
       TEXT_MINIMUM
     );
@@ -162,7 +163,7 @@ describe("the Ready Pick Score band, dark theme", () => {
   });
 });
 
-describe("the Pre-Screen Grade cell", () => {
+describe("the AI Match cell", () => {
   it("is readable as plain ink on the page, which is all it ever is", () => {
     expect(ratio(LIGHT.ink, LIGHT.canvas)).toBeGreaterThanOrEqual(TEXT_MINIMUM);
     expect(ratio(darkToken("ink"), darkToken("canvas"))).toBeGreaterThanOrEqual(

@@ -32,9 +32,6 @@ export const MATCHING_BAND_ORDER: RatingWordLabel[] = [
   "Not Matching",
 ];
 
-/** @deprecated One scale now. Alias kept so older imports keep compiling. */
-export const ASSESSMENT_BAND_ORDER = MATCHING_BAND_ORDER;
-
 export function bandClassName(label: string | null | undefined): string {
   if (!label) return "border-border bg-muted text-foreground";
   return BAND_STYLES[label as RatingWordLabel] ?? "border-border bg-muted text-foreground";
@@ -82,7 +79,7 @@ export function RatedComment({
 }) {
   if (!comment) return null;
   return (
-    <p className="text-xs leading-5">
+    <p className="text-xs">
       <span className="font-semibold">{title}:</span>{" "}
       <RatingLabel label={label} />{" "}
       <span>{comment}</span>

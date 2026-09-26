@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -24,216 +24,161 @@ from app.services.ppi import CATEGORIES
 # reads as still supported.
 
 
-# ── The job's PPI matrix (spec §5.2, §5.3) ───────────────────────────────────
+# ── Job setup: the Skills step and the setup checklist (Vivekium release) ──
+#
+# The Tatva matrix editor's shapes (`CompetencyIn`, `BulkCompetencyIn`,
+# `CompetencyOut`, `CompetencyMoveIn`, `MatrixReorderIn`, `FrameworkOut` and the
+# old `JobSetupOut`) are DELETED with the routes that spoke them. What replaced
+# them carries NAMES AND STATES ONLY: no grade word per skill, no priority, no
+# evidence line, no number. Those are the hidden half of the assessment
+# contract (`services/assessment_contract`) and never cross this boundary.
 
 
-class CompetencyIn(BaseModel):
-    """What the Hiring Manager's Edit control sends.
+class SkillOut(BaseModel):
+    """One skill as the recruitment team reads it."""
 
-    `required_level` is a WORD, one of the four grades. There is no numeric
-    input anywhere on this form: the client never types a score and never sees
-    one.
-    """
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    name: str = Field(min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-    required_level: str
-
-
-class BulkCompetencyIn(BaseModel):
-    """Paste-friendly creation of up to 100 skills/competencies."""
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    names: list[str] = Field(min_length=1, max_length=100)
-    required_level: str
-
-
-class CompetencyOut(BaseModel):
     id: uuid.UUID
-    category: str
     name: str
-    description: str | None
-    required_level: str
-    ordinal: int
-    # ── Sutra's seven stages, projected for the review screen ────────────────
-    #
-    # spec-doc6 4.3: "Traceability is a product requirement, not a log line ...
-    # The Hiring Manager's review screen shows this in plain language before
-    # finalisation."
-    #
-    # NO NUMBER CROSSES THIS BOUNDARY. `weight`, `threshold` and the four
-    # multiplier terms stay on the row; what a reviewer reads is `provenance`,
-    # a list of sentences, and `force_rank`, which is an ORDER rather than a
-    # score -- the same status the radar chart's band index has had all along,
-    # and it is what §20.3's force-ranking is FOR. A weight rendered as "1.4850"
-    # would be a number a hiring manager could not usefully argue with.
-
-    #: Stage 2: what we would SEE if a candidate had this.
-    observable_evidence: str | None = None
-    #: Stage 4, as a word.
-    assessment_method: str | None = None
-    #: Stage 7, when one applies.
-    disqualifier: str | None = None
-    #: The hiring manager's own sentence, quoted, when a Layer 3 input produced
-    #: this criterion.
-    swot_origin: str | None = None
-    #: §20.3's position in the force-ranking, 1..n, or null for a behavioural
-    #: competency (§20.1's scorecard has no behavioural row to rank).
-    force_rank: int | None = None
-    #: Where the weight came from, in sentences. `hiring.scorecard.plain_provenance`.
-    provenance: list[str] = []
+    #: `swot` | `jd` | `company` | `team`. `team` means the hiring team wrote it.
+    source: str
+    #: The SWOT sentence this skill answers, VERBATIM, or None. Cleared by a
+    #: rename, because a quotation carried onto a different skill is a
+    #: fabricated citation (2026-09-23).
+    from_swot: str | None = None
 
 
-class CompetencyMoveIn(BaseModel):
-    """One aspect's order after a drag-and-drop move (spec 5.3).
-
-    The client sends the WHOLE ordered list for each aspect it changed, not a
-    (from, to) pair. A pair has to be replayed against whatever the server
-    currently holds, and two hiring managers dragging at once would interleave
-    into an order neither of them saw; a full list is idempotent and always
-    describes a state someone actually looked at.
-    """
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    #: Competency ids, in the order they should appear in this aspect.
-    competency_ids: list[uuid.UUID] = Field(max_length=200)
+class SkillBucketsOut(BaseModel):
+    must_have: list[SkillOut] = []
+    nice_to_have: list[SkillOut] = []
+    behavioural: list[SkillOut] = []
 
 
-class MatrixReorderIn(BaseModel):
-    #: One entry per aspect whose order or membership changed. An aspect that is
-    #: absent is left exactly as it is.
-    groups: list[CompetencyMoveIn] = Field(min_length=1, max_length=3)
+class SkillBucketPermissionsOut(BaseModel):
+    """Per-bucket edit answers for THIS person on THIS job, resolved by the
+    same `rbac.authorize` calls the write routes enforce with."""
+
+    must_have: bool = False
+    nice_to_have: bool = False
+    behavioural: bool = False
 
 
-class FrameworkOut(BaseModel):
+class SkillsOut(BaseModel):
+    """The Skills step (PLAN-p1 section 3.12)."""
+
     job_id: uuid.UUID
-    status: str
-    approved: bool
-    #: Ordered must_have, nice_to_have, behavioural -- report order.
-    competencies: list[CompetencyOut]
-    #: The most items this matrix may hold. Every item is probed at least once,
-    #: so the grade's question ceiling is the matrix's ceiling (spec 5.4).
-    maximum_items: int = 0
-    #: How many questions this job's candidates will be asked, resolved from the
-    #: grade's range and the matrix size. Shown so the Hiring Manager can see
-    #: what adding an item actually costs the candidate.
-    question_target: int = 0
-    #: The RANGE the assessment may run to, as [minimum, maximum]. Sutra fixes
-    #: it per job; Vaada decides where inside it a given conversation ends, from
-    #: that candidate's own answer depth. Shown as a range rather than a single
-    #: number because that is what actually happens now, and a UI promising an
-    #: exact count would be wrong for every candidate who answered thoroughly.
-    question_range: list[int] = []
-    #: There is NO minimum item count in Draft v4: the agent recommends what the
-    #: job needs. Reported as one per aspect purely because each aspect is
-    #: graded and charted on every report, so none of the three may be empty.
-    minimum_per_category: int
-    #: Populated when the matrix cannot yet be saved, so the UI can say why
-    #: rather than only disabling the Save control.
+    #: not_started | drafting | drafted | failed. A lost draft reads failed.
+    draft_status: str
+    #: The server's own sentence for a failed draft, rendered verbatim.
+    draft_error: str | None = None
+    saved: bool
+    locked: bool
+    #: The most a bucket may hold. A limit the reviewer is told, not a score.
+    max_per_bucket: int
+    #: The saved SWOT is newer than the one the skills were drafted from. An
+    #: OFFER only: nothing is re-drafted without a person asking.
+    redraft_available: bool = False
+    #: Active skills the team wrote, named so a redraft confirmation can say
+    #: exactly what it would replace.
+    human_authored_names: list[str] = []
+    #: Why these skills cannot be saved as they stand, every problem named.
     blocking_reason: str | None = None
+    buckets: SkillBucketsOut
+    can_edit: SkillBucketPermissionsOut
+    can_save: bool = False
 
 
-# ── The Reporting Authority SWOT intake (spec 5.1) ───────────────────────
+class SkillAddIn(BaseModel):
+    bucket: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    name: str = Field(min_length=1, max_length=255)
 
 
-class SwotAnswerIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=6000)
+class SkillBulkAddIn(BaseModel):
+    """"Paste a list". All or nothing against the per-bucket limit."""
+
+    bucket: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    names: list[str] = Field(min_length=1, max_length=50)
 
 
-class SwotIntakeOut(BaseModel):
-    """The intake conversation, as one payload.
+class SkillPatchIn(BaseModel):
+    """Rename, move, or both. A rename is applied before a move."""
 
-    `captured` is what the PPI agent will read; `prompt` is what the reporting
-    authority is being asked right now. Both are returned every turn so the
-    screen can show the growing picture beside the question, which is what makes
-    a four-area conversation feel finite to someone doing it unpaid.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    job_id: uuid.UUID
-    status: str
-    complete: bool
-    #: strengths | weaknesses | opportunities | threats, or null when finished.
-    current_area: str | None = None
-    current_area_label: str | None = None
-    prompt: str | None = None
-    #: area -> the points captured so far, in the authority's own terms.
-    captured: dict[str, list[str]] = {}
-    areas_total: int = 4
-    areas_done: int = 0
-    # ── The rest of §18.2's session, which the four quadrants are only the
-    #    first four blocks of ──────────────────────────────────────────────
-    #: `swot_intake.PHASES`. Reported so the screen can say which block of the
-    #: session the manager is in rather than showing "Threats" through the
-    #: force-ranking, the best-performer test and the classification read-back.
-    phase: str = "areas"
-    phase_label: str | None = None
-    #: The §18.4 situation type the manager CONFIRMED, as a word, plus its
-    #: label. Never a proposal: a proposal shown as a confirmation is how the
-    #: most expensive error at intake gets made silently.
-    situation_key: str | None = None
-    situation_label: str | None = None
-    #: True while §18.5 has handed the intake back. A screen that showed this
-    #: the same as "in progress" would let a rejected intake look finished.
-    returned_for_rework: bool = False
-    #: The §18.5 rules currently refusing, by name. The SENTENCE to say is
-    #: `prompt`; these are for the progress panel.
-    outstanding_rules: list[str] = []
-    #: §18.3 probes and the other instruments already put to the manager.
-    instruments_asked: list[str] = []
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    bucket: str | None = Field(default=None, pattern="^(" + "|".join(CATEGORIES) + ")$")
+
+
+class SkillsDraftIn(BaseModel):
+    #: Required to replace skills the team wrote themselves. Without it a
+    #: redraft over them is a 409 naming them.
+    confirm_overwrite: bool = False
 
 
 class JobSetupOut(BaseModel):
-    """The one manual step in the pipeline (spec §10), as one payload.
+    """The job-setup checklist (PLAN-p1 section 3.12). States only.
 
-    Draft v4 made that step TWO halves finalised in ONE session: the PPI matrix
-    and the job's Matching category list. A job reaches "Ready for Candidates"
-    when both are stamped, and everything after that -- the candidate
-    conversation, scoring, report synthesis -- runs with no further human
-    involvement.
-
-    The SWOT intake is REPORTED but does not gate on its own. It is an input to
-    the matrix, so an unfinished intake already shows up as a matrix nobody has
-    approved, and gating separately would give one problem two error messages.
-
-    `questions_approved` is retained and always reports the matrix's own approval
-    state. It is not a third gate: it is here so a client build that still reads
-    the field cannot conclude a ready job is unready and hide the invite control.
-    It is deprecated and should be dropped once no client reads it.
+    Every flag is DERIVED from the tables on read: `swot_saved` from the SWOT
+    row's own status, `skills_saved` from the saved stamp AND the hidden
+    context, `skills_locked` from the existence of a snapshot row. A timestamp
+    is not evidence that work happened (rule 8).
     """
 
     job_id: uuid.UUID
-    status: str
-    grade: str | None
-    #: DEPRECATED, mirrors `framework_approved`. See the class docstring.
-    questions_approved: bool
-    framework_approved: bool
-    #: The second half of the setup session (spec §3.2).
-    matching_categories_finalized: bool = False
-    #: Whether the reporting authority has finished the SWOT intake.
-    swot_complete: bool = False
+    jd_ready: bool
+    #: The SWOT document's state as a reader sees it (a lost generation reads
+    #: `failed`).
+    swot_status: str
+    swot_saved: bool
+    skills_draft_status: str
+    skills_saved: bool
+    skills_locked: bool
+    #: The grade is locked with the skills (D5).
+    grade_locked: bool
+    published: bool
     ready_for_candidates: bool
-    generated_at: datetime | None = None
-    approved_at: datetime | None = None
-    #: True when this job has no usable framework and one has been enqueued.
-    #: Populated so the setup screen can say "we are preparing this" instead of
-    #: rendering an empty list that looks like a finished, empty framework --
-    #: which is exactly what 19 of 35 live jobs were showing.
-    framework_pending: bool = False
+    #: The server's own sentence naming every step still missing before
+    #: publication, or None when nothing blocks it.
+    publish_blocked_reason: str | None = None
 
 
-# ── The PPI Assessment Report (spec §10) ─────────────────────────────────────
+# ── The PRISM Report (spec §10) ──────────────────────────────────────────────
 
 
 class DimensionOut(BaseModel):
     name: str
     description: str | None
     #: One of the four grades. Never a number, a percentage, or a letter grade.
+    #: "Not assessed" exactly when `status` is `not_assessed`: the evaluation
+    #: could not be completed and no grade is stated for it (migration 0130).
     grade: str
+    #: `graded`, `unanswered` or `not_assessed`, the row's stored status.
+    status: Literal["graded", "unanswered", "not_assessed"] = "graded"
+    #: The sentence beside a `not_assessed` row. Words only.
+    status_note: str | None = None
     #: What the job requires of this item, as a word. Null on AI Score
     #: parameters and technical items, which have no job-requirement shape.
     required_level: str | None = None
     remark: str
+    #: The server's marker for a remark a fixed template wrote because the
+    #: writing model was unavailable. None for a model remark and for a row
+    #: written before remark provenance existed.
+    remark_note: str | None = None
+    #: The citation trail's marker for a remark its cited evidence did not
+    #: clearly support. None when it is supported or no trail exists.
+    support_note: str | None = None
+    #: EVIDENCE CONFIDENCE (0107): High, Moderate, Low, or "Insufficient
+    #: evidence". How well corroborated the evidence behind the grade is, and
+    #: never a statement about the candidate: it is derived after scoring, from
+    #: distinct evidence ORIGINATORS, and it moves no grade.
+    #:
+    #: NULL on every row written before 0107, and nothing is substituted. A
+    #: report is immutable and the evidence set an older one was written from
+    #: cannot be reconstructed; a plausible word here would be the only
+    #: uncheckable claim on the line.
+    evidence_confidence: str | None = None
+    #: The named sources it rests on, as words a reader recognises. Empty on a
+    #: pre-0107 row, which renders as no source line rather than as none found.
+    evidence_sources: list[str] = []
 
 
 class RadarAxisOut(BaseModel):
@@ -249,8 +194,11 @@ class RadarAxisOut(BaseModel):
     """
 
     axis: str
-    requirement_band: str
-    requirement_index: int
+    #: None when the report recorded no requirement for this spoke. The chart
+    #: then draws the candidate's shape only, rather than a requirement nobody
+    #: stated.
+    requirement_band: str | None = None
+    requirement_index: int | None = None
     candidate_band: str
     candidate_index: int
 
@@ -300,6 +248,119 @@ class GapAnalysisOut(BaseModel):
     groups: list[GapGroupOut] = []
 
 
+class ValidationPointOut(BaseModel):
+    """One Recommended Human Validation Point (0107).
+
+    NOTE THE FIELD LIST. No severity, no score, no priority and no decision.
+    Order carries what ranking the section is entitled to state, exactly as the
+    Proctoring Report does, and a field an outcome could be written into is a
+    field an outcome eventually appears in.
+    """
+
+    area: str
+    #: `confidence | borderline | contradiction`. Why this area is listed, as a
+    #: code the UI can group by; the sentence a reader sees is `reason`.
+    driver: str
+    #: The evidence confidence word, where the driver is a confidence verdict.
+    #: Null rather than blank, so a renderer can tell "not about confidence"
+    #: from "confidence was empty".
+    confidence: str | None = None
+    reason: str
+    #: One interview probe. Advisory, grounded in the record, and never phrased
+    #: as an advance or reject decision.
+    probe: str
+
+
+class ValidationPointsOut(BaseModel):
+    """Recommended Human Validation Points (0107).
+
+    DELIBERATELY NOT THE GAP ANALYSIS. That section is GRADE driven and
+    unbounded; this one is CONFIDENCE and CONTRADICTION driven and stops at
+    five. A Highly Matching item resting on the candidate's own unchecked
+    account is invisible to the first and is the first row of the second.
+    """
+
+    note: str = ""
+    points: list[ValidationPointOut] = []
+    #: Said in words when nothing needs checking, rather than blank space.
+    no_points_statement: str | None = None
+
+
+class ClaimEvidenceEntryOut(BaseModel):
+    """One row of the Evidence vs Claim Summary (0107)."""
+
+    #: The competency or employer the claim bears on. May be empty: a claim the
+    #: matrix does not grade is still part of the candidate's account.
+    area: str = ""
+    #: What the candidate asserted, in the ledger's normalised wording.
+    claim: str
+    #: What was found when it was looked for. ABSENCE OF EVIDENCE IS NEVER
+    #: RENDERED AS THE CLAIM BEING FALSE: the sentence for an unevidenced claim
+    #: says in so many words that it is a gap in what was examined.
+    evidence: str
+    #: How well corroborated that evidence is, as a word.
+    confidence: str | None = None
+
+
+class ClaimEvidenceOut(BaseModel):
+    """Evidence vs Claim Summary (0107).
+
+    A CLAIM IS NOT A FACT, and this is the section that says so. It never
+    states whether a claim is true; it states what the record holds.
+    """
+
+    note: str = ""
+    entries: list[ClaimEvidenceEntryOut] = []
+    no_claims_statement: str | None = None
+
+
+class AiScoreTagOut(BaseModel):
+    """One evidence tag on the AI Score snapshot: a phrase, for or against."""
+
+    text: str
+    polarity: Literal["positive", "negative"]
+
+
+class AiScoreSnapshotOut(BaseModel):
+    """Yukti's frozen pre-assessment snapshot (the AI Score of a report written
+    from the Vivekium release on). A grade word, a header sentence and evidence
+    tags; no radar, no remark, no number."""
+
+    status: Literal["scored", "not_assessed", "pending"]
+    grade: str | None = None
+    header: str = ""
+    tags: list[AiScoreTagOut] = []
+
+
+class CitationEvidenceOut(BaseModel):
+    """One piece of evidence a report statement rests on, resolved at read
+    time. Words and the candidate's own text only: no id, no locator, no
+    position."""
+
+    kind: str
+    question: str | None = None
+    excerpt: str | None = None
+
+
+class CitationStatementOut(BaseModel):
+    section: str
+    item: str
+    kind: str
+    text: str
+    #: The trail's words-only marker when the statement's support is weak.
+    support: str | None = None
+    evidence: list[CitationEvidenceOut] = []
+
+
+class ReportCitationsOut(BaseModel):
+    """What each statement of a PRISM Report rests on. `trail_available` is
+    False for a report written before the citation trail existed, which is a
+    different answer from an empty trail."""
+
+    trail_available: bool
+    statements: list[CitationStatementOut] = []
+
+
 class FunctionalReportOut(NumberFreeDelivery):
     # THE SERIALISER-LEVEL NUMBER BAN (spec-doc6 D8). Inherited rather than
     # asserted in the route: this model is the last shape a delivered PRISM
@@ -313,9 +374,15 @@ class FunctionalReportOut(NumberFreeDelivery):
     reference_code: str = ""
     grade: str
     # ── AI Score: the pre-assessment resume snapshot (9.1) ──────────────
+    #: LEGACY rows: the four matching parameters of a report written before
+    #: the Vivekium release. Empty on a newer report, which carries
+    #: `ai_score_snapshot` instead.
     ai_score: list[DimensionOut]
-    # ── PPI Assessment (9.3) ────────────────────────────────────
+    ai_score_snapshot: AiScoreSnapshotOut | None = None
+    # ── Tatva Assessment (9.3) ──────────────────────────────────
+    #: "Not assessed" exactly when `overall_status` is `not_assessed`.
     overall_grade: str
+    overall_status: Literal["graded", "not_assessed"] = "graded"
     overall_summary: str
     must_have: list[DimensionOut]
     nice_to_have: list[DimensionOut]
@@ -333,11 +400,17 @@ class FunctionalReportOut(NumberFreeDelivery):
     proctoring: ProctoringReportOut | None = None
     #: Gap Analysis & Action Plan (9.6).
     gap_analysis: GapAnalysisOut = GapAnalysisOut()
+    #: Evidence vs Claim Summary (0107). Empty on a report written before it,
+    #: which renders without the section rather than with an empty one.
+    claim_evidence: ClaimEvidenceOut = ClaimEvidenceOut()
+    #: Recommended Human Validation Points (0107). Same reading of empty.
+    validation_points: ValidationPointsOut = ValidationPointsOut()
     #: RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
     #: before Draft v4, so an old report opened today still renders what it was
     #: actually written with rather than an empty section.
     suggested_interview_questions: list[str] = []
-    #: Four charts: Overall, Must-have, Nice-to-have, Behavioural.
+    #: Four charts are built (Overall, Must-have, Nice-to-have, Behavioural);
+    #: the renderers draw three.
     radar_charts: list[RadarChartOut] = []
     #: Ordered best-to-worst grade labels, for the chart legend and colour ramp.
     radar_bands: list[str] = []
@@ -353,6 +426,12 @@ class FunctionalReportOut(NumberFreeDelivery):
     #: the Download control instead of offering a button the PDF route will
     #: refuse with 403. Viewing is not gated by this flag.
     report_download_allowed: bool = False
+    #: Whether gate G4 would release the PDF now (`siddhi.delivery`, the same
+    #: gate the PDF route runs). False with `pdf_blocked_reason` set while a
+    #: report routed to a person has no recorded decision, so the screen says
+    #: why instead of offering a button the route would refuse with 409.
+    pdf_available: bool = True
+    pdf_blocked_reason: str | None = None
 
 
 class AnswerBehaviourIn(BaseModel):
@@ -388,29 +467,10 @@ class AnswerBehaviourIn(BaseModel):
 # transcript, and until 2026-08-06 the only way to read one was a psql session.
 
 
-class ConversationMessageIn(BaseModel):
-    """One turn. Prose for a text question; a structure for the others.
-
-    `answer` stays the transcript line for the two text formats. For a
-    structured format the client sends `answer_payload` in the shape
-    `assessment_formats.types.ANSWER_MODELS` names and the SERVER renders the
-    transcript line from it; an `answer` string sent alongside is ignored so a
-    client can never disagree with its own structured submission.
-
-    `paused_ms` is how long a blocking proctoring warning held the screen
-    during this question, subtracted from the server-measured time spent and
-    bounded by it. `behaviour` is the answer field's keystroke and pointer
-    timings, evaluated server-side against the candidate's own baseline.
-    """
-
-    answer: str = Field(default="", max_length=10000)
-    answer_payload: dict[str, Any] | None = None
-    paused_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
-    behaviour: AnswerBehaviourIn | None = None
-
-
-class ConversationAnswerEditIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=10000)
+# The turn's request and response shapes (`ConversationMessageIn`,
+# `ConversationOut`) live in `schemas/assessment_conversation.py` with the
+# routes that speak them (2026-09-24). `ConversationAnswerEditIn` is DELETED:
+# past answers are viewable and never editable (Appendix B section 3).
 
 
 class QuestionOut(BaseModel):
@@ -437,36 +497,20 @@ class QuestionOut(BaseModel):
         return value
 
 
-class ConversationOut(BaseModel):
-    conversation_id: uuid.UUID
-    #: active | completed | terminated
-    status: str
-    #: Which input mechanism this session uses (dual-mode spec section 2):
-    #: 'conversational' or 'video_interview'. Defaulted so every constructor
-    #: that predates dual mode stays truthful about its own rows.
-    mode: str = "conversational"
-    prompt: str | None
-    progress_label: str
-    answered_questions: int
-    total_questions: int
-    is_reask: bool = False
-    answer_message_id: uuid.UUID | None = None
-    #: The format of the prompt on screen. None once the conversation is over
-    #: and on a follow-up or re-ask, which is always answered in prose.
-    question: QuestionOut | None = None
-    #: The proctoring termination notice, in plain language, when `status` is
-    #: terminated. Never a reason code.
-    termination_message: str | None = None
-
-
 class TranscriptAnswerDetailOut(BaseModel):
     """The recruiter's view of one structured answer (formats spec 7).
 
     Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
     `not_answered`, or None for a format that has none), never a score. The
     AI evaluation is its reasoning, never its number. `not_executed_note` is
-    present on every coding answer so a reader cannot mistake a read-only
-    judgement for a verified run.
+    present on every LEGACY coding answer so a reader cannot mistake a
+    read-only judgement for a verified run.
+
+    An EXECUTED coding answer (Phase 4) carries the four `coding_*` / review
+    fields instead, all prose: the outcome sentence with its counts spelled
+    out, the compiler's message when the code did not compile, and the
+    code-quality review's reasoning and verbatim citations. No hidden test,
+    no reference and no number crosses here.
     """
 
     #: The candidate view of the payload, so the recruiter sees the options
@@ -484,6 +528,10 @@ class TranscriptAnswerDetailOut(BaseModel):
     evaluation_reasoning: str | None = None
     evaluation_citations: list[str] = []
     not_executed_note: str | None = None
+    coding_outcome: str | None = None
+    compile_error: str | None = None
+    review_reasoning: str | None = None
+    review_citations: list[str] = []
     time_spent: str | None = None
 
 
@@ -549,141 +597,10 @@ class TranscriptOut(BaseModel):
     offset: int
 
 
-# ── The assessment invitation link (2026-08-11) ──────────────────────────────
-
-class InvitationResolveOut(BaseModel):
-    """What the invitation landing page needs to decide where to send someone.
-
-    ONE response shape covers the whole flow -- signed out, signed in as the
-    wrong person, expired, already submitted, ready -- because the page's job
-    is to branch, and a branch is far harder to get wrong when the states are
-    an enum in one payload than when they are spread across status codes.
-
-    `state` is the branch. Everything else is context for the copy.
-    """
-
-    #: One of:
-    #:   needs_auth        the link is good, nobody is signed in
-    #:   wrong_account     signed in, but not as the invited candidate
-    #:   ready             go to the assessment
-    #:   in_progress       partly answered, same destination, different copy
-    #:   completed         already submitted; the report is the destination
-    #:   not_invited       the recruiter has not invited this application
-    #:   expired           the signed link is past its lifetime
-    #:   window_closed     the 30 + 5 day posting window has ended
-    #:   invalid           not one of our links
-    state: str
-    #: Where to send the browser once the state allows it. Always a path on
-    #: this site, never an absolute URL: an open redirect in an emailed link is
-    #: exactly the thing a phisher would want from this endpoint.
-    redirect_to: str | None = None
-    #: Masked, e.g. `as***@example.com`. Only populated for `wrong_account`, so
-    #: the candidate can tell which of their addresses was invited.
-    invited_email_masked: str | None = None
-    #: The email currently signed in, unmasked -- the caller already knows it.
-    signed_in_email: str | None = None
-    job_title: str | None = None
-    company_name: str | None = None
-    #: Human-readable, already resolved server-side. The page renders this
-    #: rather than mapping the state to copy itself, so the email, the API and
-    #: the page cannot describe the same situation three different ways.
-    message: str
-    #: True when a prior report for this candidate is under the six-month
-    #: window, so the page can explain why they are answering questions again.
-    #: Never a reason to skip the assessment: under PPI the framework is
-    #: generated from each job's own JD, so nothing is portable between jobs.
-    recent_prior_report: bool = False
-
-
-# ── Dual-mode assessment (2026-09-05 spec sections 2-5, 16) ──────────────────
-
-
-class AssessmentModeIn(BaseModel):
-    """The candidate's mode choice, made before consent and before starting."""
-
-    mode: str
-
-    @field_validator("mode")
-    @classmethod
-    def _known_mode(cls, value: str) -> str:
-        from app.models.dual_mode import ASSESSMENT_MODES
-
-        if value not in ASSESSMENT_MODES:
-            raise ValueError(f"unknown assessment mode {value!r}")
-        return value
-
-
-class ConsentTermsOut(BaseModel):
-    """One mode's consent screen, exactly as configured (spec 3.2, 3.3).
-
-    The versions travel with the text so the client shows what the server will
-    stamp; the row written on acceptance re-reads the settings server-side and
-    never trusts these echoes back.
-    """
-
-    assessment_mode: str
-    text: str
-    consent_version: str
-    privacy_policy_version: str
-    terms_version: str
-
-
-class ModeStateOut(BaseModel):
-    """Where this assessment session stands in the mode/consent flow."""
-
-    mode: str
-    #: True once the assessment has begun (or a recording exists): the mode
-    #: can no longer change, because the records already written belong to it.
-    mode_frozen: bool
-    #: Whether a consent row exists for THIS session in THIS mode.
-    consented: bool
-    #: The consent terms for the CURRENT mode.
-    consent: ConsentTermsOut
-
-
-class VideoQuestionOut(BaseModel):
-    """One question of the video interview, in served order."""
-
-    ordinal: int
-    #: The text the candidate reads aloud and answers in speech.
-    prompt: str
-    #: The format detail (candidate view only; the answer key never crosses).
-    question: QuestionOut
-
-
-class VideoStartOut(BaseModel):
-    """The video interview, opened: the recording session and the questions."""
-
-    conversation_id: uuid.UUID
-    recording_id: uuid.UUID
-    status: str
-    questions: list[VideoQuestionOut]
-    #: Ceilings the recorder must respect, served so the client and server
-    #: never disagree about a number (the proctoring config rule, applied here).
-    max_upload_bytes: int
-    max_duration_seconds: int
-
-
-class VideoMarkIn(BaseModel):
-    """The next-question control: the question now on screen."""
-
-    question_id: uuid.UUID
-
-
-class VideoRecordingStatusOut(BaseModel):
-    """The candidate's honest view of their recording (spec 16).
-
-    `status` is the lifecycle state, `message` is the plain-language account
-    of it. No score, no grade, no internal identifier beyond the recording's
-    own id, and the message never pretends a failed step ran.
-    """
-
-    recording_id: uuid.UUID
-    status: str
-    message: str
-    #: True only for `upload_failed`, where the fix is the candidate's own
-    #: re-upload; every other failure is retried server-side by staff.
-    can_retry_upload: bool = False
+# The invitation and consent shapes moved to
+# `schemas/assessment_conversation.py` on 2026-09-24. The mode-choice shapes
+# are DELETED with the mode choice: there is one assessment mode (Appendix B
+# section 1).
 
 
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ───
@@ -699,7 +616,7 @@ class SwotAnalysisSectionsIn(BaseModel):
     threats: str = Field(default="", max_length=4000)
     #: The version the editor loaded. Sent back so a save that would overwrite
     #: somebody else's newer save is refused instead of silently winning.
-    expected_version: int | None = None
+    expected_version: int = Field(ge=0)
 
 
 class SwotAnalysisGenerateIn(BaseModel):
@@ -724,7 +641,8 @@ class SwotAnalysisOut(BaseModel):
     """
 
     job_id: uuid.UUID
-    #: not_generated | generated | failed | edited
+    #: not_generated | generating | generated | failed | edited. A generation
+    #: past its stale window is served as `failed` (derived, never written).
     status: str
     strengths: str | None = None
     weaknesses: str | None = None
@@ -744,3 +662,8 @@ class SwotAnalysisOut(BaseModel):
     can_restore_previous: bool = False
     #: The effective answer for THIS user on THIS job.
     can_edit: bool = False
+    #: The saved SWOT is newer than the one the skills were drafted from and
+    #: the skills are not locked, so the team may be OFFERED "Re-draft skills
+    #: from the updated SWOT". An offer only: nothing is re-drafted without the
+    #: team asking (`services/skills.redraft_available`).
+    skills_redraft_available: bool = False

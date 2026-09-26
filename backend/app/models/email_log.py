@@ -9,7 +9,7 @@ updated by the worker, never only on success.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,6 +55,30 @@ EMAIL_TYPES: tuple[str, ...] = (
     EMAIL_TYPE_JOINED,
     EMAIL_TYPE_DATABANK_INVITATION,
 )
+
+# ── Logged but never AI-drafted (migration 0114) ─────────────────────────────
+# The BGV verification request. It is DELIBERATELY not a member of
+# `EMAIL_TYPES`: every type in that tuple has a prompt in `EMAIL_TYPE_PROMPTS`
+# and is drafted by `lifecycle_email.draft`, and this one is not drafted at all
+# -- a recruiter writes it, or the deterministic template does when automation
+# sends it and there is no recruiter to review a draft. It exists as a type so
+# the message has an `email_log` row, which is the only thing a delivery event
+# can be matched back to.
+EMAIL_TYPE_BGV_VERIFICATION = "bgv_verification"
+# ── The message notification (migration 0121) ────────────────────────────────
+# Sent when a recruiter writes to a candidate in the portal. Fixed copy from
+# `services/candidate_message_notifications`, never drafted by a model, so it
+# is not a lifecycle type either.
+EMAIL_TYPE_MESSAGE_NOTIFICATION = "message_notification"
+
+NON_LIFECYCLE_EMAIL_TYPES: tuple[str, ...] = (
+    EMAIL_TYPE_BGV_VERIFICATION,
+    EMAIL_TYPE_MESSAGE_NOTIFICATION,
+)
+
+#: Everything the `ck_email_log_type` CHECK admits. Mirrored by migrations
+#: 0114 and 0121 -- keep them in step.
+LOGGED_EMAIL_TYPES: tuple[str, ...] = EMAIL_TYPES + NON_LIFECYCLE_EMAIL_TYPES
 
 #: Which prompt template drafts each type (app/prompts/*.txt).
 EMAIL_TYPE_PROMPTS: dict[str, str] = {
@@ -105,6 +129,21 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
         Index("ix_email_log_tenant_created", "tenant_id", "created_at"),
         Index("ix_email_log_job", "job_id"),
         Index("ix_email_log_candidate", "candidate_id"),
+        Index("ix_email_log_conversation", "conversation_id"),
+        # Migration 0121. One row per dedupe key: a redelivered automatic
+        # email is refused by the database, not by a lookup that races.
+        Index(
+            "uq_email_log_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_email_log_pending",
+            "status",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'processing')"),
+        ),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -148,6 +187,21 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     complained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: SES REJECT and RENDERING_FAILURE: the message never reached a receiver
+    #: at all. Deliberately separate from `bounced_at`, which means a receiver
+    #: took it and refused it. The two have different causes and different
+    #: fixes, and one column would make them indistinguishable afterwards.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: WHICH TRANSPORT ACTUALLY CARRIED THIS MESSAGE, recorded per row rather
+    #: than inferred from today's `settings.email_transport`. A deployment that
+    #: switches from smtp to ses would otherwise silently relabel every
+    #: historical row, and `sent` means something different under each: Gmail
+    #: reports no delivery outcome at all, so under smtp `sent` is terminal.
+    transport: Mapped[str | None] = mapped_column(String(20))
+    #: The template this body was rendered from. Stored so a bounce traces back
+    #: to the copy that produced it without re-deriving it from `email_type`,
+    #: which is a coarser thing: several templates share one type.
+    template_id: Mapped[str | None] = mapped_column(String(120))
     #: The corporate sender this message was queued under, when the recruiter
     #: chose one. SET NULL so revoking-then-deleting a sender never erases the
     #: delivery record; the send-time chokepoint in workers/tasks.py re-loads
@@ -155,3 +209,36 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     sender_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("client_email_senders.id", ondelete="SET NULL")
     )
+    #: WHICH BGV VERIFICATION THIS MESSAGE IS (migration 0114). The bounce
+    #: handler used to correlate back through the recipient ADDRESS, and one
+    #: HR mailbox confirming two candidates at the same employer is the normal
+    #: case at any large company: the address resolved to whichever
+    #: verification was sent last, silently, and the wrong candidate was told
+    #: to fix an address that worked. An address is a property of a recipient
+    #: and is never an identity of a message. SET NULL so deleting a
+    #: verification never erases the delivery record of what was sent.
+    bgv_verification_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("bgv_verifications.id", ondelete="SET NULL")
+    )
+    #: WHAT MAKES AN AUTOMATIC EMAIL IDEMPOTENT (migration 0121). Written by
+    #: `services/email_outbox` only, and it names the STAGE, never just the
+    #: type: `assessment_reminder:<link>:24` and `...:72` are two emails, which
+    #: is exactly what "any row of this type" could not express, and why the
+    #: 72 hour reminder was never sent. NULL for a human-sent email, which may
+    #: legitimately be sent twice.
+    dedupe_key: Mapped[str | None] = mapped_column(String(200))
+    #: The candidate thread this email is part of (migration 0121). Set when a
+    #: person sent it, or when it announces a message in that thread; its
+    #: Reply-To is then the thread's own address, so an emailed answer lands in
+    #: the conversation instead of a mailbox nobody watches. SET NULL so a
+    #: deleted conversation never erases the delivery record.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    #: When a send worker CLAIMED this row, moving it from `queued` to
+    #: `processing` in one conditional UPDATE (migration 0121). Two
+    #: invocations for one row cannot both claim it, so a redelivered or
+    #: re-dispatched send never mails a candidate twice. A row still
+    #: `processing` long after its claim may or may not have been sent, and it
+    #: is reported, never resent.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -1,22 +1,35 @@
 """Corporate email sender management (Corporate Email System spec, 2026-09-05).
 
-The spec's whole section 3 flow lives behind these routes:
+The whole sender flow lives behind these routes:
 
-    add sender -> business email check -> 6-digit OTP to the mailbox ->
-    POC enters OTP -> ownership verified -> Super Admin authorizes -> ACTIVE
+    add sender -> business email check -> Super Admin approves or rejects
+    -> ACTIVE (and SES eligibility is checked, never asserted)
+
+THE MAILBOX OTP WAS WITHDRAWN, and this is the reasoning rather than an
+omission. It proved the POC could read the mailbox. SES already refuses to
+send as any identity the account has not verified, so the OTP re-proved a
+property AWS enforces on every single send -- and it cost the product an OTP
+surface in a portal that bans OTP everywhere else. Two questions remain, and
+they are different questions: the COMPANY authorizes the address (the Super
+Admin's decision, recorded here) and AWS carries mail from it
+(`email_senders.eligibility`, which asks and never asserts).
+
+THE DEFAULT SENDER (Phase 6). Automatic emails (an application
+confirmation, an assessment reminder) have no request to name a sender in, so
+before the default existed a corporate sender could never be used for them.
+`POST /{id}/default` makes one ACTIVE sender the tenant's default (at most one,
+a partial unique index); `DELETE /{id}/default` clears it; and every
+transition AWAY from active clears it in the same UPDATE, so the next email
+falls back to the platform mailbox instead of failing at send time. Both are
+`authorize_email_senders` acts, because choosing the address every automatic
+email speaks from is the same decision as authorizing it.
 
 Two capabilities split the flow exactly where spec section 10 does:
-`manage_email_senders` covers registration and verification (client Super
-Admin + Recruitment Manager), `authorize_email_senders` covers activation,
-disable, enable and revoke (client Super Admin only). Every state change goes
-through `email_senders.assert_transition` -- the FSM is the one chokepoint --
-and every event is audited (spec section 10), never with the code in it.
-
-The OTP email leaves through the existing dispatched email path
-(`pickready.send_email` with the fixed `sender_verification` template), never
-inline in the handler (claude.md rule 4). The plaintext code exists only in
-the dispatch payload and the mailbox; Redis holds the HMAC hash
-(services/email_senders/verification).
+`manage_email_senders` covers registration (client Super Admin + Recruitment
+Manager), `authorize_email_senders` covers approve, reject, disable, enable
+and revoke (client Super Admin only). Every state change goes through
+`email_senders.assert_transition` -- the FSM is the one chokepoint -- and
+every event is audited (spec section 10).
 
 This module also carries the SES event webhook (spec section 8): SNS posts
 delivery/bounce/complaint events here, the message signature and TopicArn are
@@ -36,30 +49,32 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_public_db, get_tenant_db, require_capability
 from app.core.config import get_settings
 from app.models.email_log import (
+    EMAIL_TYPE_BGV_VERIFICATION,
     STATUS_BOUNCED,
     STATUS_COMPLAINT,
     STATUS_DELIVERED,
+    STATUS_FAILED,
+    STATUS_QUEUED,
     STATUS_SENT,
     EmailLog,
 )
 from app.models.email_sender import (
     SENDER_ACTIVE,
     SENDER_DISABLED,
-    SENDER_EMAIL_VERIFIED,
     SENDER_PENDING_VERIFICATION,
+    SENDER_REJECTED,
     SENDER_REVOKED,
-    SENDER_VERIFICATION_EXPIRED,
     ClientEmailSender,
 )
 from app.models.tenant import Tenant
 from app.schemas.email_senders import (
-    OtpIssueOut,
-    OtpVerifyIn,
+    ActiveSenderOut,
     SenderCreateIn,
     SenderListOut,
     SenderOut,
@@ -72,18 +87,14 @@ from app.services import email_templates, rbac
 from app.services.audit import audit
 from app.services.email_senders import (
     IllegalSenderTransition,
-    ResendCooldownActive,
     SenderDomainBlocked,
     SenderEmailInvalid,
-    VerificationUnavailable,
     assert_transition,
-    issue_otp,
     validate_business_email,
-    verify_otp,
 )
-from app.services.email_senders import verification as otp_state
+from app.services.email_senders.eligibility import check_sender_eligibility
 from app.services.rate_limit import rate_limit
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -114,39 +125,36 @@ def _transition_or_409(sender: ClientEmailSender, target: str) -> None:
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     sender.status = target
+    if target != SENDER_ACTIVE:
+        # Only an active sender may be the default. Cleared on the SAME row in
+        # the same flush, so there is no instant at which a revoked or
+        # disabled address is what automatic emails would go out under.
+        sender.is_default = False
 
 
-async def _dispatch_otp_email(
-    session: AsyncSession, user: CurrentUser, sender: ClientEmailSender, code: str
-) -> None:
-    """Send the verification code to the MAILBOX BEING REGISTERED, through the
-    dispatched email path (never inline). The code travels only in the task
-    payload and the mailbox; it is never persisted, logged or audited."""
-    settings = get_settings()
-    tenant = await session.get(Tenant, user.tenant_id)
-    dispatch(
-        "pickready.send_email",
-        args=[
-            str(user.tenant_id),
-            sender.email,
-            "sender_verification",
-            {
-                "sender_name": sender.name,
-                "company_name": tenant.name if tenant else "Your company",
-                "otp_code": code,
-                "ttl_minutes": str(max(1, settings.sender_otp_ttl_seconds // 60)),
-            },
-        ],
-    )
+async def _sender_out(sender: ClientEmailSender) -> SenderOut:
+    """One sender, with its current sending eligibility attached.
 
-
-def _otp_issue_out(sender: ClientEmailSender) -> OtpIssueOut:
-    settings = get_settings()
-    return OtpIssueOut(
-        sender_id=sender.id,
+    The eligibility lookup is DELIBERATELY not cached on the row: an identity
+    can be verified or fail verification in AWS at any moment without anything
+    in this product being told, so a stored copy would be a fact with an
+    expiry date and no refresh. Asking at read time keeps the portal honest.
+    """
+    eligibility = await check_sender_eligibility(sender.email)
+    return SenderOut(
+        id=sender.id,
+        name=sender.name,
+        email=sender.email,
         status=sender.status,
-        resend_cooldown_seconds=settings.sender_otp_resend_cooldown_seconds,
-        expires_in_seconds=settings.sender_otp_ttl_seconds,
+        email_verified=sender.email_verified,
+        authorized_at=sender.authorized_at,
+        created_at=sender.created_at,
+        is_default=sender.is_default,
+        # NO AWS VOCABULARY CROSSES THIS BOUNDARY. The Super Admin is told
+        # whether the address can send and, if not, what happens next -- never
+        # SES, an identity, a domain-verification status or a DKIM record.
+        can_send=eligibility.eligible,
+        sending_detail=eligibility.detail,
     )
 
 
@@ -174,7 +182,7 @@ async def list_senders(
         session, user.tenant_id, user.role, caps.AUTHORIZE_EMAIL_SENDERS, user.user_id
     )
     return SenderListOut(
-        senders=[SenderOut.model_validate(r) for r in rows],
+        senders=[await _sender_out(r) for r in rows],
         can_manage=True,  # the capability gate above already proved it
         can_authorize=can_authorize,
     )
@@ -182,7 +190,7 @@ async def list_senders(
 
 @router.post(
     "",
-    response_model=OtpIssueOut,
+    response_model=SenderOut,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(rate_limit("sender_create", limit=10, window=3600))],
 )
@@ -190,14 +198,19 @@ async def create_sender(
     body: SenderCreateIn,
     user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_SENDERS)),
     session: AsyncSession = Depends(get_tenant_db),
-) -> OtpIssueOut:
-    """Register one corporate mailbox and send its first verification code.
+) -> SenderOut:
+    """Register one corporate mailbox, pending the Super Admin's decision.
 
     The business-email gate runs first (spec section 2): a malformed address
-    or a free-provider domain is refused with the reason named. A REVOKED row
-    for the same address is REPLACED, not resurrected -- revoked is terminal
-    in the FSM, so registering the mailbox again starts the whole
-    verification flow from scratch on a fresh row.
+    or a free-provider domain is refused with the reason named. A REVOKED or
+    REJECTED row for the same address is REPLACED, not resurrected -- both are
+    terminal in the FSM, so proposing the mailbox again starts a fresh row and
+    leaves the original decision on the audit record.
+
+    NO CODE IS SENT. Mailbox ownership used to be proved by an OTP here; SES
+    identity verification already establishes that the account may send as
+    this address, and the Super Admin's approval establishes that the company
+    authorizes it. Those are the two questions, and neither is an OTP.
     """
     try:
         email = validate_business_email(body.email)
@@ -219,7 +232,7 @@ async def create_sender(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        if existing.status != SENDER_REVOKED:
+        if existing.status not in {SENDER_REVOKED, SENDER_REJECTED}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="That address is already registered for your company.",
@@ -238,17 +251,6 @@ async def create_sender(
     session.add(sender)
     await session.flush()
 
-    try:
-        code = await issue_otp(sender.id)
-    except VerificationUnavailable as exc:
-        # The session dependency rolls the row back with this, so a sender
-        # never exists without a code having been minted for it.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Verification is temporarily unavailable. Try again shortly.",
-        ) from exc
-
-    await _dispatch_otp_email(session, user, sender, code)
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -256,135 +258,18 @@ async def create_sender(
         action="email_sender_created",
         target_type="client_email_sender",
         target_id=sender.id,
-        metadata={"email": sender.email, "replaced_revoked": existing is not None},
+        metadata={"email": sender.email, "replaced_terminal": existing is not None},
     )
-    return _otp_issue_out(sender)
+    return await _sender_out(sender)
 
 
-# ── verification ─────────────────────────────────────────────────────────────
-
-@router.post(
-    "/{sender_id}/resend-otp",
-    response_model=OtpIssueOut,
-    dependencies=[Depends(rate_limit("sender_otp_resend", limit=10, window=300))],
-)
-async def resend_otp(
-    sender_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_SENDERS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> OtpIssueOut:
-    """Mint and send a fresh code. A resend REPLACES the outstanding code and
-    re-arms an expired verification (the FSM's one edge out of
-    verification_expired that is not revoke)."""
-    sender = await _load_sender(session, user, sender_id)
-    if sender.status == SENDER_VERIFICATION_EXPIRED:
-        _transition_or_409(sender, SENDER_PENDING_VERIFICATION)
-    elif sender.status != SENDER_PENDING_VERIFICATION:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This sender is not awaiting verification.",
-        )
-
-    try:
-        code = await issue_otp(sender.id)
-    except ResendCooldownActive as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
-    except VerificationUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Verification is temporarily unavailable. Try again shortly.",
-        ) from exc
-
-    await _dispatch_otp_email(session, user, sender, code)
-    await audit(
-        session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
-        action="email_sender_otp_resent",
-        target_type="client_email_sender",
-        target_id=sender.id,
-        metadata={"email": sender.email},
-    )
-    return _otp_issue_out(sender)
-
-
-class VerifyOut(BaseModel):
-    """The OTP dialog's whole answer in one shape: wrong-code is an OUTCOME
-    the dialog renders with the attempts left, not an exception."""
-
-    verified: bool
-    reason: str
-    attempts_remaining: int
-    status: str
-
-
-@router.post(
-    "/{sender_id}/verify-otp",
-    response_model=VerifyOut,
-    dependencies=[Depends(rate_limit("sender_otp_verify", limit=15, window=300))],
-)
-async def verify_sender_otp(
-    sender_id: uuid.UUID,
-    body: OtpVerifyIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_SENDERS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> VerifyOut:
-    """Judge one entered code. Success moves the sender to email_verified and
-    invalidates the code; an expired code moves it to verification_expired so
-    the list tells the truth about why nothing is progressing."""
-    sender = await _load_sender(session, user, sender_id)
-    if sender.status != SENDER_PENDING_VERIFICATION:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This sender is not awaiting verification.",
-        )
-
-    try:
-        outcome = await verify_otp(sender.id, body.code)
-    except VerificationUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Verification is temporarily unavailable. Try again shortly.",
-        ) from exc
-
-    if outcome.verified:
-        _transition_or_409(sender, SENDER_EMAIL_VERIFIED)
-        sender.email_verified = True
-        await audit(
-            session,
-            tenant_id=user.tenant_id,
-            actor_user_id=user.user_id,
-            action="email_sender_verified",
-            target_type="client_email_sender",
-            target_id=sender.id,
-            metadata={"email": sender.email},
-        )
-    elif outcome.reason == otp_state.REASON_EXPIRED:
-        _transition_or_409(sender, SENDER_VERIFICATION_EXPIRED)
-        await audit(
-            session,
-            tenant_id=user.tenant_id,
-            actor_user_id=user.user_id,
-            action="email_sender_verification_expired",
-            target_type="client_email_sender",
-            target_id=sender.id,
-            metadata={"email": sender.email},
-        )
-
-    return VerifyOut(
-        verified=outcome.verified,
-        reason=outcome.reason,
-        attempts_remaining=outcome.attempts_remaining,
-        status=sender.status,
-    )
-
-
-# ── authorization + lifecycle (spec sections 3 and 11) ───────────────────────
-
+# ── Super Admin decision ─────────────────────────────────────────────────────
+#
+# THE MAILBOX OTP THAT USED TO LIVE HERE IS GONE. It proved the POC could read
+# the mailbox; SES already refuses to send as any identity this account has not
+# verified, so the OTP re-proved a property AWS enforces anyway -- at the cost
+# of an OTP surface in a portal that bans OTP everywhere else. What remains is
+# the one decision only the company can make: does this address speak for us.
 async def _lifecycle_move(
     session: AsyncSession,
     user: CurrentUser,
@@ -409,19 +294,44 @@ async def _lifecycle_move(
         metadata={"email": sender.email, "status": sender.status},
     )
     await session.flush()
-    return SenderOut.model_validate(sender)
+    return await _sender_out(sender)
 
 
-@router.post("/{sender_id}/authorize", response_model=SenderOut)
-async def authorize_sender(
+@router.post("/{sender_id}/approve", response_model=SenderOut)
+async def approve_sender(
     sender_id: uuid.UUID,
     user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SenderOut:
-    """The client Super Admin's explicit activation (spec section 3). Only a
-    verified sender can be authorized; the FSM refuses everything else."""
+    """The client Super Admin authorizes this address to speak for the company.
+
+    THIS IS A BUSINESS DECISION AND IT IS NOT GATED ON AWS. Eligibility is
+    reported alongside the sender so the person deciding can see it, but a
+    transient SES lookup failure must not veto a company's own authorization,
+    and an approval granted while the domain is still being set up becomes
+    useful the moment that finishes. Nothing unsafe follows from that: the
+    send path revalidates the sender AND SES refuses any identity it has not
+    verified, so an approved-but-not-yet-sendable address simply cannot send.
+    """
     return await _lifecycle_move(
-        session, user, sender_id, SENDER_ACTIVE, "email_sender_authorized"
+        session, user, sender_id, SENDER_ACTIVE, "email_sender_approved"
+    )
+
+
+@router.post("/{sender_id}/reject", response_model=SenderOut)
+async def reject_sender(
+    sender_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SenderOut:
+    """The client Super Admin refuses this address. Terminal.
+
+    Distinct from revoke, which withdraws an authorization that once existed.
+    A rejected address is proposed again by registering it afresh, so the
+    refusal stays on the audit record instead of being edited away.
+    """
+    return await _lifecycle_move(
+        session, user, sender_id, SENDER_REJECTED, "email_sender_rejected"
     )
 
 
@@ -462,6 +372,125 @@ async def revoke_sender(
     return await _lifecycle_move(
         session, user, sender_id, SENDER_REVOKED, "email_sender_revoked"
     )
+
+
+# ── The default sender (Phase 6) ─────────────────────────────────────────────
+
+
+@router.get("/active", response_model=list[ActiveSenderOut])
+async def list_active_senders(
+    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[ActiveSenderOut]:
+    """The senders an email can be sent under right now, default first.
+
+    For the email composer, whose user sends email and may hold nothing that
+    manages senders: registering or authorizing an address is a different
+    act from choosing which authorized address a message goes out under.
+    Name and address only; no eligibility lookup, no lifecycle detail.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(ClientEmailSender)
+                .where(
+                    ClientEmailSender.tenant_id == user.tenant_id,
+                    ClientEmailSender.status == SENDER_ACTIVE,
+                )
+                .order_by(
+                    ClientEmailSender.is_default.desc(),
+                    ClientEmailSender.created_at,
+                    ClientEmailSender.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        ActiveSenderOut(
+            id=row.id, name=row.name, email=row.email, is_default=row.is_default
+        )
+        for row in rows
+    ]
+
+
+@router.post("/{sender_id}/default", response_model=SenderOut)
+async def set_default_sender(
+    sender_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SenderOut:
+    """Make this ACTIVE sender the one automatic emails go out under.
+
+    The tenant's sender rows are locked first, so two people choosing
+    different defaults at the same moment are serialised rather than one of
+    them meeting the unique index as a 500. The previous default is cleared
+    BEFORE the new one is set: a unique index is checked row by row, so the
+    other order would collide with itself.
+    """
+    sender = await _load_sender(session, user, sender_id)
+    if sender.status != SENDER_ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an active, authorized sender can be the default.",
+        )
+    await session.execute(
+        select(ClientEmailSender.id)
+        .where(ClientEmailSender.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
+    previous = (
+        await session.execute(
+            select(ClientEmailSender).where(
+                ClientEmailSender.tenant_id == user.tenant_id,
+                ClientEmailSender.is_default.is_(True),
+                ClientEmailSender.id != sender.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if previous is not None:
+        previous.is_default = False
+        await session.flush()
+    sender.is_default = True
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="email_sender_default_set",
+        target_type="client_email_sender",
+        target_id=sender.id,
+        metadata={
+            "email": sender.email,
+            "previous_default": str(previous.id) if previous is not None else None,
+        },
+    )
+    await session.flush()
+    return await _sender_out(sender)
+
+
+@router.delete("/{sender_id}/default", response_model=SenderOut)
+async def clear_default_sender(
+    sender_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SenderOut:
+    """Stop using this sender for automatic emails; they go out from the
+    platform mailbox until another default is chosen. Idempotent."""
+    sender = await _load_sender(session, user, sender_id)
+    if sender.is_default:
+        sender.is_default = False
+        await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="email_sender_default_cleared",
+            target_type="client_email_sender",
+            target_id=sender.id,
+            metadata={"email": sender.email},
+        )
+        await session.flush()
+    return await _sender_out(sender)
 
 
 # ── templates (spec section 7) ───────────────────────────────────────────────
@@ -511,7 +540,7 @@ async def preview_email_template(
 # ── SES delivery events over SNS (spec section 8) ────────────────────────────
 #
 # SNS delivers a JSON document over HTTPS with its own signature scheme. The
-# endpoint is unauthenticated by necessity (SNS holds no ReadyPick session),
+# endpoint is unauthenticated by necessity (SNS holds no Vivekium session),
 # so THREE independent checks gate every message before a row is touched:
 # the TopicArn must equal `ses_sns_topic_arn` exactly (empty setting = refuse
 # everything), the signing certificate must come from an https URL on
@@ -555,18 +584,34 @@ def _cert_url_is_trusted(cert_url: str) -> bool:
 
 async def _verify_sns_signature(payload: dict) -> bool:
     """Fetch the signing certificate (bounded) and verify the RSA signature.
-    SignatureVersion 1 is SHA1withRSA, 2 is SHA256withRSA."""
+    SignatureVersion 1 is SHA1withRSA, 2 is SHA256withRSA.
+
+    EVERY REFUSAL IS LOGGED WITH ITS REASON, and only the failures a hostile or
+    broken message can cause are caught. The caller answers 403 with nothing
+    revealed, which is right for the sender and useless to an operator: this
+    handler used to catch EVERYTHING around the signature check and log
+    nothing, so a real SES topic whose events all stopped verifying (a rotated
+    certificate, a canonical string built from the wrong field list) looked
+    exactly like a quiet mailbox. A programming error is not a bad signature
+    and is left to propagate, so it surfaces as a 500 SNS retries rather than
+    as a refusal nobody can see.
+    """
     import httpx
+    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
     from cryptography.x509 import load_pem_x509_certificate
 
     cert_url = str(payload.get("SigningCertURL", ""))
     if not _cert_url_is_trusted(cert_url):
+        logger.warning("email_senders.sns_signature_invalid reason=untrusted_cert_url")
         return False
     try:
         signature = base64.b64decode(str(payload.get("Signature", "")))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "email_senders.sns_signature_invalid reason=%s", type(exc).__name__
+        )
         return False
 
     try:
@@ -574,8 +619,13 @@ async def _verify_sns_signature(payload: dict) -> bool:
             response = await client.get(cert_url)
             response.raise_for_status()
             cert = load_pem_x509_certificate(response.content)
-    except Exception:
-        logger.warning("ses_events.cert_fetch_failed")
+    except (httpx.HTTPError, ValueError) as exc:
+        # HTTPError covers the transport, the timeout and a non-2xx answer;
+        # ValueError is what the loader raises for bytes that are not a PEM
+        # certificate.
+        logger.warning(
+            "email_senders.sns_cert_fetch_failed reason=%s", type(exc).__name__
+        )
         return False
 
     algorithm = (
@@ -587,7 +637,13 @@ async def _verify_sns_signature(payload: dict) -> bool:
         cert.public_key().verify(
             signature, _sns_canonical_string(payload), padding.PKCS1v15(), algorithm
         )
-    except Exception:
+    except (InvalidSignature, ValueError, TypeError) as exc:
+        # InvalidSignature is the forged or altered message. TypeError is a
+        # certificate whose key is not RSA, whose `verify` takes different
+        # arguments; ValueError is a malformed signature length.
+        logger.warning(
+            "email_senders.sns_signature_invalid reason=%s", type(exc).__name__
+        )
         return False
     return True
 
@@ -599,6 +655,140 @@ def _extract_ses_event(message: dict) -> tuple[str | None, str | None]:
     kind = str(message.get("eventType") or message.get("notificationType") or "").lower()
     message_id = (message.get("mail") or {}).get("messageId")
     return (kind or None), (str(message_id) if message_id else None)
+
+
+#: TERMINAL RANK, and the reason out-of-order events cannot corrupt a row.
+#: SNS makes no ordering promise, so a DELIVERY published before a BOUNCE can
+#: arrive after it. Ranking the outcomes and refusing to move DOWN means the
+#: worst thing that happened to a message is what the row remembers, whatever
+#: order the events land in. Equal rank never overwrites either, which is what
+#: makes a redelivered duplicate a no-op rather than a rewrite.
+_OUTCOME_RANK: dict[str, int] = {
+    STATUS_QUEUED: 0,
+    STATUS_SENT: 1,
+    STATUS_DELIVERED: 2,
+    # A complaint means it ARRIVED and the recipient reported it, so it
+    # outranks delivery. A bounce and a hard failure outrank everything: those
+    # are the states a human has to act on.
+    STATUS_COMPLAINT: 3,
+    STATUS_BOUNCED: 4,
+    STATUS_FAILED: 4,
+}
+
+
+def _failure_reason(kind: str, message: dict) -> str | None:
+    """A short, human-readable cause for the outcomes that have one.
+
+    Drawn from SES's own structured fields rather than a dump of the event,
+    and bounded: this column is read by staff in the portal, and an event
+    document carries the full recipient list and the message headers.
+    """
+    if kind == "bounce":
+        block = message.get("bounce") or {}
+        detail = " / ".join(
+            part for part in (
+                str(block.get("bounceType") or "").strip(),
+                str(block.get("bounceSubType") or "").strip(),
+            ) if part
+        )
+        return (f"Bounce: {detail}" if detail else "Bounce")[:500]
+    if kind == "complaint":
+        detail = str((message.get("complaint") or {}).get(
+            "complaintFeedbackType") or "").strip()
+        return (f"Complaint: {detail}" if detail else "Complaint")[:500]
+    if kind == "reject":
+        detail = str((message.get("reject") or {}).get("reason") or "").strip()
+        return (f"Rejected by SES: {detail}" if detail else "Rejected by SES")[:500]
+    if kind == "renderingfailure":
+        detail = str((message.get("failure") or {}).get("errorMessage") or "").strip()
+        return (
+            f"Template rendering failed: {detail}" if detail
+            else "Template rendering failed"
+        )[:500]
+    if kind == "deliverydelay":
+        detail = str((message.get("deliveryDelay") or {}).get("delayType") or "").strip()
+        return (f"Delivery delayed: {detail}" if detail else "Delivery delayed")[:500]
+    return None
+
+
+def _bounce_is_permanent(message: dict) -> bool:
+    """Whether SES said the address is dead, rather than momentarily unusable.
+
+    `Permanent` is a receiver saying the mailbox does not exist; `Transient` is
+    a full mailbox or a throttled server, which SES is still retrying and which
+    a candidate cannot fix by correcting anything. Telling somebody to change a
+    working address because their former HR manager's inbox was full for an
+    hour is worse than saying nothing: they contact the employer, the employer
+    says the address is fine, and the product has spent the candidate's
+    credibility on a delay it caused.
+
+    `Undetermined` is read as NOT permanent, the safe direction: it is the
+    state where SES itself could not classify the refusal.
+    """
+    return str((message.get("bounce") or {}).get("bounceType") or "") == "Permanent"
+
+
+async def _alert_candidate_of_bgv_bounce(
+    session: AsyncSession, row, verification_id: uuid.UUID
+) -> None:
+    """Email 4 of the brief: the BGV request could not be delivered.
+
+    The candidate is asked to sign in and correct the HR address; the address
+    itself travels PARTIALLY MASKED (`bgv_form.masked_email`), never in full.
+    Silent when the verification has already been answered, which is the case
+    where a second recipient on the same message bounced and the employer had
+    already replied from another.
+    """
+    from app.services import bgv_form
+
+    match = (
+        (
+            await session.execute(
+                sa_text(
+                    "SELECT c.full_name, c.email AS candidate_email, "
+                    " e.hr_email, e.id AS employment_id "
+                    "FROM bgv_verifications v "
+                    "JOIN candidate_employments e "
+                    "  ON e.id = v.candidate_employment_id "
+                    "JOIN candidates c ON c.id = v.candidate_id "
+                    "WHERE v.id = :vid AND v.responded_at IS NULL"
+                ),
+                {"vid": str(verification_id)},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if match is None or not match["candidate_email"]:
+        return
+    from app.services import bgv_delivery
+
+    # The address that actually bounced, which is the candidate's correction
+    # when they have already made one. Masking the declaration instead would
+    # show them the address they replaced and read as if the correction was
+    # never applied.
+    failed_address = await bgv_delivery.effective_hr_email(
+        session, uuid.UUID(str(match["employment_id"]))
+    )
+    # AFTER the commit that records the bounce: the email tells the candidate
+    # the delivery failed, and a rolled-back webhook must not say so. A lost
+    # invoke costs this email only; the candidate portal's employment card
+    # reads the bounce from the table (`bgv_delivery`), not from the email.
+    dispatch_after_commit(
+        session,
+        "pickready.send_email",
+        args=[
+            str(row.tenant_id),
+            match["candidate_email"],
+            "bgv_bounced",
+            {
+                "candidate_name": match["full_name"] or "there",
+                "masked_hr_email": bgv_form.masked_email(
+                    failed_address or match["hr_email"]
+                ),
+            },
+        ],
+    )
 
 
 @router.post(
@@ -666,18 +856,103 @@ async def ses_event_webhook(
         return {"status": "unmatched"}
 
     now = datetime.now(timezone.utc)
-    if kind == "delivery":
+
+    # THE TIMESTAMP AND THE STATUS ARE DECIDED SEPARATELY, on purpose. A
+    # timestamp records that the thing happened at all and is written once
+    # (`or now`, so a duplicate never moves it). The status is the row's
+    # single summary and is rank-guarded below, so a late DELIVERY cannot
+    # erase a BOUNCE that has already been recorded.
+    outcome: str | None = None
+    if kind == "send":
+        # SES ACCEPTED the message. Not delivery, and the two must never blur:
+        # `sent` is what the send path already wrote, so this only ever
+        # confirms it.
+        outcome = STATUS_SENT
+    elif kind == "delivery":
         row.delivered_at = row.delivered_at or now
-        # Never let a late delivery event overwrite a bounce or complaint.
-        if row.status == STATUS_SENT:
-            row.status = STATUS_DELIVERED
+        outcome = STATUS_DELIVERED
+        # THE EMPLOYER'S THREE DAYS START HERE, not at send. A request still in
+        # a provider's retry queue is one the HR team cannot act on, so the
+        # chase and the form link both key off this stamp
+        # (`services/bgv_delivery.clock_start`).
+        if row.bgv_verification_id is not None:
+            from app.services import bgv_delivery
+
+            await bgv_delivery.mark_delivered(
+                session, verification_id=row.bgv_verification_id, at=now
+            )
     elif kind == "bounce":
+        # Vivekium feature 4, bounce detection: a BGV request that bounced is
+        # an address the candidate must fix NOW, not something to wait out for
+        # three days.
+        #
+        # THE VERIFICATION IS RESOLVED BY THE BINDING, never by the recipient
+        # address. This used to match `candidate_employments.hr_email` within
+        # the tenant, newest send first, limit one, so two open verifications
+        # sharing one HR mailbox (one HR manager confirming two candidates at
+        # the same company, which is the normal case at a large employer)
+        # resolved to whichever went out last: the wrong candidate was told to
+        # correct an address that worked, and nothing recorded the mistake. A
+        # row with no binding is left UNATTRIBUTED and logged, because
+        # attributing it to the most similar message is exactly the defect.
+        #
+        # PERMANENT ONLY. A transient bounce is a full mailbox or a throttled
+        # server that SES is still retrying, and a candidate cannot fix it by
+        # correcting an address that is already right.
+        #
+        # Acted on ONCE, on the first bounce record (`bounced_at is None`):
+        # SNS delivers at least once, so a redelivery is the default.
+        if row.email_type == EMAIL_TYPE_BGV_VERIFICATION and row.bounced_at is None:
+            if not _bounce_is_permanent(message):
+                logger.info(
+                    "bgv.transient_bounce email_log=%s  -  not alerting, SES is "
+                    "still retrying",
+                    row.id,
+                )
+            elif row.bgv_verification_id is None:
+                logger.warning(
+                    "bgv.bounce_unattributed email_log=%s  -  this row carries no "
+                    "verification binding, so the candidate cannot be told which "
+                    "employer to correct",
+                    row.id,
+                )
+            else:
+                from app.services import bgv_delivery
+
+                await bgv_delivery.mark_bounced(
+                    session,
+                    verification_id=row.bgv_verification_id,
+                    at=now,
+                    reason=_failure_reason(kind, message),
+                )
+                await _alert_candidate_of_bgv_bounce(
+                    session, row, row.bgv_verification_id
+                )
         row.bounced_at = row.bounced_at or now
-        row.status = STATUS_BOUNCED
+        outcome = STATUS_BOUNCED
     elif kind == "complaint":
         row.complained_at = row.complained_at or now
-        row.status = STATUS_COMPLAINT
+        outcome = STATUS_COMPLAINT
+    elif kind in {"reject", "renderingfailure"}:
+        # SES never handed it to a receiver. Terminal, and a real failure.
+        row.failed_at = row.failed_at or now
+        outcome = STATUS_FAILED
+    elif kind == "deliverydelay":
+        # NOT TERMINAL. SES is still retrying, and calling this a failure
+        # would tell a recruiter a candidate was never contacted while the
+        # message is still in flight. Record the reason, move no status.
+        row.error = _failure_reason(kind, message) or row.error
+        await session.flush()
+        return {"status": "recorded"}
     else:
         return {"status": "ignored"}
+
+    reason = _failure_reason(kind, message)
+    if reason:
+        row.error = reason
+    # STRICTLY GREATER, so a duplicate event is a no-op and an out-of-order
+    # one cannot demote the row.
+    if _OUTCOME_RANK.get(outcome, 0) > _OUTCOME_RANK.get(row.status, 0):
+        row.status = outcome
     await session.flush()
     return {"status": "recorded"}

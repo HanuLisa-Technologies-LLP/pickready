@@ -1,121 +1,169 @@
 "use client";
 
-// The unified assessment conversation.
+// The assessment, one question at a time (Appendix B sections 1 to 3).
 //
-// One question at a time, rendered as a transcript: the asked question on the
-// left, the candidate's saved answer on the right. Progress is shown as a
-// completion percentage and a base-question count; those are navigation, not a
-// candidate score. Re-asks and probes deliberately leave both values unchanged.
+// ONE MODE. Every candidate takes the same proctored, question-by-question
+// assessment: prose answered by typing or speaking, multiple choice and
+// fill-in-the-blank by clicking and typing, coding in the editor. The format
+// on screen comes from the server's `question`, and the answer field is
+// whatever `QuestionRenderer` dispatches for it.
 //
-// SIX FORMATS, ONE PLAYER. The question on screen carries a type, and the
-// answer field is whatever `QuestionRenderer` dispatches for it. The player
-// itself knows only two kinds of turn: PROSE (an evidence-based or
-// short-answer question, and every follow-up or re-ask, which the server
-// always words as a question) goes up as `answer`; everything else goes up as
-// `answer_payload` in the shape the server validates for the type. The
-// navigation is unchanged: linear, one question at a time, no going back,
-// because per-question timing and the proctoring baseline both assume it
-// (assessment spec 5.3).
+// FIXED ORDER, AND THE SERVER NAMES THE TURN. Only the current turn is
+// answerable. Every submission carries the server's `turn_seq`, and a
+// submission naming a turn that is no longer current is refused with a 409 and
+// writes nothing, so a retry after a lost response is never filed as the
+// answer to the next question. The answers already given are shown read-only
+// from the server's own `history`; there is no edit control because there is
+// no edit route.
 //
-// Rendered INSIDE `components/proctoring/proctoring-shell`, which owns consent,
-// the system check and the monitoring session and hands this component the
-// `ProctoringBridge` from lib/assessment/contracts.ts through
-// `useProctoring()`. Proctoring is mandatory: this component has no unmonitored
-// mode and the page never mounts it outside the shell. Every answer field is
-// wired to the bridge's hooks for the turn it answers, and every submission
-// carries what those hooks recorded plus the time a warning held the screen.
+// THE CLOCK IS THE SERVER'S. The countdown renders the server's deadline; the
+// draft is sent to the server as the candidate works, because on expiry the
+// server submits what it holds; and reaching zero here first re-reads the
+// server's clock, because a pause this browser did not see (a warning, a
+// camera recovery, a transcription) may have moved the deadline. Nothing this
+// component measures is sent as time. An empty answer submitted by the clock
+// is recorded by the server as an evidence gap, and it says so.
+//
+// Rendered INSIDE `components/proctoring/proctoring-shell`, which owns consent
+// to monitoring, the system check and the monitoring session, and hands this
+// component the `ProctoringBridge` through `useProctoring()`. There is no
+// unmonitored mode and the page never mounts this outside the shell.
 
 import * as React from "react";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  CheckCircle2,
-  Loader2,
-  Pencil,
-  Send,
-  Sparkles,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2, Send, Sparkles, Trash2 } from "lucide-react";
 
 import { PageHeader } from "@/components/app-shell";
-import {
-  AssessmentProgress,
-  AssessmentSteps,
-} from "@/components/assessment-progress";
+import { AssessmentProgress, AssessmentSteps } from "@/components/assessment-progress";
 import { AutosaveIndicator } from "@/components/assessment/autosave-indicator";
+import { CodingSubmitButton } from "@/components/assessment/coding-submit-button";
+import { HistoryList } from "@/components/assessment/history-list";
 import { QuestionRenderer } from "@/components/assessment/question-renderer";
-import { MAX_ANSWER } from "@/components/assessment/text-answer-field";
+import { TurnTimer, remainingMs } from "@/components/assessment/turn-timer";
+import {
+  SERVER_PAUSED_PHASES,
+  VOICE_OCCUPIED_PHASES,
+  VoiceAnswer,
+  type VoiceAnswerHandle,
+  type VoicePhase,
+} from "@/components/assessment/voice-answer";
 import { useProctoring } from "@/components/proctoring/proctoring-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { apiPatch, apiPost } from "@/lib/api";
+import { ApiError, apiPost } from "@/lib/api";
 import {
   answerLine,
   emptyAnswerFor,
   isAnswerComplete,
   isAnswerEmpty,
+  isCodingAnswer,
+  starterCodeFor,
   textOf,
   turnIsProse,
   turnKeyFor,
 } from "@/lib/assessment/answers";
 import { clearDraft, readDraft, useAutosaveDraft } from "@/lib/assessment/autosave";
+import { CodingConversationContext } from "@/lib/assessment/coding";
 import type {
-  AnswerBehaviour,
   AnswerPayload,
   ConversationTurn,
+  PauseReason,
   ProctoringFieldHooks,
   QuestionOut,
   RespondBody,
 } from "@/lib/assessment/contracts";
-import { timeAllocationPhrase } from "@/lib/assessment/time-guidance";
 import { useAuth } from "@/lib/auth-context";
 
-interface Exchange {
-  prompt: string;
-  /** The readable line: the prose itself, or the server's rendering of a
-   *  structured answer once it arrives. */
-  answer: string;
-  /** True when the answer was prose and can therefore still be edited while
-   *  it is the latest one. A structured answer was scored on submission and
-   *  is not re-opened. */
-  prose: boolean;
-  /** When each side of the turn appeared, in THIS browser. The transcript is
-   *  stored server-side without per-message timestamps, and inventing a
-   *  server time here would be a worse lie than showing the local one: these
-   *  are the times the candidate actually saw and sent the message. */
-  askedAt: Date;
-  answeredAt: Date;
-  messageId?: string;
-}
+/** How often a conversation that is being prepared, or is paused by the
+ *  proctoring layer, is asked for again. */
+export const WAITING_POLL_MS = 5000;
 
-/** What was consumed from the bridge for a turn whose send failed. The
- *  bridge clears its counters on read, so a retry after a network blip would
- *  otherwise report zero paused time and no behaviour for a turn that had
- *  both. Kept until the turn is accepted. */
+/** Attempts at an answer the clock submitted, when the network fails it. Each
+ *  one is a full request; after the last the candidate is told what happens
+ *  next rather than left looking at zero. */
+export const EXPIRY_SUBMIT_ATTEMPTS = 3;
+const EXPIRY_RETRY_MS = 3000;
+
+/** Said when a turn's time ran out and this page could not reach the server
+ *  to hand it in. True whatever the network does next: the server submits the
+ *  last draft it received for the turn the next time the assessment is opened
+ *  (PLAN-p3 section 3.4), so nothing more is promised than that. */
+export const EXPIRY_UNREACHABLE =
+  "Time ran out on this question and this page could not reach us to send your answer. We will use the last draft we received from you for this question. Reload the page to carry on.";
+
+const PAUSE_LABELS: Record<PauseReason, string> = {
+  device_loss: "Paused while your camera or microphone is restored",
+  transcription: "Paused while your spoken answer is transcribed",
+  warning: "Paused while you read the warning",
+};
+
+/** What was consumed from the bridge for a turn whose send failed. The bridge
+ *  clears its capture on read, so a retry after a network blip would
+ *  otherwise report no behaviour for a turn that had some. Kept until the
+ *  turn is accepted. */
 interface CarriedCapture {
   turnKey: string;
-  pausedMs: number;
-  behaviour: AnswerBehaviour | null;
+  behaviour: RespondBody["behaviour"] | null;
 }
+
+/** The exchange on its way to the server, shown the moment it is sent. */
+interface PendingExchange {
+  prompt: string;
+  answer: string;
+}
+
+interface SubmitOptions {
+  timedOut: boolean;
+  voice?: { id: string; transcript: string };
+}
+
+/** What became of a submission. `stale` means the server had already moved
+ *  past this turn and nothing was written; `failed` means it never arrived
+ *  and may be tried again. */
+type SubmitOutcome = "sent" | "stale" | "failed" | "not_sent";
+
+const START_PATH = (linkId: string) =>
+  `/api/v2/assessments/conversations/links/${linkId}/start`;
 
 export function AssessmentConversation({ linkId }: { linkId: string }) {
   const { toast } = useToast();
   const { user } = useAuth();
   const bridge = useProctoring();
   const [conversation, setConversation] = React.useState<ConversationTurn | null>(null);
-  const [exchanges, setExchanges] = React.useState<Exchange[]>([]);
-  const [value, setValue] = React.useState<AnswerPayload | null>(null);
+  const [receivedAt, setReceivedAt] = React.useState(0);
+  const [value, setValueState] = React.useState<AnswerPayload | null>(null);
+  // The answer as of the last change, readable synchronously. The clock can
+  // expire in the same effect flush that restores a draft, before React has
+  // re-rendered with it, and the submission must carry the restored words.
+  const valueRef = React.useRef<AnswerPayload | null>(null);
+  const setValue = React.useCallback((next: AnswerPayload | null) => {
+    valueRef.current = next;
+    setValueState(next);
+  }, []);
   const [fieldHooks, setFieldHooks] = React.useState<ProctoringFieldHooks | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [sending, setSending] = React.useState(false);
-  // When the question currently on screen was shown. Captured on arrival so
-  // the transcript can record it once the candidate answers.
-  const promptShownAt = React.useRef<Date>(new Date());
+  const [pending, setPending] = React.useState<PendingExchange | null>(null);
+  const [voicePhase, setVoicePhase] = React.useState<VoicePhase>("idle");
+  const [typingOnly, setTypingOnly] = React.useState(false);
+  const [expiryNotice, setExpiryNotice] = React.useState<string | null>(null);
+  // A transcribed spoken answer whose submission did not arrive. The
+  // transcript is final and already on the server, so the only thing to do
+  // is send it again; it is never put back into a box to be edited.
+  const [voiceRetry, setVoiceRetry] = React.useState<{
+    id: string;
+    transcript: string;
+    timedOut: boolean;
+  } | null>(null);
+
   const endRef = React.useRef<HTMLDivElement | null>(null);
+  const voiceRef = React.useRef<VoiceAnswerHandle | null>(null);
   const carried = React.useRef<CarriedCapture | null>(null);
   const endedFor = React.useRef<string | null>(null);
+  const sendingRef = React.useRef(false);
+  const expiring = React.useRef(false);
   // The bridge is read through a ref inside effects so a re-render of the
   // shell that hands down a new bridge object does not restart a capture:
   // `fieldHooksFor` starts a fresh capture for its key every time it is
@@ -124,42 +172,114 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
   bridgeRef.current = bridge;
 
   const question: QuestionOut | null = conversation?.question ?? null;
-  const active = conversation?.status === "active" && Boolean(conversation.prompt);
-  const turnKey = active
-    ? turnKeyFor(question, conversation.answered_questions, conversation.is_reask)
-    : null;
+  // A turn paused by the proctoring layer is still the current turn: its
+  // draft, its capture and its clock stay where they are, and only answering
+  // is held until the session resumes.
+  const hasTurn =
+    (conversation?.status === "active" || conversation?.status === "paused") &&
+    Boolean(conversation.prompt) &&
+    conversation.turn !== null;
+  const answerable = hasTurn && conversation?.status === "active";
+  const turnKey =
+    hasTurn && conversation ? turnKeyFor(conversation.conversation_id, conversation.turn_seq) : null;
   const prose = turnIsProse(question);
-  const starterCode =
-    question?.question_type === "coding"
-      ? String((question.payload as { starter_code?: string }).starter_code ?? "")
-      : "";
+  // Untouched starter code is not an answer. A version 2 coding question
+  // carries one starter per language, so the comparison follows the language
+  // the answer is in (`starterCodeFor`), never the first one offered.
   const isEmpty = React.useCallback(
-    (candidate: AnswerPayload | null) => isAnswerEmpty(candidate, starterCode),
-    [starterCode]
+    (candidate: AnswerPayload | null) =>
+      isAnswerEmpty(candidate, starterCodeFor(question, candidate)),
+    [question]
   );
-  const autosave = useAutosaveDraft(linkId, turnKey, value, isEmpty);
+  const bridgePaused = Boolean(bridge.paused);
+  const serverPaused = Boolean(conversation?.turn?.paused) || conversation?.status === "paused";
+  const voiceHoldsClock = SERVER_PAUSED_PHASES.includes(voicePhase);
+  const clockPaused = serverPaused || bridgePaused || voiceHoldsClock;
+  const voiceOccupied = VOICE_OCCUPIED_PHASES.includes(voicePhase);
+
+  /** Take a server response as the current state. The browser's clock is
+   *  read HERE, once, as the instant the server's `server_now` arrived. */
+  const adopt = React.useCallback((next: ConversationTurn) => {
+    setReceivedAt(Date.now());
+    setConversation(next);
+  }, []);
+
+  const resync = React.useCallback(async (): Promise<ConversationTurn | null> => {
+    try {
+      const fresh = await apiPost<ConversationTurn>(START_PATH(linkId));
+      adopt(fresh);
+      return fresh;
+    } catch (error) {
+      toast({
+        title: "Could not reach the assessment",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+      return null;
+    }
+  }, [adopt, linkId, toast]);
+
+  const autosave = useAutosaveDraft({
+    linkId,
+    conversationId: conversation?.conversation_id ?? null,
+    turnKey,
+    turnSeq: answerable ? (conversation?.turn_seq ?? null) : null,
+    value,
+    isEmpty,
+    prose,
+    enabled: answerable && !clockPaused && !sending && !voiceOccupied,
+    onStale: () => void resync(),
+  });
 
   React.useEffect(() => {
-    apiPost<ConversationTurn>(
-      `/api/v2/assessments/conversations/links/${linkId}/start`
-    )
-      .then(setConversation)
-      .catch((error) =>
-        toast({
-          title: "Assessment unavailable",
-          description: error instanceof Error ? error.message : undefined,
-          variant: "destructive",
-        })
-      )
-      .finally(() => setLoading(false));
-  }, [linkId, toast]);
+    let cancelled = false;
+    apiPost<ConversationTurn>(START_PATH(linkId))
+      .then((started) => {
+        if (!cancelled) adopt(started);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setLoadError(error instanceof Error ? error.message : "The assessment could not be opened.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adopt, linkId]);
 
-  // A new turn is on screen: restore its draft (before the candidate can
-  // type, so it cannot clobber something they have already started), start
-  // its clock, and open its behaviour capture. All three are keyed by the
-  // turn, so a re-ask of the same base question is a fresh capture and a
-  // fresh draft, which is what the server measures it as.
+  // A conversation being prepared, or a turn the server is holding still, is
+  // asked for again until it can be answered. The server's answer is the
+  // only thing that ends the wait; a spoken answer being transcribed is
+  // followed by its own poll and needs no second one.
   React.useEffect(() => {
+    if (!conversation) return;
+    const waiting =
+      conversation.status === "preparing" ||
+      conversation.status === "paused" ||
+      (conversation.status === "active" && Boolean(conversation.turn?.paused) && !voiceHoldsClock);
+    if (!waiting) return;
+    const timer = window.setTimeout(() => void resync(), WAITING_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [conversation, resync, voiceHoldsClock]);
+
+  // The proctoring layer released a pause: the server extended the deadline
+  // by however long it lasted, so the face re-reads it.
+  const wasBridgePaused = React.useRef(bridgePaused);
+  React.useEffect(() => {
+    if (wasBridgePaused.current && !bridgePaused) void resync();
+    wasBridgePaused.current = bridgePaused;
+  }, [bridgePaused, resync]);
+
+  // A new turn is on screen: restore its local draft before the candidate can
+  // type, and open its behaviour capture. Both are keyed by the turn, so a
+  // re-ask of the same question is a fresh draft and a fresh capture.
+  React.useEffect(() => {
+    setVoicePhase("idle");
+    setTypingOnly(false);
+    setExpiryNotice(null);
+    setVoiceRetry(null);
     if (turnKey === null) {
       setValue(null);
       setFieldHooks(null);
@@ -167,7 +287,6 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
     }
     const restored = readDraft(linkId, turnKey);
     setValue(restored ?? (question ? emptyAnswerFor(question) : { text: "" }));
-    promptShownAt.current = new Date();
     setFieldHooks(bridgeRef.current.fieldHooksFor(turnKey));
     // `question` is the object the key was derived from; a new key always
     // means a new question object.
@@ -175,8 +294,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
   }, [linkId, turnKey]);
 
   // The conversation has ended, one way or the other: tell the shell once so
-  // monitoring stops and the camera is released. Keyed so a re-render with
-  // the same terminal state cannot say it twice.
+  // monitoring stops and the camera is released.
   React.useEffect(() => {
     if (!conversation) return;
     if (conversation.status !== "completed" && conversation.status !== "terminated") return;
@@ -186,99 +304,103 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
     bridgeRef.current.onConversationEnded(conversation.status);
   }, [conversation]);
 
-  // Auto-scroll. A conversation that grows off the bottom of the viewport and
-  // leaves the reader to find the new message is the single most obvious way a
-  // chat stops feeling like one. `behavior: smooth` follows the thread rather
-  // than jumping, and it runs on the typing indicator too so the candidate can
-  // see that the interviewer is composing.
   React.useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
-  }, [exchanges.length, conversation?.prompt, sending]);
+  }, [conversation?.history.length, conversation?.prompt, sending]);
 
-  const complete = isAnswerComplete(value, starterCode);
+  const complete = isAnswerComplete(value, starterCodeFor(question, value));
+  const view = React.useRef({ conversation, question, turnKey, prose, answerable });
+  view.current = { conversation, question, turnKey, prose, answerable };
 
   /**
-   * Send the answer, showing it IMMEDIATELY.
+   * Send the current turn's answer.
    *
-   * WHY OPTIMISTIC, AND WHY IT MATTERS MORE THAN IT USED TO
-   * -------------------------------------------------------
-   * This request is not a save. Since the assessment became adaptive the server
-   * may make up to three model calls on one turn -- classify the answer, decide
-   * whether to challenge or probe it, then write the next question -- so it can
-   * legitimately take several seconds.
-   *
-   * The page used to hold the candidate's text in the textarea for that whole
-   * time and only move it into the transcript once the response arrived. Every
-   * turn therefore ended with the interface visibly doing nothing to the thing
-   * the candidate had just acted on, which reads as a dropped click and invites
-   * a second press.
-   *
-   * The answer now moves into the transcript on the press, and the typing
-   * indicator explains the wait. On failure the exchange is rolled back and the
-   * answer is returned to the field, so nothing is ever silently lost -- which
-   * is the property that makes optimism safe here rather than merely faster.
+   * The exchange is shown the moment it is sent and replaced by the server's
+   * own history when the response arrives. On a failure the answer goes back
+   * into the field, so nothing is ever silently lost. A 409 means the turn is
+   * no longer current (already answered, or the server's clock submitted it):
+   * nothing was written, and the screen re-reads the server's state rather
+   * than retrying into the next question.
    */
-  const respond = async () => {
-    if (!conversation?.prompt || turnKey === null || value === null || !complete || sending) {
-      return;
+  const submit = async (options: SubmitOptions): Promise<SubmitOutcome> => {
+    // Read the LATEST render, never this closure's: the clock's expiry and a
+    // spoken answer's transcript both call this after an await, and a closure
+    // from the render that started them would submit what the screen held
+    // then (an empty box before the draft was restored, say).
+    const currentValue = valueRef.current;
+    const {
+      conversation: current,
+      question: currentQuestion,
+      turnKey: currentKey,
+      prose: currentProse,
+      answerable: open,
+    } = view.current;
+    if (!current?.prompt || currentKey === null || !open || sendingRef.current) {
+      return "not_sent";
     }
-    const currentPrompt = conversation.prompt;
-    const currentValue = value;
-    const currentQuestion = question;
-    const currentKey = turnKey;
-    const optimistic: Exchange = {
-      prompt: currentPrompt,
-      answer: answerLine(currentQuestion, currentValue),
-      prose,
-      askedAt: promptShownAt.current,
-      answeredAt: new Date(),
-    };
+    const currentStarter = starterCodeFor(currentQuestion, currentValue);
+    const empty = options.voice ? false : isAnswerEmpty(currentValue, currentStarter);
+    if (
+      !options.timedOut &&
+      !options.voice &&
+      (currentValue === null || !isAnswerComplete(currentValue, currentStarter))
+    ) {
+      return "not_sent";
+    }
 
-    // What the bridge recorded for this turn, plus anything a failed earlier
-    // attempt at the same turn had already consumed.
     const previous = carried.current?.turnKey === currentKey ? carried.current : null;
-    const pausedMs = (previous?.pausedMs ?? 0) + bridgeRef.current.consumePausedMs();
     const behaviour =
       bridgeRef.current.collectAnswerBehaviour(currentKey) ?? previous?.behaviour ?? null;
-    carried.current = { turnKey: currentKey, pausedMs, behaviour };
+    carried.current = { turnKey: currentKey, behaviour };
 
-    const body: RespondBody = prose
-      ? { answer: textOf(currentValue).trim(), paused_ms: pausedMs }
-      : { answer: "", answer_payload: currentValue, paused_ms: pausedMs };
+    const body: RespondBody = { turn_seq: current.turn_seq, answer: "" };
+    if (options.voice) {
+      body.voice_answer_id = options.voice.id;
+    } else if (!empty && currentValue !== null) {
+      if (currentProse) body.answer = textOf(currentValue).trim();
+      else body.answer_payload = currentValue;
+    }
+    if (options.timedOut) body.timed_out = true;
     if (behaviour) body.behaviour = behaviour;
 
+    sendingRef.current = true;
     setSending(true);
-    setExchanges((items) => [...items, optimistic]);
-    setValue(currentQuestion ? emptyAnswerFor(currentQuestion) : { text: "" });
+    setPending({
+      prompt: current.prompt,
+      answer: options.voice
+        ? options.voice.transcript
+        : empty
+          ? ""
+          : answerLine(currentQuestion, currentValue),
+    });
+    if (!options.voice) {
+      setValue(currentQuestion ? emptyAnswerFor(currentQuestion) : { text: "" });
+    }
 
     try {
       const next = await apiPost<ConversationTurn>(
-        `/api/v2/assessments/conversations/${conversation.conversation_id}/respond`,
+        `/api/v2/assessments/conversations/${current.conversation_id}/respond`,
         body
       );
       carried.current = null;
       clearDraft(linkId, currentKey);
-      setExchanges((items) =>
-        items.map((item) =>
-          item === optimistic
-            ? {
-                ...item,
-                messageId: next.answer_message_id ?? undefined,
-                // The server's line is the one the recruiter's transcript
-                // shows; adopt it so the candidate and the recruiter read the
-                // same words for the same answer.
-                answer: next.answer_line?.trim() || item.answer,
-              }
-            : item
-        )
-      );
-      setConversation(next);
+      adopt(next);
+      return "sent";
     } catch (error) {
-      // Roll the turn back completely. Identity comparison rather than an
-      // index: nothing else can append while `sending` is true, but a rollback
-      // that removed "the last item" would be wrong the moment that changes.
-      setExchanges((items) => items.filter((item) => item !== optimistic));
-      setValue(currentValue);
+      if (error instanceof ApiError && error.status === 409) {
+        // Nothing was written: the turn was already answered, its time had
+        // run out, or the session is paused. The server's own sentence says
+        // which, and whatever it now says is current is what comes next.
+        carried.current = null;
+        if (!options.voice) setValue(currentValue);
+        toast({
+          title: "Your answer was not sent",
+          description: error.message,
+        });
+        await resync();
+        return "stale";
+      }
+      if (!options.voice) setValue(currentValue);
       toast({
         title: "Could not save your response",
         description:
@@ -287,32 +409,81 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
             : "Your answer is still in the box. Please try sending it again.",
         variant: "destructive",
       });
+      return "failed";
     } finally {
+      sendingRef.current = false;
       setSending(false);
+      setPending(null);
     }
   };
 
-  const saveEditedAnswer = async (index: number, edited: string) => {
-    const exchange = exchanges[index];
-    if (!conversation || !exchange?.messageId) return;
-    await apiPatch(
-      `/api/v2/assessments/conversations/${conversation.conversation_id}/answers/${exchange.messageId}`,
-      { answer: edited }
-    );
-    setExchanges((items) =>
-      items.map((item, itemIndex) =>
-        itemIndex === index ? { ...item, answer: edited } : item
-      )
-    );
+  /**
+   * The face reached zero. Ask the server first: if a pause this browser did
+   * not see moved the deadline, the new deadline simply takes over. Only a
+   * turn the server agrees is out of time is submitted, with whatever is in
+   * the field, and a spoken answer in progress is stopped and sent instead.
+   */
+  const expire = async (attempt = 1): Promise<void> => {
+    if (expiring.current || sendingRef.current) return;
+    expiring.current = true;
+    // Neither the clock check nor the submission reached the server. Tried
+    // again a bounded number of times, then said out loud rather than left
+    // showing zero.
+    const unreachable = () => {
+      if (attempt < EXPIRY_SUBMIT_ATTEMPTS) {
+        window.setTimeout(() => void expire(attempt + 1), EXPIRY_RETRY_MS);
+      } else {
+        setExpiryNotice(EXPIRY_UNREACHABLE);
+      }
+    };
+    try {
+      const expiringSeq = view.current.conversation?.turn_seq;
+      if (expiringSeq === undefined) return;
+      const fresh = await resync();
+      if (fresh === null) {
+        unreachable();
+        return;
+      }
+      if (fresh.status !== "active" || fresh.turn_seq !== expiringSeq || fresh.turn === null) {
+        return;
+      }
+      if (fresh.turn.paused) return;
+      // Read at the server's own instant: no browser time enters it.
+      const now = Date.now();
+      if (remainingMs(fresh.turn.deadline_at, fresh.turn.server_now, now, now) > 0) return;
+      if (voiceRef.current?.stopForExpiry()) return;
+      const outcome = await submit({ timedOut: true });
+      if (outcome === "failed") unreachable();
+    } finally {
+      expiring.current = false;
+    }
+  };
+
+  const sendSpokenAnswer = async (id: string, transcript: string, timedOut: boolean) => {
+    setVoiceRetry(null);
+    const outcome = await submit({ timedOut, voice: { id, transcript } });
+    if (outcome === "failed") setVoiceRetry({ id, transcript, timedOut });
   };
 
   const candidateInitials = initials(user?.full_name || "You");
+  const pauseLabel =
+    voiceHoldsClock
+      ? PAUSE_LABELS.transcription
+      : conversation?.turn?.pause_reason
+        ? PAUSE_LABELS[conversation.turn.pause_reason]
+        : bridgePaused
+          ? "Paused"
+          : null;
+  const showVoice =
+    Boolean(conversation?.voice_input_available) && prose && !typingOnly;
+  const showTyping = !voiceOccupied;
+  const inputDisabled = sending || clockPaused;
 
   return (
     <div>
       <PageHeader
         title="Your assessment"
-        description="Answer in your own words. Each response is saved as you go, so you can close this page and come back."
+        description="Answer each question in order. Your draft is saved as you go, so you can close this page and come back."
         actions={
           <Button variant="outline" asChild>
             <Link href="/portal/applications">
@@ -324,51 +495,60 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
       />
 
       <div className="mx-auto max-w-5xl">
-        <AssessmentSteps
-          answered={conversation?.answered_questions ?? 0}
-          total={conversation?.total_questions ?? 45}
-        />
-        <div className="mt-6 grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
-          <AssessmentProgress
-            answered={conversation?.answered_questions ?? 0}
-            total={conversation?.total_questions ?? 45}
+        {conversation ? (
+          <AssessmentSteps
+            answered={conversation.answered_questions}
+            total={conversation.total_questions}
           />
+        ) : null}
+        <div className="mt-6 grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
+          {conversation ? (
+            <AssessmentProgress
+              answered={conversation.answered_questions}
+              total={conversation.total_questions}
+            />
+          ) : (
+            <div />
+          )}
           <div className="min-w-0 space-y-4">
-            {exchanges.map((exchange, index) => (
-              <React.Fragment key={index}>
-                <Bubble side="asked" at={exchange.askedAt}>
-                  {exchange.prompt}
-                </Bubble>
-                <EditableAnswerBubble
-                  answer={exchange.answer}
-                  at={exchange.answeredAt}
-                  initials={candidateInitials}
-                  canEdit={
-                    exchange.prose &&
-                    Boolean(exchange.messageId) &&
-                    index === exchanges.length - 1 &&
-                    conversation?.status === "active"
-                  }
-                  onSave={(edited) => saveEditedAnswer(index, edited)}
-                />
-              </React.Fragment>
-            ))}
+            <HistoryList entries={conversation?.history ?? []} initials={candidateInitials} />
+
+            {pending ? (
+              <div className="space-y-3 opacity-80" data-testid="pending-exchange">
+                <div className="sm:mr-10">
+                  <div className="rounded-2xl rounded-tl-md border border-border bg-surface p-5 text-sm leading-7 shadow-card">
+                    {pending.prompt}
+                  </div>
+                </div>
+                <div className="sm:ml-10">
+                  <div className="rounded-2xl rounded-tr-md border border-brand-600/30 bg-brand-100/70 p-5 text-sm leading-7">
+                    <p className="whitespace-pre-wrap">
+                      {pending.answer || "No answer was given before time ran out."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {loading ? (
-              <p
-                role="status"
-                className="flex items-center justify-center gap-2 py-12 text-sm"
-              >
+              <p role="status" className="flex items-center justify-center gap-2 py-12 text-sm">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                Preparing your assessment
+                Opening your assessment
               </p>
             ) : null}
 
-            {/* The interviewer composing. This is not decoration: since the
-                assessment became adaptive, the server really is deciding whether
-                to follow up on what was just said, and that round trip includes a
-                model call. Without this the page simply sits still and the
-                candidate cannot tell the difference between thinking and broken. */}
+            {loadError ? (
+              <Card className="shadow-card" data-testid="load-error">
+                <CardContent className="p-8 text-center">
+                  <h2 className="text-base font-semibold">This assessment could not be opened</h2>
+                  <p className="mt-2 text-sm">{loadError}</p>
+                  <Button className="mt-5" variant="outline" asChild>
+                    <Link href="/portal/applications">Back to Applied Jobs</Link>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : null}
+
             {sending ? (
               <div className="sm:mr-10" aria-live="polite">
                 <p className="sr-only">The interviewer is typing</p>
@@ -380,11 +560,22 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
               </div>
             ) : null}
 
+            {conversation?.status === "preparing" ? (
+              <p
+                role="status"
+                className="flex items-center justify-center gap-2 py-12 text-sm"
+                data-testid="preparing"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Your questions are being prepared. This page will carry on by itself in a moment.
+              </p>
+            ) : null}
+
             {conversation?.status === "terminated" ? (
               <Card className="shadow-card" data-testid="termination-notice">
                 <CardContent className="p-8 text-center">
                   <h2 className="text-base font-semibold">This assessment has ended</h2>
-                  <p className="mt-2 max-w-md text-pretty text-sm leading-6 sm:mx-auto">
+                  <p className="mt-2 max-w-md text-pretty text-sm sm:mx-auto">
                     {conversation.termination_message ??
                       "The assessment was ended before its final question. The answers you had already sent were kept."}
                   </p>
@@ -399,10 +590,8 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                   <span className="grid h-14 w-14 place-items-center rounded-2xl bg-rating-1-bg text-rating-1">
                     <CheckCircle2 className="h-7 w-7" aria-hidden="true" />
                   </span>
-                  <h2 className="mt-4 text-base font-semibold">
-                    Assessment complete
-                  </h2>
-                  <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+                  <h2 className="mt-4 text-base font-semibold">Assessment complete</h2>
+                  <p className="mt-1 max-w-sm text-pretty text-sm">
                     Your responses were saved and your report is being compiled.
                   </p>
                   <Button className="mt-5" variant="outline" asChild>
@@ -410,75 +599,142 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                   </Button>
                 </CardContent>
               </Card>
-            ) : conversation?.prompt && turnKey !== null ? (
-              <>
+            ) : conversation?.prompt && conversation.turn && turnKey !== null ? (
+              // Hidden rather than unmounted while an answer is on its way, so
+              // a spoken answer's state survives a submission that fails.
+              <div className="space-y-4" hidden={pending !== null}>
                 <div className="sm:mr-10">
                   <div className="rounded-2xl rounded-tl-md border border-border bg-surface p-5 shadow-card">
-                    <AssessorHeader at={promptShownAt.current} />
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-brand-700">
+                        <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                      </span>
+                      <span className="font-semibold">AI Assessor</span>
+                      <span className="ml-auto">
+                        <TurnTimer
+                          key={turnKey}
+                          deadlineAt={conversation.turn.deadline_at}
+                          serverNow={conversation.turn.server_now}
+                          receivedAtMs={receivedAt}
+                          paused={clockPaused}
+                          pauseLabel={pauseLabel}
+                          onExpire={() => void expire()}
+                        />
+                      </span>
+                    </div>
                     <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">
                       {conversation.is_reask
                         ? `Re-asking ${conversation.progress_label}`
                         : conversation.progress_label}
                     </p>
-                    <p className="mt-2 text-pretty leading-7">
-                      {conversation.prompt}
-                    </p>
-                    {question ? (
-                      // Guidance, not a limit: nothing stops the candidate at
-                      // the mark, and the wording says "about" so it cannot
-                      // read as a clock.
-                      <p className="mt-3 text-xs" data-testid="time-guidance">
-                        Suggested time: {timeAllocationPhrase(question.time_allocation_seconds)}.
-                      </p>
-                    ) : null}
+                    <p className="mt-2 text-pretty leading-7">{conversation.prompt}</p>
                   </div>
                 </div>
 
                 <div className="space-y-3 sm:ml-10">
-                  {fieldHooks && value !== null ? (
-                    <QuestionRenderer
-                      // A follow-up or a re-ask has no question row of its
-                      // own; it is prose, and prose renders as a short answer.
-                      question={question ?? proseTurn(turnKey)}
-                      prompt={conversation.prompt}
-                      value={value}
-                      onChange={setValue}
-                      disabled={sending}
-                      autosave={autosave}
-                      fieldHooks={fieldHooks}
-                      onSubmitShortcut={() => void respond()}
-                    />
+                  {expiryNotice ? (
+                    <p role="alert" className="border border-warning bg-warning/10 p-3 text-sm">
+                      {expiryNotice}
+                    </p>
                   ) : null}
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <AutosaveIndicator state={autosave} />
-                    <div className="flex items-center gap-2">
+                  {voiceRetry ? (
+                    <div role="alert" className="space-y-2 border border-warning bg-warning/10 p-3 text-sm">
+                      <p>
+                        Your spoken answer was transcribed but did not reach us. It has not been lost.
+                      </p>
+                      <blockquote className="whitespace-pre-wrap border-l-2 border-teal-600 bg-surface p-3 leading-7">
+                        {voiceRetry.transcript}
+                      </blockquote>
                       <Button
                         type="button"
-                        variant="outline"
-                        disabled={sending || isEmpty(value)}
+                        disabled={sending}
                         onClick={() =>
-                          setValue(question ? emptyAnswerFor(question) : { text: "" })
+                          void sendSpokenAnswer(voiceRetry.id, voiceRetry.transcript, voiceRetry.timedOut)
                         }
                       >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        Clear
-                      </Button>
-                      <Button
-                        size="lg"
-                        disabled={sending || !complete}
-                        onClick={() => void respond()}
-                      >
-                        {sending ? (
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <Send className="h-4 w-4" aria-hidden="true" />
-                        )}
-                        {sending ? "Sending" : "Send"}
+                        Send my spoken answer again
                       </Button>
                     </div>
-                  </div>
+                  ) : null}
+                  {showVoice ? (
+                    <div hidden={voiceRetry !== null}>
+                      <VoiceAnswer
+                        key={turnKey}
+                        ref={voiceRef}
+                        conversationId={conversation.conversation_id}
+                        turnSeq={conversation.turn_seq}
+                        disabled={inputDisabled || !isEmpty(value)}
+                        onPhaseChange={setVoicePhase}
+                        onTranscribed={(id, transcript, byClock) =>
+                          void sendSpokenAnswer(id, transcript, byClock)
+                        }
+                        onSwitchToTyping={() => {
+                          setTypingOnly(true);
+                          setVoicePhase("idle");
+                          void resync();
+                        }}
+                      />
+                    </div>
+                  ) : null}
+                  {showTyping && fieldHooks && value !== null ? (
+                    // A coding question's Run button needs the conversation it
+                    // belongs to; `useCodingConversationId` throws without it.
+                    <CodingConversationContext.Provider value={conversation.conversation_id}>
+                      <QuestionRenderer
+                        // A follow-up or a re-ask has no question row of its
+                        // own; it is prose, and prose renders as a short answer.
+                        question={question ?? proseTurn(turnKey)}
+                        prompt={conversation.prompt}
+                        value={value}
+                        onChange={setValue}
+                        disabled={inputDisabled}
+                        autosave={autosave}
+                        fieldHooks={fieldHooks}
+                        onSubmitShortcut={() => void submit({ timedOut: false })}
+                      />
+                    </CodingConversationContext.Provider>
+                  ) : null}
+                  {showTyping ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <AutosaveIndicator state={autosave} />
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={inputDisabled || isEmpty(value)}
+                          onClick={() => setValue(question ? emptyAnswerFor(question) : { text: "" })}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          Clear
+                        </Button>
+                        {question?.question_type === "coding" && isCodingAnswer(value) ? (
+                          // A coding answer is final: the press confirms, naming
+                          // the language, before the hidden tests are run.
+                          <CodingSubmitButton
+                            language={value.language}
+                            disabled={inputDisabled || !complete}
+                            sending={sending}
+                            onConfirm={() => void submit({ timedOut: false })}
+                          />
+                        ) : (
+                          <Button
+                            size="lg"
+                            disabled={inputDisabled || !complete}
+                            onClick={() => void submit({ timedOut: false })}
+                          >
+                            {sending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Send className="h-4 w-4" aria-hidden="true" />
+                            )}
+                            {sending ? "Sending" : "Send"}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
-              </>
+              </div>
             ) : null}
 
             {/* Scroll target. An empty node rather than scrolling the last bubble,
@@ -493,8 +749,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
 }
 
 /** The question shape a prose follow-up or re-ask renders through. It has no
- *  row on the server, so its id is the turn key and its allocation is not
- *  shown (the guidance line is drawn only for a real question). */
+ *  row on the server, so its id is the turn key. */
 function proseTurn(turnKey: string): QuestionOut {
   return {
     id: turnKey,
@@ -506,20 +761,10 @@ function proseTurn(turnKey: string): QuestionOut {
 
 /** One animated dot of the typing indicator.
  *
- * A FADE, NOT A BOUNCE. Tailwind's bounce utility overshoots, and this dot
- * appears while a candidate is waiting to be asked the next question in an
- * assessment of their career. A bouncing indicator on that screen is the
- * product being cheerful at somebody who is nervous. DESIGN.md §7 forbids
- * spring overshoot on anything a person is waiting on, and Impeccable flags it
- * as `bounce-easing`.
- *
- * The comment deliberately does NOT name the utility: Impeccable's detector is
- * a source scan, so an explanation that quotes the banned class makes the
- * detector fire on its own documentation.
- *
- * The animation is defined inline rather than as a Tailwind utility because it
- * exists in exactly one place, and a global `animate-pulse-dot` would be a
- * utility somebody reaches for on a surface where it does not belong.
+ * A FADE, NOT A BOUNCE. An overshooting indicator on a screen where somebody
+ * is waiting to be asked the next question in an assessment of their career
+ * is the product being cheerful at somebody who is nervous. DESIGN.md section
+ * 7 forbids spring overshoot on anything a person is waiting on.
  */
 function Dot({ delay }: { delay: string }) {
   return (
@@ -530,172 +775,7 @@ function Dot({ delay }: { delay: string }) {
   );
 }
 
-/** Time of day, e.g. "14:32". Deliberately no date: the whole conversation
- *  happens in one sitting, and a date on every bubble is noise. */
-function formatTime(value: Date): string {
-  return value.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   return (parts[0]?.[0] || "Y") + (parts[1]?.[0] || "");
-}
-
-function AssessorHeader({ at }: { at: Date }) {
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-brand-700">
-        <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-      </span>
-      <span className="font-semibold">AI Assessor</span>
-      <time className="ml-auto" dateTime={at.toISOString()}>
-        {formatTime(at)}
-      </time>
-    </div>
-  );
-}
-
-function EditableAnswerBubble({
-  answer,
-  at,
-  initials: badge,
-  canEdit,
-  onSave,
-}: {
-  answer: string;
-  at: Date;
-  initials: string;
-  canEdit: boolean;
-  onSave: (edited: string) => Promise<void>;
-}) {
-  const { toast } = useToast();
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(answer);
-  const [saving, setSaving] = React.useState(false);
-
-  const save = async () => {
-    if (!draft.trim() || draft.trim() === answer) {
-      setEditing(false);
-      setDraft(answer);
-      return;
-    }
-    setSaving(true);
-    try {
-      await onSave(draft.trim());
-      setEditing(false);
-    } catch (error) {
-      toast({
-        title: "Could not edit your response",
-        description: error instanceof Error ? error.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="sm:ml-10">
-      <div className="rounded-2xl rounded-tr-md border border-brand-600/30 bg-brand-100/70 p-5 text-sm leading-7">
-        <div className="mb-3 flex items-center gap-2 text-xs">
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-600 font-semibold text-white">
-            {badge.toUpperCase()}
-          </span>
-          <span className="font-semibold">You</span>
-          <time className="ml-auto" dateTime={at.toISOString()}>
-            {formatTime(at)}
-          </time>
-          {canEdit && !editing ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-              Edit
-            </Button>
-          ) : null}
-        </div>
-        {editing ? (
-          <div className="space-y-2">
-            <Textarea
-              value={draft}
-              maxLength={MAX_ANSWER}
-              onChange={(event) => setDraft(event.target.value)}
-            />
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={saving}
-                onClick={() => {
-                  setDraft(answer);
-                  setEditing(false);
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={saving || !draft.trim()}
-                onClick={() => void save()}
-              >
-                {saving ? "Saving" : "Save edit"}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <p className="whitespace-pre-wrap" data-testid="answer-bubble">
-            {answer}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * One turn of the transcript. The asked question sits left on the plain card
- * surface; the candidate's own answer sits right in a brand-tinted bubble, so
- * the two are told apart by position and fill rather than by grey text.
- */
-function Bubble({
-  side,
-  at,
-  children,
-}: {
-  side: "asked" | "answered";
-  at?: Date;
-  children: React.ReactNode;
-}) {
-  const asked = side === "asked";
-  return (
-    <div className={asked ? "sm:mr-10" : "sm:ml-10"}>
-      <p className="sr-only">{asked ? "Question" : "Your answer"}</p>
-      <div
-        className={
-          asked
-            ? "rounded-2xl rounded-tl-md border border-border bg-surface p-5 text-sm leading-7 shadow-card"
-            : "rounded-2xl rounded-tr-md border border-brand-600/30 bg-brand-100/70 p-5 text-sm leading-7"
-        }
-      >
-        {asked && at ? <AssessorHeader at={at} /> : null}
-        {asked && at ? <div className="h-3" aria-hidden="true" /> : null}
-        {children}
-      </div>
-      {at && !asked ? (
-        <p
-          className={`mt-1 text-[11px] ${asked ? "text-left" : "text-right"}`}
-        >
-          <time dateTime={at.toISOString()}>{formatTime(at)}</time>
-        </p>
-      ) : null}
-    </div>
-  );
 }

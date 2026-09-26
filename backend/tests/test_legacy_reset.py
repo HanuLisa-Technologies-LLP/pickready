@@ -104,10 +104,9 @@ def test_the_preserve_default_covers_the_tables_d2_never_named() -> None:
         if rule.bucket == reset.PURGE and not rule.named_by_d2
     ]
     assert {rule.table for rule in inferred_purges} == {
-        "technical_questions",
         "job_matching_categories",
         "context_chunks",
-        "job_company_dna_bindings",
+        "job_scorecard_bindings",
     }
 
 
@@ -305,9 +304,21 @@ def test_the_application_reset_clears_the_grade_and_keeps_the_application() -> N
         "match_rationale = NULL",
         "match_breakdown_json = NULL",
         "tier = NULL",
+        # Yukti's reading goes back to `pending` so the next run reads it
+        # afresh (Phase 2 WP-F).
+        "yukti_pre_score = NULL",
+        "yukti_status = 'pending'",
+        "yukti_failure_reason = NULL",
+        "evidence_tags_json = '[]'::jsonb",
+        "yukti_provenance_json = NULL",
+        "yukti_scored_at = NULL",
+        "yukti_profile_id = NULL",
     }
+    # By written COLUMN, not substring: `yukti_status` is written and the
+    # application's own `status` must not be.
+    written = {clause.split(" = ", 1)[0] for clause in assignments.split(", ")}
     for column in ("created_at", "status", "validation_json", "archived_at"):
-        assert column not in assignments
+        assert column not in written
 
 
 def test_a_second_reset_reports_zero_rather_than_the_whole_table() -> None:
@@ -424,7 +435,7 @@ def test_the_purge_refuses_while_g1_is_unreachable() -> None:
 
 def test_a_reachable_gate_passes() -> None:
     reachable = reset.GateWiring(
-        ("app/services/miti/pipeline.py:290",), ("app.api.assessments",)
+        ("app/services/miti/pipeline.py:290",), ("app.api.assessment_reports",)
     )
     assert reachable.enforced
     reset.assert_gate_enforced(reachable)
@@ -432,7 +443,7 @@ def test_a_reachable_gate_passes() -> None:
 
 def test_a_gate_that_is_never_called_is_not_enforced_either() -> None:
     with pytest.raises(reset.GateNotWired) as raised:
-        reset.assert_gate_enforced(reset.GateWiring((), ("app.api.assessments",)))
+        reset.assert_gate_enforced(reset.GateWiring((), ("app.api.assessment_reports",)))
     assert "never called" in str(raised.value)
 
 

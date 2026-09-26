@@ -50,7 +50,47 @@ FRONTEND_TARGET="${FRONTEND_TARGET%/}"
 # The liveness probe. NOTE the path: the health route is mounted on the app
 # root (backend/app/main.py), NOT under the /api/v1 prefix, so /api/v1/health
 # is a 404 and would fail every deploy.
-HEALTH_PATH="${HEALTH_PATH:-/health}"
+# `/health/live`, NOT `/health`, AND THE REASON IS THAT THIS CHECK WAS LYING.
+#
+# `probe()` passes `--location`. The apex only routes `/api/*` and a short
+# allowlist to the API, so `https://<host>/health` reached the FRONTEND, which
+# is deny-by-default and answered 307 to /login, which answered 200. This
+# script then printed "PASS /health 200" while never touching the API at all.
+# A liveness gate that passes by successfully loading a login page is worse
+# than no gate, because it is believed.
+#
+# Two changes fix it and both are needed: this path is now routed to the API by
+# the load balancer, and the probe below refuses a redirect instead of chasing
+# one.
+HEALTH_PATH="${HEALTH_PATH:-/health/live}"
+
+# AND IT IS ASKED OF THE ORIGIN, NOT OF `$TARGET`.
+#
+# `/health/live` is declared on the FastAPI app itself (`@app.get` in
+# `app/main.py`), not on a router mounted under `/api/v1`, because the load
+# balancer's health check cannot carry an API prefix. `$TARGET` ends in
+# `/api/v1`, so joining the two asked for `/api/v1/health/live`, which is a
+# route that has never existed and answered 404 twelve times before failing
+# the deploy.
+#
+# This was invisible until 2026-09-23 because the CI jobs that run this script
+# are gated behind `vars.PILOT_DEPLOY_ENABLED`, which has never been set: the
+# script had simply never been executed against a live site. A check nobody
+# has run is not a check.
+# EVERY PATH IN THIS SCRIPT IS ABSOLUTE FROM THE ORIGIN, SO THE ORIGIN IS THE
+# BASE. `$TARGET` comes from the terraform output and ends in `/api/v1`, while
+# the paths below are written `/api/v1/jobs`, `/openapi.json`, `/health/live`.
+# Joining the two produced `/api/v1/api/v1/jobs` and `/api/v1/openapi.json`,
+# both 404, and `/api/v1/health/live`, which is a route that has never existed.
+#
+# It read as "the revision is not serving" and would have failed a deploy of a
+# perfectly healthy build. It survived because the CI jobs that run this script
+# are gated behind `vars.PILOT_DEPLOY_ENABLED`, which has never been set: until
+# 2026-09-23 the script had never been executed against a live site. A check
+# nobody has run is not a check, which is the same lesson `verify-deployment.sh`
+# states about a skipped digest.
+ORIGIN="${ORIGIN:-${TARGET%%/api/*}}"
+HEALTH_BASE="${HEALTH_BASE:-$ORIGIN}"
 
 # Authenticated endpoints, probed with TEST_BEARER_TOKEN. The capabilities
 # endpoint is /api/v1/auth/me: it returns {user, capabilities[]} and there is
@@ -78,12 +118,15 @@ trap 'rm -f "$BODY_FILE"' EXIT
 probe() {
   local path="$1" auth="${2:-}"
   local args=(
-    --silent --show-error --location
+    --silent --show-error
     --max-time "$CURL_TIMEOUT"
     --output "$BODY_FILE"
     --write-out '%{http_code}'
     --header 'Accept: application/json'
   )
+  # Following a redirect is right for most probes here and wrong for liveness:
+  # a 307 to a login page that answers 200 is not the API being up.
+  [ -z "${NO_REDIRECT:-}" ] && args+=( --location )
   # The token is passed via -H from a shell variable and never appears in the
   # URL: a query-string token lands in every access log between here and the
   # container.
@@ -94,7 +137,7 @@ probe() {
   # as a mysterious non-200. The ${out:-000} default covers curl producing
   # nothing at all.
   local out
-  out="$(curl "${args[@]}" "${TARGET}${path}" 2>/dev/null || true)"
+  out="$(curl "${args[@]}" "${PROBE_BASE:-$ORIGIN}${path}" 2>/dev/null || true)"
   out="$(printf '%s' "$out" | tr -cd '0-9')"
   printf '%s' "${out:-000}"
 }
@@ -104,9 +147,11 @@ log "Liveness"
 code=""
 attempt=1
 while [ "$attempt" -le "$HEALTH_RETRIES" ]; do
-  code="$(probe "$HEALTH_PATH")"
+  # NO_REDIRECT: a 3xx here means the request never reached the API, which is
+  # exactly the failure this check exists to catch.
+  code="$(NO_REDIRECT=1 PROBE_BASE="$HEALTH_BASE" probe "$HEALTH_PATH")"
   if [ "$code" = "200" ]; then
-    pass "${HEALTH_PATH} 200"
+    pass "${HEALTH_BASE}${HEALTH_PATH} 200"
     break
   fi
   printf '  ....  %s attempt %s/%s -> %s\n' "$HEALTH_PATH" "$attempt" "$HEALTH_RETRIES" "$code"

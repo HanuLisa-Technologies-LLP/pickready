@@ -31,17 +31,42 @@ variable "secret_names" {
     "OPENAI_GPT_TERRA",
     "OPENAI_GPT_LUNA",
     "VOYAGE_CONTEXT_4",
+    # The RERANKER's credential, named after the model it unlocks (rerank-2.5),
+    # the same convention as the line above. It holds the same Voyage ACCOUNT
+    # key as VOYAGE_CONTEXT_4, because one account serves both /v1/embeddings
+    # and /v1/rerank, and the names stay separate anyway: an absent key must
+    # name the missing CAPABILITY, so "the reranker is not configured" is a
+    # recorded degradation rather than an embedding outage wearing a
+    # reranker's name.
+    "VOYAGE_RERANK_2_5",
     "DATABASE_URL",
     "REDIS_URL",
     "JWT_SECRET",
+    # HELD, AND INJECTED INTO NOTHING (2026-09-24). No service holds a grant
+    # on it and no container mounts it: the setting that read it is deleted,
+    # and nothing in the application decrypts with it. The CONTAINER stays
+    # because it is the only copy of the key that opened the retired key
+    # roster (whose empty table migration 0128 drops), and destroying a secret
+    # is the one step here with no undo once the recovery window passes. It
+    # goes when the owner decides (CONTRACT v2). `test_deploy_secret_hygiene.py`
+    # pins both halves: present in this list, granted to no service.
     "LLM_KEY_ENCRYPTION_SECRET",
     "FIREBASE_SERVICE_ACCOUNT_JSON",
     "SMTP_PASSWORD",
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_WEBHOOK_SECRET",
     "TAVILY_API_KEY",
-    "MSG91_API_KEY",
     "HUGGINGFACE_TOKEN",
+    # THE ONE SECRET IN THIS LIST NOBODY OUTSIDE THIS PLATFORM ISSUES, and
+    # therefore the one whose value IS created here. See
+    # `random_password.generated` in main.tf, and `generated_secret_names`
+    # below for the split.
+    #
+    # It proves to `POST /verification/inbound-email` that the call came from
+    # `readypick-inbound-email` and not from a stranger who knows a thread
+    # token. Those travel by email, so they exist in every mailbox that ever
+    # received or forwarded one of these threads.
+    "INBOUND_WEBHOOK_SECRET",
   ]
 }
 
@@ -90,20 +115,56 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
-      "LLM_KEY_ENCRYPTION_SECRET",
+      # THE WEBHOOK HANDLER RUNS IN THIS SERVICE, NOT IN A "webhook" ONE.
+      #
+      # `RAZORPAY_WEBHOOK_SECRET` was granted only to a `webhook` entry below,
+      # and no environment has ever defined a service by that name: the running
+      # services are api, frontend and analysis. So the secret was created,
+      # granted to a service that does not exist, and mounted on nothing, while
+      # `POST /api/v1/billing/webhook` is served here by `api/billing.py`.
+      #
+      # That is why the missing secret was invisible. The handler used to treat
+      # an absent secret as "development" and PROCESS the unsigned event, so an
+      # anonymous POST could grant credits on the live site. The handler now
+      # refuses outright when it is absent; this grant is what lets it verify
+      # instead of refusing forever.
+      "RAZORPAY_WEBHOOK_SECRET",
+      # THE BD PORTAL'S AI REACH RUNS IN THE REQUEST HANDLER, and this key is
+      # why it returned nothing on the live site. The search is deliberately
+      # NOT dispatched -- it is user-initiated, interactive and bounded by
+      # `web_research.SEARCH_BUDGET_SECONDS` -- so the API is the process that
+      # calls Tavily, and it was the one runtime identity without the key.
+      #
+      # It failed silently by design: an absent key is a supported state that
+      # answers `status="unconfigured"` so the customer-database segment keeps
+      # working. That graceful path is right, and it is exactly what made this
+      # invisible. The task worker and the company-profile function have held
+      # the key since the roster was written; only the caller that needed it
+      # most did not.
+      "TAVILY_API_KEY",
+      # THE API IS THE ROUTE'S SIDE OF THE SHARED SECRET. It is mounted rather
+      # than set as a plain env var because a task definition is readable by
+      # anyone holding ecs:DescribeTaskDefinition, which is the exact shape
+      # `test_deploy_secret_hygiene.py` refuses. The relay's own copy cannot be
+      # a mount: see the inbound function in the pilot composition.
+      "INBOUND_WEBHOOK_SECRET",
     ]
     "task-worker" = [
       "DATABASE_URL",
       "REDIS_URL",
+      # The worker mints assessment invite links, which are signed material
+      # (workers/tasks.py); under REQUIRE_JWT_SECRET it refuses to boot in
+      # production without this rather than sign with an empty string.
+      "JWT_SECRET",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "SMTP_PASSWORD",
       "TAVILY_API_KEY",
-      "MSG91_API_KEY",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "agent" = [
       "DATABASE_URL",
@@ -111,27 +172,21 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
-      "LLM_KEY_ENCRYPTION_SECRET",
+      "VOYAGE_RERANK_2_5",
     ]
     "jd-gen" = [
       "DATABASE_URL",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "company-profile" = [
       "DATABASE_URL",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "TAVILY_API_KEY",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "migrate" = [
       "DATABASE_URL",
-    ]
-    "webhook" = [
-      "DATABASE_URL",
-      "RAZORPAY_WEBHOOK_SECRET",
     ]
     "analysis" = [
       "HUGGINGFACE_TOKEN",
@@ -154,6 +209,62 @@ variable "placeholder_value" {
   EOT
   type        = string
   default     = "PLACEHOLDER_NOT_CONFIGURED"
+}
+
+variable "generated_secret_names" {
+  description = <<-EOT
+    The secrets this module MINTS, rather than waits for a human to supply.
+
+    Must be a subset of `secret_names`: the container is created there and the
+    value is written here. A name in both lists gets a real value and no
+    placeholder; a name in `secret_names` alone gets the sentinel and waits.
+
+    THE TEST FOR WHETHER A SECRET BELONGS HERE is whether anybody else issues
+    it. A Voyage key, a Razorpay secret and an SMTP app password all exist
+    before Terraform runs and Terraform cannot know them. A value one half of
+    this platform shows to the other half has no issuer, and leaving it to a
+    human means the control it enables ships disabled until somebody remembers
+    -- which for `INBOUND_WEBHOOK_SECRET` means a public write endpoint that
+    logs `verification.inbound_unauthenticated` on every call and admits
+    anybody.
+
+    The cost is that a generated value lives in the Terraform state file. That
+    is accepted here and is NOT a licence to move a vendor credential in: a
+    vendor key in state is a second copy of something that already has a safer
+    home, while this one would otherwise have no home at all.
+  EOT
+  type        = list(string)
+  default     = ["INBOUND_WEBHOOK_SECRET"]
+}
+
+variable "service_secret_writers" {
+  description = <<-EOT
+    {service -> the exact secrets it may WRITE}. Almost always empty.
+
+    Reading a secret and replacing it are different powers, and this module has
+    only ever granted the first. One thing needs the second, and the reason it
+    does is the 2026-09-11 outage: `DATABASE_URL` held a hand-copied snapshot
+    of the RDS MASTER password, `manage_master_user_password` had Secrets
+    Manager rotating that password on a schedule, and seven days after the
+    instance was created the copy went stale and every database connection in
+    the product failed at once.
+
+    The fix is the design the `rds` module has documented from the start: the
+    DSN carries a least-privileged application role whose password nothing else
+    rotates. `app.scripts.provision_app_db_role` mints that password INSIDE the
+    VPC and writes it here, so it is never an argument, never in a RunTask call,
+    never in CloudTrail and never in a shell history. Rotating it later is the
+    same script run again.
+
+    Scoped the same way the read grant is: one service, an enumerated list of
+    secret names, never a prefix. A service absent from this map can read what
+    `service_secrets` allows and write nothing, which is the correct answer for
+    every service except the one-shot migration task.
+  EOT
+  type        = map(list(string))
+  default = {
+    "migrate" = ["DATABASE_URL"]
+  }
 }
 
 variable "kms_key_id" {

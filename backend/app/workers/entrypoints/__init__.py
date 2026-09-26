@@ -11,39 +11,36 @@ failure in the second is something you want to be able to read.
 """
 from __future__ import annotations
 
-import logging
-import os
-
-_configured = False
-
+from app.core.logging import configure_logging as core_configure_logging
 
 def configure_logging() -> None:
-    """Make sure INFO records actually reach the log, once per process.
+    """Make sure records actually reach the log, in the SAME SHAPE as the API.
 
-    The Lambda runtime installs its own root handler and leaves the root level
-    at WARNING unless told otherwise, so every `logger.info` this codebase
-    writes about a dispatch, a retry or a completed task would be dropped. The
-    tasks' INFO lines are the operational record of what ran, so losing them
-    turns a worker into a black box that only speaks when it fails.
+    ONE IMPLEMENTATION, AND THIS IS THE DELEGATION TO IT. This function used to
+    configure logging itself, with a plain
+    `%(asctime)s %(levelname)s %(name)s %(message)s` formatter, while the API
+    process configured structlog with a JSON renderer. Two implementations of
+    one concept, and the consequence was operational rather than cosmetic: an
+    API line and the worker line for the same piece of work came out in
+    different formats, so no log query could join them and a correlation id
+    could not be followed across the boundary it exists to cross.
 
-    `LOG_LEVEL` stays the operator's override, and it is read here rather than
-    through `Settings` so logging is configured before anything that could fail
-    while validating configuration.
+    `app.core.logging.configure_logging` is now the only one, and it carries
+    both of the properties this function existed to guarantee:
+
+      * IT SETS THE ROOT LEVEL FROM `LOG_LEVEL`, DEFAULTING TO INFO. The Lambda
+        runtime leaves the root at WARNING unless told otherwise, so every
+        `logger.info` about a dispatch, a retry or a completed task would be
+        dropped, and the INFO lines ARE the operational record of what ran.
+      * IT REPLACES THE ROOT HANDLER LIST RATHER THAN APPENDING. That is what
+        keeps the old "only outside Lambda" guard unnecessary: the runtime
+        installs its own handler, and appending a second one duplicated every
+        line in CloudWatch. Replacing cannot.
+
+    It is idempotent, so the `_configured` latch that used to live here is gone
+    rather than duplicated.
     """
-    global _configured
-    if _configured:
-        return
-    level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    root = logging.getLogger()
-    root.setLevel(level)
-    if not root.handlers:
-        # Only outside Lambda: the runtime installs its own handler, and adding
-        # a second one duplicates every line in CloudWatch.
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        )
-    _configured = True
+    core_configure_logging()
 
 
 def bootstrap() -> None:

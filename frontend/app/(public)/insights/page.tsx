@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/insights",
   title: "Insights",
-  description: "Practical thinking on evidence-led candidate decisions, assessment and trust.",
-};
+  description:
+    "Practical thinking on evidence-led candidate decisions, assessment and trust.",
+});
 
 const ARTICLES = [
   ["Decision quality", "Why a shortlist needs evidence, not another score", "A score compresses uncertainty. A good decision profile names it, connects it to evidence and gives the interviewer a useful next question."],
@@ -21,7 +24,7 @@ export default function InsightsPage() {
   return (
     <main id="main" className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28">
       <FadeIn className="max-w-3xl">
-        <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">ReadyPick Insights</p>
+        <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">Vivekium Insights</p>
         <h1 className="mt-4 text-balance text-4xl font-bold sm:text-5xl">Better evidence. Better conversations.</h1>
         <p className="mt-6 text-pretty text-lg leading-8">
           Practical notes for people teams building faster, clearer and more accountable candidate decisions.
@@ -32,9 +35,9 @@ export default function InsightsPage() {
           <StaggerItem key={title}>
             <article className="flex h-full flex-col rounded-2xl border border-border bg-surface p-7 shadow-card">
               <Badge variant="outline" className="self-start">{tag}</Badge>
-              <h2 className="mt-6 text-xl font-semibold leading-8">{title}</h2>
+              <h2 className="mt-6 text-xl font-semibold">{title}</h2>
               <p className="mt-4 text-sm leading-7">{body}</p>
-              <p className="mt-auto pt-8 text-xs font-semibold uppercase tracking-[.14em] text-brand-600">ReadyPick editorial</p>
+              <p className="mt-auto pt-8 text-xs font-semibold uppercase tracking-[.14em] text-brand-600">Vivekium editorial</p>
             </article>
           </StaggerItem>
         ))}

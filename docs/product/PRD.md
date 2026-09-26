@@ -1,4 +1,4 @@
-# ReadyPick Product Requirements Document
+# Vivekium Product Requirements Document
 
 **Status:** Implementation-aligned product specification
 **Authority:** The running source code, database migrations, tests, and user interfaces in this repository
@@ -11,16 +11,16 @@ When this document and the implementation differ, the implementation is authorit
 
 ## 2. Product overview
 
-ReadyPick is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
+Vivekium is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
 
 The product serves four workspaces:
 
 | Workspace | Primary users | Purpose |
 |---|---|---|
-| Provider | ReadyPick owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
+| Provider | Vivekium owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
 | Company | Company administrators, HR managers, recruiters, and hiring managers | Run jobs, candidate review, assessments, compliance, staff, billing, and hiring decisions |
 | Candidate | Job applicants and sourced candidates | Maintain a reusable profile and resume, apply for jobs, complete invited assessments, and track applications |
-| Business development | ReadyPick BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
+| Business development | Vivekium BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
 
 The public website explains the platform and pricing and provides entry points for registration, login, public job applications, outreach responses, and employer verification.
 
@@ -135,27 +135,25 @@ The company dashboard provides operational summaries derived from job, candidate
 
 ## 7. Job creation and publishing
 
-### 7.0 Company DNA
+### 7.0 The Company Profile, and why job creation waits for it
 
-Before any job is graded well, the client tells the platform how it hires. The
-**Company DNA** intake is a one-time-per-client instrument of twelve sections.
-Two of its design rules are load-bearing:
+Before any job is drafted well, the client says what the organisation is. The
+**Company Profile** carries three sections a client authors once on Customer
+Portal -> Company Profile: what the company does, what working there is like,
+and what it offers. A company research agent can draft them from the web, and
+an explicit Edit action is what saves them, so no words reach a candidate
+without a person having read them.
 
-- Section 2 uses **forced trade-off scales**, not free text. Asked "what do you
-  value", every company answers "excellence and integrity", which modifies
-  nothing. A trade-off forces a real choice.
-- Section 3 accepts only **observable evidence** and rejects an adjective, then
-  asks again. "Ownership mindset" is refused; "has taken a project from an
-  unclear brief to a shipped outcome" is accepted.
+**Job creation is refused until the About section says something.** That is the
+useful place to refuse: the profile is what seeds each new job's own narrative
+sections and what the job description generator reads, so a job drafted without
+it has been drafted against nothing. The refusal names the page and what to
+write there. A job created before the client wrote their profile stays created:
+the gate is on the act of creation, never a sweep over jobs candidates may
+already be applying to.
 
-The intake is compiled DETERMINISTICALLY into a versioned artifact, with no
-model call, so it is reproducible, diffable between versions, and explainable
-without a provider. Job setup reads the COMPILED artifact and never the
-client's raw free text: an unbounded client-authored string in a prompt that
-decides what every candidate is graded on is both an injection surface and a
-way for a stray phrase to quietly become a hiring criterion.
-
-Each job records which Company DNA version its matrix was frozen against.
+Every new job SNAPSHOTS the profile at creation, so editing it later reaches
+future jobs only and never rewrites a role people are already applying to.
 
 ### 7.1 Required job information
 
@@ -449,9 +447,9 @@ Note the direction of the PPI column: more questions for a junior candidate,
 fewer for a CXO. A CXO's evidence is broader per answer and their time is the
 scarce resource.
 
-### 11.2.1 ReadyPick Profile Intelligence (PPI)
+### 11.2.1 Vivekium Profile Intelligence (PPI)
 
-PPI replaced the ReadyPick Functional Index (PFI) on 2026-07-30. PFI was one
+PPI replaced the Vivekium Functional Index (PFI) on 2026-07-30. PFI was one
 fixed dimension set per grade, reused across every job in the product. PPI
 generates a **fresh evaluation framework for every job, from that job's own JD**:
 
@@ -472,12 +470,16 @@ CHECK constraint.
 PPI is a first-party framework and is not presented as DISC, MBTI, Hogan,
 CliftonStrengths, or another licensed psychometric instrument.
 
-**The framework is per job; the questions are per candidate.** Once the Hiring
-Manager saves the framework it is the fixed evaluation criteria for every
-candidate who applies to that job - that is the only reason two candidates'
-reports are comparable. The questions probing it are generated individually from
-the JD, the saved framework, and that candidate's own resume, so each
-conversation is relevant to the person in it.
+**The framework is per job; the questions are per candidate.** Sutra compiles
+the initial Tatva proposal from the job and its available context. The
+authorized Hiring Manager owns the final criteria: they may add, edit, rename,
+reorder, reclassify, or remove a proposed item. Save Matrix derives any missing
+internal assessment metadata and freezes exactly the reviewed matrix as a
+version. That version is the fixed evaluation contract for candidates assessed
+under it and makes their reports comparable. A later revision must not rewrite
+the contract used for an earlier assessment. Questions are generated
+individually from the JD, the frozen matrix, and each candidate's resume, so
+each conversation remains relevant to the person in it.
 
 ### 11.2.2 The hiring intelligence framework
 
@@ -486,8 +488,8 @@ boundary it may not cross:
 
 | Stage | Responsibility |
 |---|---|
-| **Bodha** | The per-job SWOT session and the one-time Company DNA intake. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
-| **Sutra** | Turns the role into a scored matrix through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Nothing enters the matrix without completing all seven |
+| **Bodha** | The per-job SWOT session. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
+| **Sutra** | Proposes the initial Tatva matrix and derives assessment metadata through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Human edits are enriched without replacing the Hiring Manager's decisions |
 | **Yukti** | Grades the resume before any conversation: the pre-screen grade and the AI Score snapshot |
 | **Miti** | Five dimension evaluators that score the completed conversation, structurally isolated from each other, plus triangulation of contradictions |
 | **Siddhi** | Composes the PRISM Report through a citation chokepoint |
@@ -564,7 +566,7 @@ Nice-to-have and Behavioural. The **PRISM Report** is the DOCUMENT that process
 produces. Completing a Tatva Assessment produces a PRISM Report. The two names
 are never used as synonyms, in copy, in a heading, or in an email.
 
-The report header is exactly, and only, `PRISM Report` over *Predictive Role
+The report header is exactly, and only, `PRISM Report` over *Evidence-Based Role
 Intelligence & Suitability Mapping*. The expansion travels with the abbreviation
 everywhere the header is drawn, on screen and in the PDF, because the
 abbreviation alone does not tell a reader they are holding the document rather

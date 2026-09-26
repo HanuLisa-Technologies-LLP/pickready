@@ -11,46 +11,40 @@ nothing here calls a model.
 
 THE EIGHT COLUMNS, IN THE SPECIFIED ORDER
 -----------------------------------------
-Candidate, Source, Pre-Screen Grade, Ready Pick Score, Ready Pick Note,
-Ready Pick Profile, Team Review, Stage. `COLUMNS` below is that order as data,
-so the API, the table and the tab-order test all read one list rather than
-three copies of it.
+Candidate, Source, AI Match, Vivekium Grade, Vivekium Note, Vivekium Profile,
+Team Review, Stage. `COLUMNS` below is that order as data, so the API, the
+table and the tab-order test all read one list rather than three copies of it.
 
-FOUR OF THE EIGHT ARE FILLED BY AGENTS THAT ARE NOT ON A LIVE PATH YET
------------------------------------------------------------------------
-Pre-Screen Grade (Yukti), Ready Pick Score and Ready Pick Profile (Miti's
-`Evaluation`), Ready Pick Note (Siddhi). Every one of them has a DOCUMENTED
-PENDING STATE in the specification, and this module renders exactly that state
-when the data is absent. It never substitutes a default, a placeholder or a
-plausible-looking value: a dashboard that shows `— · Pending Ready Pick
-Profile` is telling the truth, and one that shows `50 · Consider with
-Reservations` because nothing was there is the failure this whole surface
-exists to prevent.
+NO NUMBER, AND NO LETTER, REACHES THIS SURFACE (Vivekium release, D3, C8)
+-------------------------------------------------------------------------
+SUPERSEDES spec-doc6 D8. Column 4 used to render the Vivekium Score as a
+0-100 number with a fifth band vocabulary (Ready to Pick, Strong / Ready to
+Pick / Consider with Reservations / Not Recommended, cut at 85 / 72 / 60), and
+column 3 rendered the pre-screen as a LETTER (A / B / C / Hold). The owner
+ruling that the Vivekium brief is final removed the one sanctioned number with
+no exception (D3), and spec v4 had already forbidden letter grades. So:
 
-TWO NUMBERS RULES, AND THEY POINT IN OPPOSITE DIRECTIONS
----------------------------------------------------------
-spec-doc6 D8 rules that the Ready Pick Score renders NUMERICALLY here, in
-column 4 and its hover, and that it must be impossible for that number to
-enter a delivered PRISM Report. So this module is the one place in the product
-that deliberately puts a 0-100 score in front of a client, and
-`schemas/dashboard.py` is where the shape of that is pinned. Everything else
-stays words: the Profile panel shows NAMED per-dimension ratings, and raw
-D1-D5 numbers live only in `services/calibration.py`, behind an audited view.
+  * Column 3, AI MATCH, is Yukti's reading of the RESUME alone: one of the
+    four `services/rating` words, or a status word when Yukti has not read the
+    resume or could not. It is an early signal and renders muted.
+  * Column 4, VIVEKIUM GRADE, is the word for the ONE rank the recruiter's
+    ranked table also sorts by: `yukti.ranking.rank_score_sql`, the resume
+    check blended with the Tatva Assessment and capped by a failed Must-have.
+    Reading the same expression is what keeps the dashboard and the job page
+    from ever ordering one job's candidates two different ways.
 
-WHY THE BAND CUT-POINTS ARE NOT `services/rating.py`'S
-------------------------------------------------------
-The Dashboard specification's band is a FIFTH vocabulary at cut-points 85 / 72
-/ 60, against `rating.py`'s 90 / 75 / 60. They are not two scales for one
-thing, which is the mistake `services/tiers.py` made and was corrected for:
-they are two different artifacts by D8's own reasoning. `rating.GRADES` is the
-assessment grade that reaches the delivered report; the Ready Pick band is a
-dashboard triage label that may never reach it, and the two vocabularies share
-no word (`test_dashboard_vocabulary.py` asserts that, so neither can ever be
-mistaken for the other on screen).
+Both words are chosen HERE from the internal score, server-side, and the score
+itself never leaves this module: `DashboardRow` has no numeric assessment
+field, and `tests/test_dashboard_numbers.py` walks every response schema to
+keep it that way. The four words are the product's one scale, so the band
+vocabulary and its separate cut-points are gone rather than kept beside it.
 
-What IS carried over from the tiers.py correction is the guard: a better score
-must never earn a worse band, and the band order must never invert relative to
-the grade order. Both are swept across the whole 0-100 range by test.
+A ROW UNDER INTEGRITY REVIEW WITHHOLDS COLUMN 4
+-----------------------------------------------
+An open G3 finding (failed, with no human disposition) still locks the stage
+control and still withholds the grade, as it withheld the number: a grade
+printed beside "Under Review" invites a recruiter to act on exactly what the
+lock is holding. It sorts with the other rows that show no grade.
 """
 from __future__ import annotations
 
@@ -64,28 +58,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services import assessment_video_access as video_access
 from app.services import hiring_pipeline, rating
 from app.services.hiring import gates as hiring_gates
-from app.services.hiring import prescreen
+from app.services.miti import aggregation as miti_aggregation
 from app.services.miti import dimensions as miti_dimensions
+from app.services.yukti import config as yukti_config
+from app.services.yukti import projection as yukti_projection
+from app.services.yukti import ranking as yukti_ranking
 
 __all__ = [
     "COLUMNS",
     "COLUMN_CANDIDATE",
     "COLUMN_SOURCE",
-    "COLUMN_PRE_SCREEN_GRADE",
-    "COLUMN_READY_PICK_SCORE",
+    "COLUMN_AI_MATCH",
+    "COLUMN_READY_PICK_GRADE",
     "COLUMN_READY_PICK_NOTE",
     "COLUMN_READY_PICK_PROFILE",
     "COLUMN_TEAM_REVIEW",
     "COLUMN_STAGE",
-    "PRE_SCREEN_GRADES",
-    "PRE_SCREEN_LABELS",
-    "pre_screen_label",
-    "BANDS",
-    "BAND_LABELS",
-    "BAND_ORDER",
-    "band_for_score",
+    "AI_MATCH_GRADES",
+    "GRADE_STATES",
+    "MatchWord",
+    "ai_match_word",
+    "ranking_word",
     "CONFIDENCE_INDICATORS",
     "confidence_indicator",
+    "confidence_label",
     "SOURCE_TYPES",
     "SORT_KEYS",
     "PAGE_SIZE",
@@ -97,6 +93,7 @@ __all__ = [
     "READY_PICK_NOTE_KEY",
     "normalize_page",
     "candidates_page",
+    "assemble_row",
     "profile_panel",
 ]
 
@@ -110,8 +107,8 @@ __all__ = [
 
 COLUMN_CANDIDATE = "candidate"
 COLUMN_SOURCE = "source"
-COLUMN_PRE_SCREEN_GRADE = "pre_screen_grade"
-COLUMN_READY_PICK_SCORE = "ready_pick_score"
+COLUMN_AI_MATCH = "ai_match"
+COLUMN_READY_PICK_GRADE = "ready_pick_grade"
 COLUMN_READY_PICK_NOTE = "ready_pick_note"
 COLUMN_READY_PICK_PROFILE = "ready_pick_profile"
 COLUMN_TEAM_REVIEW = "team_review"
@@ -120,8 +117,8 @@ COLUMN_STAGE = "stage"
 COLUMNS: tuple[str, ...] = (
     COLUMN_CANDIDATE,
     COLUMN_SOURCE,
-    COLUMN_PRE_SCREEN_GRADE,
-    COLUMN_READY_PICK_SCORE,
+    COLUMN_AI_MATCH,
+    COLUMN_READY_PICK_GRADE,
     COLUMN_READY_PICK_NOTE,
     COLUMN_READY_PICK_PROFILE,
     COLUMN_TEAM_REVIEW,
@@ -131,162 +128,203 @@ COLUMNS: tuple[str, ...] = (
 #: Screen-reader headers. The specification asks for "Candidate Code Name"
 #: rather than "Candidate" on column 1, because a blind reader reaching a cell
 #: with a name and a monospace code needs to know both are there before they
-#: hear them.
+#: hear them. Column 3 says what it is read from, because "AI Match" alone
+#: does not tell a listener that no assessment has touched it.
 COLUMN_SCREEN_READER_LABELS: dict[str, str] = {
     COLUMN_CANDIDATE: "Candidate Code Name",
     COLUMN_SOURCE: "Source",
-    COLUMN_PRE_SCREEN_GRADE: "Pre-Screen Grade, early signal",
-    COLUMN_READY_PICK_SCORE: "Ready Pick Score",
-    COLUMN_READY_PICK_NOTE: "Ready Pick Note",
-    COLUMN_READY_PICK_PROFILE: "Ready Pick Profile",
+    COLUMN_AI_MATCH: "AI Match, from the resume only",
+    COLUMN_READY_PICK_GRADE: "Vivekium Grade",
+    COLUMN_READY_PICK_NOTE: "Vivekium Note",
+    COLUMN_READY_PICK_PROFILE: "Vivekium Profile",
     COLUMN_TEAM_REVIEW: "Team Review",
     COLUMN_STAGE: "Stage",
 }
 
 
-# ── Column 3: the Pre-Screen Grade ───────────────────────────────────────────
+# ── Columns 3 and 4: one scale, and the states that are not a grade ──────────
 #
-# spec-doc6 C9: the Dashboard's A / B / C / Hold and spec-doc5's "AI Score" are
-# THE SAME ARTIFACT, and the named grade is the product surface.
+# THE VOCABULARY IS NOT DEFINED HERE. The four grades are `rating.GRADES`, the
+# one scale the whole product reads, and Yukti's statuses are
+# `yukti.config.STATUSES`. This module imports both. A second copy of either
+# in a rendering layer is how `services/tiers.py` came to disagree with
+# `rating.py` on 69.5% of its rows.
 #
-# THE VOCABULARY IS NOT DEFINED HERE. It is
-# `services/hiring/prescreen.GRADES`, written by Yukti's resume-stage pass and
-# stored on `job_candidate_links.prescreen_grade` behind a CHECK constraint
-# (migration 0065). This module IMPORTS it. A second copy of four strings in a
-# rendering layer is exactly how a product ends up with two vocabularies that
-# have to be kept in step by hand, which this codebase has already paid for
-# once in `services/tiers.py`.
-#
-# A NULL GRADE IS "NOT PRE-SCREENED", AND IS NOT `Hold`.
-# ------------------------------------------------------
-# Migration 0065 says so and it matters on this surface more than anywhere
-# else: `Hold` is a GRADED outcome meaning a person should look, and NULL means
-# nothing has looked at all. Rendering them the same way would tell a recruiter
-# that an ungraded backlog had been triaged. `PRE_SCREEN_PENDING_LABEL` is the
-# honest cell, and column 3 renders it in the same muted treatment as a real
-# grade, because the muted treatment is what says "early signal" either way.
+# A STATE is what the browser styles by: the grade words as codes, plus the
+# three states that carry no grade. The browser never derives a state from a
+# word or a word from a number; it is sent both.
 
-PRE_SCREEN_GRADES: tuple[str, ...] = prescreen.GRADES
+STATE_HIGHLY = "highly_matching"
+STATE_MATCHING = "matching"
+STATE_MODERATELY = "moderately_matching"
+STATE_NOT = "not_matching"
+STATE_NOT_CHECKED = "not_checked"
+STATE_NOT_ASSESSED = "not_assessed"
+STATE_UNDER_REVIEW = "under_review"
 
-#: What a screen reader and a legend say. Colour and a bare letter are both
-#: insufficient on their own: colour is never the sole carrier of meaning, and
-#: `B` is not self-describing to somebody meeting this product today.
-PRE_SCREEN_LABELS: dict[str, str] = {
-    prescreen.GRADE_A: "A, claims backed by attached artefacts",
-    prescreen.GRADE_B: "B, claims are checkable",
-    prescreen.GRADE_C: "C, claims are asserted and nothing checkable stands behind them",
-    prescreen.GRADE_HOLD: "Hold, there was nothing to grade; not a rejection",
+#: The grade word to its state code, best first, in `rating.GRADES` order.
+GRADE_STATES: dict[str, str] = {
+    rating.GRADE_HIGHLY: STATE_HIGHLY,
+    rating.GRADE_MATCHING: STATE_MATCHING,
+    rating.GRADE_MODERATELY: STATE_MODERATELY,
+    rating.GRADE_NOT: STATE_NOT,
 }
 
-#: What column 3 renders when Yukti has not graded this resume yet.
-PRE_SCREEN_PENDING_LABEL = (
-    "Not pre-screened. This application has not been graded, which is not the "
-    "same as being graded Hold."
+#: The AI Match filter's whole domain: the four words, served to the browser.
+AI_MATCH_GRADES: tuple[str, ...] = rating.GRADES
+
+#: Statuses whose stored pre-assessment score is a real reading. `legacy` is a
+#: link ranked by the retired matcher before Yukti existed (WP-B's migration
+#: carries its old score across so no live table goes unordered on deploy
+#: day); it reads as a grade with a note saying so.
+_READ_STATUSES: tuple[str, ...] = (
+    yukti_config.STATUS_SCORED,
+    yukti_config.STATUS_LEGACY,
+)
+
+#: The status words and the sentences under them are the ranked table's own,
+#: read from `yukti.projection` and `yukti.ranking` rather than retyped, so the
+#: dashboard and the job page can never describe one reading two ways (one
+#: implementation per concept; Phase 2 WP-F folded the dashboard's copy in).
+NOT_CHECKED_LABEL = yukti_projection.STATUS_WORD_PENDING
+NOT_CHECKED_NOTE = yukti_projection.LINE_PENDING
+NOT_ASSESSED_LABEL = yukti_projection.STATUS_WORD_NOT_ASSESSED
+UNDER_REVIEW_LABEL = "Under Review"
+UNDER_REVIEW_SCREEN_READER = "Status: Under Review, awaiting integrity disposition"
+
+RESUME_CHECK_NOTE = yukti_ranking.HEADER_RESUME_ONLY
+LEGACY_NOTE = yukti_projection.LINE_LEGACY
+
+#: Why a resume could not be read, in words. Keyed by EVERY reason Yukti can
+#: store (`test_dashboard_columns` pins the key set to
+#: `yukti.config.FAILURE_REASONS`), so a reason added there cannot reach a row
+#: that has no sentence for it.
+NOT_ASSESSED_NOTES: dict[str, str] = dict(yukti_projection.FAILURE_LINES)
+
+BASIS_RESUME_ONLY = "Resume check only"
+BASIS_WITH_ASSESSMENT = "Tatva Assessment and resume check"
+BASIS_ASSESSMENT_ONLY = "Tatva Assessment only"
+MUST_HAVE_CAPPED_NOTE = (
+    "Capped: a Must-have skill was not demonstrated in the assessment."
 )
 
 
-def pre_screen_label(grade: str | None) -> str:
-    """The spoken label for a stored pre-screen grade.
+@dataclass(frozen=True)
+class MatchWord:
+    """One of columns 3 or 4, as words. There is no number on it."""
 
-    Raises on a grade nobody defined rather than falling through to a neutral
-    string: the database CHECK already refuses one, so reaching here with an
-    unknown value means the vocabularies have diverged, and a dashboard that
-    quietly renders an unknown grade is how that goes unnoticed.
+    state: str
+    label: str
+    screen_reader_label: str
+    note: str
+
+
+def ai_match_word(
+    status: str | None, pre_score: float | None, failure_reason: str | None
+) -> MatchWord:
+    """Column 3: Yukti's resume-only reading, as a word or a status word.
+
+    RAISES on a status or a reason nobody defined, rather than falling through
+    to a neutral string. The CHECK on `yukti_status` and the writer in
+    `yukti.scoring` refuse both, so arriving here with one means the
+    vocabularies have diverged, and a dashboard that quietly renders it is how
+    that goes unnoticed. A read status with no score is the same divergence.
     """
-    if grade is None:
-        return PRE_SCREEN_PENDING_LABEL
-    try:
-        return PRE_SCREEN_LABELS[str(grade)]
-    except KeyError as exc:
-        raise ValueError(
-            f"{grade!r} is not one of prescreen.GRADES {list(prescreen.GRADES)}, "
-            "so it has no Pre-Screen Grade label."
-        ) from exc
+    if status == yukti_config.STATUS_PENDING:
+        return MatchWord(
+            state=STATE_NOT_CHECKED,
+            label=NOT_CHECKED_LABEL,
+            screen_reader_label=f"{NOT_CHECKED_LABEL}. {NOT_CHECKED_NOTE}",
+            note=NOT_CHECKED_NOTE,
+        )
+    if status == yukti_config.STATUS_NOT_ASSESSED:
+        if failure_reason not in NOT_ASSESSED_NOTES:
+            raise ValueError(
+                f"{failure_reason!r} is not one of yukti.config.FAILURE_REASONS, "
+                "so a not-assessed row has no sentence to explain it."
+            )
+        note = NOT_ASSESSED_NOTES[failure_reason]
+        return MatchWord(
+            state=STATE_NOT_ASSESSED,
+            label=NOT_ASSESSED_LABEL,
+            screen_reader_label=f"{NOT_ASSESSED_LABEL}. {note}",
+            note=note,
+        )
+    if status in _READ_STATUSES:
+        word = yukti_ranking.grade_word(pre_score)
+        if word is None:
+            raise ValueError(
+                f"a {status!r} Yukti reading carries no score, so it has no word."
+            )
+        note = LEGACY_NOTE if status == yukti_config.STATUS_LEGACY else RESUME_CHECK_NOTE
+        return MatchWord(
+            state=GRADE_STATES[word],
+            label=word,
+            screen_reader_label=f"{word}, from the resume only. {note}",
+            note=note,
+        )
+    raise ValueError(
+        f"{status!r} is not one of yukti.config.STATUSES "
+        f"{list(yukti_config.STATUSES)}, so it has no AI Match word."
+    )
 
 
-# ── Column 4: the Ready Pick Score ───────────────────────────────────────────
+def ranking_word(
+    rank_score: float | None,
+    *,
+    under_review: bool,
+    has_assessment_grade: bool,
+    must_have_failed: bool,
+    ai_match: MatchWord,
+) -> MatchWord:
+    """Column 4: the word for the ONE rank the ranked table also sorts by.
 
-BAND_STRONG = "ready_to_pick_strong"
-BAND_READY = "ready_to_pick"
-BAND_RESERVATIONS = "consider_with_reservations"
-BAND_NOT_RECOMMENDED = "not_recommended"
-BAND_UNDER_REVIEW = "under_review"
-BAND_PENDING = "pending_ready_pick_profile"
-
-BANDS: tuple[str, ...] = (
-    BAND_STRONG,
-    BAND_READY,
-    BAND_RESERVATIONS,
-    BAND_NOT_RECOMMENDED,
-    BAND_UNDER_REVIEW,
-    BAND_PENDING,
-)
-
-BAND_LABELS: dict[str, str] = {
-    BAND_STRONG: "Ready to Pick, Strong",
-    BAND_READY: "Ready to Pick",
-    BAND_RESERVATIONS: "Consider with Reservations",
-    BAND_NOT_RECOMMENDED: "Not Recommended",
-    BAND_UNDER_REVIEW: "Under Review",
-    BAND_PENDING: "Pending Ready Pick Profile",
-}
-
-#: What a screen reader announces. "Under Review" is the one the specification
-#: singles out: announced with its MEANING, because a red pill that reads as
-#: the two words alone tells a blind recruiter nothing about why the stage
-#: control beside it is locked.
-BAND_SCREEN_READER_LABELS: dict[str, str] = {
-    BAND_STRONG: "Ready to Pick, Strong",
-    BAND_READY: "Ready to Pick",
-    BAND_RESERVATIONS: "Consider with Reservations",
-    BAND_NOT_RECOMMENDED: "Not Recommended",
-    BAND_UNDER_REVIEW: "Status: Under Review, awaiting integrity disposition",
-    BAND_PENDING: "Status: Pending Ready Pick Profile, assessment in progress",
-}
-
-#: Scored bands only, best first, with the inclusive lower bound the
-#: specification states. `under_review` and `pending` carry no score and are
-#: therefore not in this table: they are STATES, decided before the number is
-#: consulted.
-BAND_CUTPOINTS: tuple[tuple[str, int], ...] = (
-    (BAND_STRONG, 85),
-    (BAND_READY, 72),
-    (BAND_RESERVATIONS, 60),
-    (BAND_NOT_RECOMMENDED, 0),
-)
-
-#: Strongest first. Used to assert monotonicity against `rating.GRADES` and to
-#: order a sorted column deterministically when two rows share a score.
-BAND_ORDER: tuple[str, ...] = tuple(band for band, _ in BAND_CUTPOINTS)
-
-
-def band_for_score(score: float | int | None) -> str:
-    """The column 4 band for a Ready Pick Score.
-
-    Boundaries are INCLUSIVE UPWARD, matching claude.md rule 8 and
-    `rating.grade_for_percent`: exactly 85 is Ready to Pick, Strong. Checked
-    top-down for the same reason.
-
-    A None score is `pending`, never `not_recommended`. The distinction is the
-    entire point of the column: "we have not assessed this person" and "we
-    assessed this person and they scored badly" are different sentences, and
-    collapsing them slanders every candidate still in the queue.
+    `rank_score` is `yukti.ranking.rank_score_sql` read from the database, so
+    the grade here and the order on the job page cannot disagree. When there
+    is no rank at all (no usable resume reading and no graded assessment) the
+    cell says why in column 3's own words rather than inventing a pending
+    grade: "not checked" and "not assessed" are different sentences.
     """
-    if score is None:
-        return BAND_PENDING
-    value = float(score)
-    for band, floor in BAND_CUTPOINTS:
-        if value >= floor:
-            return band
-    # Unreachable while the last floor is 0 and scores are non-negative. A
-    # negative score is a corrupt aggregate rather than a weak candidate, so it
-    # reads as pending rather than as the bottom band.
-    return BAND_PENDING
+    if under_review:
+        return MatchWord(
+            state=STATE_UNDER_REVIEW,
+            label=UNDER_REVIEW_LABEL,
+            screen_reader_label=UNDER_REVIEW_SCREEN_READER,
+            note=(
+                "The grade is withheld while an integrity finding awaits a "
+                "human disposition."
+            ),
+        )
+    word = yukti_ranking.grade_word(rank_score)
+    if word is None:
+        return MatchWord(
+            state=ai_match.state,
+            label=ai_match.label,
+            screen_reader_label=ai_match.screen_reader_label,
+            note=ai_match.note,
+        )
+    resume_read = ai_match.state in GRADE_STATES.values()
+    if not has_assessment_grade:
+        basis = BASIS_RESUME_ONLY
+    elif resume_read:
+        basis = BASIS_WITH_ASSESSMENT
+    else:
+        basis = BASIS_ASSESSMENT_ONLY
+    note = basis + "."
+    if has_assessment_grade and must_have_failed:
+        note = f"{note} {MUST_HAVE_CAPPED_NOTE}"
+    return MatchWord(
+        state=GRADE_STATES[word],
+        label=word,
+        screen_reader_label=f"{word}, {basis.lower()}.",
+        note=note,
+    )
 
 
-#: Column 4's confidence dot. The specification gives four visual states and
-#: three of them collapse onto the aggregator's three confidence words; the
-#: fourth (`grayed`) belongs to the two states that carry no score at all.
+#: The confidence dot beside column 4. The specification gives four visual
+#: states and three of them collapse onto the aggregator's confidence words;
+#: the fourth (`grayed`) belongs to the states that carry no grade and to an
+#: assessment the aggregator itself called insufficient.
 CONFIDENCE_FILLED = "filled"
 CONFIDENCE_OUTLINE = "outline"
 CONFIDENCE_GRAYED = "grayed"
@@ -305,45 +343,49 @@ CONFIDENCE_LABELS: dict[str, str] = {
     CONFIDENCE_GRAYED: "Insufficient confidence",
 }
 
+#: No evaluation exists: a resume check is not an assessment, and calling its
+#: confidence "insufficient" would read as a verdict on evidence nobody has
+#: gathered yet.
+CONFIDENCE_NOT_ASSESSED_LABEL = "No assessment yet"
+
+#: The aggregator's own words (`miti.aggregation`, and the CHECK migration 0106
+#: put on `evaluations.confidence`), each to its dot. `moderate` is FILLED,
+#: which is the specification's grouping: it already means most dimensions
+#: were judged on real evidence, a result a recruiter may act on. Before this
+#: table the dot read `medium`, a word 0106 rewrote out of the column, so every
+#: moderate assessment rendered as grayed "Insufficient confidence".
+_CONFIDENCE_DOTS: dict[str, str] = {
+    miti_aggregation.CONFIDENCE_HIGH: CONFIDENCE_FILLED,
+    miti_aggregation.CONFIDENCE_MODERATE: CONFIDENCE_FILLED,
+    miti_aggregation.CONFIDENCE_LOW: CONFIDENCE_OUTLINE,
+    miti_aggregation.CONFIDENCE_INSUFFICIENT: CONFIDENCE_GRAYED,
+}
+
 
 def confidence_indicator(confidence: str | None) -> str:
     """Filled / outline / grayed, from the aggregator's confidence word.
 
-    `high` and `medium` are both FILLED, which is the specification's own
-    grouping. It is worth naming why it is not an accident: the aggregator's
-    `medium` already means "three of five dimensions were judged on real
-    evidence", which is a result a recruiter may act on. `low` is where a
-    second look is owed, and that is the one the outline dot marks.
+    Raises on a word the aggregator does not write, for the reason
+    `ai_match_word` does: the column carries a CHECK, so an unknown word is a
+    diverged vocabulary rather than a candidate.
     """
     if confidence is None:
         return CONFIDENCE_GRAYED
-    word = str(confidence).lower()
-    if word in {"high", "medium"}:
-        return CONFIDENCE_FILLED
-    if word == "low":
-        return CONFIDENCE_OUTLINE
-    return CONFIDENCE_GRAYED
+    try:
+        return _CONFIDENCE_DOTS[str(confidence).lower()]
+    except KeyError as exc:
+        raise ValueError(
+            f"{confidence!r} is not a confidence word the aggregator writes."
+        ) from exc
 
 
-#: THE SCORE RANGE THE SPECIFICATION ASKS FOR DOES NOT EXIST, AND IS NOT
-#: INVENTED HERE.
-#:
-#: Column 4 specifies a hover tooltip reading `82 [76 to 88]`. Nothing in the
-#: evaluation engine publishes an uncertainty interval: `Aggregate` carries a
-#: raw composite, an adjusted composite and a confidence WORD, and no spread.
-#: A bracket computed here from the confidence word would be a number with no
-#: provenance printed next to one that has some, which is worse than an absent
-#: bracket in exactly the way this dashboard is trying to avoid.
-#:
-#: So the hover carries the score, the confidence and the reason the confidence
-#: is what it is, and says plainly that no interval is published.
-SCORE_RANGE_UNAVAILABLE = (
-    "No uncertainty interval is published by the evaluator, so no score range "
-    "is shown."
-)
+def confidence_label(confidence: str | None) -> str:
+    if confidence is None:
+        return CONFIDENCE_NOT_ASSESSED_LABEL
+    return CONFIDENCE_LABELS[confidence_indicator(confidence)]
 
 
-# ── Column 5: the Ready Pick Note ────────────────────────────────────────────
+# ── Column 5: the Vivekium Note ────────────────────────────────────────────
 #
 # ONE PRODUCER, TWO CONSUMERS. `siddhi/synthesis.ready_pick_note` computes the
 # sentence ONCE and writes it to `evaluations.aggregate_json` under this key.
@@ -365,12 +407,10 @@ SCORE_RANGE_UNAVAILABLE = (
 # the delivered PRISM Report (spec-doc6 C10/C15). Sourcing a dashboard cell
 # from the delivered document would make the row's pending state a statement
 # about the report rather than about the profile, which is the exact confusion
-# C15 exists to settle. Nothing in this package imports `schemas/reports.py`:
-# a report payload carrying a score field now refuses to construct at all, and
-# the dashboard's one number reaches a client through its own schema.
+# C15 exists to settle. Nothing in this package imports `schemas/reports.py`.
 READY_PICK_NOTE_KEY = "why_this_candidate"
 
-NOTE_PENDING = "Ready Pick Profile not written yet."
+NOTE_PENDING = "Vivekium Profile not written yet."
 NOTE_UNDER_REVIEW = (
     "Held for integrity review. No note is written until a person has "
     "dispositioned the finding."
@@ -406,39 +446,43 @@ SOURCE_LABELS: dict[str, str] = {
 PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 
-SORT_SCORE = "score"
+SORT_GRADE = "grade"
 SORT_NAME = "name"
 SORT_ADDED = "added"
 SORT_SOURCE = "source"
-SORT_PRE_SCREEN = "pre_screen"
+SORT_AI_MATCH = "ai_match"
 SORT_STAGE = "stage"
 
 SORT_KEYS: tuple[str, ...] = (
-    SORT_SCORE,
+    SORT_GRADE,
     SORT_NAME,
     SORT_ADDED,
     SORT_SOURCE,
-    SORT_PRE_SCREEN,
+    SORT_AI_MATCH,
     SORT_STAGE,
 )
 
 #: The leading expression per sort key. Every clause is completed with a TOTAL
 #: order (`link.created_at, link.id`) by `_order_by`: without it, two rows
-#: sharing a score can swap between two page fetches, and a candidate then
-#: appears on two pages or on none.
+#: sharing a grade can swap between two page fetches, and a candidate then
+#: appears on two pages or on none. The two grade sorts order by the internal
+#: score UNDER the word, which is the ranked table's own rule: the word is what
+#: a reader sees, and the score only breaks ties inside it.
 _SORT_EXPRESSIONS: dict[str, str] = {
-    SORT_SCORE: "ready_pick_score",
+    SORT_GRADE: "ready_pick_rank",
     SORT_NAME: "lower(cand.full_name)",
     SORT_ADDED: "link.created_at",
     SORT_SOURCE: "link.source_type",
-    # Ordered by the tier's own rank, not alphabetically: `highly_matching`
-    # sorting after `matching` because H follows M would print the strongest
-    # candidates in the middle of the list.
-    SORT_PRE_SCREEN: "pre_screen_rank",
+    SORT_AI_MATCH: "ai_match_rank",
     SORT_STAGE: "stage_rank",
 }
 
 _DIRECTIONS: tuple[str, ...] = ("asc", "desc")
+
+#: Descending by default for the two grades (the specification's fast-triage
+#: workflow opens with the strongest first); ascending for everything else,
+#: where the natural reading is A before B and older before newer.
+_DESCENDING_BY_DEFAULT = frozenset({SORT_GRADE, SORT_AI_MATCH})
 
 
 def normalize_page(page: int | None, page_size: int | None) -> tuple[int, int]:
@@ -450,34 +494,55 @@ def normalize_page(page: int | None, page_size: int | None) -> tuple[int, int]:
 
 
 def _order_by(sort: str | None, direction: str | None) -> str:
-    key = sort if sort in _SORT_EXPRESSIONS else SORT_SCORE
+    key = sort if sort in _SORT_EXPRESSIONS else SORT_GRADE
     order = (direction or "").lower()
     if order not in _DIRECTIONS:
-        # Descending by default for the score (the specification's fast-triage
-        # workflow opens with "sort descending"); ascending for everything
-        # else, where the natural reading is A before B and older before newer.
-        order = "desc" if key == SORT_SCORE else "asc"
+        order = "desc" if key in _DESCENDING_BY_DEFAULT else "asc"
     expression = _SORT_EXPRESSIONS[key]
-    # NULLs LAST in both directions. An unscored candidate is not the worst
+    # NULLs LAST in both directions. An ungraded candidate is not the worst
     # candidate and must not head an ascending list, and they must not head a
     # descending one either.
     return f"{expression} {order.upper()} NULLS LAST, link.created_at DESC, link.id"
 
 
+def _grade_floors() -> dict[str, int]:
+    """The inclusive lower bound of each grade, READ OFF `rating`, not retyped.
+
+    `rating.grade_for_percent` is the one place the cut-points live. The AI
+    Match filter needs them as SQL ranges, so they are recovered here by
+    asking that function at every whole percent, and
+    `test_dashboard_columns` sweeps a fine grid to prove the ranges and the
+    function agree everywhere, which also catches a cut-point moved off a whole
+    number.
+    """
+    floors: dict[str, int] = {}
+    for percent in range(0, 101):
+        word = rating.grade_for_percent(percent)
+        floors.setdefault(word, percent)
+    missing = set(rating.GRADES) - set(floors)
+    if missing:
+        raise RuntimeError(f"grades with no whole-percent floor: {sorted(missing)}")
+    return floors
+
+
+_GRADE_FLOORS = _grade_floors()
+
+
+def grade_range(grade: str) -> tuple[int, int | None]:
+    """[floor, ceiling) of a grade on the 0-100 line; ceiling None at the top."""
+    floor = _GRADE_FLOORS[grade]
+    above = [value for value in _GRADE_FLOORS.values() if value > floor]
+    return floor, (min(above) if above else None)
+
+
 # ── The two artefacts, as two types (spec-doc6 C10) ──────────────────────────
 #
-# "Ready Pick Profile" is the dashboard's evidence panel over an `Evaluation`.
+# "Vivekium Profile" is the dashboard's evidence panel over an `Evaluation`.
 # "PRISM Report" is the delivered, immutable, employer-facing document, a
 # `functional_skills_reports` row. spec-doc6 §8.2 requires the codebase to stop
 # using the names interchangeably and to enforce the distinction with types
-# rather than with convention, so here are the two types.
-#
-# What makes them non-interchangeable is not the class names; it is that
-# neither can be constructed from the other's identifier and neither carries
-# the other's payload. `ReadyPickProfileRef` is keyed on an evaluation and may
-# carry a score. `PrismReportRef` is keyed on a report and structurally cannot:
-# there is no score field on it, so D8's "no numeric score field in any PRISM
-# payload" holds by construction rather than by filtering.
+# rather than with convention, so here are the two types. Neither carries a
+# score: D8's licence for one on the profile reference went with D3.
 
 
 @dataclass(frozen=True)
@@ -485,8 +550,6 @@ class ReadyPickProfileRef:
     """The dashboard's evidence panel. Points at an `evaluations` row."""
 
     evaluation_id: uuid.UUID
-    #: D8 permits the number HERE and only here.
-    score: int | None = None
 
     @property
     def artifact(self) -> str:
@@ -497,10 +560,8 @@ class ReadyPickProfileRef:
 class PrismReportRef:
     """The delivered document. Points at a `functional_skills_reports` row.
 
-    Deliberately has no score field of any kind. A future edit that adds one
-    fails `test_dashboard_artifact_types.py`, which asserts the absence by
-    field set rather than by name, so a field called `value` would not slip
-    through a narrower check.
+    `test_dashboard_numbers.py` asserts the field set, so a field called
+    `value` could not slip through a narrower check.
     """
 
     report_id: uuid.UUID
@@ -520,7 +581,8 @@ class DashboardRow:
     Note what is NOT here, and the specification lists them explicitly under
     "What's never displayed": individual dimension scores, evidence source
     counts, confidence reasoning detail, and any other reviewer's Team Review
-    remark. Those belong to the panels, and the row is the fast-triage surface.
+    remark. Nor is any score: the two grade columns are words and states, and
+    the internal numbers they came from stay in `candidates_page`.
     """
 
     link_id: uuid.UUID
@@ -531,17 +593,17 @@ class DashboardRow:
     system_id: str
     source_type: str
     source_label: str
-    pre_screen_grade: str | None
-    pre_screen_label: str
-    ready_pick_score: int | None
-    band: str
-    band_label: str
-    band_screen_reader_label: str
+    ai_match_state: str
+    ai_match_label: str
+    ai_match_screen_reader_label: str
+    ai_match_note: str
+    ranking_state: str
+    ranking_label: str
+    ranking_screen_reader_label: str
+    ranking_note: str
     confidence: str | None
     confidence_indicator: str
     confidence_label: str
-    score_range: str | None
-    score_range_note: str
     note: str
     note_is_pending: bool
     profile: ReadyPickProfileRef | None
@@ -580,11 +642,11 @@ class DashboardPage:
 #: says "Awaiting Profile"; this is the sentence behind it, which is what a
 #: screen reader announces and what a tooltip shows.
 PROFILE_PENDING_REASON = (
-    "The Ready Pick Profile has not been written yet. This says nothing about "
+    "The Vivekium Profile has not been written yet. This says nothing about "
     "the PRISM Report, which is a different document."
 )
 PROFILE_PENDING_UNDER_REVIEW = (
-    "The Ready Pick Profile is held while an integrity finding awaits a human "
+    "The Vivekium Profile is held while an integrity finding awaits a human "
     "disposition."
 )
 
@@ -592,13 +654,14 @@ PROFILE_PENDING_UNDER_REVIEW = (
 # ── The query ────────────────────────────────────────────────────────────────
 #
 # One statement, filtered, sorted and counted in SQL. Written as `text()`
-# rather than assembled from the ORM because three of the eight columns need
-# JSON extraction and a lateral join to the newest evaluation, and the shape of
+# rather than assembled from the ORM because several columns need JSON
+# extraction and a lateral join to the newest evaluation, and the shape of
 # that is easier to review as SQL than as a chain of query-builder calls.
 #
 # EVERY FRAGMENT INTERPOLATED INTO IT IS FROM A CLOSED SET. `_order_by` reads
 # from `_SORT_EXPRESSIONS`, whose keys are matched against `SORT_KEYS` first;
-# every value a caller supplies travels as a bound parameter.
+# the rank expression and the status literals come from modules, never from a
+# caller; every value a caller supplies travels as a bound parameter.
 
 #: The newest evaluation for the link, and only that one. LATERAL rather than a
 #: window function because the row set is one page and the correlated read is
@@ -617,6 +680,15 @@ _LATEST_EVALUATION = """
         ORDER BY e.created_at DESC, e.id DESC
         LIMIT 1
     ) eval ON true
+"""
+
+#: The delivered report (`uq_functional_report_link`: at most one per link, so
+#: this join never multiplies a row) and the tenant, whose assessment weight
+#: the rank expression reads. Aliased `rep` and `t` because those are the
+#: names `yukti.ranking.rank_score_sql` is called with below.
+_RANK_JOINS = """
+    JOIN tenants t ON t.id = link.tenant_id
+    LEFT JOIN functional_skills_reports rep ON rep.job_candidate_link_id = link.id
 """
 
 #: An open integrity finding is G3 recorded as failed with no disposition
@@ -651,7 +723,7 @@ _ASSESSMENT_VIDEO_JOINS = """
         LIMIT 1
     ) conv ON true
     LEFT JOIN LATERAL (
-        SELECT vr.status
+        SELECT vr.status, vr.media_deleted_at
         FROM video_recordings vr
         WHERE vr.job_candidate_link_id = link.id
         ORDER BY vr.created_at DESC, vr.id DESC
@@ -659,11 +731,28 @@ _ASSESSMENT_VIDEO_JOINS = """
     ) vid ON true
 """
 
-#: Ranks for the two sorts that must not be alphabetical.
-_PRE_SCREEN_RANK_SQL = "CASE link.prescreen_grade " + " ".join(
-    f"WHEN '{grade}' THEN {index}"
-    for index, grade in enumerate(prescreen.GRADES, start=1)
-) + " END"
+#: `yukti_status IN (<the read statuses>)`, from `yukti.config`, never retyped.
+_READ_STATUS_SQL = "link.yukti_status IN ({})".format(
+    ", ".join(f"'{status}'" for status in _READ_STATUSES)
+)
+
+#: Column 3's sort key: the resume-only score, NULL when there is no reading.
+_AI_MATCH_RANK_SQL = (
+    f"CASE WHEN {_READ_STATUS_SQL} THEN link.yukti_pre_score END"
+)
+
+
+def _ready_pick_rank_sql() -> str:
+    """Column 4's sort key: THE rank, or NULL while the row is under review.
+
+    THE SORT KEY IS WHAT THE READER CAN SEE. A row under integrity review
+    withholds its grade, so sorting it by the hidden rank would drop a
+    gradeless row into the middle of a descending list with nothing to explain
+    its position. Nulled here instead, so it sorts with the other rows that
+    show no grade, and `NULLS LAST` puts them at the end in both directions.
+    """
+    rank = yukti_ranking.rank_score_sql(link="link", report="rep", tenant="t")
+    return f"CASE WHEN {_UNDER_REVIEW_SQL} THEN NULL ELSE {rank} END"
 
 
 def _stage_rank_sql() -> str:
@@ -686,13 +775,33 @@ def _stage_rank_sql() -> str:
     return f"CASE link.status {whens} END"
 
 
+def _ai_match_clause(grades: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    """The AI Match filter: each word to its range on the resume-only score.
+
+    A caller's word never reaches the SQL text. It is looked up in
+    `_GRADE_FLOORS` (an unknown one is a KeyError the route has already
+    refused with a 422), and only the bounds travel, as bound parameters.
+    """
+    ranges: list[str] = []
+    params: dict[str, Any] = {}
+    for index, grade in enumerate(dict.fromkeys(grades)):
+        floor, ceiling = grade_range(grade)
+        params[f"ai_match_lo_{index}"] = floor
+        clause = f"link.yukti_pre_score >= :ai_match_lo_{index}"
+        if ceiling is not None:
+            params[f"ai_match_hi_{index}"] = ceiling
+            clause += f" AND link.yukti_pre_score < :ai_match_hi_{index}"
+        ranges.append(f"({clause})")
+    return f"({_READ_STATUS_SQL} AND ({' OR '.join(ranges)}))", params
+
+
 def _scope_clause(
     *,
     scoped_to_assignments: bool,
     job_id: uuid.UUID | str | None,
     source_types: Sequence[str] | None,
     stages: Sequence[str] | None,
-    pre_screen_grades: Sequence[str] | None,
+    ai_match_grades: Sequence[str] | None,
     search: str | None,
     include_archived: bool,
 ) -> tuple[str, dict[str, Any]]:
@@ -733,9 +842,10 @@ def _scope_clause(
         clauses.append("link.status = ANY(:stage_statuses)")
         params["stage_statuses"] = statuses
 
-    if pre_screen_grades:
-        clauses.append("link.prescreen_grade = ANY(:pre_screen_grades)")
-        params["pre_screen_grades"] = list(pre_screen_grades)
+    if ai_match_grades:
+        clause, ai_params = _ai_match_clause(ai_match_grades)
+        clauses.append(clause)
+        params.update(ai_params)
 
     if search:
         clauses.append("cand.full_name ILIKE :search")
@@ -753,7 +863,7 @@ async def candidates_page(
     job_id: uuid.UUID | str | None = None,
     source_types: Sequence[str] | None = None,
     stages: Sequence[str] | None = None,
-    pre_screen_grades: Sequence[str] | None = None,
+    ai_match_grades: Sequence[str] | None = None,
     search: str | None = None,
     include_archived: bool = False,
     sort: str | None = None,
@@ -773,7 +883,7 @@ async def candidates_page(
         job_id=job_id,
         source_types=source_types,
         stages=stages,
-        pre_screen_grades=pre_screen_grades,
+        ai_match_grades=ai_match_grades,
         search=search,
         include_archived=include_archived,
     )
@@ -792,6 +902,7 @@ async def candidates_page(
         FROM job_candidate_links link
         JOIN candidates cand ON cand.id = link.candidate_id
         JOIN jobs job ON job.id = link.job_id
+        {_RANK_JOINS}
         {_LATEST_EVALUATION}
         {_ASSESSMENT_VIDEO_JOINS}
         WHERE {where}
@@ -813,29 +924,26 @@ async def candidates_page(
                     link.candidate_id      AS candidate_id,
                     cand.full_name         AS full_name,
                     link.source_type       AS source_type,
-                    link.prescreen_grade   AS pre_screen_grade,
                     link.status            AS status,
                     link.created_at        AS created_at,
                     link.archived_at       AS archived_at,
+                    -- Column 3's inputs. The score is read to choose a word
+                    -- and never leaves `assemble_row`.
+                    link.yukti_status          AS ai_match_status,
+                    link.yukti_pre_score       AS ai_match_score,
+                    link.yukti_failure_reason  AS ai_match_failure_reason,
+                    {_AI_MATCH_RANK_SQL}       AS ai_match_rank,
+                    -- Column 4's inputs, and the rank the ranked table sorts by.
+                    (rep.id IS NOT NULL AND rep.overall_score IS NOT NULL)
+                                           AS has_assessment_grade,
+                    COALESCE(rep.must_have_failed, false)
+                                           AS must_have_failed,
+                    {_ready_pick_rank_sql()} AS ready_pick_rank,
                     eval.id                AS evaluation_id,
                     eval.confidence        AS confidence,
                     eval.completed_at      AS evaluated_at,
-                    -- THE SORT KEY IS WHAT THE READER CAN SEE.
-                    -- A row under integrity review withholds its number
-                    -- (`assemble_row` blanks it, and the specification's
-                    -- Under Review state shows no score), so sorting on the
-                    -- stored composite would drop a numberless row into the
-                    -- middle of a descending list with nothing to explain its
-                    -- position. From the reader's side that column is not
-                    -- sorted at all. Nulled here instead, so it sorts with the
-                    -- other rows that show no number, and `NULLS LAST` puts
-                    -- them at the end in both directions.
-                    CASE WHEN {_UNDER_REVIEW_SQL} THEN NULL
-                         ELSE (eval.aggregate_json->>'adjusted_composite')::numeric
-                    END                    AS ready_pick_score,
                     eval.aggregate_json->>:note_key
                                            AS ready_pick_note,
-                    {_PRE_SCREEN_RANK_SQL} AS pre_screen_rank,
                     {_stage_rank_sql()}    AS stage_rank,
                     {_UNDER_REVIEW_SQL}    AS under_integrity_review,
                     (SELECT count(*) FROM candidate_team_reviews tr
@@ -855,10 +963,8 @@ async def candidates_page(
                     conv.mode              AS assessment_mode,
                     conv.status            AS conversation_status,
                     vid.status             AS video_recording_status,
-                    EXISTS (
-                        SELECT 1 FROM functional_skills_reports fsr
-                         WHERE fsr.job_candidate_link_id = link.id
-                    )                      AS has_prism_report,
+                    vid.media_deleted_at   AS video_media_deleted_at,
+                    (rep.id IS NOT NULL)   AS has_prism_report,
                     EXISTS (
                         SELECT 1 FROM proctoring_reports pr
                         JOIN proctoring_sessions psess
@@ -890,36 +996,36 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
     """Turn one queried row into the eight cells.
 
     Pure, and separated from the query on purpose: every state in the
-    specification's two state tables is reachable from a plain mapping, so the
+    specification's state tables is reachable from a plain mapping, so the
     state matrix is unit-tested without a database and the query is tested for
-    the shape it produces.
+    the shape it produces. The two scores in the mapping are consumed here and
+    appear on the returned row only as words.
     """
     from app.services import reference_code
 
     under_review = bool(row.get("under_integrity_review"))
     evaluation_id = row.get("evaluation_id")
-    raw_score = row.get("ready_pick_score")
-    # An evaluation exists but carries no composite: that is a scoring run that
-    # did not finish, and it is pending, not zero.
-    score = None if raw_score is None else int(round(float(raw_score)))
 
-    if under_review:
-        band = BAND_UNDER_REVIEW
-        # The number is withheld while the finding is open. Showing a score
-        # beside "Under Review" would invite a recruiter to act on it, which is
-        # the one thing the lock exists to prevent.
-        score = None
-    else:
-        band = band_for_score(score)
-
-    confidence = row.get("confidence")
-    indicator = (
-        CONFIDENCE_GRAYED
-        if band in {BAND_UNDER_REVIEW, BAND_PENDING}
-        else confidence_indicator(confidence)
+    ai_match = ai_match_word(
+        row.get("ai_match_status"),
+        row.get("ai_match_score"),
+        row.get("ai_match_failure_reason"),
+    )
+    ranking = ranking_word(
+        row.get("ready_pick_rank"),
+        under_review=under_review,
+        has_assessment_grade=bool(row.get("has_assessment_grade")),
+        must_have_failed=bool(row.get("must_have_failed")),
+        ai_match=ai_match,
     )
 
-    grade = row.get("pre_screen_grade")
+    confidence = row.get("confidence")
+    if under_review:
+        indicator = CONFIDENCE_GRAYED
+        spoken_confidence = CONFIDENCE_LABELS[CONFIDENCE_GRAYED]
+    else:
+        indicator = confidence_indicator(confidence)
+        spoken_confidence = confidence_label(confidence)
 
     note_text = (row.get("ready_pick_note") or "").strip()
     if under_review:
@@ -932,9 +1038,7 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
     profile = None
     profile_pending_reason: str | None = PROFILE_PENDING_REASON
     if evaluation_id is not None:
-        profile = ReadyPickProfileRef(
-            evaluation_id=uuid.UUID(str(evaluation_id)), score=score
-        )
+        profile = ReadyPickProfileRef(evaluation_id=uuid.UUID(str(evaluation_id)))
         profile_pending_reason = None
     elif under_review:
         profile_pending_reason = PROFILE_PENDING_UNDER_REVIEW
@@ -959,17 +1063,17 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
         source_label=SOURCE_LABELS.get(
             str(row.get("source_type") or SOURCE_APPLIED), SOURCE_LABELS[SOURCE_APPLIED]
         ),
-        pre_screen_grade=grade,
-        pre_screen_label=pre_screen_label(grade),
-        ready_pick_score=score,
-        band=band,
-        band_label=BAND_LABELS[band],
-        band_screen_reader_label=BAND_SCREEN_READER_LABELS[band],
+        ai_match_state=ai_match.state,
+        ai_match_label=ai_match.label,
+        ai_match_screen_reader_label=ai_match.screen_reader_label,
+        ai_match_note=ai_match.note,
+        ranking_state=ranking.state,
+        ranking_label=ranking.label,
+        ranking_screen_reader_label=ranking.screen_reader_label,
+        ranking_note=ranking.note,
         confidence=confidence,
         confidence_indicator=indicator,
-        confidence_label=CONFIDENCE_LABELS[indicator],
-        score_range=None,
-        score_range_note=SCORE_RANGE_UNAVAILABLE,
+        confidence_label=spoken_confidence,
         note=note,
         note_is_pending=note_pending,
         profile=profile,
@@ -1000,12 +1104,13 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
         video_status=video_access.video_status_word(
-            row.get("video_recording_status")
+            row.get("video_recording_status"),
+            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
     )
 
 
-# ── The Ready Pick Profile panel ─────────────────────────────────────────────
+# ── The Vivekium Profile panel ─────────────────────────────────────────────
 
 
 def profile_panel(
@@ -1081,18 +1186,6 @@ def profile_panel(
         "under_integrity_review": under_integrity_review,
         "needs_human_review": bool(evaluation.get("needs_human_review")),
         "scorecard_version": evaluation.get("scorecard_version"),
-        "company_dna_version": evaluation.get("company_dna_version"),
         "evaluated_at": evaluation.get("completed_at"),
         "scoring_mode": evaluation.get("scoring_mode"),
     }
-
-
-#: Exported so a caller can assert the two vocabularies never collide.
-#: `rating.GRADES` is the assessment scale that reaches a delivered report;
-#: `BAND_LABELS.values()` is the dashboard's triage vocabulary. If a word ever
-#: appeared in both, a recruiter reading "Matching" on a dashboard and
-#: "Matching" in a report would have no way to know they mean different things.
-def vocabularies_are_disjoint() -> bool:
-    dashboard_words = {label.lower() for label in BAND_LABELS.values()}
-    grade_words = {grade.lower() for grade in rating.GRADES}
-    return not (dashboard_words & grade_words)

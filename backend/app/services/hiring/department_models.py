@@ -2,7 +2,7 @@
 
 WHAT LAYER 1 IS, AND WHY IT IS PYTHON RATHER THAN A TABLE
 -----------------------------------------------------------
-Layer 1 is the ReadyPick Hiring Philosophy compiled into something executable:
+Layer 1 is the Vivekium Hiring Philosophy compiled into something executable:
 per-department baseline competencies, their baseline weights, the rubric anchors
 a dimension evaluator is given, and the evidence sources that would actually
 show a competency is real. spec-doc5 calls it "captured once, ever -- not
@@ -99,6 +99,13 @@ from functools import lru_cache
 from typing import Any, Iterable, Mapping
 
 from app.services.hiring import layers
+from app.services.miti.dimensions import (
+    DIM_AUTHENTICITY,
+    DIM_ROLE_FIT,
+    DIM_TRACK_RECORD,
+    DIM_TRAJECTORY,
+    DIM_VERIFIED_COMPETENCE,
+)
 
 __all__ = [
     "SENIORITIES",
@@ -118,8 +125,6 @@ __all__ = [
     "runbook_departments",
     "runbook_competency_menu",
     "baseline_dimension_weights",
-    "RubricBand",
-    "dimension_rubric_anchors",
     "seniority_emphasis",
 ]
 
@@ -154,7 +159,7 @@ class EvidenceSource:
     key: str
     label: str
     tier: str
-    #: Whether this source is reachable inside a ReadyPick assessment today.
+    #: Whether this source is reachable inside a Vivekium assessment today.
     #: A source that is not reachable is still worth naming -- it tells Sutra's
     #: stage 3 what would be needed, and it tells a recruiter what the platform
     #: cannot see -- but it must never be treated as a satisfied requirement.
@@ -233,13 +238,11 @@ class BaselineCompetency:
     aliases: tuple[str, ...] = ()
 
 
-# The five internal dimensions, named here so a competency can point at one
-# without importing the Miti package (which imports this one).
-DIM_VERIFIED_COMPETENCE = "verified_competence"
-DIM_TRACK_RECORD = "track_record_impact"
-DIM_ROLE_FIT = "role_context_fit"
-DIM_AUTHENTICITY = "authenticity_consistency"
-DIM_TRAJECTORY = "trajectory_potential"
+# The five internal dimensions are OWNED by `services/miti/dimensions.py` since
+# the Vivekium release (WP5-B) and imported here, so a baseline competency can
+# still point at one and there is still one definition of each name. Miti no
+# longer imports this module, so the import (at the top of this file) runs one
+# way only.
 
 
 @dataclass(frozen=True)
@@ -258,7 +261,7 @@ class DepartmentModel:
     #: §57.3 names "retrieved rubric anchors from the department model" as an
     #: evaluator input, which is what led here; the anchors that exist are the
     #: dimension ones, and the department model supplies the COMPETENCY SET they
-    #: are applied to. Use `dimension_rubric_anchors` for the real thing and
+    #: are applied to. Use `miti.dimensions.dimension_rubric_anchors` for the real thing and
     #: `seniority_emphasis` for §21.11. These stay because Sutra and Vaada read
     #: them today and the Runbook offers no per-seniority replacement for
     #: fourteen departments, and they are marked rather than trusted.
@@ -1020,7 +1023,7 @@ def baseline_dimension_weights(family: str, band: str) -> dict[str, float]:
     instead of trusting a translation nobody reviewed. See the module docstring.
 
     Returns D1..D5 keys, because that is how §11.1 prints them; use
-    `situations.DIMENSION_BY_RUNBOOK_ID` to name them.
+    `miti.dimensions.DIMENSION_BY_RUNBOOK_ID` to name them.
     """
     weights = layers.runbook_value("department_models", "baseline_weight_families", family, "weights")
     if not isinstance(weights, Mapping):
@@ -1052,49 +1055,10 @@ def baseline_dimension_weights(family: str, band: str) -> dict[str, float]:
 # notes" table for IT & Software, and it is an EMPHASIS SHIFT ("5-10: system
 # design; production ownership; influence"), not a rubric anchor. Fourteen
 # departments have no per-seniority material at all.
-
-
-@dataclass(frozen=True)
-class RubricBand:
-    """One row of a §9.x scoring-anchor table."""
-
-    #: The band as the Runbook prints it, e.g. "75-89". Kept as a string
-    #: alongside the numbers so a citation can quote the document verbatim.
-    band: str
-    low: int
-    high: int
-    meaning: str
-
-
-def dimension_rubric_anchors(runbook_dimension_id: str) -> tuple[RubricBand, ...]:
-    """§9.x's six scoring anchors for one dimension. Raises if absent.
-
-    `runbook_dimension_id` is D1..D5, the Runbook's own naming; use
-    `situations.RUNBOOK_ID_BY_DIMENSION` to convert from this codebase's names.
-
-    These are the anchors an evaluator is actually given. They carry NUMBERS,
-    which is correct and stays internal: §9.x's bands are 0 to 100 and
-    `services/rating.py` converts to the four words a client reads. No caller
-    may render one.
-    """
-    anchors = layers.runbook_value(
-        "dimensions", "dimensions", runbook_dimension_id, "rubric_anchors"
-    )
-    if not isinstance(anchors, list) or not anchors:
-        raise layers.RunbookDataUnavailable(
-            f"runbook_data/dimensions.yaml has no rubric_anchors for "
-            f"{runbook_dimension_id!r}. §9.1 to §9.5 state them once per "
-            f"dimension and they are not restated in code."
-        )
-    return tuple(
-        RubricBand(
-            band=str(row["band"]),
-            low=int(row["low"]),
-            high=int(row["high"]),
-            meaning=str(row["meaning"]),
-        )
-        for row in anchors
-    )
+#
+# MOVED TO `services/miti/dimensions.py` in the Vivekium release (WP5-B):
+# `RubricBand` and `dimension_rubric_anchors` now live beside the only code
+# that reads them, Miti's evaluators. One implementation, no re-export.
 
 
 def seniority_emphasis(department_key: str) -> dict[str, str]:

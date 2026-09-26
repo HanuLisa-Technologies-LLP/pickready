@@ -4,9 +4,20 @@
 // is no separate review screen any more.
 //
 // Columns (new spec, 2026-07-28; Assessment added by the 2026-09-05
-// dashboard/video spec):
-//   Name | Type of Procurement | Status | Assessment | Resume |
-//   AI Rating & Report | PRISM Report | Q&A | Validation | Decision
+// dashboard/video spec; AI Match replaced the Match percentage and the
+// AI Rating & Report column in the Vivekium release):
+//   Name | AI Match | CTC Match | Notice Period | Education | BGV Status |
+//   Type of Procurement | Status | Assessment | Resume | PRISM Report | Q&A |
+//   Validation | Team review | Decision
+//
+// AI Match (Vivekium release, PLAN-p2 WP-D) is ONE column: the grade WORD the
+// server derives from the resume check (and, once there is one, the Tatva
+// Assessment), the evidence tags the server flagged for the row, and a
+// Details button. It replaced two things that each broke a rule: the Match
+// percentage, which was the one number this table ever showed a client, and
+// the AI Rating cell, whose five sections were the retired matcher's weighted
+// parameters. The one sentence above the table is the server's, verbatim: it
+// says how the order was made, so nobody has to infer it from a number.
 //
 // Changes the client asked for on 2026-07-28:
 //   * Level column removed. The grade is a property of the JOB, so printing it
@@ -24,20 +35,23 @@
 //
 // Two rules this component exists to honour:
 //   * NO NUMBERS. Every rating is a word label supplied by the backend; this
-//     file contains no score, percentage, or rank arithmetic at all.
-//   * NO CLIENT SORT. Order comes from the API, which sorts in SQL by the
-//     job's grade with a total order. Re-sorting a single page here would let a
-//     candidate appear on two pages, or on none, as scores change.
+//     file contains no score, percentage, or rank arithmetic at all, and the
+//     API sends none (the row schema forbids undeclared keys).
+//   * NO CLIENT SORT. Order comes from the API, which sorts in SQL on one
+//     derived key with a total order (arrival, then id). Re-sorting a single
+//     page here would let a candidate appear on two pages, or on none.
 
 import * as React from "react";
 import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  FileSearch,
   FileText,
   Mail,
   MessageSquareText,
   MessagesSquare,
+  Users,
 } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
@@ -50,11 +64,13 @@ import type {
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BandLegend } from "@/components/rating-label";
-import { AiRatingCell, AiRatingReportModal } from "@/components/ai-rating-report-modal";
+import { EmptyState } from "@/components/page-primitives";
+import { BandLegend, RatingLabel } from "@/components/rating-label";
+import { AiMatchDialog } from "@/components/ai-match-dialog";
+import { EvidenceTags } from "@/components/evidence-tags";
 import { ProcurementBadge } from "@/components/procurement-badge";
 import { StageBadge, StatusActions } from "@/components/pipeline-status";
-import { TierBadge } from "@/components/tier-badge";
+import { resumeTabUrl } from "@/components/resume-viewer";
 import {
   Table,
   TableBody,
@@ -120,7 +136,7 @@ function ValidationAnswersModal({
                   {group.items.map((item) => (
                     <div key={item.key} className="p-4">
                       <dt className="text-sm font-semibold">{item.question}</dt>
-                      <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                      <dd className="mt-2 whitespace-pre-wrap text-sm">
                         {item.answer?.trim() || "Not answered"}
                       </dd>
                     </div>
@@ -139,11 +155,94 @@ function ValidationAnswersModal({
   );
 }
 
+/**
+ * Column 6, Resume Link: a direct tap that opens the resume in a NEW TAB.
+ *
+ * An anchor rather than a button with an onClick, and that is the change
+ * rather than an implementation detail of it. This used to set state and open
+ * an in-app dialog, and the brief asks for a tab: a recruiter reading a
+ * resume wants it beside the table, not on top of it, and a real link is what
+ * gives them middle-click, "open in new window" and a back button.
+ *
+ * `rel="noopener"` because a tab opened with target="_blank" can otherwise
+ * reach back through `window.opener`. The href is the authorized proxy route
+ * (see `resumeTabUrl`), never a storage URL: the payload no longer carries
+ * one, and `has_resume` is the flag that decides whether there is anything to
+ * open.
+ */
+function ResumeLinkCell({ row }: { row: RankedCandidate }) {
+  const href = row.has_resume
+    ? resumeTabUrl({
+        profileId: row.profile_id,
+        resumeFileName: row.resume_filename,
+        resumeMimeType: row.resume_mime_type,
+      })
+    : null;
+  if (!href) {
+    return (
+      <Button variant="outline" size="sm" disabled title="No resume on file">
+        None
+      </Button>
+    );
+  }
+  return (
+    <Button asChild variant="outline" size="sm">
+      <a href={href} target="_blank" rel="noopener" title="View resume">
+        View Resume
+      </a>
+    </Button>
+  );
+}
+
+/**
+ * Column 2, AI Match. Everything in it is the server's: the grade word (or
+ * the status word when there is no grade), the tags it flagged `shown_in_row`,
+ * and whether the check is out of date. The cell adds no word of its own
+ * beyond two fixed prompts ("Out of date", "More in Details"), and neither is
+ * a number: the count of hidden tags is deliberately NOT shown, because "+3"
+ * beside a grade reads as a score.
+ */
+function AiMatchCell({
+  row,
+  onOpen,
+}: {
+  row: RankedCandidate;
+  onOpen: (row: RankedCandidate) => void;
+}) {
+  const rowTags = row.evidence_tags.filter((tag) => tag.shown_in_row);
+  const hasMore = rowTags.length < row.evidence_tags.length;
+  return (
+    <div className="flex flex-col items-start gap-1.5" data-testid="ai-match-cell">
+      {row.ai_match_label ? (
+        <RatingLabel label={row.ai_match_label} />
+      ) : row.ai_match_status_word ? (
+        <span className="text-xs font-medium">{row.ai_match_status_word}</span>
+      ) : null}
+      {row.ai_match_stale ? (
+        <span className="text-xs" title="Run AI Matching to refresh this check">
+          Out of date
+        </span>
+      ) : null}
+      <EvidenceTags tags={rowTags} />
+      {hasMore ? <span className="text-xs">More in Details</span> : null}
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+        aria-label={`AI Match details for ${row.full_name}`}
+        onClick={() => onOpen(row)}
+      >
+        <FileSearch className="h-3.5 w-3.5" aria-hidden="true" />
+        Details
+      </Button>
+    </div>
+  );
+}
+
 export function CandidateRankingTable({
   jobId,
   onOpenReport,
   onOpenTranscript,
-  onOpenResume,
   onEmail,
   onSelectionChange,
   canDecide = false,
@@ -158,7 +257,6 @@ export function CandidateRankingTable({
    * they finish. A recruiter chasing a stalled assessment needs the former.
    */
   onOpenTranscript: (row: RankedCandidate) => void;
-  onOpenResume: (row: RankedCandidate) => void;
   /** Omit to hide the email action (caller lacks send_outreach). */
   onEmail?: (rows: RankedCandidate[]) => void;
   /** Show the status-action column (caller has decide_profile). */
@@ -186,8 +284,8 @@ export function CandidateRankingTable({
   const [data, setData] = React.useState<RankedCandidatesResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
-  // The row whose full AI report is open. Null closes the dialog.
-  const [aiReportRow, setAiReportRow] = React.useState<RankedCandidate | null>(null);
+  // The row whose AI Match details are open. Null closes the dialog.
+  const [aiMatchRow, setAiMatchRow] = React.useState<RankedCandidate | null>(null);
   const [teamReviewRow, setTeamReviewRow] = React.useState<RankedCandidate | null>(null);
   const [validationRow, setValidationRow] = React.useState<RankedCandidate | null>(null);
 
@@ -240,7 +338,9 @@ export function CandidateRankingTable({
   // Keep the empty-state cell spanning the WHOLE table as columns come and go
   // with the caller's capabilities, a hardcoded span leaves a ragged row.
   const selectable = Boolean(onEmail || onSelectionChange);
-  const columnCount = 9 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
+  // Name, AI Match, CTC Match, Notice Period, Education, BGV Status, Type of
+  // Procurement, Status, Resume, PRISM Report, Q&A, Validation.
+  const columnCount = 12 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
   const selectedRows = rows.filter((r) => selected.has(r.link_id));
 
   /**
@@ -255,7 +355,7 @@ export function CandidateRankingTable({
    */
   const openCandidateDetail = React.useCallback(
     (row: RankedCandidate) => {
-      setAiReportRow(row);
+      setAiMatchRow(row);
       if (row.profile_age !== "old" || row.review_charged) return;
       void apiPost<ReviewProfileResponse>(
         `/jobs/${jobId}/candidates/${row.link_id}/review`
@@ -366,8 +466,16 @@ export function CandidateRankingTable({
           ) : null}
         </div>
       </div>
+      {/* The server's one sentence about how this table is ordered. Rendered
+          verbatim: the server owns it, so the claim and the SQL that orders
+          the rows cannot drift apart. */}
+      {data?.ranking_header ? (
+        <p className="mb-3 text-sm font-medium" data-testid="ranking-header">
+          {data.ranking_header}
+        </p>
+      ) : null}
       {profileAge === "old" ? (
-        <p className="mb-3 text-sm leading-6">
+        <p className="mb-3 text-sm">
           These people applied before this job was renewed. Their profiles stay
           yours to read, and opening one for the first time draws a twentieth of
           a credit from your pool.
@@ -377,7 +485,7 @@ export function CandidateRankingTable({
       {/* Horizontal scroll on narrow screens (spec §10), the page body itself
           must never scroll sideways. */}
       <div className="overflow-x-auto rounded-lg border">
-        <Table className="min-w-[1020px]">
+        <Table label="Candidate ranking" className="min-w-[1560px]">
           <TableHeader>
             <TableRow>
               {selectable ? (
@@ -398,22 +506,21 @@ export function CandidateRankingTable({
                 </TableHead>
               ) : null}
               <TableHead className="w-[200px]">Name</TableHead>
+              {/* Column 2, where the Match percentage used to be. A word, the
+                  evidence behind it and a Details button; the sentence above
+                  the table says what the word was built from. */}
+              <TableHead className="w-[220px]">AI Match</TableHead>
+              {/* Columns 3-5 and 7: derived words from the server. "Not
+                  stated" is a real state, never hidden: an absent comparison
+                  is information a recruiter should see, not a blank to
+                  paper over. */}
+              <TableHead className="w-[110px]">CTC Match</TableHead>
+              <TableHead className="w-[120px]">Notice Period</TableHead>
+              <TableHead className="w-[110px]">Education</TableHead>
+              <TableHead className="w-[110px]">BGV Status</TableHead>
               <TableHead className="w-[130px]">Type of Procurement</TableHead>
               <TableHead className="w-[150px]">Status</TableHead>
-              {/* How the assessment was conducted and whether its recording is
-                  there to watch (2026-09-05 dashboard/video spec 4.1 / 4.4).
-                  Metadata words from the server; this file computes nothing. */}
-              <TableHead className="w-[140px]">Assessment</TableHead>
               <TableHead className="w-[110px]">Resume</TableHead>
-              <TableHead className="w-[180px]">
-                AI Rating &amp; Report
-                {/* The same line the modal carries, so the column cannot be
-                    read as an assessed verdict. This rating is written from the
-                    resume and the JD alone. */}
-                <span className="mt-0.5 block text-[11px] font-normal">
-                  Based on Candidate Resume and JD
-                </span>
-              </TableHead>
               {/* PRISM Report is the document a completed Tatva Assessment
                   produces (spec doc 4). The column header is the document's
                   name; the component and route behind it still say "ppi" on
@@ -446,8 +553,16 @@ export function CandidateRankingTable({
               ))
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columnCount} className="py-10 text-center">
-                  No candidates yet. Applications appear here as they arrive.
+                {/* Inside the cell, not instead of the table: the column
+                    headers name what will arrive, which is the useful half of
+                    an empty ranking table. */}
+                <TableCell colSpan={columnCount} className="p-0">
+                  <EmptyState
+                    icon={Users}
+                    title="No candidates yet"
+                    description="Applications appear here as they arrive."
+                    className="border-0"
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -473,6 +588,7 @@ export function CandidateRankingTable({
                         ticket. It is a label, never a permission. */}
                     {row.reference_code ? (
                       <span
+                        data-reference-code
                         className="mt-0.5 block select-all font-mono text-[11px] font-normal tracking-wider"
                         title="Company, job and candidate reference"
                       >
@@ -494,59 +610,44 @@ export function CandidateRankingTable({
                         New candidate
                       </span>
                     ) : null}
-                    {row.tier ? (
-                      <span className="mt-1.5 block">
-                        <TierBadge tier={row.tier} />
-                      </span>
-                    ) : null}
+                  </TableCell>
+                  <TableCell className="pt-4">
+                    <AiMatchCell row={row} onOpen={openCandidateDetail} />
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.ctc_match_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.notice_period_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.education_match_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {/* Detail (which employer, which reply) lives inside the
+                        candidate's profile only, per the brief. */}
+                    {row.bgv_status_label ?? "Not Started"}
                   </TableCell>
                   <TableCell className="pt-4">
                     <ProcurementBadge
                       type={row.source_type}
                       label={row.source_type_label}
                     />
+                    {/* Somebody AI Matching found in the databank, or a
+                        sourced link, has not asked for this job. The server
+                        says so while it is true and sends null once they
+                        apply. */}
+                    {row.applicant_label ? (
+                      <span className="mt-1 block text-xs">
+                        {row.applicant_label}
+                      </span>
+                    ) : null}
                   </TableCell>
                   <TableCell className="pt-4">
                     <StageBadge status={row.status} short />
                   </TableCell>
                   <TableCell className="pt-4">
-                    {/* Mode word, then the video word underneath. Both come
-                        from the server; "Ready" is teal because a watchable
-                        recording is evidence, and the empty states stay plain
-                        words because they are normal, not warnings. */}
-                    <span className="inline-block whitespace-nowrap rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium leading-tight">
-                      {row.assessment_mode_label ?? "Not started"}
-                    </span>
-                    <span
-                      className={
-                        "mt-1 block text-xs " +
-                        (row.video_status === "Ready"
-                          ? "font-medium text-teal-700"
-                          : "")
-                      }
-                    >
-                      {row.video_status === "Ready"
-                        ? "Video ready"
-                        : row.video_status === "Processing"
-                          ? "Video processing"
-                          : row.video_status === "Failed"
-                            ? "Video failed"
-                            : "No video"}
-                    </span>
-                  </TableCell>
-                  <TableCell className="pt-4">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!row.resume_url}
-                      title={row.resume_url ? "View resume" : "No resume on file"}
-                      onClick={() => onOpenResume(row)}
-                    >
-                      {row.resume_url ? "View" : "None"}
-                    </Button>
-                  </TableCell>
-                  <TableCell className="pt-4">
-                    <AiRatingCell row={row} onOpen={openCandidateDetail} />
+                    <ResumeLinkCell row={row} />
                   </TableCell>
                   <TableCell className="pt-4">
                     <Button
@@ -627,12 +728,12 @@ export function CandidateRankingTable({
         </Table>
       </div>
 
-      {/* The full AI reasoning, opened from the AI Report button in a row. */}
-      <AiRatingReportModal
-        row={aiReportRow}
-        open={aiReportRow !== null}
+      {/* The AI Match evidence and provenance, from a row's Details button. */}
+      <AiMatchDialog
+        row={aiMatchRow}
+        open={aiMatchRow !== null}
         onOpenChange={(next) => {
-          if (!next) setAiReportRow(null);
+          if (!next) setAiMatchRow(null);
         }}
       />
       <CandidateTeamReviewModal

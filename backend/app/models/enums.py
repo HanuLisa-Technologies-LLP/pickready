@@ -28,7 +28,7 @@ class Role(str, enum.Enum):
     # direction.
     interview_manager = "interview_manager"
     candidate = "candidate"
-    # Business Development. ReadyPick's own staff, not a customer's: a bd user
+    # Business Development. Vivekium's own staff, not a customer's: a bd user
     # has tenant_id NULL and works the sales pipeline in `bd_leads`. Sits in
     # the OWNER token audience (see core/security.audience_for_role) because
     # the BD console is a platform console, not a tenant one.
@@ -39,11 +39,6 @@ class UserStatus(str, enum.Enum):
     invited = "invited"
     active = "active"
     disabled = "disabled"
-
-
-class OTPChannel(str, enum.Enum):
-    email = "email"
-    sms = "sms"
 
 
 class JobStatus(str, enum.Enum):
@@ -130,25 +125,3 @@ class PipelineStatus(str, enum.Enum):
     hold = "hold"  # requires mandatory remarks (FR-8.2)
     #: Legacy synonym of `offer_extended`, retained so historic rows still read.
     offered = "offered"
-
-
-class VerificationStatus(str, enum.Enum):
-    pending = "pending"
-    submitted = "submitted"
-    overridden = "overridden"  # explicit HR override with logged reason (ESD §10)
-
-
-class SubmittedVia(str, enum.Enum):
-    form = "form"
-    email_reply = "email_reply"
-
-
-class LLMProvider(str, enum.Enum):
-    groq = "groq"
-    gemini = "gemini"
-    openrouter = "openrouter"
-
-
-class LLMRoleHint(str, enum.Enum):
-    rerank = "rerank"          # Groq-first chain (latency-sensitive)
-    extraction = "extraction"  # Gemini-first chain (long context)

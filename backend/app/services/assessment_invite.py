@@ -20,7 +20,7 @@ involved.
 Design notes
 ------------
 * It is a JWT because the product already signs stateless links this way
-  (`deps.make_outreach_token`) and `exp` is then enforced by the library rather
+  (the product's other signed links) and `exp` is then enforced by the library rather
   than by hand. It carries its OWN purpose and audience so it can never be
   replayed as a session token, and `deps._decode_or_401` will never accept it:
   the audience does not match any portal.

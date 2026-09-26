@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS, AND WHY TRACING WAS NOT ENOUGH
 -----------------------------------------------
-`services/tracing.py` puts a LangSmith run around every LLM call at the one
+`observability/otel.genai_span` puts a span around every LLM call at the one
 chokepoint, `llm_router.invoke_llm`. That answers "was the model called, did it
 answer, how long did it take". It cannot answer anything about the INTERVIEW,
 because a conversation is not an LLM call: it is a sequence of turns, some of
@@ -48,20 +48,32 @@ Logged: conversation id, turn index, question KEY, domain, the answer's
 classification LABEL, the action taken, two booleans and a duration.
 
 NEVER logged, under any setting: answer text, question text, candidate name,
-candidate email. `tracing.py` already establishes that prompt and completion
-TEXT does not leave the process without an explicit opt-in, because a prompt
-carries a real candidate's answers and a real JD. This module holds the same
-line and holds it harder: an ordinary application log is read by far more people
-than a LangSmith project, and there is no flag here to loosen it because there
-is no operational question that needs the text to answer it.
+candidate email. `observability/otel` already establishes that prompt and
+completion TEXT never leaves the process on a span, because a prompt carries a
+real candidate's answers and a real JD. This module holds the same line: an
+ordinary application log is read by far more people than a trace store, and
+there is no flag here to loosen it because there is no operational question
+that needs the text to answer it.
 
 IT MUST NEVER RAISE
 -------------------
-Every public function swallows its own failures. Telemetry that can break the
+Every public function contains its own failures. Telemetry that can break the
 request it observes is strictly worse than no telemetry, and the request being
 observed here is a candidate part-way through an assessment they cannot easily
 restart. A bad field, a None where a dataclass was expected, a logging handler
-that itself throws: all of it degrades to a silent no-op.
+that itself throws: all of it degrades to a no-op on the request.
+
+NOT A SILENT ONE. Until 2026-09-24 each of those handlers was `except
+Exception: pass`, so a telemetry line that stopped being written (a renamed
+field, a broken formatter) looked exactly like a conversation that had no
+turns, and the one question this module exists to answer went unanswered with
+nothing saying why. Each handler now writes `interview_telemetry.emit_failed`
+at WARNING naming WHICH emitter failed and the exception CLASS. The class and
+never the message or a traceback, because the message of an exception raised
+while formatting a field can quote that field, and the fields are exactly what
+the rule above keeps out of the log. `logging` contains a failing handler
+itself (`Handler.handleError`), so the warning cannot raise into the request
+either.
 """
 from __future__ import annotations
 
@@ -73,7 +85,9 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EndEvent",
     "TurnEvent",
+    "record_end",
     "record_turn",
     "conversation_summary",
     "emit_summary",
@@ -110,6 +124,62 @@ class TurnEvent:
     generated: bool      # True when written this turn, False when stored text
     degraded: bool       # True when an LLM step failed and a fallback was used
     latency_ms: int
+
+
+@dataclass(frozen=True)
+class EndEvent:
+    """Why one conversation finished, and where it finished.
+
+    The reason is also stored on `assessment_conversations.end_reason`; this
+    line is what makes a COHORT readable without a query, which is the
+    question an operator actually asks after a change to the stopping rule.
+    "Are sessions ending early at all, and how much of the ceiling are they
+    using" is a log aggregation over this line, and it could not be answered
+    from the row alone without access to the database.
+
+    The three counts are the only honest way to read the reason. A stop at
+    fourteen means nothing until you know whether fourteen was the floor, the
+    ceiling, or somewhere between them, and `questions_asked` on its own has
+    been misread as a quality signal before.
+
+    Numbers here are OPERATOR data, exactly as `conversation_summary`'s are,
+    and they are bounded by the same rule: this line goes to the log and
+    nothing in it may be forwarded to a client.
+    """
+
+    conversation_id: str
+    #: One of `interviewer.STOP_CONDITIONS`.
+    end_reason: str
+    #: Base questions the candidate actually reached.
+    questions_asked: int
+    #: Questions written up front, i.e. Sutra's ceiling for this job.
+    questions_written: int
+    #: The grade's minimum, below which no early stop is permitted.
+    floor: int
+
+
+def _emit_failed(emitter: str, exc: BaseException) -> None:
+    """The one record of a telemetry emitter that could not emit.
+
+    The exception CLASS only: see the module docstring for why the message is
+    never logged here.
+    """
+    logger.warning(
+        "interview_telemetry.emit_failed emitter=%s err=%s",
+        emitter,
+        type(exc).__name__,
+    )
+
+
+def _readable_latency(value: Any) -> int | None:
+    """A turn's duration as an int, or None when it cannot be read as one.
+
+    OverflowError is an infinite float; ValueError is a NaN or a word.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _scrub(value: Any) -> str:
@@ -149,10 +219,37 @@ def record_turn(event: TurnEvent) -> None:
             _scrub(getattr(event, "degraded", None)),
             _scrub(getattr(event, "latency_ms", None)),
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A candidate is mid-assessment on a live request. Losing one telemetry
-        # line is free; raising out of an observer is not.
-        pass
+        # line is cheap; raising out of an observer is not, and losing it
+        # WITHOUT a trace is how a dashboard goes quiet for a week.
+        _emit_failed("turn", exc)
+
+
+def record_end(event: EndEvent) -> None:
+    """Write ONE structured line saying why a conversation ended, at INFO.
+
+    Emitted beside the column write rather than instead of it. The column is
+    what a recruiter's own record can be read against months later; this line
+    is what a person watching a deploy can aggregate the same afternoon, and
+    neither substitutes for the other.
+
+    Never raises, like everything else here: it fires on the request that also
+    settles completion, the credit charge and the scoring dispatch, and an
+    observer that can interrupt that sequence is worse than no observer.
+    """
+    try:
+        logger.info(
+            "interview_telemetry.end conversation_id=%s end_reason=%s "
+            "questions_asked=%s questions_written=%s floor=%s",
+            _scrub(getattr(event, "conversation_id", None)),
+            _scrub(getattr(event, "end_reason", None)),
+            _scrub(getattr(event, "questions_asked", None)),
+            _scrub(getattr(event, "questions_written", None)),
+            _scrub(getattr(event, "floor", None)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_failed("end", exc)
 
 
 def _empty_summary() -> dict[str, Any]:
@@ -172,6 +269,7 @@ def _empty_summary() -> dict[str, Any]:
         "degradation_rate": None,
         "latency_p50_ms": None,
         "latency_p95_ms": None,
+        "unreadable_latencies": 0,
     }
 
 
@@ -204,10 +302,13 @@ def conversation_summary(events: list[TurnEvent]) -> dict:
     """
     try:
         return _summarise(events)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Never raise: a caller reaching for a summary is by definition already
         # in the reporting path, not the product path, and a broken summary must
-        # not become a broken request.
+        # not become a broken request. The empty shape is answered with a
+        # WARNING beside it, so "no turns" and "could not count" stay
+        # distinguishable in the log.
+        _emit_failed("summary", exc)
         return _empty_summary()
 
 
@@ -219,6 +320,7 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
     generated = 0
     degraded = 0
     latencies: list[int] = []
+    unreadable_latencies = 0
 
     for event in events or []:
         label = getattr(event, "answer_label", None)
@@ -241,14 +343,15 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
         if bool(getattr(event, "degraded", False)):
             degraded += 1
 
-        latency = getattr(event, "latency_ms", None)
-        try:
-            latencies.append(int(latency))
-        except (TypeError, ValueError):
-            # A turn with an unreadable duration still counts as a turn. It just
-            # contributes nothing to the percentiles, which is better than
-            # dropping the turn from every other counter to save one field.
-            pass
+        # A turn with an unreadable duration still counts as a turn. It just
+        # contributes nothing to the percentiles, which is better than dropping
+        # the turn from every other counter to save one field, and it is
+        # COUNTED, so a p95 computed over half the turns says so.
+        latency = _readable_latency(getattr(event, "latency_ms", None))
+        if latency is None:
+            unreadable_latencies += 1
+        else:
+            latencies.append(latency)
 
     if not total:
         return _empty_summary()
@@ -263,6 +366,7 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
         "degradation_rate": round(degraded / total, 3),
         "latency_p50_ms": _percentile(latencies, 0.50),
         "latency_p95_ms": _percentile(latencies, 0.95),
+        "unreadable_latencies": unreadable_latencies,
     }
 
 
@@ -290,7 +394,8 @@ def emit_summary(conversation_id: str, events: list[TurnEvent]) -> None:
         logger.info(
             "interview_telemetry.conversation conversation_id=%s total_turns=%s "
             "answer_labels=%s actions=%s adaptivity_rate=%s generation_rate=%s "
-            "degradation_rate=%s latency_p50_ms=%s latency_p95_ms=%s",
+            "degradation_rate=%s latency_p50_ms=%s latency_p95_ms=%s "
+            "unreadable_latencies=%s",
             _scrub(conversation_id),
             summary["total_turns"],
             _render_counts(summary["answer_labels"]),
@@ -300,8 +405,9 @@ def emit_summary(conversation_id: str, events: list[TurnEvent]) -> None:
             summary["degradation_rate"],
             summary["latency_p50_ms"],
             summary["latency_p95_ms"],
+            summary["unreadable_latencies"],
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Emitted at the END of a conversation, which is also where completion
         # and billing are settled. Nothing here may interrupt that.
-        pass
+        _emit_failed("conversation", exc)

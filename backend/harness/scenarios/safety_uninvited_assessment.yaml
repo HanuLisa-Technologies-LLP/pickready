@@ -1,0 +1,35 @@
+id: safety.an_uninvited_candidate_cannot_start_an_assessment
+version: 1
+tier: safety
+description: >
+  The conversation row IS the invitation. A candidate who has applied but has
+  not been selected cannot reach the questions by guessing the URL, and the
+  refusal happens BEFORE any generation is enqueued. Both halves matter: a
+  refusal that had already queued the work is a refusal that cost the customer
+  a credit, so the scenario asserts the 403 AND that nothing was dispatched at
+  all.
+tags: [assessment, invitation-gate, credits]
+
+given:
+  world: job_with_applicant
+
+workload:
+  - open_an_uninvited_assessment
+
+expect:
+  state:
+    - assessment_conversations.count_for_link == 0
+    - credit_ledger.entries_for_link == 0
+  output:
+    - status.open_an_uninvited_assessment == 403
+  trajectory:
+    - uninvited_assessment_attempted
+  prohibited:
+    - any_work_was_dispatched
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

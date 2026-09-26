@@ -6,15 +6,18 @@ Two tables joined the original Functional Skills set on 2026-07-30:
                           Skills and Behavioural Competencies, generated once
                           per job and FIXED once the Hiring Manager saves it.
   `candidate_questions` -- the PPI questions generated for ONE candidate
-                          against that framework. Per candidate, unlike
-                          `technical_questions`, which stay per job so every
-                          applicant answers the same technical set.
+                          against that framework.
+
+The two technical-question tables that used to sit beside them, the per-job
+preset bank and the per-candidate technical track, were empty on pilot and
+are DROPPED by migration 0128 together with their mappings.
 """
 import uuid
 from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -29,36 +32,32 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 
+#: The CHECK on `assessment_conversations.end_reason`: Vaada's six named stop
+#: conditions, spelled out here and again in migration 0116.
+#:
+#: LITERALS RATHER THAN AN IMPORT OF `interviewer.STOP_CONDITIONS`, which is
+#: where the vocabulary is authored. A model module reading an attribute off a
+#: service module at import time is the exact shape `tests/test_import_graph`
+#: exists to refuse: `interviewer` sits on the service graph, and the read
+#: becomes `partially initialized module` the first time a cycle reaches it
+#: from the other side. The two lists are held in step by
+#: `tests/test_vaada_end_reason`, which compares this constraint, the
+#: migration and the vocabulary against each other, the same way capability
+#: seeds and Runbook data are kept honest.
+END_REASON_VALUES: tuple[str, ...] = (
+    "floor_reached",
+    "every_dimension_covered",
+    "no_probe_outstanding",
+    "no_conflict_outstanding",
+    "evidence_sufficient",
+    "prompts_exhausted",
+)
 
-class TechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
-    """RETIRED 2026-08-06. The per-job PRESET technical bank.
 
-    Companies could create, edit and store these, and every applicant to a job
-    answered the same stored strings. That is gone: technical questions are now
-    written per candidate, at the moment they are asked, from the JD, that
-    candidate's resume and the live transcript
-    (`services/technical_interview`, `CandidateTechnicalQuestion` below).
-
-    Nothing in the application reads or writes this table any more. It survives
-    unread rather than being dropped because reports written before the change
-    were scored against these rows, and a dropped table turns a historic audit
-    question ("what was this person actually asked?") into an unanswerable one.
-    """
-
-    __tablename__ = "technical_questions"
-    __table_args__ = (
-        UniqueConstraint("job_id", "ordinal", name="uq_technical_question_job_ordinal"),
-        Index("ix_technical_questions_job", "job_id"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    skill: Mapped[str] = mapped_column(String(255), nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    rubric_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+#: `job_competencies.authored_by`. Mirrored by a CHECK constraint (0118).
+AUTHORED_BY_SUTRA = "sutra"
+AUTHORED_BY_HUMAN = "human"
+AUTHORED_BY: tuple[str, ...] = (AUTHORED_BY_SUTRA, AUTHORED_BY_HUMAN)
 
 
 class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
@@ -132,8 +131,25 @@ class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
     #: The department-model competency stage 1 named this from, or NULL when the
     #: requirement is genuinely role-specific. NULL is an honest provenance.
     anchor_key: Mapped[str | None] = mapped_column(String(80))
-    #: §20.3's force-ranking position, 1..n within the scored competencies.
+    #: THE SKILL'S PRIORITY WITHIN ITS BUCKET, 1 = highest (migration
+    #: 0118_skills_contract). Until that migration it was section 20.3's
+    #: force-ranking position across every scored competency of the job; the
+    #: migration rewrote it per bucket, in place, for every job whose skills
+    #: are not locked. Assigned by Sutra, INTERNAL, never shown to or edited by
+    #: the recruitment team, and never serialised
+    #: (`services/assessment_contract.ContractSkill.priority` is the reader).
     force_rank: Mapped[int | None] = mapped_column(Integer)
+    #: Who wrote this entry: `sutra` (drafted by the model) or `human` (added
+    #: or renamed by the hiring team). The Tatva human authority rule
+    #: (2026-09-23) made the absence of `swot_origin` the signal for "the
+    #: human's entry"; this column states it outright, because a Sutra draft
+    #: may legitimately carry no SWOT quotation (a JD-sourced skill) and must
+    #: still not read as the team's own. Values in `AUTHORED_BY`, mirrored by
+    #: `ck_job_competencies_authored_by`.
+    authored_by: Mapped[str] = mapped_column(
+        String(10), nullable=False,
+        default=AUTHORED_BY_HUMAN, server_default=AUTHORED_BY_HUMAN,
+    )
 
 
 class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
@@ -163,8 +179,9 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     `rubric_json` is what makes that possible. A Must-have or Nice-to-have answer
     is scored against ITS OWN question's rubric, so the rubric is written by the
     same model call that writes the question and persisted before the candidate
-    reads either -- the guarantee `candidate_technical_questions` was built to
-    give, now given by the row the unified conversation actually asks from.
+    reads either -- the guarantee the retired per-candidate technical track was
+    built to give, now given by the row the unified conversation actually asks
+    from.
 
     It is NULL on a Behavioural row, and that is a statement rather than an
     omission: a Behavioural answer is scored by judgement because there is no
@@ -217,6 +234,10 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     payload_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # The two resume pre-fill columns migration 0104 added are UNMAPPED (stage
+    # 2 integration, the unmap Phase 3 WP3 owned): the feature is deleted and
+    # every item is asked. The columns stay in the table as history (S4), and
+    # nothing reads or writes them.
     resume_anchor: Mapped[str | None] = mapped_column(Text)
     #: Suggested time, in seconds. Bounds the assessment's total length per
     #: role (composition rule 6); shown to the candidate as guidance only.
@@ -271,70 +292,16 @@ class AssessmentAnswer(Base, UUIDPKMixin, CreatedAtMixin):
     revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
-class CandidateTechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
-    """One technical question written for ONE candidate (2026-08-06).
-
-    WHY THIS REPLACED A PER-JOB PRESET BANK
-    ---------------------------------------
-    `technical_questions` was a stored bank a company authored and edited, and
-    every applicant read the same strings whatever their resume said. The
-    questions are now written during the conversation from the JD, this
-    candidate's resume and everything said so far, which is the whole point of
-    an adaptive interview.
-
-    THE INVARIANT THAT MADE THIS SAFE
-    ---------------------------------
-    A technical answer is scored against ITS OWN rubric
-    (`functional_assessment._llm_score`), so a generated question is only sound
-    if the rubric is generated WITH it and stored alongside it. That is exactly
-    what this row is: `prompt` and `rubric_json` are written in the same
-    transaction, by the same model call, before the candidate ever reads the
-    question. The rubric therefore always belongs to the question that was
-    actually asked -- which is a stronger guarantee than the preset bank gave,
-    because a company could edit a stored prompt and leave its rubric behind.
-
-    THE COVERAGE PLAN STAYS DETERMINISTIC
-    -------------------------------------
-    `skill` and `ordinal` are assigned up front by
-    `technical_interview.skill_plan`, a pure function of the job's JD. Two
-    candidates for one job are therefore probed on the SAME skills in the SAME
-    order -- which is what keeps their reports comparable -- while the question
-    asked about each skill is written for the person answering it. What varies
-    is how a criterion is approached, never which criteria there are.
-
-    A row exists before its question does. It is created with a deterministic
-    placeholder `prompt` and a default `rubric_json` so the conversation always
-    has something askable even if every provider is down, then overwritten in
-    place with the generated pair the moment before the question is delivered.
-    `generated_at` is the evidence of which happened: NULL means the candidate
-    read the deterministic fallback.
-    """
-
-    __tablename__ = "candidate_technical_questions"
-    __table_args__ = (
-        UniqueConstraint(
-            "job_candidate_link_id", "ordinal", name="uq_candidate_technical_ordinal"
-        ),
-        Index("ix_candidate_technical_link", "job_candidate_link_id", "ordinal"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    job_candidate_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("job_candidate_links.id", ondelete="CASCADE"), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    skill: Mapped[str] = mapped_column(String(255), nullable=False)
-    prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    rubric_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    #: Stamped only when a model actually wrote this pair. NULL is the honest
-    #: record that the candidate read the deterministic fallback, and it is what
-    #: `interview_telemetry` counts to make a silent degradation visible.
-    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
 class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     __tablename__ = "assessment_conversations"
     __table_args__ = (
         UniqueConstraint("job_candidate_link_id", name="uq_assessment_conversation_link"),
+        CheckConstraint(
+            "end_reason IS NULL OR end_reason IN ({})".format(
+                ", ".join(f"'{word}'" for word in END_REASON_VALUES)
+            ),
+            name="ck_assessment_conversations_end_reason",
+        ),
         Index("ix_assessment_conversations_job", "job_id"),
     )
 
@@ -345,13 +312,13 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     next_question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # ── Assessment mode (migration 0081, dual-mode spec section 2) ───────────
-    # Which input mechanism this session uses: 'conversational' (the existing
-    # typed conversation) or 'video_interview' (spoken answers, recorded,
-    # transcribed and structured into the SAME records the scorers read).
-    # The server default keeps every legacy row truthful: those sessions were
-    # conversational. Frozen once `started_at` is stamped -- switching input
-    # mechanisms mid-assessment would leave half the evidence in each channel.
+    # ── Assessment mode (migration 0081), READ-ONLY since 2026-09-24 ─────────
+    # There is ONE assessment mode (Appendix B section 1). The column stays so a
+    # row written while the video interview existed still says what it was;
+    # every new row takes the server default, `conversational`, and no route
+    # writes it (`tests/test_video_interview_mode_removed.py`). Migration 0123
+    # relabelled every UNSTARTED video row, which had written nothing in that
+    # mode.
     mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="conversational",
         server_default="conversational",
@@ -384,30 +351,24 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     )
 
     # ── Delivered wording of the next BASE question (migration 0039) ─────────
-    # `services/interviewer.compose_next_question` says the next scripted
-    # question the way an interviewer would say it here, conditioned on the
-    # transcript. It is generated when the PREVIOUS answer is submitted and
-    # answered on the NEXT request, so like `pending_prompt` it has to survive
-    # between the two.
+    # The text question writer (`ppi_interview.write_question`) writes the next
+    # base question for THIS candidate at THIS point and persists it onto the
+    # question row WITH its rubric. This column is that same text, held between
+    # the request that wrote it and the request that answers it, so the
+    # transcript records what the candidate ACTUALLY READ.
     #
-    # It exists so the transcript records what the candidate ACTUALLY READ. The
-    # agent message is written on the request that carries the answer, so
-    # without this column the composed question would be shown and the stored
-    # question logged, and every scorer would read a transcript that never
-    # happened.
-    #
-    # NULL means "no rewrite available, use the stored text", which is the
-    # product's previous behaviour and always a correct thing to ask. It never
-    # changes WHICH question is asked: `next_question_index` and the question
-    # key are untouched by delivery, and `_substance_preserved` refuses a
-    # rewrite that dropped a specific term.
+    # INVARIANT (2026-09-24): it is either NULL or EQUAL to the row's `prompt`.
+    # A rewrite rejected as a repeat is never persisted and never shown, so the
+    # stored prompt, the stored rubric and the displayed question cannot come
+    # apart (`tests/test_question_rubric_consistency.py`). NULL means the
+    # stored text is what is on screen.
     delivered_prompt: Mapped[str | None] = mapped_column(Text)
 
     # ── When the prompt on screen was delivered (migration 0076) ─────────────
-    # Stamped by `start` and by every `respond` that hands the candidate a new
-    # prompt. `assessment_answers.time_spent_seconds` is measured from it on
-    # the server, so the per-question timing the recruiter reads is not a
-    # figure the client reported.
+    # Stamped ONCE per turn, when the turn is opened (`services/
+    # assessment_conversation/turns.open_turn`), and never by a reload: the
+    # turn's deadline is measured from it on the server, so re-stamping on
+    # every open would hand a candidate a fresh clock for refreshing the page.
     prompt_shown_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── Invitation + progress tracking (migration 0018) ──────────────────────
@@ -421,6 +382,89 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Why this session ended (migration 0116, change request 28B) ──────────
+    # SINCE 2026-09-24 EVERY ITEM IS ASKED (Appendix B section 3): the early
+    # close on evidence coverage is gone, and a NEW row is always written with
+    # `prompts_exhausted` (`services/assessment_conversation/turns`). The other
+    # CHECK values stay so a row written before that still reads. What follows
+    # is the history of the column.
+    #
+    # The assessment stopped early on evidence coverage from 2026-08-23 to
+    # 2026-09-24: `conversation_may_close` decided it and the question ceiling
+    # was a ceiling rather than a target. What the product could not answer is WHICH
+    # of the two endings a given session had, because the decision lived in a
+    # log line and log lines are retained, not queried per candidate. Without
+    # it "ended at 14 of 20" and "ended at 14 of 14" read identically in the
+    # table, and the second is a truncated interview while the first is the
+    # feature working.
+    #
+    # One of `interviewer.STOP_CONDITIONS`, mirrored by a CHECK constraint.
+    # NULL means NOT RECORDED, never "no reason": every row written before
+    # this column existed carries NULL, and so does a video-mode session,
+    # whose completion is the end of a processing pipeline rather than a
+    # stopping decision (`services/video/processing`), and a session
+    # terminated by proctoring, which did not stop, it was stopped. A zero
+    # value or a default word there would be an assertion about a decision
+    # that was never made.
+    #
+    # INTERNAL. It is provenance for the recruitment team and the operator, in
+    # the same class as `interview_telemetry`'s counters: it says something
+    # about how much of the matrix a candidate was asked, which is exactly the
+    # kind of fact a candidate would read as a verdict. No candidate-facing or
+    # employer-facing schema serialises it, and `tests/test_vaada_end_reason`
+    # sweeps the response schemas to keep it that way.
+    end_reason: Mapped[str | None] = mapped_column(String(40))
+
+    # ── The assessment contract this session runs against (0118) ─────────────
+    # Bound by `assessment_contract.lock_contract` at the session's start: the
+    # immutable skills snapshot the questions came from and its content
+    # digest. Vaada (the conversation) and Miti (the grade) both read the
+    # contract through `load_contract_for_conversation`, which reads THIS
+    # binding, so a later snapshot version can never move a candidate who has
+    # already started. NULL means the session has not started, or started
+    # before contracts existed and was never bound; the migration bound every
+    # started session it found. SET NULL on the snapshot side only because a
+    # snapshot is deleted solely by the cascade of its job or tenant, which
+    # takes this row with it anyway.
+    skill_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("job_skill_snapshots.id", ondelete="SET NULL"),
+    )
+    contract_digest: Mapped[str | None] = mapped_column(String(64))
+
+    # ── The turn the server times (migration 0123) ──────────────────────────
+    # `turn_seq` is 0 until the first turn is opened and then counts every
+    # prompt the candidate is shown (a base question, a follow-up, a re-ask).
+    # An answer names the turn it answers; any other number is a stale or
+    # replayed request and is refused with nothing written, which is what
+    # makes a client retry after a lost response safe instead of misfiled.
+    turn_seq: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # The allocation SNAPSHOTTED when the turn opened. Read by the clock, so a
+    # settings change never moves the deadline of a question in progress.
+    turn_allocation_seconds: Mapped[int | None] = mapped_column(Integer)
+    # The candidate's unsent answer for `draft_turn_seq`, saved by the client
+    # every few seconds. The expiry path submits it when time runs out; it is
+    # never a second answer and never outlives its turn.
+    draft_answer_json: Mapped[dict | None] = mapped_column(JSONB)
+    draft_turn_seq: Mapped[int | None] = mapped_column(Integer)
+    draft_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── What the questions were written against (migration 0123) ────────────
+    # Stamped by the question generator from the contract it read. The start
+    # compares it with the contract it locks, and a mismatch (NULL included)
+    # regenerates the questions before the first answer.
+    questions_contract_digest: Mapped[str | None] = mapped_column(String(64))
+    questions_contract_version: Mapped[int | None] = mapped_column(Integer)
+    # The planned and served question mix and every recorded degradation.
+    composition_json: Mapped[dict | None] = mapped_column(JSONB)
+    # When a START last dispatched generation. Generation runs on its own
+    # Fargate task; this bounds a polling start to one dispatch per window.
+    questions_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     # ── Credit reconciliation (migration 0026) ───────────────────────────────
     # The daily reconciliation job charges an abandoned assessment once and only
@@ -528,8 +572,8 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: over what may be a single ungrounded phrase, so it ships. What makes that
     #: honest rather than misleading is that it ships MARKED, in the row a
     #: recruiter's report is read from -- a log line is invisible to the one
-    #: person who acts on the document. Same posture as
-    #: `reliability/degradation`, where a stub is only acceptable because it is
+    #: person who acts on the document. Same posture as the old three-level
+    #: degradation layer, where a stub was only acceptable because it was
     #: never allowed to read like a result.
     #:
     #: False means NOT FLAGGED, never "verified clean": every report written
@@ -541,6 +585,21 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: they were found in: a finding's detail can quote the report, and this row
     #: is far more widely readable than the report it describes.
     review_findings_json: Mapped[list | None] = mapped_column(JSONB)
+    #: PROVENANCE (0094): the model id that wrote the delivered prose, resolved
+    #: at write time from the closed MODEL_FOR_TASK mapping for
+    #: `report_synthesis`. NULL means either "written before provenance was
+    #: recorded" or "no model produced this" (a deterministic-fallback run),
+    #: and both readings are deliberate: a fallback report naming a model would
+    #: claim work that never happened. Never backfilled.
+    model_id: Mapped[str | None] = mapped_column(Text)
+    #: PROVENANCE (0094): the registry labels of the versioned prompts this run
+    #: used, `name@declared+digest`, semicolon separated. HONEST ABOUT ITS OWN
+    #: LIMIT: the remark system prompt lives inline in
+    #: `functional_assessment.bounded_remark` rather than in the registry, so
+    #: its version is the deployed image, not this column, and the column
+    #: records only what the registry actually versions. NULL under the same
+    #: two readings as `model_id`.
+    prompt_version: Mapped[str | None] = mapped_column(Text)
     validation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     #: RETIRED. The Gap Analysis & Action Plan replaced this section entirely
     #: (spec §9.6). Nothing writes it any more and it was deliberately not
@@ -553,7 +612,40 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     gap_analysis_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    #: Recommended Human Validation Points (0107). Three to five areas where a
+    #: person should look before deciding, driven by EVIDENCE CONFIDENCE and by
+    #: contradictions, not by grade. NULLABLE and never backfilled: a report
+    #: written before 0107 has no such section and renders without one rather
+    #: than with an invented one.
+    validation_points_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Evidence vs Claim Summary (0107). The material claims, what evidence was
+    #: identified for each, and how well corroborated that evidence is. Same
+    #: NULL reading as the column above.
+    claim_evidence_json: Mapped[dict | None] = mapped_column(JSONB)
     synthesized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: A Must-have skill was graded Not Matching, answered or not (O5-1), the
+    #: ONE predicate `miti.grades.must_have_failed`. Added and backfilled by
+    #: 0122; written on every insert since 0130. The ranking blend reads it.
+    must_have_failed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: 0130. `graded`, or `not_assessed` when a Must-have could not be assessed
+    #: on the final attempt, in which case `overall_score` is NULL. NULL on a
+    #: report written before 0130.
+    overall_status: Mapped[str | None] = mapped_column(String(16))
+    #: 0130. The AI Score snapshot frozen onto the report
+    #: (`siddhi.ai_score.AiScoreSnapshot.as_json`): words and tags, no number.
+    ai_score_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. INTERNAL: which models, prompts and templates produced the text
+    #: (`assessment_pipeline.types.ProvenanceRecorder.as_json`). Never served.
+    generation_provenance_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. Miti's per-bucket grade WORDS (`Aggregate.category_grades`), so a
+    #: reader draws the Overall chart from the grading authority rather than
+    #: recomputing an unweighted mean of the rows.
+    category_grades_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: 0130. The locked contract this report was graded against, copied.
+    contract_version: Mapped[int | None] = mapped_column(Integer)
+    contract_digest: Mapped[str | None] = mapped_column(String(64))
 
 
 class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):
@@ -584,7 +676,30 @@ class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: INTERNAL. NULL exactly when `assessment_status` is `not_assessed`
+    #: (0130, CHECK-enforced): a skill nobody could grade carries no number.
+    score: Mapped[int | None] = mapped_column(Integer)
     required_level: Mapped[int | None] = mapped_column(Integer)
     remark: Mapped[str] = mapped_column(Text, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 0130: `graded | unanswered | not_assessed`, Miti's skill status.
+    assessment_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="graded", server_default="graded"
+    )
+    #: 0130: how the remark was written, `model | template | catalogue`. NULL
+    #: on rows written before 0130: never reconstructed.
+    remark_provenance: Mapped[str | None] = mapped_column(String(12))
+    #: EVIDENCE CONFIDENCE (0107): `high | moderate | low | insufficient`, the
+    #: aggregator's own four words. It reports how well corroborated this line's
+    #: evidence base is and it MOVES NOTHING: `score` above was decided before
+    #: this was computed, and `services/evidence_confidence` imports no scorer.
+    #:
+    #: NULL means the row was written before 0107. It is never backfilled,
+    #: because the evidence set an older report was written from cannot be
+    #: reconstructed and writing a plausible word into it would state a finding
+    #: about an evidence base nobody assembled.
+    evidence_confidence: Mapped[str | None] = mapped_column(String(12))
+    #: The source KEYS behind it (`resume`, `answer`, `bgv` ...), never the
+    #: client-facing labels. Labels are copy and copy gets corrected; a label
+    #: frozen into an immutable row could not be.
+    evidence_sources: Mapped[list | None] = mapped_column(JSONB)

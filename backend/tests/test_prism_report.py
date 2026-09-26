@@ -34,7 +34,13 @@ SPEC_ORDER = (
     "must_have",
     "nice_to_have",
     "behavioural",
+    # 0107. The Evidence vs Claim Summary annotates the grades above it; the
+    # Recommended Human Validation Points sit beside the Gap Analysis because
+    # they are the other thing an interviewer acts on. Gap Analysis still
+    # precedes Validation, which is the property the reversal bought.
+    "claim_evidence",
     "gap_analysis",
+    "validation_points",
     "validation",
     # The Proctoring Report is the LAST section (proctoring spec section 7):
     # informational, moves no grade, and sits after everything that does.
@@ -44,12 +50,16 @@ SPEC_ORDER = (
 #: The heading each section prints, in the same order. Kept beside the keys so
 #: a reordering has to move both halves of the pair.
 SECTION_HEADINGS = {
-    "ai_score": "AI Score",
+    # The key stays `ai_score`; the printed words are the product's own name
+    # for the pre-assessment check (CONTRACT v4 item 5).
+    "ai_score": "AI Match",
     "overall": "Overall Assessment",
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",
     "behavioural": "Behavioural Competencies",
+    "claim_evidence": "Evidence vs Claim Summary",
     "gap_analysis": "Gap Analysis",
+    "validation_points": "Recommended Human Validation Points",
     "validation": "Validation",
     "proctoring": "Proctoring Report",
 }
@@ -64,6 +74,11 @@ def _dimension(name: str) -> dict:
         "name": name,
         "grade": "Matching",
         "required_level": "Matching",
+        # 0107. A WORD, like every other rated value on the line. A report
+        # written before 0107 carries neither key, which the next fixture
+        # exercises.
+        "evidence_confidence": "Moderate",
+        "evidence_sources": ["Assessment responses", "Resume"],
         "remark": (
             "Described owning the migration end to end, naming the rollback "
             "they wrote and the on-call week they spent watching it settle."
@@ -137,6 +152,31 @@ def _report() -> dict:
                 {"label": "Role interest", "value": "Platform reliability ownership"},
             ]
         },
+        "claim_evidence": {
+            "note": "What this person asserted, and what the record holds.",
+            "entries": [
+                {
+                    "area": "Distributed Systems",
+                    "claim": "Led the migration of the ingest path onto Kafka.",
+                    "evidence": "Identified in Assessment responses and Resume.",
+                    "confidence": "Moderate",
+                }
+            ],
+            "no_claims_statement": None,
+        },
+        "validation_points": {
+            "note": "Areas where the evidence base is thinner than the grade.",
+            "points": [
+                {
+                    "area": "Judgement under pressure",
+                    "driver": "confidence",
+                    "confidence": "Low",
+                    "reason": "The evidence is this person's own account.",
+                    "probe": "Ask for a specific instance and who else saw it.",
+                }
+            ],
+            "no_points_statement": None,
+        },
     }
 
 
@@ -173,11 +213,11 @@ def test_the_header_is_the_documents_name_and_its_expansion_verbatim():
     assert report_pdf.REPORT_TITLE == "PRISM Report"
     assert (
         report_pdf.REPORT_SUBTITLE
-        == "Predictive Role Intelligence & Suitability Mapping"
+        == "Evidence-Based Role Intelligence & Suitability Mapping"
     )
     text = _pdf_text()
     assert "PRISM Report" in text
-    assert "Predictive Role Intelligence & Suitability Mapping" in text
+    assert "Evidence-Based Role Intelligence & Suitability Mapping" in text
 
 
 def test_the_document_never_calls_itself_the_process():
@@ -216,18 +256,36 @@ def test_gap_analysis_precedes_validation_on_the_rendered_page():
 
     Asserted on the RENDERED text, not on the constant: a constant the renderer
     does not actually walk would pass while the PDF read the other way round.
+
+    The Validation heading is found by walking FORWARD from the Gap Analysis
+    heading rather than by a bare index, because 0107's "Recommended Human
+    Validation Points" contains the word Validation and a bare index would
+    match inside it. That would still pass here, by luck, and would stop
+    meaning what it says the day the two sections move.
     """
     text = _pdf_text()
-    assert 0 <= text.index("Gap Analysis") < text.index("Validation")
+    gap = text.index("Gap Analysis")
+    assert gap >= 0
+    assert text.index("Validation", gap) > gap
 
 
 def test_every_section_appears_once_in_the_documented_order():
+    """Walked with a forward CURSOR, not with independent index() calls.
+
+    One heading is a substring of another since 0107 ("Validation" inside
+    "Recommended Human Validation Points"), so independent lookups would
+    compare a position inside one section against the start of another and
+    could report an order the document does not have.
+    """
     text = _pdf_text()
+    cursor = 0
     positions = []
     for key in report_pdf.SECTION_ORDER:
         heading = SECTION_HEADINGS[key]
-        assert heading in text, heading
-        positions.append(text.index(heading))
+        found = text.find(heading, cursor)
+        assert found >= 0, f"{heading} is missing or out of order"
+        positions.append(found)
+        cursor = found + len(heading)
     assert positions == sorted(positions), dict(
         zip(report_pdf.SECTION_ORDER, positions)
     )

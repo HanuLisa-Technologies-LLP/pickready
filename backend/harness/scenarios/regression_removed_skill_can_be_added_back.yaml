@@ -1,0 +1,52 @@
+id: regression.a_removed_skill_can_be_added_back
+version: 2
+tier: regression
+description: >
+  A reviewer clears the drafted skills and pastes their own list, two of whose
+  names they had just removed. The removed rows are REVIVED rather than
+  re-inserted, the revived row keeps the SWOT sentence it was drafted from,
+  and nothing answers 500. Measured in pilot on 2026-09-20: deletion is soft
+  because an issued candidate question may reference the row, while
+  `uq_job_competency_name` is on (job_id, category, name) with NO predicate, so
+  a removed name still held its slot invisibly and the paste raised
+  UniqueViolationError twice, forty-five seconds apart, behind the words "API
+  error 500". Version 2 drives the Skills step that replaced the matrix
+  editor, over the same pilot sequence.
+tags: [skills, soft-delete, unique-constraint, "2026-09-20"]
+
+given:
+  world: job_with_drafted_skills
+
+workload:
+  - empty_the_skills
+  - paste_the_same_names_back
+
+expect:
+  state:
+    # REVIVED, NOT RE-INSERTED, and this pair of counts is what says so. Eight
+    # rows were seeded across the three buckets and all eight were emptied;
+    # the paste brings back Python and PostgreSQL and adds three names nobody
+    # has used, so the table grows by exactly three. A re-insert would have
+    # taken the total to thirteen, and a refusal would have left it at eight.
+    - job_competencies.total_count == 11
+    - job_competencies.active_count == 5
+    - job_competencies.active_names == [Agentic AI, DSA, LLMs, PostgreSQL, Python]
+    # A revive is the SAME name coming back, so the sentence it was drafted
+    # from still refers to it (the 2026-09-23 asymmetry: a rename clears it).
+    - job_competencies.swot_origin:PostgreSQL is not null
+  output:
+    # NOT 500, and not 409 either. Five names fit the empty bucket exactly,
+    # and two of them being removed rows must not refuse the other three.
+    - status.paste_the_same_names_back == 200
+    - statuses.empty_the_skills == [200, 200, 200, 200, 200, 200, 200, 200]
+  trajectory:
+    - skills_emptied
+    - names_pasted_back
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

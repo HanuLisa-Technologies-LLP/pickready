@@ -1,5 +1,4 @@
-"""Job + approval FSM schemas (API_CONTRACT.md `/jobs`)."""
-import re
+"""Job schemas (API_CONTRACT.md `/jobs`)."""
 import uuid
 from datetime import datetime
 from typing import Literal
@@ -8,7 +7,7 @@ from pydantic import (
     BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator,
 )
 
-from app.models.enums import ApprovalDecision, JobStatus
+from app.models.enums import JobStatus
 from app.models.job import REPORTING_TO_OPTIONS
 from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 
@@ -19,37 +18,10 @@ from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 JobGrade = Literal["non_managerial", "managerial", "leadership", "cxo"]
 
 
-class JDIn(BaseModel):
-    """Structured JD fields (FR-3.1).
-
-    Still accepted and still stored on `jd_json`, but no longer the thing a
-    recruiter types: as of 2026-07-28 these sections are DERIVED by parsing
-    `jd_markdown`, the unified document that is now canonical. `reportees` was
-    removed entirely (client decision); an old client still sending it is
-    ignored rather than rejected, so nothing 422s mid-upgrade.
-    """
-    model_config = ConfigDict(extra="ignore")
-
-    description: str | None = None
-    reporting_to: str | None = None
-    role: str | None = None
-    responsibilities: list[str] | str | None = None
-    accountabilities: list[str] | str | None = None
-    education: str | None = None
-    skills: list[str] = []
-    experience_years: float | str | None = None
-
-    @field_validator("experience_years", mode="before")
-    @classmethod
-    def _experience_is_number_or_range(cls, value):
-        if not isinstance(value, str):
-            return value
-        value = value.strip()
-        if not value:
-            return None
-        if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?", value):
-            raise ValueError("experience_years must be a number or numeric range")
-        return re.sub(r"\s*-\s*", "-", value)
+# `JDIn`, the per-section JD input, is DELETED (Vivekium release). The
+# document (`jd_markdown`) is the one canonical JD and its three writers are
+# now one (`PATCH /jobs/{id}/jd`); the sections on `jd_json` are derived from
+# it by `jd_generation.parse_jd_markdown`, never typed.
 
 
 #: Sanity bound on the experience band. 60 years is well past any real career
@@ -133,28 +105,109 @@ class JobCloseIn(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
+class AssessmentDisputeIn(BaseModel):
+    """Opening the dispute path on a closed job (change request 22).
+
+    The reason is REQUIRED here, unlike `JobCloseIn`'s, and the asymmetry is
+    the point. Closing a job is the client acting on their own requisition;
+    opening a dispute re-opens access to records the candidate was told had
+    been taken out of use, so an unlock with no stated reason is an unlock
+    nobody can review afterwards. `min_length` is on the stripped value
+    through the validator below, because a field of spaces satisfies a bare
+    length bound and tells a reader the opener said something.
+    """
+
+    reason: str = Field(max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def _must_say_something(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(
+                "Say why this assessment record is being retrieved. The "
+                "reason is recorded against the retrieval."
+            )
+        return stripped
+
+
+class AssessmentRetentionOut(BaseModel):
+    """Where one job's assessment data sits in its thirty day lifecycle.
+
+    NO CANDIDATE DETAIL AND NO COUNT OF PEOPLE. It answers "can these records
+    still be retrieved, until when, and is a dispute open", which is what the
+    screen needs to decide whether to offer the control. A count of assessed
+    candidates here would be an assessment fact travelling on a route whose
+    whole purpose is that assessment facts are withheld.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    #: `live`, `pending_deletion` or `purged`, derived server-side.
+    state: str
+    closed_at: datetime | None = None
+    purge_due_at: datetime | None = None
+    purged_at: datetime | None = None
+    dispute_open: bool = False
+    #: Whole days, rounded up, and never zero while the window is open.
+    days_remaining: int | None = None
+    #: The server's own refusal sentence, so the screen renders it verbatim
+    #: rather than writing a second one that can contradict the gate.
+    message: str | None = None
+    dispute_reason: str | None = None
+
+
+#: The refusal a create call carrying `publish: true` gets. Server-authored so
+#: the screen renders it verbatim.
+PUBLISH_IS_SEPARATE_DETAIL = (
+    "Publishing is a separate step. Save the draft, finish the SWOT and "
+    "skills, then publish."
+)
+#: The refusal for a create call with no job description in it.
+JD_REQUIRED_DETAIL = (
+    "Write the job description before saving the job. Generate a draft or "
+    "type one."
+)
+
+
+def jd_body_is_empty(document: str | None) -> bool:
+    """Headings alone are not a job description. True when nothing but
+    headings and whitespace is left. The one test shared by create and
+    publish, so the two can never disagree about what "empty" means."""
+    body = "\n".join(
+        line for line in (document or "").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    return not body.strip()
+
+
 class JobCreateIn(ExperienceBandMixin):
+    """Create Job saves a DRAFT, always (Vivekium release).
+
+    The job goes live only through `POST /jobs/{id}/publish`, which checks the
+    JD, the saved SWOT and the saved skills. Two inputs are GONE: the free-text
+    `level` (the experience band and the grade replaced it on 2026-07-28, and
+    nothing reads it now) and the per-section `jd` (the document is the one
+    canonical JD; the sections are derived from it).
+    """
+
     title: str = Field(min_length=1, max_length=255)
     department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
     requirement_period: str | None = Field(default=None, max_length=100)
+    #: Who the role reports to, from the Create Job dropdown. The one JD fact
+    #: the document does not carry as its own section, so it is stored into
+    #: `jd_json.reporting_to` beside the sections derived from the document.
+    reporting_to: str | None = Field(default=None, max_length=255)
     # REQUIRED (Create Job form dropdown). Anything outside the four literals → 422.
     grade: JobGrade
-    jd: JDIn
-    #: The unified JD document. Optional on create because the recruiter's flow
-    #: is generate -> edit -> publish: they may save a draft before the document
-    #: is finished. Publishing without one is what is refused (see
-    #: api/jobs.publish_job).
-    jd_markdown: str | None = None
-    #: Whether this create call also publishes.
-    #
-    # ASSUMPTION (2026-07-28): defaults to True so the established
-    # create-publishes-immediately contract (PRD v1.0 §4, flat staff model) is
-    # preserved for every existing caller. The new Create Job screen sends
-    # `publish: false`, writes the AI draft, lets the recruiter edit it, and
-    # then calls POST /jobs/{id}/publish explicitly, which is what the client
-    # asked for. Additive rather than a silent behaviour change.
-    publish: bool = True
+    #: The unified JD document, REQUIRED and never only headings. The
+    #: per-section `jd_json` is derived from it by the handler.
+    jd_markdown: str = Field(max_length=60000)
+    #: Kept in the schema only to refuse `true` LOUDLY. During a rolling deploy
+    #: an old Create Job screen still sends `publish: true`; silently saving a
+    #: draft it believes it published would be the mislabel this release
+    #: exists to remove, so it is a 422 naming the new flow.
+    publish: bool = False
     # Optional at creation: omit them and the job snapshots the company
     # profile's values (spec §3.2). Supplying one here is a per-job override
     # from the very first save.
@@ -178,6 +231,20 @@ class JobCreateIn(ExperienceBandMixin):
     def _policy_in_vocabulary(cls, value: str | None) -> str | None:
         return _valid_warning_policy(value)
 
+    @field_validator("publish")
+    @classmethod
+    def _publish_is_a_separate_step(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(PUBLISH_IS_SEPARATE_DETAIL)
+        return value
+
+    @field_validator("jd_markdown")
+    @classmethod
+    def _jd_has_a_body(cls, value: str) -> str:
+        if jd_body_is_empty(value):
+            raise ValueError(JD_REQUIRED_DETAIL)
+        return value
+
 
 class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -185,7 +252,6 @@ class JobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
     status: JobStatus
     requirement_period: str | None
     created_by: uuid.UUID | None
@@ -308,7 +374,6 @@ class PublicJobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
     jd_json: dict
     #: The canonical candidate-facing document. The public apply page renders
     #: this and falls back to the per-section `jd_json` only for jobs written
@@ -554,22 +619,6 @@ class PublishJobOut(JobOut):
     public_application_url: str = ""
 
 
-class ApproveIn(BaseModel):
-    decision: Literal["approved", "rejected"]
-    remarks: str | None = None
-
-
-class ApprovalOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    level: JobStatus
-    approver_user_id: uuid.UUID | None
-    decision: ApprovalDecision
-    remarks: str | None
-    decided_at: datetime
-
-
 class CompensationIn(BaseModel):
     compensation: dict
 
@@ -581,35 +630,33 @@ class CompensationIn(BaseModel):
         return v
 
 
-class JDUpdateIn(BaseModel):
-    jd: JDIn
-    title: str | None = Field(default=None, max_length=255)
-    department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
-    # Optional grade change; omit to leave the job's grade untouched.
-    grade: JobGrade | None = None
-
-
 class JobPatchIn(ExperienceBandMixin):
-    """PARTIAL in-place JD edit (spec §3.1) — every field optional.
+    """PARTIAL edit of a job's METADATA (spec §3.1): every field optional.
 
     PATCH semantics, honestly implemented: a field that is ABSENT is left
     untouched. That distinction matters here because the three narrative
-    sections are inheritable — sending `about_company: null` explicitly clears
+    sections are inheritable: sending `about_company: null` explicitly clears
     the per-job override so the job falls back to the company profile, which is
     a different intent from not mentioning the field at all. `model_fields_set`
     is what tells the two apart, so the endpoint reads that rather than testing
     for None.
+
+    THE JOB DESCRIPTION IS NOT HERE (Vivekium release). It has ONE edit path,
+    `PATCH /jobs/{id}/jd`, which takes the document. This route used to take
+    the document AND the per-section `jd`, and `PUT /jobs/{id}/jd` a third
+    shape that left the document stale; three writers of one text is the shape
+    rule 5 forbids. `extra="forbid"` makes an old client sending `jd` or
+    `level` a loud 422 rather than a silently ignored field.
     """
+
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = Field(default=None, max_length=255)
     department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
     requirement_period: str | None = Field(default=None, max_length=100)
+    #: Refused with 409 once the skills are locked: the grade decides the
+    #: question budget every candidate on the job receives (D5).
     grade: JobGrade | None = None
-    jd: JDIn | None = None
-    #: Editing the document here re-derives `jd_json` from it, same as
-    #: PATCH /jobs/{id}/jd. The document stays canonical either way.
-    jd_markdown: str | None = None
     about_company: str | None = Field(default=None, max_length=4000)
     work_life: str | None = Field(default=None, max_length=4000)
     benefits: str | None = Field(default=None, max_length=4000)
@@ -636,171 +683,9 @@ def _valid_warning_policy(value: str | None) -> str | None:
     return value
 
 
-# ── Inline candidate ranking table (spec §2) ─────────────────────────────────
-
-class TransitionOptionOut(BaseModel):
-    """One entry of the Decision / "Move to" dropdown."""
-
-    status: str
-    label: str
-
-
-class RankedCandidateOut(BaseModel):
-    """One row of the job page's candidate table.
-
-    Carries the five rated comments and their WORD LABELS, and no numeric score
-    of any kind — the ordering that used those scores already happened in SQL
-    (services/job_candidates), so nothing downstream needs them.
-    """
-    model_config = ConfigDict(from_attributes=True)
-
-    link_id: uuid.UUID
-    candidate_id: uuid.UUID
-    full_name: str
-    #: COMPANY-JOB-CANDIDATE, e.g. "K7QP-2M4X-9TB1". Rendered under the name.
-    #: One stable, readable handle for this application: names repeat, and a
-    #: UUID is not something a person carries between a screen, an email and a
-    #: phone call. Derived from the three ids under the app secret and one-way,
-    #: so it identifies a row without disclosing anything about it. It is a
-    #: LABEL, never a permission -- nothing authorises on this value.
-    reference_code: str = ""
-    email: str | None = None
-    #: The job's grade, as a display label ("Non-managerial", "CXO", ...).
-    level: str
-    source: str | None = None
-    tier: str | None = None
-    archived_at: datetime | None = None
-
-    #: The application's Profile. Resumes live in private storage, so this is
-    #: the only handle the viewer and the download endpoint can use; a row
-    #: without it renders as an unreadable resume.
-    profile_id: uuid.UUID | None = None
-    resume_url: str | None = None
-    resume_filename: str | None = None
-    resume_mime_type: str | None = None
-    has_report: bool = False
-    report_ready_at: datetime | None = None
-
-    # ── Assessment/video metadata (2026-09-05 dashboard/video spec §3-5) ─────
-    #: 'conversational' | 'video_interview', null before any session opens.
-    assessment_mode: str | None = None
-    #: "Video interview" / "Conversational" / "Not started".
-    assessment_mode_label: str = "Not started"
-    #: PRISM Report availability word: Available / Processing / Not available.
-    #: Derived from the same report presence `has_report` reads; the words are
-    #: the spec's dashboard vocabulary, never a lifecycle identifier.
-    prism_report_status: str = "Not available"
-    #: Proctoring Report availability word, from the EXISTING proctoring
-    #: report presence (spec 4.3: reuse, never recreate).
-    proctoring_report_status: str = "Not available"
-    #: "Ready" / "Processing" / "Failed" / "No recording". Metadata only: the
-    #: table query reads rows, never S3, and a conversational session with no
-    #: recording honestly reads "No recording".
-    video_status: str = "No recording"
-
-    # ── Type of procurement (2026-07-28) ─────────────────────────────────────
-    #: applied | sourced | databank. Display and filtering ONLY: all three go
-    #: through identical parsing, matching and assessment.
-    source_type: str = "applied"
-    #: "Applied" / "Sourced" / "Databank", so the tag is never a raw enum.
-    source_type_label: str = "Applied"
-
-    # ── Old Profiles vs New Profiles (spec §4.2) ─────────────────────────────
-    #: `old` when this application came in before the CURRENT posting window —
-    #: i.e. the job has since been renewed. Presentation and billing only: an
-    #: Old Profile is ranked, listed and openable exactly like a new one, which
-    #: is the candidate-data-ownership promise made on the landing page.
-    profile_age: str = "new"
-    profile_age_label: str = "New Profile"
-    #: True once someone on this team has already paid the bulk review rate for
-    #: this profile, so the UI can say the reopen is free.
-    review_charged: bool = False
-
-    # ── New Candidates (workflow section 32) ─────────────────────────────────
-    #: This application arrived AFTER the last assessment round on this job, so
-    #: nobody has considered it yet. Presentation only, exactly like
-    #: `profile_age`: it changes no score, no ranking and no access. False
-    #: before the first round, when there is one pool rather than a pool plus a
-    #: supplement.
-    is_new_candidate: bool = False
-
-    # ── Hiring pipeline (spec §3.3) ──────────────────────────────────────────
-    #: direct | sourced — where this applicant came from.
-    application_source: str | None = None
-    status: str
-    stage_label: str
-    status_updated_at: datetime | None = None
-    #: Which moves the recruiter may pick from the "Move to" dropdown. This is
-    #: the MANUAL set, which deliberately excludes `shortlisted` (see
-    #: services/hiring_pipeline.manual_transitions) — the UI renders exactly
-    #: these, so a button never appears that would 409 and no offered option is
-    #: one the client asked us to remove.
-    allowed_transitions: list[str] = []
-    #: The same list with human labels, so the UI never title-cases an enum.
-    allowed_transition_options: list["TransitionOptionOut"] = []
-
-    #: "ready" once matching has scored this link, else "not_scored".
-    ranking_status: str
-
-    skills_match_comment: str | None = None
-    experience_comment: str | None = None
-    role_alignment_comment: str | None = None
-    education_comment: str | None = None
-    overall_comment: str | None = None
-
-    skills_match_label: str | None = None
-    experience_label: str | None = None
-    role_alignment_label: str | None = None
-    education_label: str | None = None
-    overall_label: str | None = None
-
-    #: One entry per matching category this candidate was ACTUALLY scored on,
-    #: in the job's own order. The flat fields above cover only the four
-    #: categories the product scored every job on before the lists became per
-    #: job (spec §3.2); a client should render this instead.
-    categories: list[dict] = []
-
-    #: The validation questionnaire as an explicit Q&A (spec §29), so a
-    #: recruiter can read each question and the candidate's exact response on
-    #: the row. Never rated, never summarised, never interpreted (spec §14).
-    validation_answers: list["ValidationAnswerOut"] = []
-
-
-class ValidationAnswerOut(BaseModel):
-    key: str
-    question: str
-    #: Exactly as submitted. Null when this application predates the field or
-    #: the candidate left it blank; the client says "Not answered" rather than
-    #: hiding the row, because "never asked" and "did not answer" look identical
-    #: when a row is simply missing and only one of them is the candidate's
-    #: doing.
-    answer: str | None = None
-    #: "Application" for the six mandatory fields, or the candidate profile
-    #: form's own section title for the 38 profile items. Client-side grouping
-    #: only.
-    group: str | None = None
-
-
-class RankedCandidatesOut(BaseModel):
-    """A page of the candidate table plus everything the pager needs."""
-    job_id: uuid.UUID
-    grade: str
-    level: str
-    results: list[RankedCandidateOut]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
-    has_next: bool
-    has_previous: bool
-    #: 1-indexed inclusive bounds for the "Showing X-Y of Z" header (0 when empty).
-    range_start: int
-    range_end: int
-    #: How many candidates on this JOB arrived after the last assessment round.
-    #: Counted over the whole job and never narrowed by the page's filters,
-    #: because the question it answers is "how many people are waiting outside
-    #: the list you are looking at".
-    new_candidate_count: int = 0
+# The inline candidate ranking table's row and page live in
+# `schemas/ranking.py` (Vivekium release, Phase 2), where every field is
+# declared and an undeclared one fails the request.
 
 
 class ReviewProfileOut(BaseModel):

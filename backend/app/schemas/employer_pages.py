@@ -44,7 +44,8 @@ class EmployerOpenRoleOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None = None
-    level: str | None = None
+    #: No `level`: the free-text field is read by nothing since the Vivekium
+    #: release. The experience band below is what a candidate reads.
     experience_min_years: int | None = None
     experience_max_years: int | None = None
     #: Same-origin path to the existing public application page.

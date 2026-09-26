@@ -1,0 +1,49 @@
+id: regression.the_known_defect_registry_still_holds
+version: 1
+tier: regression
+description: >
+  Every case in `app/evaluation/regression.py` still passes. That module is
+  already this repository's registry of defects it actually shipped, and
+  HARNESS.md section 0 lists it as something the harness READS rather than
+  rebuilds: re-deriving its cases as scenario YAML would be a second copy
+  of a list that already exists, and the two would drift the first time
+  somebody added a case to one of them.
+tags: [regression-registry, defects]
+
+given:
+  world: no_state
+
+workload:
+  - run_known_defect_registry
+  - probe_health
+
+expect:
+  output:
+    # NAMED FAILURES, NOT A COUNT. An empty list is what a pass looks like, and
+    # when it is not empty the report carries the case ids rather than "9 of
+    # 10", so the reader knows which defect came back without opening another
+    # file.
+    - facts.defect_registry_failures == []
+    # A FLOOR ON THE SIZE, for the reason claude.md gives about a guard
+    # threshold going quietly vacuous: a registry that lost its cases would
+    # report zero failures for ever, which is the same green as a registry
+    # whose cases all pass. Moving this number means naming the case that was
+    # removed and why, in the same change. NINE since the Vivekium release:
+    # `routes-match-permissions` checked the orchestration router's task table
+    # against the tool grants, and the router was deleted with the rest of the
+    # unreachable orchestration package (Phase 7 WP-B5). The defect it guarded
+    # (a task routed to an agent holding no tools) has no router left to
+    # recur in; the grants themselves stay pinned by the tool manifest.
+    # EIGHT since the final sweeps: `pii-card-before-phone` exercised
+    # `services/safety/pii.py`, the PII masker nothing in the product ran,
+    # which was deleted (it is not a defect that can recur in live code).
+    - facts.defect_registry_size >= 8
+    - status.probe_health == [200, 200]
+  trajectory:
+    - defect_registry_replayed
+  prohibited:
+    - a_number_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - functional_correctness
+    - safety_and_policy

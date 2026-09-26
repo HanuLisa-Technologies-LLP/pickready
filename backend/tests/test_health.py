@@ -209,3 +209,68 @@ async def test_health_does_not_reuse_the_degrading_cache_client() -> None:
         "on an outage and latches. A probe built on it reports a healthy task "
         "with no Redis. Open a connection here instead."
     )
+
+
+# ── Liveness, which is a different question from readiness ──────────────────
+#
+# `/health` above is READINESS and its strictness is correct: a task with no
+# Redis answers every assessment turn with a 503, and promoting it on a deploy
+# would ship a broken release.
+#
+# The defect was using that one endpoint to answer a SECOND question. The ALB
+# target group polled it every thirty seconds with `unhealthy_threshold = 3`,
+# and ECS replaces a task that fails its load balancer check. Redis is a single
+# shared ElastiCache, so an outage there marked EVERY task unhealthy at once:
+# the target group emptied and the ALB answered 503 for the whole product,
+# including jobs, candidates, billing and reports, all of which would otherwise
+# have kept working; then ECS killed the tasks and the replacements failed the
+# same check, which is a restart loop. There was nothing to route around TO,
+# because the dependency is shared.
+#
+# The deploy gate did not disappear, it moved: `scripts/smoke-test.sh` probes
+# `/health` after the rollout and fails the deploy when it is not 200.
+
+
+@pytest.mark.asyncio
+async def test_liveness_answers_while_every_dependency_is_down(wire) -> None:
+    """THE WHOLE POINT, and the assertion that would catch a regression.
+
+    A liveness probe that touched a dependency would bring the restart loop
+    straight back, so this wires BOTH dependencies to fail and still expects a
+    200 body.
+    """
+
+    class BrokenSession(_Session):
+        async def execute(self, statement) -> None:
+            raise ConnectionError("database unavailable")
+
+    wire(session=BrokenSession(), redis=_Redis(fail=True))
+
+    assert await main.health_live() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_liveness_touches_no_dependency_at_all(wire) -> None:
+    """Asserted on the PROBES rather than on the response.
+
+    A handler could return the right body and still have opened a connection on
+    the way, which is the thing that must not happen. `session.statements` and
+    `redis.pinged` are the same witnesses the readiness tests above use.
+    """
+    session, redis = wire()
+
+    await main.health_live()
+
+    assert session.statements == [], "liveness executed a query"
+    assert not redis.pinged, "liveness opened Redis"
+
+
+@pytest.mark.asyncio
+async def test_readiness_still_refuses_when_a_dependency_is_down(wire) -> None:
+    """The other direction. Splitting the two questions must not have quietly
+    relaxed the strict one: a release with a broken dependency still must not
+    pass the post-rollout smoke test."""
+    wire(redis=_Redis(fail=True))
+
+    with pytest.raises(Exception):
+        await main.health()

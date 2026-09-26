@@ -1,0 +1,132 @@
+{
+  "_provenance": [
+    "The expected shape of a REAL span exported through the OpenTelemetry SDK by",
+    "app/services/observability/otel.py. Produced by running the module and",
+    "reading the exporter, never transcribed from the specification.",
+    "",
+    "WHY THIS FILE IS DATA AND NOT ASSERTIONS IN THE TEST. The GenAI semantic",
+    "conventions moved to a dedicated repository in June 2026, nothing in them is",
+    "marked Stable, and the repository carries no tags, so there is no schema",
+    "version to pin. A convention drift therefore arrives as a renamed field in a",
+    "dependency upgrade, which is exactly the change a hand-written assertion",
+    "quietly follows. Comparing a real exported span against this file turns that",
+    "drift into a failing test with a diff naming the old and new field.",
+    "",
+    "Every attribute value here is an identifier, a count or a protocol word.",
+    "There is no candidate text, no prompt body, no score, no bucket name and no",
+    "object key, and tests/test_otel_no_content.py proves the allowlist is what",
+    "keeps it that way."
+  ],
+  "tenant_id": "11111111-1111-1111-1111-111111111111",
+  "spans": [
+    {
+      "case": "chat",
+      "span_name": "chat gpt-5.6-terra",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "gpt-5.6-terra",
+        "gen_ai.response.finish_reasons": ["stop"],
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 340,
+        "readypick.agent": "siddhi",
+        "readypick.prompt_digest": "7f2a1c9d",
+        "readypick.prompt_version": "3",
+        "readypick.route": "ecs",
+        "readypick.task_type": "report_synthesis",
+        "readypick.tenant_hash": "bafde89c041e1756"
+      }
+    },
+    {
+      "case": "embeddings",
+      "span_name": "embeddings voyage-4",
+      "attributes": {
+        "gen_ai.operation.name": "embeddings",
+        "gen_ai.request.model": "voyage-4",
+        "gen_ai.usage.input_tokens": 512,
+        "readypick.agent": "yukti",
+        "readypick.route": "lambda",
+        "readypick.task_type": "extraction",
+        "readypick.tenant_hash": "bafde89c041e1756"
+      }
+    },
+    {
+      "case": "execute_tool",
+      "span_name": "execute_tool",
+      "attributes": {
+        "gen_ai.operation.name": "execute_tool",
+        "readypick.agent": "email_agent",
+        "readypick.route": "lambda",
+        "readypick.task_type": "job_facts",
+        "readypick.tenant_hash": "bafde89c041e1756"
+      }
+    },
+    {
+      "case": "invoke_agent",
+      "span_name": "invoke_agent gpt-5.6-luna",
+      "attributes": {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.request.model": "gpt-5.6-luna",
+        "gen_ai.response.finish_reasons": ["length"],
+        "gen_ai.usage.input_tokens": 8100,
+        "gen_ai.usage.output_tokens": 2048,
+        "readypick.agent": "bodha",
+        "readypick.prompt_digest": "c41d0e2b",
+        "readypick.prompt_version": "1",
+        "readypick.route": "ecs",
+        "readypick.task_type": "extraction",
+        "readypick.tenant_hash": "bafde89c041e1756"
+      }
+    },
+    {
+      "case": "chat_failed",
+      "span_name": "chat gpt-5.6-terra",
+      "attributes": {
+        "error.type": "LLMUnavailableError",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "gpt-5.6-terra",
+        "readypick.agent": "miti",
+        "readypick.route": "ecs",
+        "readypick.task_type": "behavioral_assessment",
+        "readypick.tenant_hash": "bafde89c041e1756"
+      },
+      "status_code": "ERROR"
+    }
+  ],
+  "metrics": {
+    "gen_ai.client.token.usage": {
+      "unit": "{token}",
+      "explicit_bounds": [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144],
+      "attribute_keys": [
+        "gen_ai.operation.name",
+        "gen_ai.request.model",
+        "gen_ai.token.type",
+        "readypick.agent",
+        "readypick.route",
+        "readypick.task_type"
+      ]
+    },
+    "gen_ai.client.operation.duration": {
+      "unit": "s",
+      "explicit_bounds": [
+        0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28,
+        2.56, 5.12, 10.24, 20.48, 40.96, 81.92
+      ],
+      "attribute_keys": [
+        "error.type",
+        "gen_ai.operation.name",
+        "gen_ai.request.model",
+        "readypick.agent",
+        "readypick.route",
+        "readypick.task_type"
+      ],
+      "_error_type_note": [
+        "error.type appears on the duration histogram and not on the token one,",
+        "and that asymmetry is the behaviour rather than an oversight: the failed",
+        "call in the fixture reported no token usage, because it never got a",
+        "response to count. A duration histogram that cannot separate a failure",
+        "from a success is uninterpretable, which is why the dimension is carried",
+        "at all."
+      ]
+    }
+  }
+}

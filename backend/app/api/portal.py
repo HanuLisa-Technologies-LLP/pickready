@@ -1,21 +1,33 @@
-"""Candidate portal (FR-6.x, FR-9.x / ESD §13). Authenticated endpoints use
-the candidate JWT audience; the outreach link endpoints are public, gated by
-the signed outreach token."""
+"""Candidate portal (FR-6.x, FR-9.x / ESD §13).
+
+Authenticated endpoints use the candidate JWT audience and resolve the caller's
+candidate record through `services/candidate_identity`, by `user_id` and
+nothing else. The one public route is the consent renewal link, gated by its
+own single-use token.
+
+There is ONE way to apply: `POST /portal/jobs/{id}/apply`, used by the portal
+board and by the public `/apply/{job}` page alike. The retired questionnaire
+outreach form and its signed-token routes are gone (2026-09-24), and
+`tests/test_aspect_form_removed.py` keeps them gone.
+"""
 import json
 import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
-from fastapi import Query, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    Query, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status,
+)
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     CurrentUser,
-    decode_outreach_token,
+    clear_auth_cookies,
     get_candidate_db,
     get_current_any,
     get_current_candidate,
@@ -25,13 +37,11 @@ from app.core.db import get_session_factory, superadmin_scope
 from app.models.candidate import (
     Candidate,
     JobCandidateLink,
-    PipelineStatusEntry,
     Profile,
-    VerificationRequest,
 )
 from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
 from app.models.company import Company
-from app.models.enums import LinkSource, PipelineStatus, VerificationStatus
+from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.candidate_update import CandidateUpdate
 from app.models.tenant import Tenant
@@ -40,47 +50,54 @@ from app.schemas.portal import (
     ApplicationOut,
     ApplicationsOut,
     ApplyOut,
-    AspectOut,
+    ConsentRenewalOut,
+    ConsentRenewedOut,
+    DeleteMeIn,
+    DeleteMeOut,
+    DeletionNoticeOut,
     MarkUpdatesReadIn,
     MeOut,
     MeUpdateIn,
-    OutreachInfoOut,
-    OutreachSubmitOut,
     PortalJobOut,
     PortalJobsOut,
+    RenewConsentIn,
     StatusEventOut,
     UpdateOut,
     UpdatesOut,
     UpdatesSummaryOut,
 )
+from app.services import account_deletion
 from app.services import application_validation
+from app.services import candidate_identity
 from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
+from app.services import consent_catalog
+from app.services import consent_lifecycle
+from app.services import consent_renewal
+from app.services import deletion_requests
 from app.services import employer_pages
+from app.services import erasure
+from app.services import firebase_auth
 from app.services import hiring_pipeline
 from app.services import job_posting
 from app.services import job_relevance
-from app.services import retake
 from app.services import telemetry_events
 from app.services.audit import audit
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 from app.services.resume_storage import apply_resume_asset, copy_resume_metadata, store_resume
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MAX_EMPLOYER_EMAILS = 3  # FR-5.2
-
-
 # ── Apply-context response models (FR-6.2 resume reuse / FR-9.2) ────────────
 # Declared here rather than in schemas/portal.py: they exist purely to let the
-# apply UI decide, BEFORE the candidate fills 40 questions, whether "reuse my
-# last resume" is offerable and whether they have already applied.
+# apply UI decide, BEFORE the candidate fills anything in, whether "reuse my
+# main resume" is offerable and whether they have already applied.
 
 class StoredResumeOut(BaseModel):
     """The candidate's most recent stored resume, reusable on a new
-    application (claude.md rule 6 / FR-6.2). No Cloudinary URL is exposed —
+    application (claude.md rule 6 / FR-6.2). No storage URL is exposed:
     the UI only needs to name the file it would reuse."""
     has_resume: bool = False
     filename: str | None = None
@@ -93,6 +110,9 @@ class ApplyContextOut(BaseModel):
     job_id: uuid.UUID
     already_applied: bool = False
     applied_at: datetime | None = None
+    #: The application's id when `already_applied`, so "View your application"
+    #: opens Applied Jobs on that card. A sourced databank entry is not one.
+    application_id: uuid.UUID | None = None
     resume: StoredResumeOut = StoredResumeOut()
     #: Whether the candidate's My Profile advanced form is filled in. The apply
     #: dialog uses this to send them to their profile first rather than letting
@@ -113,168 +133,13 @@ class ApplyContextOut(BaseModel):
     #: is the typing, not the record.
     validation_values: dict[str, str] = {}
 
-# ── The 40-aspect questionnaire ─────────────────────────────────────────────
-# ASSUMPTION: the PRD references "the 40-aspect questionnaire" but does not
-# enumerate the aspects (business content to be supplied by Hanulisa). Known
-# from the PRD: aspects 1-4 duplicate the personal fields collected in
-# FR-5.1 a-d (and are therefore skipped when those are already covered), and
-# Aspect 40 is the Databank re-use consent (FR-4.2 / PRD §10). The remaining
-# prompts are placeholders to be replaced with the real questionnaire text.
-_PERSONAL_ASPECTS: dict[int, str] = {
-    1: "full_name", 2: "city", 3: "age", 4: "gender",
-}
-ASPECT_DEFINITIONS: list[AspectOut] = (
-    [
-        AspectOut(id=1, prompt="Full Name (as per PF records / Class X memorandum)"),
-        AspectOut(id=2, prompt="Residing City"),
-        AspectOut(id=3, prompt="Age"),
-        AspectOut(id=4, prompt="Gender"),
-    ]
-    + [AspectOut(id=n, prompt=f"Aspect {n} (questionnaire item {n})") for n in range(5, 40)]
-    + [AspectOut(id=40, prompt="Do you consent to being matched against future "
-                               "roles via the ReadyPick Databank?")]
-)
-
-
-async def _outreach_context(session: AsyncSession, token: str):
-    payload = decode_outreach_token(token)
-    profile = await session.get(Profile, uuid.UUID(payload["profile_id"]))
-    if profile is None:
-        raise HTTPException(status_code=404, detail="Invalid or expired link")
-    candidate = await session.get(Candidate, profile.candidate_id)
-    job = await session.get(Job, uuid.UUID(payload["job_id"]))
-    return profile, candidate, job
-
-
-@router.get("/outreach/{token}", response_model=OutreachInfoOut)
-async def outreach_info(
-    token: str, session: AsyncSession = Depends(get_public_db)
-) -> OutreachInfoOut:
-    """What the outreach asks for (FR-5.1/6.1): personal fields still missing,
-    the 40 aspects minus those already covered, a fresh resume, and up to 3
-    previous-employer HR emails."""
-    profile, candidate, job = await _outreach_context(session, token)
-    tenant = await session.get(Tenant, job.tenant_id) if job else None
-
-    missing_personal = [
-        field for field in ("full_name", "city", "age", "gender")
-        if getattr(candidate, field, None) is None
-    ]
-    covered_ids = {
-        aspect_id for aspect_id, field in _PERSONAL_ASPECTS.items()
-        if getattr(candidate, field, None) is not None
-    }
-    return OutreachInfoOut(
-        job_title=job.title if job else None,
-        company_name=tenant.name if tenant else None,
-        already_submitted=profile.aspects_completed_at is not None,
-        personal_fields=missing_personal,
-        aspects=[a for a in ASPECT_DEFINITIONS if a.id not in covered_ids],
-        max_employer_emails=MAX_EMPLOYER_EMAILS,
-    )
-
-
-@router.post("/outreach/{token}", response_model=OutreachSubmitOut)
-async def outreach_submit(
-    token: str,
-    resume: UploadFile = File(...),
-    aspects: str = Form(...),  # JSON object {"5": "...", ..., "40": true}
-    full_name: str | None = Form(default=None),
-    city: str | None = Form(default=None),
-    age: int | None = Form(default=None),
-    gender: str | None = Form(default=None),
-    employer_emails: list[str] = Form(default=[]),
-    session: AsyncSession = Depends(get_public_db),
-) -> OutreachSubmitOut:
-    """Candidate completes the outreach (FR-6.1): personal fields, the
-    40-aspect questionnaire, a fresh resume, and up to 3 previous-employer
-    HR emails. Single-use: a completed profile rejects re-submission."""
-    profile, candidate, job = await _outreach_context(session, token)
-    if profile.aspects_completed_at is not None:
-        raise HTTPException(status_code=409, detail="This outreach was already completed")
-    if len(employer_emails) > MAX_EMPLOYER_EMAILS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"At most {MAX_EMPLOYER_EMAILS} previous employers (FR-5.2)",
-        )
-    try:
-        aspects_data = json.loads(aspects)
-        if not isinstance(aspects_data, dict):
-            raise ValueError
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="aspects must be a JSON object") from exc
-
-    if full_name is not None:
-        candidate.full_name = full_name
-    if city is not None:
-        candidate.city = city
-    if age is not None:
-        candidate.age = age
-    if gender is not None:
-        candidate.gender = gender
-    # Aspect 40 is the Databank consent (PRD §10 / FR-4.2).
-    consent = aspects_data.get("40")
-    candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
-
-    asset = await store_resume(resume)
-    apply_resume_asset(profile, asset)
-    profile.aspects_json = aspects_data
-    profile.aspects_completed_at = datetime.now(timezone.utc)
-
-    created = 0
-    for seq, employer_email in enumerate(employer_emails, start=1):
-        if not employer_email.strip():
-            continue
-        session.add(VerificationRequest(
-            tenant_id=job.tenant_id,
-            profile_id=profile.id,
-            employer_seq=seq,
-            employer_email=employer_email.strip(),
-            token=secrets.token_urlsafe(32),  # single-use employer form token
-            status=VerificationStatus.pending,
-        ))
-        created += 1
-    await session.flush()
-
-    dispatch("pickready.parse_resume", args=[str(profile.id)])
-    if created:
-        dispatch(
-            "pickready.send_verification_requests", args=[str(profile.id)]
-        )
-    return OutreachSubmitOut(
-        profile_id=profile.id,
-        aspects_received=len(aspects_data),
-        verification_requests_created=created,
-    )
-
-
 # ── Authenticated candidate endpoints ───────────────────────────────────────
 
-async def _candidate_for_user(
-    session: AsyncSession, user: CurrentUser
-) -> Candidate:
-    row = await session.get(User, user.user_id)
-    if row is None:
-        raise HTTPException(status_code=401, detail="Unknown user")
-    candidate = (
-        await session.execute(
-            select(Candidate).where(
-                (Candidate.user_id == user.user_id) | (Candidate.email == row.email)
-            )
-        )
-    ).scalars().first()
-    if candidate is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No candidate record yet, you appear after an employer's first outreach",
-        )
-    if candidate.user_id is None:
-        candidate.user_id = user.user_id  # link portal login to the candidate record
-    return candidate
-
-
 def _portal_job_out(
-    job: Job, tenant: Tenant | None, company: Company | None = None
+    job: Job,
+    tenant: Tenant | None,
+    company: Company | None = None,
+    application_id: uuid.UUID | None = None,
 ) -> PortalJobOut:
     """One place where a Job becomes the candidate-facing job payload.
 
@@ -289,7 +154,6 @@ def _portal_job_out(
         id=job.id,
         title=job.title,
         department=job.department,
-        level=job.level,
         company_name=tenant.name if tenant else None,
         # The employer-page link travels with the card only while the page is
         # actually served, so the portal never renders a link that 404s
@@ -305,7 +169,30 @@ def _portal_job_out(
         company_culture=(company.work_life if company else None) or (tenant.culture if tenant else None),
         company_industry=tenant.industry if tenant else None,
         company_benefits=company.benefits_text if company else None,
+        already_applied=application_id is not None,
+        application_id=application_id,
     )
+
+
+async def _applications_by_job(
+    session: AsyncSession, candidate_id: uuid.UUID, job_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID]:
+    """job id -> this candidate's APPLICATION link on it, for these jobs.
+
+    A `sourced` link is excluded, for the reason `apply_context` gives: it is a
+    recruiter's databank entry, not something the candidate did, and the apply
+    path converts it rather than refusing it. One query for the whole board.
+    """
+    if not job_ids:
+        return {}
+    rows = await session.execute(
+        select(JobCandidateLink.job_id, JobCandidateLink.id).where(
+            JobCandidateLink.candidate_id == candidate_id,
+            JobCandidateLink.job_id.in_(job_ids),
+            JobCandidateLink.status != hiring_pipeline.SOURCED,
+        )
+    )
+    return {job_id: link_id for job_id, link_id in rows}
 
 
 #: What a candidate is told when a posting has closed. Deliberately identical
@@ -361,7 +248,7 @@ async def _previous_resume(
     """The candidate's most recent stored resume, reused across applications
     (FR-6.2 / FR-9.2 / claude.md rule 6, reversed 2026-07-24).
 
-    # The latest profile with complete Cloudinary metadata is the reusable
+    # The latest profile with a complete stored resume file is the reusable
     # resume snapshot. A new application copies that immutable metadata.
     """
     return (
@@ -419,11 +306,55 @@ async def portal_jobs(
     This ranking is candidate-side presentation ONLY. It never decides who is
     scored — every non-archived link on a job still enters the scoring pool.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    # ── The SQL pre-filter is a strict SUPERSET of `can_view_job` ────────────
+    #
+    # This query used to be `WHERE ratified_at IS NOT NULL` with no window
+    # predicate, no ceiling and no column projection: every ratified job on the
+    # platform, fully hydrated, including `embedding` and `reach_embedding`.
+    # Those are `vector(1024)`, about 4KB each and out-of-line, so the ORM
+    # detoasted roughly 8KB per job on every board open for a page that renders
+    # a title and a company name. At ten thousand live jobs that is tens of
+    # megabytes per request; the API task runs out of memory before the
+    # database notices.
+    #
+    # THE WINDOW RULE IS STILL THE AUTHORITY, and it still runs below, before
+    # search and before relevance, for the reason the comment there gives. What
+    # goes into SQL is only what `can_view_job` NECESSARILY requires, so the
+    # filter cannot exclude a job the rule would have admitted:
+    #
+    #   * `closed_at IS NULL` -- a closed job is STATUS_CLOSED, which dominates
+    #     the four date-derived states and is never ACTIVE or GRACE.
+    #   * `grace_period_end_date >= now()` -- ACTIVE needs the posting window
+    #     open and GRACE needs the grace window open; the grace end is the
+    #     later of the two, so it is implied by both.
+    #   * `posting_end_date >= candidate.created_at` -- `candidate_registered_
+    #     in_time` refuses a candidate who registered after the active window
+    #     closed, whatever the status.
+    #
+    # A job the SQL admits may still be refused by `can_view_job`. That is the
+    # safe direction and the only one that keeps one implementation of the rule.
+    now = datetime.now(timezone.utc)
     jobs = list(
         (
             await session.execute(
-                select(Job).where(Job.ratified_at.isnot(None))
+                select(Job)
+                .where(
+                    Job.ratified_at.isnot(None),
+                    Job.closed_at.is_(None),
+                    Job.grace_period_end_date >= now,
+                    Job.posting_end_date >= candidate.created_at,
+                )
+                # NO `defer()` ON THE VECTOR COLUMNS, and the absence is the
+                # point. `jobs.embedding` and `jobs.reach_embedding` exist in
+                # the DATABASE and are deliberately NOT MAPPED on `Job`: the
+                # model reaches them through raw SQL
+                # (`_invalidate_job_embedding`) precisely so an ordinary read
+                # never drags 1024 floats per row across the wire. Deferring
+                # them was written here from inference, raised `AttributeError:
+                # type object 'Job' has no attribute 'embedding'` on every call
+                # to this endpoint, and the cost it claimed to remove had never
+                # been paid in the first place.
                 .order_by(Job.created_at.desc())
             )
         ).scalars().all()
@@ -465,8 +396,16 @@ async def portal_jobs(
         jobs = job_relevance.visible(ranked, signal)
 
     tenants, companies = await _employers_for(session, jobs)
+    applications = await _applications_by_job(
+        session, candidate.id, [job.id for job in jobs]
+    )
     return PortalJobsOut(jobs=[
-        _portal_job_out(job, tenants.get(job.tenant_id), companies.get(job.tenant_id))
+        _portal_job_out(
+            job,
+            tenants.get(job.tenant_id),
+            companies.get(job.tenant_id),
+            applications.get(job.id),
+        )
         for job in jobs
     ])
 
@@ -482,13 +421,14 @@ async def portal_job(
     regardless of prior contact (FR-3.5, open application), PROVIDED the
     posting window still admits them (spec §2.2): direct-URL access is exactly
     the path Rule 3 has to close, not just the job board."""
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     job = await _visible_job_or_404(session, candidate, job_id)
     tenant = await session.get(Tenant, job.tenant_id)
     company = (
         await session.execute(select(Company).where(Company.tenant_id == job.tenant_id))
     ).scalars().first()
-    return _portal_job_out(job, tenant, company)
+    applications = await _applications_by_job(session, candidate.id, [job.id])
+    return _portal_job_out(job, tenant, company, applications.get(job.id))
 
 
 # ── Self-service profile CRUD (Settings & Profile) ──────────────────────────
@@ -541,10 +481,17 @@ async def update_me(
 ) -> MeOut:
     """Update the signed-in user's own name and/or phone.
 
-    Both the `users` row and the caller's matching `candidates` row are kept in
-    step, so a corrected name shows up on the HR Review Screen (which reads the
-    candidate record) and not just in the portal header. `email` is read-only
-    (claude.md rule 2) and is rejected by the request schema.
+    The `users` row and the caller's OWN candidate record are kept in step, so
+    a corrected name shows up on the recruiter's candidate table (which reads
+    the candidate record) and not just in the portal header. `email` is
+    read-only (claude.md rule 2) and is rejected by the request schema.
+
+    ONE candidate row, and it is never linked here. This used to update every
+    candidate row whose email matched the user's and stamp `user_id` onto each,
+    which turned one profile edit into a multi-link generator: a recruiter's
+    sourced upload carrying the same address became this person's record
+    without any sign-in ever proving the address. Linking now happens only at
+    sign-in, on a Firebase-verified address (`candidate_identity`).
     """
     row = await session.get(User, user.user_id)
     if row is None:
@@ -560,18 +507,13 @@ async def update_me(
         changed["phone"] = body.phone
 
     if changed:
-        # Keep the shared candidate record in step. Matched the same way
-        # `_candidate_for_user` matches, so a candidate whose record predates
-        # their login (created by an employer's outreach) is still updated.
-        match = Candidate.user_id == user.user_id
-        if row.email:  # a phone-only account has no email to match on
-            match = match | (Candidate.email == row.email)
-        candidates = (
-            await session.execute(select(Candidate).where(match))
-        ).scalars().all()
-        for candidate in candidates:
-            if candidate.user_id is None:
-                candidate.user_id = user.user_id
+        # A staff account has no candidate record, and that is not an error:
+        # this route serves every audience's Settings page.
+        candidate_id = await candidate_identity.resolve_candidate_id(
+            session, user.user_id
+        )
+        if candidate_id is not None:
+            candidate = await session.get(Candidate, candidate_id)
             if "full_name" in changed:
                 candidate.full_name = row.full_name
             if "phone" in changed:
@@ -597,31 +539,71 @@ async def update_me(
 
 
 class ProfileFormOut(BaseModel):
-    """The advanced form: its definition, the candidate's saved answers, and
-    the main resume that goes with it."""
+    """The advanced form: its definition, the candidate's saved answers, the
+    main resume that goes with it, and the registration consent it cannot be
+    completed without."""
     definition: dict
     answers: dict = {}
     complete: bool = False
     missing: list[str] = []
     updated_at: datetime | None = None
     main_resume: StoredResumeOut = StoredResumeOut()
+    #: Stage A of the consent catalogue (vivekium feature 6) with this
+    #: candidate's stamps: {key, stage, text, version, consented_at,
+    #: consented_version, wording_current}. Served so the profile screen
+    #: renders the server's wording and never authors consent copy.
+    consent_items: list[dict[str, Any]] = []
+    #: The Stage A keys still outstanding. Empty means registration consent
+    #: stands and the profile can be completed.
+    consent_missing: list[str] = []
 
 
 class ProfileFormIn(BaseModel):
     """Answers keyed by the form's field keys. Unknown keys are dropped rather
-    than stored — `candidate_profile_form.clean_answers` is the gate."""
+    than stored — `candidate_profile_form.clean_answers` is the gate.
+
+    `consent_keys` are the Stage A items ticked in THIS submission. They are a
+    separate field rather than two more form answers because the record of a
+    consent belongs in `candidate_consents`, individually timestamped, and a
+    checkbox inside `profile_form_json` would be a second, unstamped copy of
+    the same fact for the two to disagree about.
+    """
     answers: dict
+    consent_keys: list[str] = []
 
 
-def _profile_form_out(candidate: Candidate, main: Profile | None) -> ProfileFormOut:
+def _declaration_accepted(answers: dict) -> bool:
+    """Whether the profile form's declaration checkbox is ticked.
+
+    A checkbox arrives as a boolean from the screen and as a string from older
+    clients, so "false", "no" and "0" read as unticked rather than as a
+    non-empty string that happens to be truthy.
+    """
+    value = answers.get("declaration_accepted")
+    return bool(value) and str(value).strip().lower() not in ("false", "no", "0")
+
+
+async def _profile_form_out(
+    session: AsyncSession, candidate: Candidate, main: Profile | None
+) -> ProfileFormOut:
     answers = candidate.profile_form_json or {}
+    outstanding = await consent_catalog.stage_a_missing(session, candidate.id)
     return ProfileFormOut(
         definition=profile_form.form_definition(),
         answers=answers,
-        complete=profile_form.is_complete(answers),
+        # COMPLETE MEANS COMPLETE, consent included. The form answers alone
+        # used to decide it, so a candidate who had never been asked for
+        # registration consent was told their profile was finished.
+        complete=profile_form.is_complete(answers) and not outstanding,
         missing=profile_form.missing_required(answers),
         updated_at=candidate.profile_form_updated_at,
         main_resume=_resume_summary(main),
+        consent_items=[
+            item
+            for item in await consent_catalog.items_for(session, candidate.id)
+            if item["stage"] == consent_catalog.STAGE_REGISTRATION
+        ],
+        consent_missing=outstanding,
     )
 
 
@@ -644,8 +626,10 @@ async def get_profile_form(
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ProfileFormOut:
     """My Profile: the advanced form definition plus this candidate's answers."""
-    candidate = await _candidate_for_user(session, user)
-    return _profile_form_out(candidate, await _main_resume_profile(session, candidate))
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    return await _profile_form_out(
+        session, candidate, await _main_resume_profile(session, candidate)
+    )
 
 
 @router.put("/me/profile-form", response_model=ProfileFormOut)
@@ -656,11 +640,68 @@ async def save_profile_form(
 ) -> ProfileFormOut:
     """Save the advanced form. Partial saves are allowed — the candidate can
     come back to it — so missing required answers are REPORTED, not rejected.
-    Personal fields the ATS shows are mirrored onto the candidate record."""
-    candidate = await _candidate_for_user(session, user)
+    Personal fields the ATS shows are mirrored onto the candidate record.
+
+    THIS IS WHERE STAGE A IS COLLECTED (vivekium feature 6: "at registration,
+    before candidate profile creation completes"). Sign-in provisions a bare
+    candidate row and asks nothing; profile creation actually COMPLETES here,
+    which is the last moment the brief's "before" is still true.
+
+    MANDATORY MEANS THE PROFILE CANNOT COMPLETE WITHOUT IT, not that the route
+    is closed. A partial save is still accepted with the consent outstanding,
+    because the form is explicitly something a candidate fills in over several
+    sittings and locking them out of their own half-finished profile would be
+    a worse outcome than an unticked box. What is refused is a save that would
+    otherwise leave the profile COMPLETE while registration consent does not
+    stand, and the refusal names the items in the server's own wording.
+
+    Consent is asked of the TABLE, so a candidate who already consented
+    on an earlier save is never asked again, and a
+    candidate who registered before this existed is asked once, on their next
+    save, rather than being locked out of anything.
+    """
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    unknown = [key for key in body.consent_keys if key not in consent_catalog.STAGE_A_KEYS]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "These are not registration consent items: " + ", ".join(sorted(unknown))
+            ),
+        )
+    if body.consent_keys:
+        await consent_catalog.record_items(
+            session,
+            candidate_id=candidate.id,
+            keys=body.consent_keys,
+            source=consent_catalog.SOURCE_REGISTRATION,
+        )
     answers = profile_form.clean_answers(body.answers)
+    outstanding = await consent_catalog.stage_a_missing(session, candidate.id)
+    if outstanding and profile_form.is_complete(answers):
+        # Refused BEFORE the answers are written, not rolled back after: a
+        # profile that reads as finished while the consent behind it was never
+        # given is the state this gate exists to prevent, and the earlier the
+        # refusal the less there is to undo.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Before your profile can be completed, please agree to each "
+                "of these: "
+                + "; ".join(
+                    consent_catalog.ITEMS_BY_KEY[key].text for key in outstanding
+                )
+            ),
+        )
     candidate.profile_form_json = answers
     candidate.profile_form_updated_at = datetime.now(timezone.utc)
+    # THE DATABANK CONSENT IS WRITTEN HERE AND NOWHERE ELSE. The declaration's
+    # own wording ("I consent to my profile being shared with prospective
+    # employers for job matching") is on this form, so this is where ticking or
+    # unticking it means something. The apply route used to re-derive the flag
+    # from whatever the apply form carried, on every application, which could
+    # silently revoke a consent the candidate had given here.
+    candidate.consent_databank = _declaration_accepted(answers)
     # Keep the denormalised candidate columns in step so the HR Review Screen
     # shows a city rather than a blank, exactly as the outreach flow did.
     if city := answers.get("current_city"):
@@ -675,9 +716,15 @@ async def save_profile_form(
         action="candidate_profile_form_saved",
         target_type="candidate",
         target_id=candidate.id,
-        metadata={"answered": len(answers), "complete": profile_form.is_complete(answers)},
+        metadata={
+            "answered": len(answers),
+            "complete": profile_form.is_complete(answers),
+            "databank_consent": candidate.consent_databank,
+        },
     )
-    return _profile_form_out(candidate, await _main_resume_profile(session, candidate))
+    return await _profile_form_out(
+        session, candidate, await _main_resume_profile(session, candidate)
+    )
 
 
 # ── Data-retention choices (Consent & Privacy spec, 2026-09-05) ─────────────
@@ -717,13 +764,37 @@ def _retention_consents_out(candidate: Candidate) -> RetentionConsentsOut:
     )
 
 
+@router.get("/me/consents")
+async def get_my_consents(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> dict:
+    """The full consent catalogue with this candidate's per-item stamps, and
+    every consent act they have performed.
+
+    Destination one of the brief's three (vivekium feature 6): the candidate
+    record. Always the WHOLE catalogue, given or not, the compliance-slots
+    pattern, so an item never asked cannot hide.
+
+    `history` is the append-only record (migration 0117), each act carrying
+    the VERBATIM wording in force at the time. It is served beside the items
+    because a re-affirmation moves the standing stamp, so the items alone
+    cannot answer "what did I agree to, and when did I first agree to it".
+    """
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    return {
+        "items": await consent_catalog.items_for(session, candidate.id),
+        "history": await consent_catalog.history_for(session, candidate.id),
+    }
+
+
 @router.get("/me/retention-consents", response_model=RetentionConsentsOut)
 async def get_retention_consents(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> RetentionConsentsOut:
     """The candidate's own data-retention choices, for the My Profile card."""
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     return _retention_consents_out(candidate)
 
 
@@ -740,7 +811,7 @@ async def set_retention_consents(
     null is refused rather than stored: once a candidate has been asked, the
     honest states are Yes and No, and "unask me" is not one of them.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     fields = body.model_fields_set
     now = datetime.now(timezone.utc)
     changed: list[str] = []
@@ -776,6 +847,401 @@ async def set_retention_consents(
     return _retention_consents_out(candidate)
 
 
+@router.post("/me/consent/renew", response_model=ConsentRenewedOut)
+async def renew_my_consent(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ConsentRenewedOut:
+    """Confirm, while signed in, that this profile should stay (feature 8).
+
+    THE ACT THE REMINDER LETTER HAS ALWAYS ASKED FOR AND THIS PRODUCT NEVER
+    HAD. `consent_renewed_at` was read by the lifecycle in three places and
+    written nowhere, so "sign in and confirm to stay visible" named a control
+    that did not exist, and every candidate advanced to the deletion stage
+    whatever they did. Signing in stamps `last_engagement_at`, which is the
+    INACTIVITY clock; the two are independent by design (C6) and one does not
+    answer for the other.
+
+    Self-service, so the session scope IS the authorization: there is no
+    target to choose, `candidate_identity.require_candidate` resolves the
+    caller's own row, and a capability here would be asking whether you may
+    confirm yourself.
+    """
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    renewed_at = await consent_renewal.renew(session, candidate.id)
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="candidate_consent_renewed",
+        target_type="candidate",
+        target_id=candidate.id,
+        metadata={"source": "portal"},
+    )
+    logger.info("consent.renewed candidate_id=%s source=portal", candidate.id)
+    return ConsentRenewedOut(
+        renewed=True,
+        renewed_at=renewed_at,
+        message=consent_renewal.RENEWED_MESSAGE,
+    )
+
+
+#: What the "Keep my profile" card says, by whether confirmation is due yet.
+#: Server-authored for the reason every rule sentence in this product is: the
+#: card must not be able to promise something the sweep does not do. Dates are
+#: rendered by the client from the timestamps beside the message, so no date
+#: format is baked into a sentence here.
+RENEWAL_NOT_YET_DUE_MESSAGE = (
+    "Your profile is active. We will ask you to confirm that you want to keep "
+    "it when the date below arrives. You can confirm now if you prefer, which "
+    "starts a new period from today."
+)
+RENEWAL_DUE_MESSAGE = (
+    "Your profile is due for renewal. Confirm below to keep it. If it is not "
+    "confirmed, it will be permanently deleted after the notice period set out "
+    "in the letters we send you."
+)
+
+
+def _renewal_thresholds() -> consent_lifecycle.Thresholds:
+    """The sweep's thresholds, read from the same settings the sweep reads
+    (`workers/tasks.sweep_consent_lifecycle`), so the card and the sweep are
+    computed from one set of numbers."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return consent_lifecycle.Thresholds(
+        renewal_months=settings.consent_renewal_months,
+        grace_days=settings.consent_grace_days,
+        inactivity_months=settings.consent_inactivity_months,
+    )
+
+
+@router.get("/me/consent/renewal", response_model=ConsentRenewalOut)
+async def my_consent_renewal(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ConsentRenewalOut:
+    """Where this candidate stands on the "keep my profile" cycle (feature 8).
+
+    The card that calls `POST /portal/me/consent/renew` needs to say whether a
+    confirmation is due and when the next one will be. Nothing here is new
+    rule: the stage comes from `consent_lifecycle.stage_for`, the pure function
+    the sweep itself calls, over the same row columns and the same thresholds,
+    so the screen cannot disagree with what the sweep will do.
+
+    READING THIS IS NOT ENGAGEMENT and does not renew anything. It still goes
+    through `require_candidate`, whose engagement stamp is the INACTIVITY clock
+    (C6) and is independent of consent by design; only the POST renews.
+    """
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    thresholds = _renewal_thresholds()
+    now = consent_lifecycle.utcnow()
+    consented_at = consent_lifecycle.consented_at_for(
+        created_at=candidate.created_at, renewed_at=candidate.consent_renewed_at
+    )
+    due_at = consent_lifecycle.renewal_due_at(
+        consented_at=consented_at, thresholds=thresholds
+    )
+    stage = consent_lifecycle.stage_for(
+        now=now,
+        consented_at=consented_at,
+        reminder_sent_at=candidate.consent_reminder_sent_at,
+        final_warning_sent_at=candidate.consent_final_warning_at,
+        thresholds=thresholds,
+    )
+    needed = now >= due_at
+    return ConsentRenewalOut(
+        consented_at=consented_at,
+        renewal_due_at=due_at,
+        stage=stage,
+        renewal_needed=needed,
+        message=RENEWAL_DUE_MESSAGE if needed else RENEWAL_NOT_YET_DUE_MESSAGE,
+    )
+
+
+@router.post("/consent/renew", response_model=ConsentRenewedOut)
+async def renew_consent_by_token(
+    body: RenewConsentIn,
+    session: AsyncSession = Depends(get_public_db),
+) -> ConsentRenewedOut:
+    """The one-click link in the renewal letter (feature 8).
+
+    UNAUTHENTICATED BY DESIGN, and declared as such in both authorization
+    sweeps. The reader is somebody who has not signed in for six months and is
+    holding the letter that says their profile is about to go; requiring them
+    to remember a password to answer "yes, keep it" is how a retention rule
+    becomes a deletion queue.
+
+    THE TOKEN IS THE AUTHORIZATION AND IT IS NOT A CREDENTIAL. It is single
+    use (renewal clears the stored hash), short lived (the expiry is checked
+    inside the lookup statement, so there is no branch that can forget it),
+    bound to one candidate, stored only as a SHA-256 hash, and accepted by
+    this route and nothing else. It reads no data back to the caller and
+    writes four timestamps. The worst outcome if it leaked is that somebody
+    else keeps a profile which asked to stay, which is why it can be a link in
+    an email at all.
+
+    `get_public_db` is the same no-session scope `/bgv/form/{token}` uses, and
+    every statement here names the exact row the token resolved to.
+    """
+    try:
+        candidate_id = await consent_renewal.candidate_id_for_token(
+            session, body.token
+        )
+    except consent_renewal.RenewalTokenInvalid as exc:
+        # 404 rather than 403: an unauthenticated caller must not be able to
+        # tell a token that has expired from one that never existed, because
+        # the difference confirms that a particular string was once real.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    renewed_at = await consent_renewal.renew(session, candidate_id)
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=None,
+        action="candidate_consent_renewed",
+        target_type="candidate",
+        target_id=candidate_id,
+        metadata={"source": "email_link"},
+    )
+    logger.info("consent.renewed candidate_id=%s source=email_link", candidate_id)
+    return ConsentRenewedOut(
+        renewed=True,
+        renewed_at=renewed_at,
+        message=consent_renewal.RENEWED_MESSAGE,
+    )
+
+
+@router.get("/me/deletion-notice", response_model=DeletionNoticeOut)
+async def get_deletion_notice(
+    _user: CurrentUser = Depends(get_current_candidate),
+) -> DeletionNoticeOut:
+    """The warning screen, authored by the server (feature 7).
+
+    Takes no session and reads no row: the warning is the same for everybody
+    and naming what a PARTICULAR candidate is about to lose would mean listing
+    their applications and verifications on a screen whose entire purpose is
+    that those things are about to stop existing.
+    """
+    return DeletionNoticeOut(**account_deletion.deletion_notice())
+
+
+@router.delete("/me", response_model=DeleteMeOut)
+async def delete_my_profile(
+    body: DeleteMeIn,
+    response: Response,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> DeleteMeOut:
+    """Erase this candidate, permanently, on their own authority (feature 7).
+
+    India's Digital Personal Data Protection Act, 2023 gives a data principal
+    the right to erasure. Until this route existed the product had the whole
+    machinery for it (`services/erasure`, `pickready.cascade_erasure`) and no
+    door: nothing, on any portal, could ask for it.
+
+    THE ERASURE RUNS IN THE REQUEST, AND THAT IS DELIBERATE, because rule 4
+    would otherwise say to dispatch it. Three reasons, and the third is the one
+    that decides it:
+
+      * It is a handful of statements and one Redis scan. The task that wraps
+        it is `Route.LAMBDA` precisely because it is seconds of work, and rule
+        4 is about work measured in minutes.
+      * A dispatch would return 200 to somebody whose data still exists. The
+        answer to "is my data gone" must not be "it has been scheduled".
+      * A dispatch that FAILED would be invisible here. `dispatch` raises, but
+        it raises about the enqueue, not about the erasure, and the candidate
+        would already have been told it was done and signed out. Running it
+        inline means the transaction either commits the erasure and its audit
+        row together or rolls both back and answers 500.
+
+    `get_candidate_db` is already a bypass scope, which `cascade_erasure`
+    requires: a candidate spans tenants through the databank and their chunks
+    sit under tenants this session is not scoped to, so a tenant-scoped session
+    would delete the subset it can see and report a complete erasure.
+
+    THE OBJECTS ARE NOT ERASED IN THE REQUEST, AND THE RECORD IS WHY THAT IS
+    STILL HONEST. Rows, vectors and caches are settled here, by one
+    transaction, exactly as above. Stored FILES cannot be: a resume, an
+    assessment recording and a staged project original live in an object store
+    that fails independently of Postgres, there may be any number of them, and
+    each deletion is a network call plus a HEAD to confirm it. Doing that
+    inline would put an unbounded loop of remote calls inside a request
+    handler, which rule 4 exists to prevent.
+    So `open_deletion_request` captures every object key BEFORE the cascade
+    (afterwards nothing in the database names one), the record moves to
+    `rows_erased`, and `pickready.cascade_erasure` finishes the objects and is
+    swept until they are verifiably gone. The response says which state it
+    reached rather than claiming a completion it cannot see.
+
+    THE SIGN-IN IDENTITY GOES TOO, INLINE AND BEFORE THE COMMIT. Deleting the
+    `users` row (inside `cascade_erasure`) left the Firebase account alive, so
+    the next sign-in with the same Google account or password silently created
+    a fresh, empty profile: an erasure the person could undo by accident, and
+    a credential for a data subject the product claims to have forgotten.
+    `firebase_auth.delete_identity` runs in a threadpool AFTER the rows are
+    erased in this transaction and BEFORE it commits. It is idempotent (an
+    identity already gone is success), and any failure raises 503 and ROLLS
+    BACK the whole transaction: rows, deletion request and audit row. "Nothing
+    was deleted, try again" is recoverable; rows gone with a live sign-in is
+    exactly the state this closes. The one window left open is a commit that
+    fails after Firebase answered, which leaves the rows with no sign-in: the
+    person signs up again and meets their own record, the safe direction.
+
+    ONE EXCEPTION, AND IT IS A REFUSAL TO DELETE ANOTHER ACCOUNT'S DOOR. When
+    the same address is ALSO a staff sign-in on this platform (a recruiter who
+    once applied for a job), the Firebase identity is that person's staff
+    login as well, and deleting it would lock them out of their employer's
+    workspace. The identity is kept, the candidate record is still erased, and
+    the response says so in the server's words.
+
+    THE WORKER PATH KEEPS THE IDENTITY, DELIBERATELY. The inactivity and
+    consent sweeps erase through the same `cascade_erasure` and do not touch
+    Firebase: workers hold no Firebase key by design (the pilot composition
+    grants that secret to the API only), and a person who never asked to leave
+    keeps the door back. `services/erasure` says the same beside the users
+    delete.
+
+    THE OBJECT PASS AND THE CONFIRMATION EMAIL ARE DISPATCHED AFTER THE COMMIT
+    (`dispatch_after_commit`), so a rolled-back erasure sends nothing: no
+    object deletion for rows that still exist and no "your profile is deleted"
+    letter for a profile that is not. The address is read BEFORE the rows go,
+    because after the cascade there is no row left to read one from. A lost
+    object dispatch is repaired by the hourly `reconcile_candidate_erasures`
+    sweep, which reads the deletion request row rather than a queue.
+    """
+    if not account_deletion.phrase_matches(body.confirmation):
+        raise HTTPException(
+            status_code=422, detail=account_deletion.WRONG_PHRASE_MESSAGE
+        )
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
+    candidate_id = candidate.id
+    # Read the address now. In a few statements' time this row is gone, and the
+    # confirmation letter is the one thing that still has to reach the person.
+    confirmation_address = candidate.email
+    # And the sign-in identity, for the same reason: `cascade_erasure` deletes
+    # the users row that names it.
+    account = await session.get(User, user.user_id)
+    firebase_uid = account.firebase_uid if account is not None else None
+    account_email = account.email if account is not None else None
+
+    # DETACH THE ROW BEFORE ERASING IT, or the erasure dies on its own audit
+    # write. `require_candidate` stamps `last_engagement_at`, which leaves
+    # this object DIRTY in the session; `cascade_erasure` then deletes the row
+    # with raw SQL, and the first `flush()` after that (the audit entry, inside
+    # the erasure itself) emits an UPDATE against a row that no longer exists
+    # and raises StaleDataError: "expected to update 1 row(s); 0 were matched".
+    #
+    # Neither half is wrong on its own, which is why this only appeared when
+    # both existed: the engagement stamp is correct for every OTHER route that
+    # resolves a candidate, and the raw delete is correct because the cascade
+    # reaches tables the ORM has no mapping for. Expunging is the narrow fix,
+    # and it is honest about the ordering: after this line the object is a
+    # plain value holding an id and an address, which is all the rest of this
+    # handler needs. The users row goes the same way, for the same reason.
+    session.expunge(candidate)
+    if account is not None:
+        session.expunge(account)
+
+    # OPENED BEFORE THE CASCADE, and it has to be. The keys it captures are
+    # named only by rows the next statement deletes, and a record written
+    # afterwards cannot exist for the failure it is supposed to describe: a
+    # process that died between the two would leave a candidate erased from the
+    # database, their files in the store, and nothing anywhere knowing either.
+    request = await erasure.open_deletion_request(
+        session,
+        candidate_id,
+        reason=deletion_requests.REASON_CANDIDATE_REQUESTED,
+        requested_by_user_id=user.user_id,
+    )
+    request_id = request.id
+    objects_total = request.objects_total
+
+    receipt = await erasure.cascade_erasure(
+        session,
+        candidate_id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+    )
+    await erasure.mark_rows_erased(session, request)
+    deletion_state = request.state
+    await session.flush()
+
+    # The sign-in identity, inside the transaction (see the docstring).
+    identity_deleted = False
+    identity_note: str | None = None
+    if firebase_uid:
+        if await account_deletion.sign_in_identity_shared(
+            session, firebase_uid=firebase_uid, email=account_email
+        ):
+            identity_note = account_deletion.SHARED_IDENTITY_NOTE
+            logger.info(
+                "portal.account_deleted_identity_kept candidate_id=%s reason=shared",
+                candidate_id,
+            )
+        else:
+            try:
+                await run_in_threadpool(firebase_auth.delete_identity, firebase_uid)
+            except firebase_auth.IdentityDeletionFailed as exc:
+                # Raising rolls back EVERYTHING above: the rows, the deletion
+                # request and the audit row. The after-commit dispatches below
+                # are not registered yet, and would be discarded anyway.
+                raise HTTPException(
+                    status_code=503,
+                    detail=account_deletion.IDENTITY_DELETION_FAILED_MESSAGE,
+                ) from exc
+            identity_deleted = True
+
+    # The session is now a credential for a user row that no longer exists.
+    # Clearing it here rather than making the client call /auth/logout means
+    # the cookie cannot outlive the account even if the browser never gets the
+    # chance to make a second request.
+    clear_auth_cookies(response)
+
+    # The object half, after the commit. It is an unbounded number of remote
+    # deletes each followed by a HEAD, which is exactly the work rule 4 keeps
+    # out of a request handler, and it must never start for an erasure that
+    # rolled back. A lost invoke is found by `reconcile_candidate_erasures`,
+    # because the record is in the database and not only in a queue.
+    dispatch_after_commit(
+        session,
+        "pickready.cascade_erasure",
+        args=[str(candidate_id), None, str(request_id)],
+    )
+    if confirmation_address:
+        dispatch_after_commit(
+            session,
+            "pickready.send_email",
+            args=[
+                None,
+                confirmation_address,
+                account_deletion.CONFIRMATION_TEMPLATE,
+                {},
+            ],
+        )
+    logger.info(
+        "portal.account_deleted candidate_id=%s sign_in_accounts=%d identity_deleted=%s",
+        candidate_id,
+        receipt.sign_in_accounts_deleted,
+        identity_deleted,
+    )
+    return DeleteMeOut(
+        deleted=True,
+        candidate_id=receipt.candidate_id,
+        erased_at=receipt.erased_at,
+        chunks_deleted=receipt.chunks_deleted,
+        profile_vectors_cleared=receipt.profile_vectors_cleared,
+        projects_deleted=receipt.projects_deleted,
+        cache_keys_deleted=receipt.cache_keys_deleted,
+        sign_in_accounts_deleted=receipt.sign_in_accounts_deleted,
+        objects_total=objects_total,
+        deletion_state=deletion_state,
+        sign_in_identity_deleted=identity_deleted,
+        sign_in_identity_note=identity_note,
+    )
+
+
 @router.put("/me/resume", response_model=StoredResumeOut)
 async def replace_main_resume(
     resume: UploadFile = File(...),
@@ -788,7 +1254,7 @@ async def replace_main_resume(
     the resume they were actually submitted with — an application is an
     immutable snapshot. Only `candidates.main_profile_id` moves.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     asset = await store_resume(resume)
     main = Profile(
         candidate_id=candidate.id,
@@ -800,7 +1266,10 @@ async def replace_main_resume(
     await session.flush()
     candidate.main_profile_id = main.id
     await session.flush()
-    dispatch("pickready.parse_resume", args=[str(main.id)])
+    # After the commit, so the parse cannot start before the Profile it reads
+    # is visible. A lost invoke is re-queued by the next matching run, which
+    # re-dispatches `parse_resume` for any profile with no resume text.
+    dispatch_after_commit(session, "pickready.parse_resume", args=[str(main.id)])
     return _resume_summary(main)
 
 
@@ -821,7 +1290,7 @@ async def my_stored_resume(
     session: AsyncSession = Depends(get_candidate_db),
 ) -> StoredResumeOut:
     """Is there a main resume on file to reuse, and which one? (FR-6.2.)"""
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     return _resume_summary(await _main_resume_profile(session, candidate))
 
 
@@ -946,7 +1415,7 @@ async def list_my_projects(
     """The candidate's projects with live processing status."""
     from app.models.project import CandidateProject
 
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     rows = (
         await session.execute(
             select(CandidateProject)
@@ -982,7 +1451,7 @@ async def add_project(
     from app.services.projects import repository as project_repository
     from app.services.projects.limits import from_settings as project_limits
 
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     limits = project_limits()
 
     existing = (
@@ -1047,18 +1516,13 @@ async def add_project(
         )
         await session.flush()
 
-    # Never allowed to fail the submission: the row is durable and the hourly
-    # sweeper re-enqueues anything the broker dropped.
-    try:
-        dispatch(
-            "pickready.process_candidate_project", args=[str(project.id)]
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "portal.project_enqueue_failed project_id=%s error=%s",
-            project.id,
-            type(exc).__name__,
-        )
+    # After the commit: the pipeline reads the staged row, which must be
+    # visible first. A failed invoke is logged by the commit hook and never
+    # fails the submission; the row is durable and the hourly
+    # `reconcile_project_intake` sweep re-enqueues anything that never ran.
+    dispatch_after_commit(
+        session, "pickready.process_candidate_project", args=[str(project.id)]
+    )
     await audit(
         session,
         tenant_id=None,
@@ -1077,7 +1541,7 @@ async def get_my_project(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ProjectOut:
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     project = await _own_project_or_404(session, candidate, project_id)
     return _project_out(project)
 
@@ -1092,7 +1556,7 @@ async def reprocess_my_project(
     idempotent, so this can never duplicate evidence."""
     from app.models.project import RETRYABLE_STATUSES, STATUS_SUBMITTED
 
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     project = await _own_project_or_404(session, candidate, project_id)
     if project.status not in RETRYABLE_STATUSES:
         raise HTTPException(
@@ -1113,16 +1577,10 @@ async def reprocess_my_project(
     project.status = STATUS_SUBMITTED
     project.status_detail = "Queued for another analysis attempt."
     await session.flush()
-    try:
-        dispatch(
-            "pickready.process_candidate_project", args=[str(project.id)]
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "portal.project_enqueue_failed project_id=%s error=%s",
-            project.id,
-            type(exc).__name__,
-        )
+    # Same rule as `add_project`: after the commit, repaired by the sweep.
+    dispatch_after_commit(
+        session, "pickready.process_candidate_project", args=[str(project.id)]
+    )
     return _project_out(project)
 
 
@@ -1135,7 +1593,7 @@ async def delete_my_project(
     """Remove a project: derived evidence and any staged originals both go."""
     from app.services.projects import pipeline as project_pipeline
 
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     project = await _own_project_or_404(session, candidate, project_id)
     await project_pipeline.discard_project(session, project)
     await audit(
@@ -1159,7 +1617,7 @@ async def apply_context(
     this job, is there a main resume they can reuse, and is their profile form
     complete? Lets the page say "you already applied" instead of surfacing a raw
     409, and prompt for a missing profile before the upload rather than after."""
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     job = await _published_job_or_404(session, job_id)
     existing = (
         await session.execute(
@@ -1194,6 +1652,7 @@ async def apply_context(
         job_id=job.id,
         already_applied=existing is not None,
         applied_at=existing.created_at if existing is not None else None,
+        application_id=existing.id if existing is not None else None,
         resume=_resume_summary(await _main_resume_profile(session, candidate)),
         profile_complete=profile_form.is_complete(answers),
         profile_missing=profile_form.missing_required(answers),
@@ -1203,59 +1662,96 @@ async def apply_context(
     )
 
 
+#: The values `application_source` may carry for a NEW application, and what
+#: each means. `sourced` survives in the column's CHECK only for rows migration
+#: 0018 backfilled; nothing writes it any more, because the word collided with
+#: the `sourced` PIPELINE STAGE (a recruiter's databank entry, Gate 5) and a
+#: public-link applicant was being labelled as somebody who never applied.
+APPLICATION_SOURCE_DIRECT = "direct"          # the portal's own New Jobs board
+APPLICATION_SOURCE_EXTERNAL = "external_link"  # the public /apply/{job} page
+APPLICATION_SOURCES = frozenset({APPLICATION_SOURCE_DIRECT, APPLICATION_SOURCE_EXTERNAL})
+
+
+def _application_source(posted: str | None) -> str:
+    """What the column records for the value a client posted.
+
+    Anything outside the two known values reads as "direct": a crafted value
+    must never reach the column the CHECK constraint guards, and
+    mis-attributing where somebody clicked is not worth a 422 in the middle of
+    their application.
+    """
+    value = (posted or "").strip()
+    return value if value in APPLICATION_SOURCES else APPLICATION_SOURCE_DIRECT
+
+
 @router.post(
     "/jobs/{job_id}/apply", response_model=ApplyOut, status_code=status.HTTP_201_CREATED
 )
 async def apply_to_job(
     job_id: uuid.UUID,
-    aspects: str = Form(default="{}"),  # legacy/optional extra answers
+    *,
     resume: UploadFile | None = File(default=None),
     reuse_previous: bool = Form(default=False),
+    # The six mandatory validation fields (spec §7), posted as one JSON object.
+    validation: str = Form(default="{}"),
+    # Where the applicant clicked: "direct" (the portal board) or
+    # "external_link" (the public /apply page). Provenance for display only.
+    application_source: str = Form(default=APPLICATION_SOURCE_DIRECT),
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
-    full_name: str | None = Form(default=None),
-    residing_city: str | None = Form(default=None),
-    age: int | None = Form(default=None),
-    gender: str | None = Form(default=None),
-    # Where the applicant came from (spec §1.1). The public /apply page posts
-    # "sourced" when the candidate arrived via an external job link; the
-    # in-portal board posts nothing and defaults to "direct".
-    #
-    # Declared LAST on purpose: the existing tests call this handler
-    # positionally through `reuse_previous, user, session`, so inserting a
-    # parameter ahead of those would silently shift `session` and hand the
-    # handler a `Depends` object instead of a database session.
-    application_source: str = Form(default="direct"),
-    # The six mandatory validation fields (spec §7), posted as one JSON object
-    # alongside the resume. Declared last for the same positional-call reason as
-    # `application_source` above.
-    validation: str = Form(default="{}"),
 ) -> ApplyOut:
-    """Open application to any published job (FR-3.5/6.1/9.2).
+    """Apply to a published job. THE one apply path (FR-3.5/6.1/9.2).
 
-    Two data sets travel with an application, and they are not the same thing:
+    The portal's New Jobs board and the public `/apply/{job}` page both post
+    here, with the same three things: a resume (a fresh upload, or
+    `reuse_previous=true` for the main resume), the six mandatory validation
+    fields, and where the applicant came from. Keyword-only after `job_id`, so
+    a parameter added later cannot silently shift `user` and `session` along
+    for a direct caller.
+
+    What travels with an application, and what does not:
 
     * The candidate's My Profile form is SNAPSHOTTED onto this application's
-      Profile (`aspects_json`), so the report and the ATS read exactly what they
-      always did.
-    * The six MANDATORY validation fields — current CTC, expected CTC, notice
-      period, joining date, document readiness, and why the role interests them
-      — are answered per application and land on the link's `validation_json`.
-      They are captured, never scored (spec §7), and capturing them here rather
-      than after the conversation is what lets a recruiter filter out a
-      candidate plainly outside the budget or notice window before a single
-      credit is spent on assessing them.
+      own Profile (`aspects_json`), so matching and the report read exactly
+      what was true when the candidate applied.
+    * The six validation fields land on the link's `validation_json`,
+      captured and never scored (spec §7), so a recruiter can filter out a
+      candidate plainly outside the budget before a credit is spent.
 
-    The candidate either applies with their MAIN resume (`reuse_previous=true`)
-    or uploads a fresh one for this application. Each application still mints
-    its OWN Profile. No prior-contact gate — any authenticated candidate may
-    apply."""
-    candidate = await _candidate_for_user(session, user)
+    WHAT APPLYING NO LONGER DOES, and each one was a defect:
+
+    * It creates NO `assessment_conversations` row and dispatches NO question
+      generation. That row IS the invitation, and inviting is the recruiter's
+      act (`select-candidates`). Creating it here handed every applicant a
+      half-made invitation the assessment page then refused, and it counted
+      as an issued contract for the matrix lock before anybody was invited.
+    * It does not write the databank consent. It used to overwrite
+      `consent_databank` from whatever the apply form carried, so applying
+      could silently REVOKE a consent given elsewhere. Consent is stamped
+      where its wording is shown, on My Profile.
+    * It takes no age, gender, name, city or questionnaire answers. Age and gender
+      were written and read by nothing; the name and city belong to the
+      profile form, which this snapshots.
+
+    A SOURCED LINK IS CONVERTED, NEVER DUPLICATED (Gate 5). A recruiter's
+    databank entry on this job is not an application, so it is not a
+    duplicate: it moves `sourced -> applied` through the FSM. When the entry
+    sits on an OLDER unlinked record carrying this person's verified address
+    (a resume uploaded before they ever signed up), `rehome_sourced_link`
+    re-points that one link onto the applicant first, so the recruiter keeps
+    one candidate on the job instead of two.
+
+    `parse_resume` and the confirmation email are dispatched AFTER the commit,
+    so a refused or rolled-back application sends nothing. A lost parse is
+    re-queued by the matching run, which re-dispatches `parse_resume` for any
+    profile it finds with no resume text.
+    """
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     job = await _visible_job_or_404(session, candidate, job_id)
 
     # A NEW application requires the 30-day active window. The grace period is
     # for editing an application that already exists (spec §5.1) and never for
-    # creating one — 409 rather than 404 because this candidate can legitimately
+    # creating one: 409 rather than 404 because this candidate can legitimately
     # see the job, so hiding the reason would just confuse them.
     if not job_posting.can_apply(
         posting_start=job.posting_start_date,
@@ -1272,43 +1768,10 @@ async def apply_to_job(
             ),
         )
 
-    dup = (
-        await session.execute(
-            select(JobCandidateLink).where(
-                JobCandidateLink.job_id == job.id,
-                JobCandidateLink.candidate_id == candidate.id,
-            )
-        )
-    ).scalars().first()
-    # Gate 5: a SOURCED row is not an application, so this is not a duplicate.
-    #
-    # The recruiter put this person's resume into the job from their databank
-    # and invited them to apply. Refusing here would tell somebody acting on
-    # our own invitation that they had already applied, which is both false and
-    # a dead end -- they would have no way to proceed and no reason to believe
-    # the message was wrong. The existing row is CONVERTED below rather than
-    # duplicated, so the recruiter keeps one candidate on the job and its
-    # provenance (`source_type = databank`) survives the conversion.
-    sourced_link = (
-        dup
-        if dup is not None
-        and hiring_pipeline.normalize(dup.status) == hiring_pipeline.SOURCED
-        else None
-    )
-    if dup is not None and sourced_link is None:
-        raise HTTPException(status_code=409, detail="You have already applied to this job")
-
-    try:
-        extra_aspects = json.loads(aspects or "{}")
-        if not isinstance(extra_aspects, dict):
-            raise ValueError
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="aspects must be a JSON object") from exc
-
     # ── The mandatory fields (spec §7) ──────────────────────────────────────
-    # Refused BEFORE the resume is stored: rejecting the application after a
-    # file has been uploaded to remote storage leaves an orphaned asset behind
-    # for an error the candidate can fix in ten seconds.
+    # Refused BEFORE anything is written or stored: rejecting the application
+    # after a file has been uploaded to remote storage leaves an orphaned asset
+    # behind for an error the candidate can fix in ten seconds.
     try:
         validation_data = json.loads(validation or "{}")
         if not isinstance(validation_data, dict):
@@ -1325,12 +1788,48 @@ async def apply_to_job(
         )
     validation_data = application_validation.normalise(validation_data)
 
-    # The profile form is the source of truth; anything posted alongside it is
-    # merged UNDER it so a stale client can never overwrite saved answers.
-    aspects_data: dict = {**extra_aspects, **(candidate.profile_form_json or {})}
+    dup = (
+        await session.execute(
+            select(JobCandidateLink).where(
+                JobCandidateLink.job_id == job.id,
+                JobCandidateLink.candidate_id == candidate.id,
+            )
+        )
+    ).scalars().first()
+    if dup is None:
+        # The merge rule. Only a Firebase-verified address may claim a
+        # recruiter's upload, because the address is the only thing that
+        # connects the two records; an unverified applicant gets a link of
+        # their own and the sourced entry is left exactly where it was.
+        account = await session.get(User, user.user_id)
+        dup = await candidate_identity.rehome_sourced_link(
+            session,
+            applicant=candidate,
+            job_id=job.id,
+            verified_email=(
+                account is not None and account.email_verified_at is not None
+            ),
+        )
+    # Gate 5: a SOURCED row is not an application, so this is not a duplicate.
+    #
+    # The recruiter put this person's resume into the job from their databank
+    # and invited them to apply. Refusing here would tell somebody acting on
+    # our own invitation that they had already applied, which is both false and
+    # a dead end. The existing row is CONVERTED below rather than duplicated,
+    # so the recruiter keeps one candidate on the job and its provenance
+    # (`source_type = databank`) survives the conversion.
+    sourced_link = (
+        dup
+        if dup is not None
+        and hiring_pipeline.normalize(dup.status) == hiring_pipeline.SOURCED
+        else None
+    )
+    if dup is not None and sourced_link is None:
+        raise HTTPException(status_code=409, detail="You have already applied to this job")
 
     # Resolve the resume: a fresh upload wins; otherwise use the main resume.
     resume_reused = False
+    previous_profile: Profile | None = None
     if resume is not None and resume.filename:
         asset = await store_resume(resume)
     elif reuse_previous:
@@ -1347,48 +1846,32 @@ async def apply_to_job(
             detail="Attach a resume file or set reuse_previous=true (FR-6.2)",
         )
 
-    # The apply form collects the personal fields alongside the questionnaire
-    # (FR-5.1 a–d). They belong on the Candidate, not only in aspects_json, so
-    # the ATS shows a name rather than a blank row.
-    if isinstance(full_name, str) and full_name.strip():
-        candidate.full_name = full_name.strip()
-    if isinstance(residing_city, str) and residing_city.strip():
-        candidate.city = residing_city.strip()
-    if isinstance(age, int):
-        candidate.age = age
-    if isinstance(gender, str) and gender.strip():
-        candidate.gender = gender.strip()
-
-    # Databank re-use consent (PRD §10 / FR-4.2). The profile form's declaration
-    # carries it now; legacy aspect 40 remains the fallback for old payloads.
-    consent = aspects_data.get("declaration_accepted", aspects_data.get("40"))
-    candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
-
+    source = _application_source(application_source)
     profile = Profile(
-        candidate_id=candidate.id, source_tenant_id=job.tenant_id,
-        aspects_json=aspects_data, aspects_completed_at=datetime.now(timezone.utc),
+        candidate_id=candidate.id,
+        source_tenant_id=job.tenant_id,
+        aspects_json=dict(candidate.profile_form_json or {}),
+        aspects_completed_at=datetime.now(timezone.utc),
     )
-    if resume_reused:
+    if previous_profile is not None:
         copy_resume_metadata(previous_profile, profile)
     else:
         apply_resume_asset(profile, asset)
     session.add(profile)
     await session.flush()
-    # A first-time applicant who uploaded here now has a main resume — otherwise
+    # A first-time applicant who uploaded here now has a main resume, otherwise
     # their My Profile page would show none straight after applying.
     if not resume_reused and candidate.main_profile_id is None:
         candidate.main_profile_id = profile.id
     if sourced_link is not None:
-        # Convert in place. The application's own facts are written here -- the
-        # resume this person chose, the answers they typed -- and the stage
+        # Convert in place. The application's own facts are written here (the
+        # resume this person chose, the answers they typed) and the stage
         # moves through the FSM so the history records a real `sourced ->
         # applied` edge rather than a row that silently changed shape.
         link = sourced_link
         link.profile_id = profile.id
         link.validation_json = validation_data
-        link.application_source = (
-            "sourced" if application_source == "sourced" else "direct"
-        )
+        link.application_source = source
         await hiring_pipeline.apply_transition(
             session,
             link_id=link.id,
@@ -1401,13 +1884,7 @@ async def apply_to_job(
         link = JobCandidateLink(
             tenant_id=job.tenant_id, job_id=job.id, candidate_id=candidate.id,
             profile_id=profile.id, source=LinkSource.fresh,
-            # Anything other than the one known alternative reads as "direct" —
-            # a crafted value must not end up in the column the CHECK
-            # constraint guards, and mis-attributing a source is not worth a
-            # 422 to the candidate mid-application.
-            application_source=(
-                "sourced" if application_source == "sourced" else "direct"
-            ),
+            application_source=source,
             status=hiring_pipeline.APPLIED,
             status_updated_at=datetime.now(timezone.utc),
             current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.APPLIED],
@@ -1437,7 +1914,7 @@ async def apply_to_job(
 
     # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT, the profile
     # entering this job's pipeline. `source_type` was derived by the link's
-    # before_insert listener, so applied/sourced/databank all report truthfully.
+    # before_insert listener, so applied/databank both report truthfully.
     await telemetry_events.emit(
         session,
         tenant_id=job.tenant_id,
@@ -1450,74 +1927,17 @@ async def apply_to_job(
         payload={"source": link.source_type},
     )
 
-    # ── Retake classification ────────────────────────────────────────────────
-    # Every application now runs its own assessment: under PPI the questions
-    # and the framework are generated from THIS job, so a prior report grades
-    # criteria this job never used (services/retake). The classification still
-    # runs so the candidate is told WHY they are answering questions again,
-    # before they open the assessment rather than after.
-    decision = await retake.decide(session, candidate.id, job.id)
-    if job.assessment_status == "ready_for_candidates":
-        session.add(
-            AssessmentConversation(
-                tenant_id=job.tenant_id,
-                job_id=job.id,
-                job_candidate_link_id=link.id,
-                grade=job.assessment_grade or "non_managerial",
-            )
-        )
-        await session.flush()
-        # Start generating THIS candidate's questions now, not when they first
-        # press Start.
-        #
-        # `_ensure_conversation_ready` used to be the only thing that enqueued
-        # this, and it enqueues LAZILY: the candidate opens the assessment, the
-        # questions do not exist yet, so it fires the task and answers 409 "We
-        # are preparing your assessment. Please try again in a moment." The
-        # candidate then waits on an LLM chain that legitimately takes a while,
-        # refreshing a page that keeps saying the same thing. That is the delay
-        # between applying and being able to begin.
-        #
-        # Enqueued here, generation runs while the candidate is still reading
-        # the confirmation screen, so choosing "start now" is genuinely
-        # available immediately. The lazy path stays exactly as it is: it is the
-        # backstop for an application that predates this change, for a job whose
-        # setup was approved after the candidate applied, and for a task that
-        # failed. Both paths are idempotent -- generate_candidate_questions
-        # writes rows keyed on the link, and `_ensure_conversation_ready` only
-        # fires when the count is still zero.
-        #
-        # Never allowed to fail the application, for the same reason as the
-        # confirmation email below: a broker hiccup must not cost the candidate
-        # their submission, and the lazy path will still cover it.
-        try:
-            dispatch(
-                "pickready.generate_candidate_questions", args=[str(link.id)]
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "portal.question_generation_enqueue_failed link_id=%s error=%s",
-                link.id, type(exc).__name__,
-            )
-
-    dispatch("pickready.parse_resume", args=[str(profile.id)])
-    # Email 1 of 6: confirm receipt (spec §6.1). Enqueued, never inline
-    # (claude.md rule 4), and never allowed to fail the application — a broker
-    # hiccup must not cost the candidate their submission.
-    try:
-        dispatch(
-            "pickready.send_application_confirmation", args=[str(link.id)]
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "portal.confirmation_enqueue_failed link_id=%s error=%s",
-            link.id, type(exc).__name__,
-        )
+    dispatch_after_commit(session, "pickready.parse_resume", args=[str(profile.id)])
+    # Email 1 of 6: confirm receipt (spec §6.1). After the commit, so a
+    # rolled-back application never tells anybody it was received.
+    dispatch_after_commit(
+        session, "pickready.send_application_confirmation", args=[str(link.id)]
+    )
     return ApplyOut(
-        link_id=link.id, job_id=job.id, profile_id=profile.id,
-        resume_reused=resume_reused, aspects_received=len(aspects_data),
-        assessment_required=decision.requires_new_assessment,
-        assessment_notice=decision.message(),
+        link_id=link.id,
+        job_id=job.id,
+        profile_id=profile.id,
+        resume_reused=resume_reused,
     )
 
 
@@ -1558,7 +1978,7 @@ async def my_updates(
     without parsing prose, and joining keeps a renamed job from leaving a stale
     heading in a feed the candidate will read for months.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     offset = (page - 1) * page_size
 
     conditions = [CandidateUpdate.candidate_id == candidate.id]
@@ -1623,7 +2043,7 @@ async def my_updates_summary(
     the nav renders on every candidate page, and fetching rows it will not show
     on every navigation is a cost with no reader.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     unread = (
         await session.execute(
             select(func.count())
@@ -1654,7 +2074,7 @@ async def mark_updates_read(
     only fact this column carries beyond a boolean: WHEN somebody saw their
     interview invitation.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     conditions = [
         CandidateUpdate.candidate_id == candidate.id,
         CandidateUpdate.read_at.is_(None),
@@ -1687,13 +2107,18 @@ async def my_applications(
 ) -> ApplicationsOut:
     """Application Stage Status (FR-9.1).
 
+    APPLICATIONS ONLY. A `sourced` link is a recruiter's databank entry on a
+    job this person never applied to (Gate 5), and listing it here showed the
+    candidate an "application" they did not make, with a stage label that
+    claimed one. It appears once they apply, when the apply path converts it.
+
     Two queries total, whatever the number of applications. It used to be six
     PER application — job, tenant, latest status, conversation, report existence
     and timeline — so a candidate with twenty applications paid a hundred and
     twenty round trips for one page. The joined query below answers all of that
     at once, and the timelines come back in a single batched call.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     rows = (
         await session.execute(
             select(
@@ -1711,12 +2136,6 @@ async def my_applications(
                 .limit(1)
                 .exists()
                 .label("report_ready"),
-                select(PipelineStatusEntry.status)
-                .where(PipelineStatusEntry.job_candidate_link_id == JobCandidateLink.id)
-                .order_by(PipelineStatusEntry.at.desc())
-                .limit(1)
-                .scalar_subquery()
-                .label("latest_status"),
             )
             .select_from(JobCandidateLink)
             .outerjoin(Job, Job.id == JobCandidateLink.job_id)
@@ -1725,7 +2144,10 @@ async def my_applications(
                 AssessmentConversation,
                 AssessmentConversation.job_candidate_link_id == JobCandidateLink.id,
             )
-            .where(JobCandidateLink.candidate_id == candidate.id)
+            .where(
+                JobCandidateLink.candidate_id == candidate.id,
+                JobCandidateLink.status != hiring_pipeline.SOURCED,
+            )
             .order_by(JobCandidateLink.created_at.desc())
         )
     ).all()
@@ -1734,7 +2156,7 @@ async def my_applications(
     )
 
     out: list[ApplicationOut] = []
-    for link, job, tenant, conversation, report_ready, latest_status in rows:
+    for link, job, tenant, conversation, report_ready in rows:
         window = job_posting.describe(job) if job else None
         can_edit = job is not None and job_posting.can_edit_application(
             applied_at=link.created_at,
@@ -1743,14 +2165,6 @@ async def my_applications(
             grace_period_end_date=job.grace_period_end_date,
         )
         status = hiring_pipeline.normalize(link.status)
-        # The legacy `stage` field only understands the OLD five-value enum, so
-        # a new pipeline stage maps to None there rather than being coerced
-        # into a value it does not mean.
-        legacy_stage = latest_status
-        try:
-            legacy_stage = PipelineStatus(legacy_stage) if legacy_stage else None
-        except ValueError:
-            legacy_stage = None
 
         out.append(ApplicationOut(
             link_id=link.id,
@@ -1759,7 +2173,6 @@ async def my_applications(
             company_name=tenant.name if tenant else None,
             company_slug=employer_pages.visible_slug(tenant),
             applied_at=link.created_at,
-            stage=legacy_stage,
             assessment_status=job.assessment_status if job else None,
             conversation_status=conversation.status if conversation else None,
             report_ready=report_ready,
@@ -1814,7 +2227,7 @@ async def edit_application(
     period — the grace period extends the right, it does not create it. Refused
     with 409 once the window has closed.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.candidate_id != candidate.id:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -1881,26 +2294,26 @@ async def edit_application(
         },
     )
     if resume_replaced:
-        # Re-parse and re-embed, then re-score: the recruiter's ranking must
-        # reflect the resume actually on file.
-        dispatch("pickready.parse_resume", args=[str(profile.id)])
-        dispatch("pickready.run_matching", args=[str(link.job_id)])
+        # Re-parse, and the parse re-reads: `pickready.parse_resume` dispatches
+        # `pickready.yukti_score_profile` after its own commit, which reads THIS
+        # link against its job's saved skills. A job-wide AI Matching run here
+        # would re-read every other candidate on the job to refresh one. After
+        # the commit, so the parse cannot read the snapshot before the new
+        # resume is stored on it.
+        dispatch_after_commit(session, "pickready.parse_resume", args=[str(profile.id)])
 
     return ApplyOut(
         link_id=link.id,
         job_id=link.job_id,
         profile_id=profile.id,
         resume_reused=not resume_replaced,
-        aspects_received=len(profile.aspects_json or {}),
-        assessment_required=False,
-        assessment_notice=None,
     )
 
 
 # ── Background verification (add-features spec 2026-09-05) ──────────────────
 #
 # Candidate-owned, candidate-driven. The candidate names up to two previous
-# employers' departmental mailboxes, ReadyPick sends ONE fixed-template
+# employers' departmental mailboxes, Vivekium sends ONE fixed-template
 # inquiry per explicit candidate action, and the parsed reply lands on the
 # candidate's own profile. An employer tenant sees the result only through a
 # `bgv_share_consents` row the candidate wrote for that specific tenant
@@ -1912,7 +2325,6 @@ async def edit_application(
 from app.models.bgv import (  # noqa: E402 -- section-scoped, matching the projects section style
     DISPATCHABLE_STATUSES as _BGV_DISPATCHABLE,
     MAX_INQUIRIES_PER_CANDIDATE as _BGV_MAX,
-    STATUS_DISPATCH_FAILED as _BGV_DISPATCH_FAILED,
     BGVInquiry,
     BGVShareConsent,
 )
@@ -2007,7 +2419,7 @@ async def list_bgv_inquiries(
     """The candidate's own background-verification card: inquiries, their
     status in words, parsed fields once a reply is extracted, and the
     per-tenant sharing state."""
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     return await _bgv_list_out(session, candidate)
 
 
@@ -2028,7 +2440,7 @@ async def create_bgv_inquiry(
     once, deterministically, and is stored as provenance; a mismatch is
     recorded, never a block.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     existing = (
         await session.execute(
             select(func.count())
@@ -2106,10 +2518,17 @@ async def dispatch_bgv_inquiry(
     Only `collected` and `dispatch_failed` rows are dispatchable: a second
     email to an HR mailbox that already received one reads as spam and burns
     the candidate's credibility, so re-sending a dispatched inquiry is a 409,
-    not a convenience. An enqueue failure is recorded on the row as
-    `dispatch_failed` and reported as an error, never swallowed.
+    not a convenience.
+
+    The send is handed off only once this request COMMITS (CONTRACT v5).
+    What used to sit here caught an enqueue failure, wrote `dispatch_failed`
+    and then RAISED, and the raise rolled that very write back, so the state
+    it promised the candidate never reached the table. Now a lost invoke is
+    logged at ERROR by the commit hook and leaves the inquiry `collected`,
+    which is dispatchable, so the candidate's Send button still works; a
+    delivery failure inside the task lands in `dispatch_failed` there.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     inquiry = await session.get(BGVInquiry, inquiry_id)
     if inquiry is None or inquiry.candidate_id != candidate.id:
         raise HTTPException(status_code=404, detail="Inquiry not found")
@@ -2117,21 +2536,9 @@ async def dispatch_bgv_inquiry(
         raise HTTPException(
             status_code=409, detail="This inquiry has already been sent"
         )
-    try:
-        dispatch("pickready.send_bgv_inquiry", args=[str(inquiry.id)])
-    except Exception as exc:
-        # The dispatcher RAISES on an enqueue failure (claude.md 2026-09-05).
-        # Record it where the candidate can see it, then surface the error.
-        inquiry.status = _BGV_DISPATCH_FAILED
-        inquiry.updated_at = datetime.now(timezone.utc)
-        await session.flush()
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "The inquiry could not be queued for delivery, please try "
-                "again"
-            ),
-        ) from exc
+    dispatch_after_commit(
+        session, "pickready.send_bgv_inquiry", args=[str(inquiry.id)]
+    )
     await audit(
         session,
         tenant_id=None,
@@ -2157,7 +2564,7 @@ async def set_bgv_share_consent(
     application. Revoking deletes the consent row, and the recruiter surface
     reads the table live, so a revocation takes effect on the next request.
     """
-    candidate = await _candidate_for_user(session, user)
+    candidate = await candidate_identity.require_candidate(session, user.user_id)
     inquiry = await session.get(BGVInquiry, inquiry_id)
     if inquiry is None or inquiry.candidate_id != candidate.id:
         raise HTTPException(status_code=404, detail="Inquiry not found")

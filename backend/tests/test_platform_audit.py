@@ -117,7 +117,7 @@ FORBIDDEN_INSTRUMENTS = (
 
 
 def test_no_third_party_assessment_instrument_is_named() -> None:
-    """The ReadyPick Functional Index is proprietary work derived from first
+    """The Vivekium Functional Index is proprietary work derived from first
     principles. Associating its name with a licensed instrument, even in a code
     comment, is the kind of thing that is read as a claim later."""
     offenders: list[str] = []
@@ -193,26 +193,20 @@ def test_smtp_settings_only_accept_gmail() -> None:
 # ── No OTP in any portal UI ────────────────────────────────────────────────
 
 def test_no_otp_copy_reaches_any_portal() -> None:
-    """Firebase owns authentication. The MSG91 SMS send-path is retained as a
-    feature (claude.md rule 2) but must not appear as a login step in any UI.
+    """Firebase owns authentication, and no one-time-code login step may
+    appear in any UI (the SMS send path itself leaves in Phase 7 Wave B).
 
-    NARROWED, NOT REMOVED (Corporate Email System spec, 2026-09-05): a LOGIN
-    OTP stays banned everywhere. The one sanctioned OTP surface is corporate
-    SENDER MAILBOX verification (spec sections 3 and 4), which proves a client
-    controls a business mailbox and authenticates nobody. That surface lives
-    in exactly one component, exempted by name below; any other file carrying
-    OTP copy is still an offender."""
+    THE ONE EXEMPTION IS GONE, AND THE RULE IS WHOLE AGAIN (2026-09-08). It
+    was granted on 2026-09-05 for the corporate sender's mailbox-verification
+    dialog, which proved a client controlled a business mailbox and
+    authenticated nobody. That dialog was withdrawn with the sender OTP: SES
+    refuses to send as any identity the account has not verified, so the code
+    re-proved on registration what AWS enforces on every send. No portal
+    surface may carry OTP copy, with no exception -- which is what claude.md
+    said before the narrowing, and says again."""
     pattern = re.compile(r"\botp\b|one[- ]time password|verification code", re.IGNORECASE)
     offenders: list[str] = []
     for path in _frontend_sources():
-        # The legacy input component is retained but must stay unreferenced;
-        # that is asserted separately below.
-        if path.name == "otp-input.tsx":
-            continue
-        # The sender mailbox-verification dialog (2026-09-05 spec). It is a
-        # settings surface behind manage_email_senders, not a login step.
-        if path.name == "email-senders-card.tsx":
-            continue
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("//") or stripped.startswith("*"):
@@ -222,16 +216,186 @@ def test_no_otp_copy_reaches_any_portal() -> None:
     assert not offenders, f"OTP copy present in: {offenders}"
 
 
-def test_the_legacy_otp_input_is_not_wired_into_any_page() -> None:
-    """Retained, not reachable. A component nobody imports cannot put an OTP
-    step back into a portal by accident."""
+def test_the_legacy_code_input_component_is_deleted() -> None:
+    """It was retained unreachable until 2026-09-24 and is now deleted. A
+    component that does not exist cannot put a code step back into a portal,
+    and nothing may reach for it by name either."""
+    assert not (FRONTEND / "components" / ("otp" + "-input.tsx")).exists()
     importers = [
         str(path.relative_to(FRONTEND))
         for path in _frontend_sources()
-        if path.name != "otp-input.tsx"
-        and "otp-input" in path.read_text(encoding="utf-8")
+        if ("otp" + "-input") in path.read_text(encoding="utf-8")
     ]
-    assert not importers, f"otp-input is imported by: {importers}"
+    assert not importers, f"the deleted component is named by: {importers}"
+
+
+# ── The vivekium forbidden terms (C7, owner-ruled final 2026-09-18) ─────────
+
+#: Built from parts so this file's own sweep cannot read its pattern as a
+#: violation, the same trick chr(8212) plays for the em dash. The brief,
+#: verbatim: do not use these anywhere on the platform, in consent text,
+#: emails or any system copy. The sanctioned phrasing is "employer clients
+#: registered on the platform".
+FORBIDDEN_TERMS = ("direct " + "employer", "manpower " + "agency")
+
+
+def test_no_forbidden_relationship_terms_anywhere() -> None:
+    """Frontend source, backend STRINGS, prompts and templates, one sweep.
+
+    Case-insensitive, because a toast and an email template capitalise
+    differently and the rule is about the words, not the casing.
+    """
+    offenders: list[str] = []
+    for path in _frontend_sources():
+        text = path.read_text(encoding="utf-8").lower()
+        for term in FORBIDDEN_TERMS:
+            if term in text:
+                offenders.append(f"{path.relative_to(FRONTEND)}: {term}")
+    for path in _python_sources():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for term in FORBIDDEN_TERMS:
+                if term not in lowered:
+                    continue
+                for match in PY_LITERAL.finditer(line):
+                    if term in match.group(0).lower():
+                        offenders.append(f"{path.name}:{n}: {term}")
+                        break
+    for folder in ("prompts", "templates"):
+        root = BACKEND_APP / folder
+        if not root.exists():
+            continue
+        for path in root.rglob("*.txt"):
+            text = path.read_text(encoding="utf-8", errors="replace").lower()
+            for term in FORBIDDEN_TERMS:
+                if term in text:
+                    offenders.append(f"{path.name}: {term}")
+    assert not offenders, f"forbidden relationship terms: {offenders}"
+
+
+# ── The same two rules, over the DATABASE ──────────────────────────────────
+#
+# THE SOURCE SWEEPS ABOVE ONLY COVER TEXT THE CODE WRITES, and that is half
+# the platform. Migration 0025 exists because 103 rows of seeded and generated
+# copy carried em dashes straight onto the public application page, and it was
+# found by loading a live job posting and reading it rather than by any test.
+# The forbidden relationship terms arrive by exactly the same routes: a model
+# writes a JD, a client types a company profile, a consent sentence is stored
+# beside the act it records. C7 asks for the sweep "over source AND the
+# database"; until now nothing here read a row.
+
+#: (table, column) pairs holding copy a candidate or a client can read. Text
+#: columns only: a jsonb document is swept whole, below, by casting it.
+_CONTENT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("jobs", "about_company"),
+    ("jobs", "work_life"),
+    ("jobs", "benefits"),
+    ("jobs", "jd_markdown"),
+    ("tenants", "details"),
+    ("tenants", "culture"),
+    # The consent record stores the VERBATIM sentence shown (migration 0117),
+    # which is precisely the "consent text" the brief names first.
+    ("candidate_consent_events", "consent_text"),
+)
+
+#: jsonb documents rendered as copy. Cast to text and swept whole: the keys
+#: are fixed English identifiers this schema sets, so a match is in a value.
+_CONTENT_JSON_COLUMNS: tuple[tuple[str, str], ...] = (("jobs", "jd_json"),)
+
+
+def _database_offenders(needle: str) -> list[str]:
+    """Rows whose stored copy contains `needle`, case-insensitively.
+
+    A table this sweep names and cannot find is an ERROR, not a pass: the
+    whole failure mode of a sweep is silently measuring nothing, and a
+    renamed content column would otherwise take its rule with it.
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import get_settings
+
+    async def _sweep() -> list[str]:
+        engine = create_async_engine(get_settings().database_url)
+        try:
+            async with engine.connect() as conn:
+                found: list[str] = []
+                pairs = [
+                    (table, column, column)
+                    for table, column in _CONTENT_COLUMNS
+                ] + [
+                    (table, column, f"{column}::text")
+                    for table, column in _CONTENT_JSON_COLUMNS
+                ]
+                for table, column, expression in pairs:
+                    count = (
+                        await conn.execute(
+                            sql(
+                                f"SELECT count(*) FROM {table} "
+                                f"WHERE {expression} ILIKE :pattern"
+                            ),
+                            {"pattern": f"%{needle}%"},
+                        )
+                    ).scalar_one()
+                    if count:
+                        found.append(f"{table}.{column}: {count} row(s)")
+                return found
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_sweep())
+
+
+def _skip_without_database() -> None:
+    """Skip when no database is reachable, saying so.
+
+    A skipped check is not a passed check. The source sweeps in this module
+    run everywhere; these two need rows to read, and reporting green without
+    a connection would be the exact dishonesty the rest of the file exists to
+    prevent.
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import get_settings
+
+    async def _probe() -> bool:
+        engine = create_async_engine(get_settings().database_url)
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(sql("SELECT 1"))
+                return True
+        except Exception:  # noqa: BLE001 - any refusal to connect means no DB
+            return False
+        finally:
+            await engine.dispose()
+
+    if not asyncio.run(_probe()):
+        pytest.skip("no database reachable: the stored-copy sweeps did not run")
+
+
+def test_no_forbidden_relationship_terms_in_stored_copy() -> None:
+    """C7, the half the source sweep cannot see."""
+    _skip_without_database()
+    offenders: list[str] = []
+    for term in FORBIDDEN_TERMS:
+        offenders.extend(
+            f"{hit} contains {term!r}" for hit in _database_offenders(term)
+        )
+    assert not offenders, f"forbidden relationship terms in the database: {offenders}"
+
+
+def test_no_em_dash_in_stored_copy() -> None:
+    """What migration 0025 fixed, kept fixed. Generated content is written by
+    a model on every published JD, so this is a live surface and not a
+    backlog that stays cleaned."""
+    _skip_without_database()
+    offenders = _database_offenders(EM_DASH)
+    assert not offenders, f"em dash in the database: {offenders}"
 
 
 # ── No em dash in user-visible text ────────────────────────────────────────
@@ -289,18 +453,50 @@ def test_prompt_and_template_files_are_clean() -> None:
 
 # ── No number reaches a client ─────────────────────────────────────────────
 
-def test_client_facing_ranking_payload_carries_no_score() -> None:
-    from app.services.matching import client_breakdown, ranking_payload
+def test_no_number_reaches_a_client_with_no_exception() -> None:
+    """Rule 1, with NO exception since the Vivekium release (D3).
 
-    breakdown = {
-        "skills_match": {"score": 91, "comment": "x " * 27},
-        "experience_relevance": {"score": 74, "comment": "y " * 27},
-        "overall": {"score": 83, "comment": "z " * 47},
+    The 2026-09-18 amendment sanctioned one number, `match_percent` on the
+    recruiter candidate table. D3 removed it: the AI Match is a grade word.
+    Pinned three ways, because each catches what the others cannot:
+
+    * the ranked row and page schemas declare NO numeric field except the
+      pager's own counts, and forbid undeclared keys, so a number cannot ride
+      in unannounced;
+    * the row serializer's source does not name `match_percent` at all;
+    * the harness's allowlist of sanctioned numeric fields is EMPTY, so the
+      no-numbers scenario has no name left to excuse.
+    """
+    import inspect
+
+    from app.schemas.ranking import RankedCandidateOut, RankedCandidatesOut
+    from app.services import job_candidates
+
+    for name, field in RankedCandidateOut.model_fields.items():
+        annotation = str(field.annotation)
+        assert "int" not in annotation and "float" not in annotation, name
+    assert RankedCandidateOut.model_config.get("extra") == "forbid"
+    assert RankedCandidatesOut.model_config.get("extra") == "forbid"
+    pager = {
+        "total", "page", "page_size", "total_pages", "range_start",
+        "range_end", "new_candidate_count",
     }
-    for payload in (ranking_payload(breakdown), client_breakdown(breakdown)):
-        flat = repr(payload)
-        for score in ("91", "74", "83"):
-            assert score not in flat, f"score {score} leaked in {flat[:200]}"
+    integers = {
+        name for name, field in RankedCandidatesOut.model_fields.items()
+        if field.annotation is int
+    }
+    assert integers == pager
+
+    source = inspect.getsource(job_candidates._row_payload)
+    assert "match_percent" not in source
+    # The word-label fields stay words, and are on the payload.
+    for field in ("ctc_match_label", "notice_period_label",
+                  "education_match_label", "bgv_status_label"):
+        assert f'"{field}"' in source, f"{field} missing from the row payload"
+
+    from harness import probes
+
+    assert probes.SANCTIONED_NUMERIC_FIELDS == frozenset()
 
 
 def test_report_ratings_are_words_not_numbers() -> None:
@@ -313,24 +509,16 @@ def test_report_ratings_are_words_not_numbers() -> None:
         assert label in set(GRADES)
 
 
-def test_matching_labels_are_words_not_numbers() -> None:
-    from app.services.matching import matching_label
-
-    for score in (0, 3, 6, 8, 9.5):
-        label = matching_label(score)
-        assert not any(char.isdigit() for char in label), label
-
-
-def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
+def test_the_assessment_and_the_ai_match_share_one_scale() -> None:
     """Two parallel five-label scales used to be kept in step by hand. One
-    scale now, so "Matching" means the same thing wherever it appears."""
+    scale now, so "Matching" means the same thing wherever it appears: the
+    report's grade and the ranked table's AI Match word both read
+    `rating.grade_for_percent`."""
     from app.services.functional_assessment import rating_label
-    from app.services.matching import MATCHING_LABELS, matching_label
-    from app.services.rating import GRADES
+    from app.services.yukti import ranking
 
-    assert MATCHING_LABELS == GRADES
     for percent in range(0, 101):
-        assert rating_label(percent) == matching_label(percent / 10.0)
+        assert rating_label(percent) == ranking.grade_word(percent)
 
 
 # ── The LLM router bounds what a human waits for ───────────────────────────
@@ -340,11 +528,7 @@ def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
 #: reply slow, so the latency brief's 15s / 30s contract is unchanged for them.
 IMMEDIATE_INTERACTIVE_TASKS = (
     "conversation_turn",
-    "situation_classification",
     "email_composition",
-    "rerank",
-    "swot_intake",
-    "company_dna_intake",
 )
 
 #: A request handler is blocked and the output is a DOCUMENT.
@@ -357,7 +541,12 @@ IMMEDIATE_INTERACTIVE_TASKS = (
 #: already accepts for report_synthesis, one tier down. It is a NAMED, BOUNDED
 #: list rather than a raised global cap, so a future task cannot join it by
 #: accident.
-GENERATIVE_INTERACTIVE_TASKS = ("jd_generation", "swot_analysis")
+#:
+#: VIVEKIUM RELEASE: `swot_analysis` LEFT this tier (the SWOT is dispatched work
+#: now, `pickready.generate_job_swot`) and `assessment_context` took its place:
+#: Save Skills waits on the hidden context because it must land in the same
+#: transaction as the human's save. Still two members, still capped.
+GENERATIVE_INTERACTIVE_TASKS = ("jd_generation", "assessment_context")
 
 GENERATIVE_INTERACTIVE_ATTEMPT_CAP = 30.0
 GENERATIVE_INTERACTIVE_BUDGET_CAP = 60.0
@@ -426,23 +615,14 @@ def test_every_list_endpoint_is_bounded() -> None:
     # Result sets bounded by the domain, not by pagination:
     #   compliance documents  exactly 7 slots, always all 7 (a short list is
     #                         the failure mode that section exists to prevent);
-    #   permissions           the capability matrix, fixed size;
     #   approvals             at most 4 levels;
     #   staff / bd-users      one company's team, and the max-5 rule;
-    #   email-templates       one row per template name.
     EXEMPT = {
         "compliance_document_slots",
         "customer_compliance_documents",
-        "list_permissions",
-        "update_permissions",
         "list_approvals",
         "list_staff",
         "list_bd_users",
-        "list_email_templates",
-        # A job is matched on at most MAXIMUM_CATEGORIES categories, refused at
-        # the POST route rather than trimmed on read, so this list cannot grow.
-        "list_matching_categories",
-        "billing_config",
         # Returns fixed-size "recent" slices (25 ledger rows, 25 payments) as
         # part of one page payload. The FULL statement is GET /billing/ledger,
         # which is paginated and is checked by this test.

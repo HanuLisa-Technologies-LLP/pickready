@@ -9,12 +9,11 @@ a float, which is the exact failure mode the sub-unit system exists to prevent.
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
-    "BillingConfigOut",
+    "CreditLotOut",
     "BillingOverviewOut",
     "CheckoutVerifyIn",
     "CreditLedgerEntryOut",
@@ -49,21 +48,6 @@ class PlanOut(BaseModel):
     #: without one would open Checkout and immediately fail, so the UI disables
     #: it instead of pretending.
     checkout_ready: bool
-
-
-class BillingConfigOut(BaseModel):
-    """What the browser needs to open Razorpay Checkout.
-
-    The Key ID is public by design — Razorpay's own client library takes it in
-    the page. It is served from here rather than inlined as a NEXT_PUBLIC_ build
-    variable so there is exactly one source of truth and the frontend container
-    never needs the .env at all.
-    """
-
-    razorpay_key_id: str | None
-    configured: bool
-    currency: Literal["INR"] = "INR"
-    plans: list[PlanOut]
 
 
 class SubscribeIn(BaseModel):
@@ -108,6 +92,23 @@ class UsageBreakdownOut(BaseModel):
     adjustment: int = 0
 
 
+class CreditLotOut(BaseModel):
+    """One batch of credits with its own expiry, for the billing page's
+    validity table.
+
+    `expires_at` of None means never expires, which is every credit granted
+    before change request 25. The client must render that as a statement
+    rather than as a blank cell: a missing date beside a balance reads as
+    missing data, and this one is a promise.
+    """
+
+    lot_id: uuid.UUID
+    issued_at: datetime
+    expires_at: datetime | None
+    remaining_subunits: int
+    remaining_credits: Decimal
+
+
 class CreditSummaryOut(BaseModel):
     balance_subunits: int
     balance_credits: Decimal
@@ -117,8 +118,41 @@ class CreditSummaryOut(BaseModel):
     subunits_per_credit: int
     granted_subunits: int
     consumed_subunits: int
+    #: Everything that happened before this calendar month's first day, which
+    #: is what the billing page labels "Carried over from last month".
+    #:
+    #: NAME AND MEANING BOTH UNCHANGED by change request 25's three-month
+    #: validity window. This field shipped two months earlier, is rendered on a
+    #: page customers read today, and has nothing to do with expiry. Pointing
+    #: it at "credits within their validity window" would have silently
+    #: changed a number already on a screen. The validity story is told by the
+    #: separate, distinctly named fields below.
     rollover_subunits: int
     rollover_credits: Decimal
+    # ── Credit validity (change request 25) ──────────────────────────────────
+    #: Removed by lots reaching their expiry, ever. Its OWN figure rather than
+    #: part of `consumed_subunits`: the page labels that "Used to date", and
+    #: folding expiry into it would bill the customer in the UI for
+    #: assessments nobody ran.
+    expired_subunits: int = 0
+    expired_credits: Decimal = Decimal("0.00")
+    #: The part of the balance that never expires: credits granted before
+    #: change request 25, which keep the promise printed on their invoices.
+    #: This is what lets the page say "X of your credits never expire" instead
+    #: of flipping a sentence that is still true for many customers.
+    non_expiring_subunits: int = 0
+    non_expiring_credits: Decimal = Decimal("0.00")
+    #: The part expiring within `expiring_soon_days`, and the earliest date any
+    #: live batch expires.
+    expiring_soon_subunits: int = 0
+    expiring_soon_credits: Decimal = Decimal("0.00")
+    expiring_soon_days: int = 30
+    next_expiry_at: datetime | None = None
+    #: How long a NEW grant stays spendable, so the client can state the term
+    #: without hardcoding the product's number.
+    credit_validity_months: int = 3
+    #: Every batch with credits still on it, oldest first.
+    lots: list["CreditLotOut"] = []
     usage_this_month_subunits: UsageBreakdownOut
     in_deficit: bool
     #: Plain-language reason shown on the billing page when invitations are
@@ -211,8 +245,17 @@ class CreditPackQuoteOut(BaseModel):
     """
 
     slug: str
+    #: Resolved server-side so the page, the invoice and an email cannot call
+    #: one pack three things. The Starter Assessment Pack is never labelled
+    #: with the bare word "Starter": that is already a subscription plan.
+    label: str
     credits: int
     bonus_credits: int
+    #: What the customer receives. For the Starter Assessment Pack this is 75
+    #: while `credits` is 40, and the difference is the free bonus: the price
+    #: per credit never moves, so a headline of "75 for Rs. 24,000" is
+    #: delivered by bonus credits rather than by a discount.
+    credits_total: int
     subtotal_inr: int
     setup_fee_inr: int
     setup_fee_waived: bool
@@ -223,6 +266,8 @@ class CreditPackQuoteOut(BaseModel):
     #: resurrected by a stale client.
     available: bool
     trial: bool
+    #: Months the granted credits stay spendable, stated BEFORE payment.
+    validity_months: int
 
 
 class CreditPacksOut(BaseModel):

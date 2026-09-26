@@ -74,3 +74,35 @@ PyYAML>=6.0
 # --strict reports missing stubs without this.
 types-PyYAML>=6.0
 mypy>=1.11
+
+# ── AI upgrade, RPN-AI-UP-001 ───────────────────────────────────────────────
+
+# Voyage rerank (rerank-2.5), through the official client rather than raw httpx,
+# unlike the chat models: the chat path owns retries against a per-task budget
+# and an SDK inside that would multiply budgets, but rerank is a single bounded
+# call on Route.ECS where that argument does not apply.
+#
+# 0.5, NOT the specification's >=0.3,<0.4. That pin predates the release the
+# code was actually written against: `AsyncClient(api_key, max_retries,
+# timeout)` and `rerank(query, documents, model, top_k, truncation)` returning
+# `.results[].index` were read off the installed 0.5.0, and pinning to a range
+# the verified shape does not come from is the `voyage-context-4` mistake in
+# dependency form.
+#
+# NOT OPTIONAL EVEN FOR A `lexical` DEPLOYMENT: `services/rag/reranker.py`
+# imports it at module scope, so the image fails to import without it. The full
+# test suite caught exactly that.
+voyageai>=0.5,<0.6
+
+# OpenTelemetry GenAI (W4.6). The semantic conventions are still Development,
+# not Stable, and the dedicated repository carries no tags, so there is no
+# schema version to pin: `tests/test_otel_span_shape.py` asserts the attributes
+# of a real exported span against a checked-in fixture instead, which makes a
+# convention drift a failing test rather than a silently renamed field.
+opentelemetry-api>=1.27
+opentelemetry-sdk>=1.27
+opentelemetry-exporter-otlp-proto-http>=1.27
+# Pinned EXPLICITLY, the PyYAML precedent: `services/observability/otel.py`
+# imports `opentelemetry.semconv` directly and fails at import without it,
+# while it otherwise arrives only transitively through the sdk.
+opentelemetry-semantic-conventions>=0.48b0

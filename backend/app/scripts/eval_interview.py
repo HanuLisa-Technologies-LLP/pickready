@@ -174,6 +174,87 @@ async def _measure_real_answer_safety(monkey) -> Result:
     return result
 
 
+def _question_fixture(
+    *,
+    prompt: str = "Describe a system you designed end to end.",
+    skill_name: str = "Kafka",
+    bucket: str = "must_have",
+    rubric: dict[str, str] | None = None,
+) -> tuple[Any, Any, Any, Any]:
+    """One question row, its skill, and the Vaada context it is written from.
+
+    Plain objects, no session: `ppi_interview.write_question` is exercised on
+    the live path's own code with `session=None`, which reads no ledger and no
+    scorecard and persists onto the row in memory. What the candidate reads is
+    `row.prompt` afterwards, so the row IS the observable.
+    """
+    import uuid as _uuid
+
+    from app.models.assessment import CandidateQuestion, JobCompetency
+    from app.models.job import Job
+    from app.services import assessment_contract
+    from app.services.vaada_context import VaadaContext
+
+    job = Job(
+        id=_uuid.uuid4(),
+        title="Senior Backend Engineer",
+        department=None,
+        jd_markdown="Build and run the event pipeline on Kafka and Postgres.",
+    )
+    competency = JobCompetency(
+        id=_uuid.uuid4(),
+        name=skill_name,
+        category=bucket,
+        description="Operating Kafka under load.",
+    )
+    row = CandidateQuestion(
+        id=_uuid.uuid4(),
+        job_candidate_link_id=_uuid.uuid4(),
+        competency_id=competency.id,
+        ordinal=0,
+        prompt=prompt,
+        rubric_json=dict(rubric) if rubric else None,
+        question_type="short_answer",
+    )
+    skill = assessment_contract.ContractSkill(
+        id=competency.id,
+        name=skill_name,
+        bucket=bucket,
+        priority=1,
+        evidence_line="Has sized partitions and consumer groups for a real load.",
+    )
+    contract = assessment_contract.AssessmentContract(
+        job_id=job.id,
+        version=1,
+        locked=True,
+        skills=(skill,),
+        role_summary="Owns the event pipeline for a payments platform.",
+        digest="0" * 64,
+        grade="non_managerial",
+        locked_at=None,
+    )
+    context = VaadaContext(contract=contract, skill=skill, role_summary=contract.role_summary)
+    return job, row, competency, context
+
+
+#: A rubric with five distinct bands, the shape a rubric-scored skill requires.
+_FULL_RUBRIC = {
+    "0_39": "Cannot describe any partitioning decision.",
+    "40_59": "Names partitions but not how the count was chosen.",
+    "60_74": "Explains a sizing decision from one real system.",
+    "75_89": "Sizes from measured throughput and consumer lag.",
+    "90_100": "Trades ordering, rebalancing cost and lag, with outcomes.",
+}
+
+
+async def _write(job: Any, row: Any, competency: Any, context: Any, **kwargs: Any) -> Any:
+    from app.services import ppi_interview
+
+    return await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context, **kwargs
+    )
+
+
 async def _measure_outage_degradation(monkey) -> Result:
     """With the model down, the agent must degrade to the product's previous
     behaviour and never to a wrong one."""
@@ -190,14 +271,18 @@ async def _measure_outage_degradation(monkey) -> Result:
         f"outage produced a punitive label: {verdict.label}",
     )
 
-    # A generated question must fall back to the stored one, never to nothing.
+    # THE LIVE QUESTION WRITER must leave the stored question exactly as it
+    # was, never replace it with nothing: the row keeps its prompt, its rubric
+    # and its NULL `generated_at`, which is the countable record of a degraded
+    # turn.
     stored = "Describe a system you designed end to end."
-    delivered = await interviewer.compose_next_question(
-        session=None, question=stored,
-        transcript=[{"speaker": "candidate", "content": "I led the rewrite."}],
-        mode=interviewer.MODE_GENERATE, competency="Systems Design",
+    job, row, competency, context = _question_fixture(prompt=stored, rubric=_FULL_RUBRIC)
+    written = await _write(job, row, competency, context)
+    result.record(
+        written.degraded and row.prompt == stored and row.rubric_json == _FULL_RUBRIC
+        and row.generated_at is None,
+        f"lost or rewrote the question on outage: {row.prompt!r}",
     )
-    result.record(delivered == stored, f"lost the question on outage: {delivered!r}")
 
     # A follow-up must simply not happen.
     probe = await interviewer.next_follow_up(
@@ -216,51 +301,74 @@ async def _measure_outage_degradation(monkey) -> Result:
 
 
 async def _measure_question_integrity(monkey) -> Result:
-    """A rewritten technical question must still be the same question, and a
-    generated one must not repeat ground already covered."""
+    """The question the candidate reads and the rubric it is graded against
+    must belong to ONE question, whatever the model returns.
+
+    Measured on `ppi_interview.write_question`, the live path. The rubric is
+    written WITH the question, so every refusal below must leave the row
+    exactly as it was (prompt, rubric and `generated_at`), and an accepted
+    question must carry its own rubric.
+    """
     result = Result("question_integrity")
+    stored = "Describe a system you designed end to end."
 
-    # REWORD: dropping the named technology would grade the answer against a
-    # rubric for a question nobody was asked.
-    monkey(_stub({"question": "How did you tune the message queue when it got slow?"}))
-    stored = "Describe how you tuned Kafka consumer lag under load."
-    delivered = await interviewer.compose_next_question(
-        session=None, question=stored,
-        transcript=[{"speaker": "candidate", "content": "We had throughput issues."}],
-        mode=interviewer.MODE_REWORD,
-    )
+    # A REPEAT is refused and persists nothing (audit P1 3.10: a repeat used to
+    # be persisted with a new rubric and then hidden, so the candidate was
+    # graded against a question they never saw).
+    asked = "How did you size the Kafka partitions when consumer lag grew?"
+    monkey(_stub({"question": asked, "rubric": _FULL_RUBRIC}))
+    job, row, competency, context = _question_fixture(prompt=stored)
+    written = await _write(job, row, competency, context, asked_before=[asked])
     result.record(
-        delivered == stored,
-        "accepted a reword that dropped the technology it was scored on",
+        written.degraded and row.prompt == stored and row.rubric_json is None
+        and row.generated_at is None,
+        f"a repeated question was persisted: {row.prompt!r}",
     )
 
-    # REWORD: a faithful rewrite SHOULD be accepted, or the graph has quietly
-    # reduced itself to the stored text it replaced.
-    good = (
-        "You mentioned throughput earlier, so how did you tune Kafka consumer "
-        "lag under load?"
+    # A question the outbound guard would alter is refused, not edited: an
+    # edited question is not the one its rubric was written for.
+    leaky = "You scored 7 out of 10 last time. How did you size Kafka partitions?"
+    monkey(_stub({"question": leaky, "rubric": _FULL_RUBRIC}))
+    job, row, competency, context = _question_fixture(prompt=stored)
+    written = await _write(job, row, competency, context)
+    result.record(
+        written.degraded and row.prompt == stored and row.rubric_json is None,
+        f"a question carrying a score was persisted: {row.prompt!r}",
     )
-    monkey(_stub({"question": good}))
-    delivered = await interviewer.compose_next_question(
-        session=None, question=stored,
-        transcript=[{"speaker": "candidate", "content": "We had throughput issues."}],
-        mode=interviewer.MODE_REWORD,
-    )
-    result.record(delivered == good, "rejected a faithful rewrite")
 
-    # GENERATE: a question already asked must not be asked again.
-    asked = "Tell me about the billing pipeline you built at Acme."
-    monkey(_stub({"question": "Tell me about the billing pipeline you built at Acme."}))
-    delivered = await interviewer.compose_next_question(
-        session=None, question="Describe a system you owned.",
-        transcript=[{"speaker": "agent", "content": asked}],
-        mode=interviewer.MODE_GENERATE, competency="Systems Design",
-        asked_before=[asked],
+    # A rubric-scored skill needs all five bands; a partial rubric is refused.
+    monkey(_stub({"question": asked, "rubric": {"0_39": "Nothing.", "90_100": "All."}}))
+    job, row, competency, context = _question_fixture(prompt=stored)
+    written = await _write(job, row, competency, context)
+    result.record(
+        written.degraded and row.prompt == stored and row.rubric_json is None,
+        "a question with a partial rubric was persisted",
     )
-    result.record(delivered != asked, "asked a question it had already asked")
+
+    # And an acceptable question IS persisted, WITH its rubric, or the writer
+    # has quietly reduced itself to the stored text it exists to replace.
+    monkey(_stub({"question": asked, "rubric": _FULL_RUBRIC}))
+    job, row, competency, context = _question_fixture(prompt=stored)
+    written = await _write(job, row, competency, context)
+    result.record(
+        not written.degraded and row.prompt == asked and row.rubric_json == _FULL_RUBRIC
+        and row.generated_at is not None,
+        "an acceptable question and its rubric were not persisted together",
+    )
+
+    # A behavioural skill carries NO rubric, and writing one would manufacture
+    # a precision the judgement-based scorer would then be bound by.
+    behavioural = "Tell me about a time you changed a teammate's mind with evidence."
+    monkey(_stub({"question": behavioural}))
+    job, row, competency, context = _question_fixture(
+        prompt=stored, skill_name="Influence", bucket="behavioural"
+    )
+    written = await _write(job, row, competency, context)
+    result.record(
+        not written.degraded and row.prompt == behavioural and row.rubric_json is None,
+        "a behavioural question was not written, or was given a rubric",
+    )
     return result
-
-
 async def _measure_no_praise(monkey) -> Result:
     """No templated acknowledgment reaches a candidate, whoever wrote it. The
     product's own canned openers are gone; a model at temperature 0.7 writes
@@ -335,16 +443,13 @@ async def _measure_composition_is_preferred(monkey) -> Result:
             f"{label} used the canned line while the model was available: {out!r}",
         )
 
-    composed_question = "How did you find the root cause on that outage?"
-    monkey(_stub({"question": composed_question}))
-    out = await interviewer.compose_next_question(
-        session=None, question="Describe a system you owned.",
-        transcript=[{"speaker": "candidate", "content": "We had an outage."}],
-        mode=interviewer.MODE_GENERATE, competency="Debugging",
-    )
+    composed_question = "How did you size the Kafka partitions when consumer lag grew?"
+    monkey(_stub({"question": composed_question, "rubric": _FULL_RUBRIC}))
+    job, row, competency, context = _question_fixture()
+    out = await _write(job, row, competency, context)
     result.record(
-        out == composed_question,
-        f"generation fell back while the model was available: {out!r}",
+        out.value["question"] == composed_question and row.prompt == composed_question,
+        f"generation fell back while the model was available: {row.prompt!r}",
     )
 
     composed_probe = "What broke first when you cut the batch size?"
@@ -503,7 +608,7 @@ def _measure_department_graph_reachability() -> Result:
 
 
 def _measure_specificity_plan() -> Result:
-    """38.3's design rule, and the extension ceiling that comes out of it.
+    """38.3's design rule, and the finite gradient behind it.
 
     "at least 40% of probe items must sit at Level 4 or 5", for all validation
     instruments across all departments. Measured at every interview length the
@@ -527,16 +632,11 @@ def _measure_specificity_plan() -> Result:
             f"{total} probes opened one on the rung anyone can answer",
         )
     result.record(
-        evidence_graph.extension_ceiling()
-        == len(evidence_graph.specificity_levels()),
-        "the extension ceiling stopped being the gradient's own length",
-    )
-    result.record(
         evidence_graph.next_specificity_level(
             max(evidence_graph.discriminator_levels())
         )
         is None,
-        "the gradient does not exhaust, so the extension is not finite",
+        "the gradient does not exhaust, so probing one claim is not finite",
     )
     return result
 
@@ -563,12 +663,20 @@ async def run() -> list[Result]:
     """Every measurement, with the model stubbed per measurement."""
     import app.services.answer_classification as ac
     import app.services.interviewer as iv
+    import app.services.ppi_interview as pi
 
-    originals = (ac.llm_router.invoke_llm, iv.llm_router.invoke_llm)
+    # All three name the SAME `llm_router` module, so one assignment stubs the
+    # model for the classifier, the interviewer and the live question writer.
+    # They are listed separately so a module that ever gained its own binding
+    # would be caught by `test_the_eval_restores_the_model_it_stubbed`.
+    originals = (
+        ac.llm_router.invoke_llm, iv.llm_router.invoke_llm, pi.llm_router.invoke_llm
+    )
 
     def monkey(fn):
         ac.llm_router.invoke_llm = fn
         iv.llm_router.invoke_llm = fn
+        pi.llm_router.invoke_llm = fn
 
     try:
         results = [
@@ -589,12 +697,16 @@ async def run() -> list[Result]:
     finally:
         # Restored even on failure: leaving a stub installed would silently
         # break every test that ran after this one in the same process.
-        ac.llm_router.invoke_llm, iv.llm_router.invoke_llm = originals
+        (
+            ac.llm_router.invoke_llm,
+            iv.llm_router.invoke_llm,
+            pi.llm_router.invoke_llm,
+        ) = originals
     return results
 
 
 def report(results: list[Result]) -> str:
-    lines = ["", "ReadyPick interview agent, offline evaluation", ""]
+    lines = ["", "Vivekium interview agent, offline evaluation", ""]
     for item in results:
         mark = "PASS" if item.rate == 1.0 else "FAIL"
         lines.append(f"  [{mark}] {item.name}: {item.passed}/{item.total}")

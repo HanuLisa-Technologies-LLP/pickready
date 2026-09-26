@@ -88,7 +88,6 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         HIRING_MANAGER_CONTROLLED,
         INTEGRITY_DISPOSITION,
         REJECT_JD,
-        SEND_JD_TO_HIRING_MANAGER,
         VIEW_COMPANY_JOBS,
     )
 
@@ -108,13 +107,25 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         # corporate sender is manager-level work (the organisation-wide pair),
         # not the Recruiter's; ACTIVATING one stays the Super Admin's alone.
         "manage_email_senders",
+        # Vivekium feature 1 (Drishti). The brief names its audience in one
+        # line and excludes one role BY NAME: "MD, CEO, Functional Heads (CTO,
+        # CFO, COO). NOT the Hiring Manager." That exclusion is a product rule,
+        # so the divergence here is the rule being expressible rather than a
+        # drift. The Recruiter is refused for the complementary reason given
+        # in capabilities.py: they run a pipeline against criteria somebody
+        # else set, and a function's strategic direction is not a pipeline act.
+        # A functional head sitting in a narrower seat is pinned by the
+        # per-user overlay, never by widening the role default.
+        "author_drishti_profile",
     }
     assert differing == expected, (
         "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "
         f"not sanction: {sorted(differing ^ expected)}"
     )
-    # The Recruiter keeps the one hand-off 9.3 gives them.
-    assert rec[SEND_JD_TO_HIRING_MANAGER] is True
+    # 9.3's hand-off to the Hiring Manager is DELETED with the approval chain
+    # (Vivekium release), so no grant of it may linger in the matrix.
+    assert "send_jd_to_hiring_manager" not in rec
+    assert "send_jd_to_hiring_manager" not in hr
     # Job visibility does NOT diverge at the grant layer, and that is the
     # design: both hold it, and the SCOPED cell in RBAC_INVARIANTS is what
     # narrows the Recruiter to their assigned jobs (9.2, 23). Expressing the
@@ -227,6 +238,12 @@ def test_default_matrix_agrees_with_the_seed_migration() -> None:
     spec = importlib.util.spec_from_file_location("seed_0031", seed_path)
     seed = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed)
+    scrap_spec = importlib.util.spec_from_file_location(
+        "route_scrap_0129",
+        seed_path.parent / "0129_route_scrap.py",
+    )
+    route_scrap = importlib.util.module_from_spec(scrap_spec)
+    scrap_spec.loader.exec_module(route_scrap)
 
     for role_name in seed.GRANTED_ROLES:
         granted = {
@@ -239,6 +256,9 @@ def test_default_matrix_agrees_with_the_seed_migration() -> None:
         # permission. Company Profile (`edit_company_profile`) is the only
         # company-information capability that remains.
         expected.discard("create_company_page")
+        # Migration 0129 retires the approval chain's company half and the
+        # email-template editor, and deletes its three capabilities' rows.
+        expected -= set(route_scrap.RETIRED_CAPABILITIES)
         # Migration 0051 reverses this one flat-model grant: Hiring Manager is
         # the bottom hierarchy tier and has no subordinate staff to manage.
         if role_name == Role.hiring_manager.value:

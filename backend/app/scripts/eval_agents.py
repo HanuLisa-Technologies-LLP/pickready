@@ -4,10 +4,19 @@ RELATIONSHIP TO `eval_interview.py`
 -----------------------------------
 That script evaluates the conversational agent's JUDGEMENT across a labelled set
 and CI already gates on it. This one evaluates the FRAMEWORK the other agents
-now run inside: that the routing table agrees with the permission matrix, that
-every registered tool is reachable, that the verifiers still reject what they
-were built to reject, that nine specific past defects are still fixed, and that
-NO AGENT NAME POINTS AT CODE NOTHING REACHES.
+now run inside: that every tool grant names a registered tool and every
+registered tool is held and is a bounded read, that the verifiers still reject
+what they were built to reject, that specific past defects are still fixed, and
+that NO AGENT NAME POINTS AT CODE NOTHING REACHES.
+
+WHAT IT STOPPED MEASURING, AND WHY
+----------------------------------
+It used to report the orchestration router's routing table and the activation
+frontier of a stage-module table. Both lived in an orchestration package that
+no route and no worker reached, deleted in the Vivekium release. A measure of
+code nothing runs is a number about nothing, so the measures went with it. The
+agent activation report below reads the live identity table against the live
+import graph, which is the question the frontier was standing in for.
 
 That last one is new and is the defect it was added for. Every Part A agent name
 resolved to the module Part A was replacing, while the three-layer framework was
@@ -38,9 +47,8 @@ import json
 import sys
 
 from app.evaluation import dataset, regression
-from app.orchestration_checks import reachable_modules, structural_invariants
+from app.import_graph import reachable_modules, structural_invariants
 from app.services.agents import identity
-from app.services.orchestration import activation
 
 
 def main() -> int:
@@ -54,7 +62,7 @@ def main() -> int:
     problems = structural_invariants()
     report["structural"] = {"problems": problems, "ok": not problems}
 
-    # ── Part A activation frontier ───────────────────────────────────────────
+    # ── Part A activation ────────────────────────────────────────────────────
     #
     # WHY THIS IS IN THE GATE AND NOT ONLY IN A TEST. For a whole phase every
     # agent name in `identity.py` pointed at the OLD module while the
@@ -69,8 +77,6 @@ def main() -> int:
     report["activation"] = {
         "reachable_module_count": len(reachable),
         "agents": identity.activation_status(reachable),
-        "stage_modules": activation.status(),
-        "stages_not_present": list(activation.missing_stages()),
     }
 
     # ── Dataset coverage ─────────────────────────────────────────────────────

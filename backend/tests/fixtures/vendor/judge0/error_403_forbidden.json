@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a privileged request without a valid X-Auth-User when AUTHZ_TOKEN is set answers 403 Forbidden.",
+    "observed": false,
+    "notes": "Same classification as 401: a credential outage."
+  },
+  "status": 403,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {}
+}

@@ -13,7 +13,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.enums import Role
-from app.services.capabilities import ALL_CAPABILITIES
 
 # The onboarding dropdown. Kept here so the API is the single source of truth
 # and the frontend list can be checked against it.
@@ -35,13 +34,6 @@ Industry = Literal[
     "Manufacturing",
     "Education",
     "Other",
-]
-
-# Roles the Owner may invite into a tenant. `client`, `super_admin` and
-# `candidate` are deliberately absent — the Owner invariant (services/owner.py)
-# is the backstop, this Literal is the first gate.
-StaffRoleName = Literal[
-    "recruitment_manager", "hr_manager", "recruiter", "hiring_manager"
 ]
 
 MAX_CULTURE = 5_000
@@ -121,41 +113,6 @@ class TenantCreateIn(BaseModel):
         return _clean(v)
 
 
-class TenantUpdateIn(BaseModel):
-    """PUT/PATCH /admin/tenants/{id} — partial update of the company profile.
-    `domain`, `created_at` and the client account are NOT editable here."""
-
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    industry: Industry | None = None
-    culture: str | None = Field(default=None, max_length=MAX_CULTURE)
-    details: str | None = Field(default=None, max_length=MAX_DETAILS)
-
-    @field_validator("name")
-    @classmethod
-    def _name_not_blank(cls, v: str | None) -> str | None:
-        cleaned = _clean(v)
-        if v is not None and cleaned is None:
-            raise ValueError("company name must not be blank")
-        return cleaned
-
-    @field_validator("culture")
-    @classmethod
-    def _culture_word_count(cls, v: str | None) -> str | None:
-        return _validate_culture(v, optional=True)
-
-    @field_validator("details")
-    @classmethod
-    def _trim(cls, v: str | None) -> str | None:
-        # An explicit "" clears the field; None means "leave unchanged".
-        return None if v is None else v.strip()
-
-    @model_validator(mode="after")
-    def _at_least_one_field(self) -> "TenantUpdateIn":
-        if not self.model_fields_set:
-            raise ValueError("provide at least one field to update")
-        return self
-
-
 class TenantOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -206,53 +163,9 @@ class TenantCreateOut(BaseModel):
 
 # ── Owner-side team management ───────────────────────────────────────────────
 
-class StaffInviteIn(BaseModel):
-    """POST /admin/staff-invites — invite a staff member INTO a chosen tenant
-    from the Owner console. Mirrors the client-side flow (`/companies/me/staff`)
-    and reuses the same `staff_invites` row + `/join` acceptance page."""
-
-    tenant_id: uuid.UUID
-    email: EmailStr
-    role: StaffRoleName
-    full_name: str | None = Field(default=None, max_length=255)
-    phone: str | None = Field(default=None, max_length=20)
-
-    @field_validator("full_name", "phone")
-    @classmethod
-    def _optional_clean(cls, v: str | None) -> str | None:
-        return _clean(v)
-
-
-class StaffInviteOut(BaseModel):
-    user: AdminUserOut
-    tenant_id: uuid.UUID
-    tenant_name: str
-    role: StaffRoleName
-    # Copyable fallback so onboarding never depends on mail delivery.
-    invite_link: str
-    expires_at: datetime | None = None
-    # True when the send_email task was enqueued (never "was delivered").
-    email_queued: bool = False
-
-
-class OwnerStaffOut(BaseModel):
-    """One staff row across all tenants for the Owner's Team Management page."""
-
-    id: uuid.UUID
-    tenant_id: uuid.UUID
-    tenant_name: str
-    email: str
-    full_name: str | None = None
-    role: StaffRoleName
-    status: str
-    invite_status: str | None = None
-    invite_sent_at: datetime | None = None
-    invite_expires_at: datetime | None = None
-
-
 # ── Business Development team (platform staff, no tenant) ────────────────────
 #
-# A BD user is ReadyPick's own salesperson, not a customer's employee: the row
+# A BD user is Vivekium's own salesperson, not a customer's employee: the row
 # carries `role = 'bd'` and `tenant_id = NULL`, so none of the tenant-scoped
 # invite machinery applies (a `staff_invites` row needs a tenant). Identity is
 # the same as everywhere else: the Owner reserves the email here, Firebase owns
@@ -312,9 +225,18 @@ class BDUserUpdateIn(BaseModel):
     `status` accepts only the two values an operator can choose. Re-enabling is
     resolved server-side (back to active when the account has already signed
     in, back to invited when it has not), so disabling is always reversible.
-    Email is deliberately not editable: it IS the identity Firebase binds to.
+
+    EMAIL BECAME EDITABLE ON 2026-09-11, owner decision, with REBIND
+    semantics rather than a quiet field write: the email IS the identity
+    Firebase binds to, so changing it on a signed-in account clears the
+    binding and returns the row to `invited`. The next sign-in on the NEW
+    address binds fresh; the old address matches nothing and is out. A typo'd
+    reservation was previously permanent, which is the problem this repairs.
     """
 
+    #: Unset means unchanged. A provided email is normalised and, when it
+    #: differs from the stored one, triggers the rebind described above.
+    email: EmailStr | None = None
     full_name: str | None = None
     phone: str | None = None
     status: Literal["active", "disabled"] | None = None
@@ -332,34 +254,6 @@ class BDUserUpdateIn(BaseModel):
 
 
 # ── Org-portal view of the caller's own tenant profile ───────────────────────
-
-class PermissionEntry(BaseModel):
-    role: Role
-    capability: str
-    allowed: bool
-
-    @field_validator("capability")
-    @classmethod
-    def _known_capability(cls, v: str) -> str:
-        if v not in ALL_CAPABILITIES:
-            raise ValueError(f"unknown capability: {v}")
-        return v
-
-
-class PermissionsUpdateIn(BaseModel):
-    tenant_id: uuid.UUID | None = None  # None -> edit the global template
-    entries: list[PermissionEntry] = Field(min_length=1)
-
-
-class PermissionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    tenant_id: uuid.UUID | None
-    role: Role
-    capability: str
-    allowed: bool
-
 
 class AuditLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

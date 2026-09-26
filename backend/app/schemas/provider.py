@@ -1,8 +1,8 @@
-"""Provider Portal schemas — the ReadyPick owner's view of its CUSTOMERS.
+"""Provider Portal schemas — the Vivekium owner's view of its CUSTOMERS.
 
 Vocabulary (the spec is strict about this and the code follows it):
 
-    Provider Portal   the ReadyPick owner's console — these schemas
+    Provider Portal   the Vivekium owner's console — these schemas
     Customer Portal   a client company's own HR/recruitment dashboard
     Candidate Portal  the public candidate surface
 
@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.compliance import (
     COMMERCIAL_DOCUMENT_TYPES,
@@ -91,6 +91,32 @@ class PrimaryContactOut(BaseModel):
     #: Landline WITH extension, as one string — "+91-22-1234-5678 ext. 101".
     landline: str | None = None
     status: str | None = None
+
+
+class PrimaryContactSetIn(BaseModel):
+    """Set or change the customer's primary contact (owner decision,
+    2026-09-11). This is the ONE carve-out from read-only-by-absence, because
+    the primary contact is not the customer's own data in the sense that rule
+    protects: it is the door INTO the tenant. A typo'd email at onboarding, an
+    expired invite, or a seeded tenant with no address at all left a customer
+    permanently unreachable, with no route anywhere to repair it."""
+
+    email: EmailStr
+    full_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)
+
+
+class PrimaryContactSetOut(BaseModel):
+    contact: PrimaryContactOut
+    #: Whether a fresh workspace invitation was queued by THIS call. False for
+    #: a name-or-phone-only edit on an already signed-in contact, where there
+    #: is nothing to invite anybody to.
+    invite_sent: bool
+    #: True when the previous sign-in binding was cleared because the email
+    #: changed on an already signed-in account: the old address is out, and
+    #: the new address binds on its first sign-in. Serialized so the UI can
+    #: say exactly that instead of implying a quiet edit.
+    rebound: bool
 
 
 class CustomerTeamMemberOut(BaseModel):
@@ -257,7 +283,7 @@ class CustomerUpdateIn(BaseModel):
 
 class ClassificationReviewItem(BaseModel):
     """One job in the Classification Review Queue: the §4.4 tentative band
-    (stem-score 0.30–0.79) plus any engine-error fallbacks, for the Hanulisa
+    (stem-score 0.30–0.79) plus any engine-error fallbacks, for the Varpitech
     team to verify by hand."""
 
     job_id: uuid.UUID

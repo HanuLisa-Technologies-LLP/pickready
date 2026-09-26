@@ -112,7 +112,7 @@ export function MonitoringPolicyCard({ jobId }: { jobId: string }) {
       <CardContent className="space-y-4">
         <div>
           <p className="text-sm font-medium">{MONITORING_FIELD_LABEL}</p>
-          <p className="mt-1 text-xs leading-5">{MONITORING_HELP_TEXT}</p>
+          <p className="mt-1 text-xs">{MONITORING_HELP_TEXT}</p>
         </div>
         <RadioGroup
           value={policy ?? DEFAULT_MONITORING_POLICY}
@@ -131,7 +131,7 @@ export function MonitoringPolicyCard({ jobId }: { jobId: string }) {
                 <Label htmlFor={`monitoring-${option.value}`} className="cursor-pointer">
                   {option.label}
                 </Label>
-                <p className="mt-1 text-xs leading-5">{option.description}</p>
+                <p className="mt-1 text-xs">{option.description}</p>
               </div>
             </div>
           ))}

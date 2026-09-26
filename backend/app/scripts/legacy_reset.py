@@ -95,6 +95,7 @@ from app.config.llm_providers import (
 from app.core.config import get_settings
 from app.core.db import get_session_factory, superadmin_scope
 from app.services.audit import audit
+from app.services.yukti import config as yukti_config
 
 logger = logging.getLogger("pickready.legacy_reset")
 
@@ -241,23 +242,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         "Per-candidate questions generated against the old scorecard.",
         order=32,
     ),
-    TableRule(
-        "candidate_technical_questions",
-        PURGE,
-        "Per-candidate technical questions and the rubric written with each. "
-        "Scored against a scorecard that is being replaced.",
-        order=33,
-    ),
-    TableRule(
-        "technical_questions",
-        PURGE,
-        "The retired per-job preset bank. CLAUDE.md kept this table unread so "
-        "'what was this candidate asked' stayed answerable for existing "
-        "reports; those reports are themselves being purged, so the reason no "
-        "longer holds and the history moves to the export.",
-        order=34,
-        named_by_d2=False,
-    ),
     # ── purged: the scorecard and the pre-screen criteria ────────────────────
     TableRule(
         "job_competencies",
@@ -320,12 +304,21 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         RESET,
         "The application. Preserved by D2, including its timestamps. The "
         "pre-screen grade written onto it is not: match_score, its rationale, "
-        "the four-parameter breakdown and the tier are all old machine output.",
+        "the four-parameter breakdown and the tier are all old machine output. "
+        "Neither is Yukti's reading: it goes back to `pending`, the state a link "
+        "no run has read yet, so the next AI Matching run reads it afresh.",
         resets=(
             ("match_score", "NULL"),
             ("match_rationale", "NULL"),
             ("match_breakdown_json", "NULL"),
             ("tier", "NULL"),
+            ("yukti_pre_score", "NULL"),
+            ("yukti_status", "'pending'"),
+            ("yukti_failure_reason", "NULL"),
+            ("evidence_tags_json", "'[]'::jsonb"),
+            ("yukti_provenance_json", "NULL"),
+            ("yukti_scored_at", "NULL"),
+            ("yukti_profile_id", "NULL"),
         ),
         order=70,
     ),
@@ -336,14 +329,25 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         "scorecard approval stamps are cleared so that gate G1 can block "
         "evaluation until the job is re-defined, which is the enforcement D2 "
         "says to reuse rather than duplicate. Whether G1 is reachable from a "
-        "live path is checked before the purge runs, not assumed.",
+        "live path is checked before the purge runs, not assumed. The Skills "
+        "step's own state goes with the rows it describes: the hidden context "
+        "(without it the skills do not read as saved) and the draft state, "
+        "back to `not_started`, which is what lets "
+        "`pickready.reconcile_job_setup` draft the job again from its saved "
+        "SWOT. `matching_categories_finalized_at` is read by nothing since the "
+        "Vivekium release and is cleared as history.",
         resets=(
             ("framework_generated_at", "NULL"),
             ("framework_approved_at", "NULL"),
+            ("assessment_context_json", "NULL"),
+            ("skills_draft_status", "'not_started'"),
+            ("skills_draft_error", "NULL"),
+            ("skills_draft_requested_at", "NULL"),
+            ("skills_drafted_at", "NULL"),
+            ("skills_drafted_swot_version", "NULL"),
             ("matching_categories_finalized_at", "NULL"),
             ("question_reminder_sent_at", "NULL"),
             ("questions_generated_at", "NULL"),
-            ("questions_approved_at", "NULL"),
             ("assessment_status", "'questions_pending_review'"),
         ),
         order=71,
@@ -397,14 +401,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         named_by_d2=False,
     ),
     TableRule(
-        "company_dna",
-        PRESERVE,
-        "The Layer 2 artifact and the client's answers behind it. Produced by "
-        "the new framework, and the input Sutra needs to compile a new "
-        "scorecard at all.",
-        named_by_d2=False,
-    ),
-    TableRule(
         "old_profile_reviews",
         PRESERVE,
         "A recruiter's decision on an old profile, and the billing event "
@@ -437,14 +433,29 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         named_by_d2=False,
     ),
     TableRule(
-        "job_company_dna_bindings",
+        "job_scorecard_bindings",
         PURGE,
-        "The frozen binding of a job to the Company DNA version and scorecard "
-        "version its evaluations were run under. The scorecard it names is "
-        "being archived, so the binding would assert a freeze over a matrix "
-        "that no longer exists. It is re-created when the job's new scorecard "
-        "is locked.",
+        "The frozen binding of a job to the scorecard version its evaluations "
+        "were run under. The scorecard it names is being archived, so the "
+        "binding would assert a freeze over a matrix that no longer exists. "
+        "Nothing re-creates one since the Vivekium release: the saved skills "
+        "and the contract snapshot replaced the freeze.",
         order=43,
+        named_by_d2=False,
+    ),
+    TableRule(
+        "job_skill_snapshots",
+        PRESERVE,
+        "The assessment contract a candidate started against: the skills, "
+        "their evidence lines, the role summary and the grade, frozen at the "
+        "first start (migration 0118). IMMUTABLE BY TRIGGER: an UPDATE always "
+        "raises and a DELETE raises unless a tenant or job cascade drives it, "
+        "so the purge could not remove one even if it tried, and it must not "
+        "want to: it is the only record of what those candidates were "
+        "assessed against. The consequence is deliberate and counted by the "
+        "survey (`locked_contracts`): a locked job's skill rows are purged but "
+        "its contract stays locked, so its skills cannot be re-defined and "
+        "new criteria mean a new job.",
         named_by_d2=False,
     ),
     TableRule(
@@ -472,20 +483,8 @@ CLASSIFICATION: tuple[TableRule, ...] = (
     TableRule("staff_invites", PRESERVE, "Staff invitations that have not been accepted yet. Deleting one would "
         "silently revoke an invite already in somebody's inbox.", named_by_d2=False),
     TableRule(
-        "otp_challenges", PRESERVE, "Short-lived authentication challenges. They expire on their own and "
-        "deleting them early would fail a login in flight.", named_by_d2=False
-    ),
-    TableRule(
         "role_permissions", PRESERVE, "The permission model is data rather than code, so this table IS the "
         "authorisation rules. Nothing about the reset touches them.", named_by_d2=False
-    ),
-    TableRule(
-        "llm_provider_keys",
-        PRESERVE,
-        "Provider credentials, encrypted at rest. A global table, and nothing "
-        "here is client hiring data.",
-        tenant_column=None,
-        named_by_d2=False,
     ),
     TableRule(
         "pricing_plans",
@@ -517,7 +516,7 @@ CLASSIFICATION: tuple[TableRule, ...] = (
     TableRule(
         "bd_leads",
         PRESERVE,
-        "Ready Pick Now's own sales pipeline. Not client hiring data.",
+        "Vivekium's own sales pipeline. Not client hiring data.",
         named_by_d2=False,
     ),
     TableRule(
@@ -1098,6 +1097,17 @@ _EDGE_CASE_QUERIES: tuple[tuple[str, str, str, bool, str], ...] = (
         """,
     ),
     (
+        "locked_contracts",
+        "Jobs whose assessment contract is locked",
+        "A candidate started against these, so a contract snapshot exists and "
+        "is immutable by trigger. The purge removes their skill rows and cannot "
+        "remove the snapshot, so the job stays locked with no editable skills: "
+        "it cannot be re-defined, and assessing against new criteria means a "
+        "new job.",
+        True,
+        "SELECT COUNT(DISTINCT job_id) FROM job_skill_snapshots",
+    ),
+    (
         "active_conversations",
         "Assessment conversations still active",
         "Purging one ends an interview a candidate may be part way through. "
@@ -1408,11 +1418,6 @@ def _safe_database_name() -> str:
 
 # ── Object store reconciliation ──────────────────────────────────────────────
 
-#: Recognised durable URI schemes for a stored object. Anything else on a row is
-#: a legacy provider that the bucket cannot be asked about.
-OBJECT_SCHEMES: tuple[str, ...] = ("s3://", "gs://")
-
-
 def classify_object_uri(uri: str | None) -> str:
     """One of: none | s3 | legacy. Pure, so the survey's arithmetic is testable
     without a bucket."""
@@ -1633,8 +1638,6 @@ def render_survey(survey: Survey) -> str:
         "job_competencies",
         "job_matching_categories",
         "candidate_questions",
-        "candidate_technical_questions",
-        "technical_questions",
         "assessment_conversations",
         "assessment_messages",
         "evidence_items",
@@ -2478,13 +2481,14 @@ async def run_purge(
 # deterministic dev fallback, which would write a hash-derived ranking into the
 # column a recruiter sorts on.
 
-#: The task the pre-screen grade is routed under, and therefore the model and
-#: the price it is estimated at. Read from the routing policy rather than
-#: restated, so a change to the policy moves the estimate with it.
-REGRADE_TASK = "rerank"
-#: `matching._RERANK_BATCH_SIZE`. Imported below rather than duplicated; this
-#: name exists so the work plan can say which constant it used.
-REGRADE_BATCH_ATTRIBUTE = "_RERANK_BATCH_SIZE"
+#: The task a regrade is routed under, and therefore the model and the price
+#: it is estimated at: Yukti's reading, the one matcher left (Phase 2 WP-B).
+#: Read from Yukti's own config rather than restated, so a change to the
+#: routing moves the estimate with it.
+REGRADE_TASK = yukti_config.TASK_TYPE
+#: `yukti.config.BATCH_SIZE`, read below rather than duplicated; this name
+#: exists so the work plan can say which constant it used.
+REGRADE_BATCH_ATTRIBUTE = "BATCH_SIZE"
 #: Rough per-call token shape for the estimate, and labelled as an estimate
 #: everywhere it surfaces. A batch prompt carries the JD, the job's categories
 #: and up to ten profile summaries; the completion is one JSON object per
@@ -2522,9 +2526,7 @@ class RegradePlan:
 
 
 def _regrade_batch_size() -> int:
-    from app.services import matching  # noqa: PLC0415
-
-    return int(getattr(matching, REGRADE_BATCH_ATTRIBUTE))
+    return int(getattr(yukti_config, REGRADE_BATCH_ATTRIBUTE))
 
 
 async def plan_regrade(session: AsyncSession) -> RegradePlan:

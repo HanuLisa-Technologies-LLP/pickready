@@ -89,6 +89,37 @@ export const CAP = {
   addTeamReviewRemark: "add_team_review_remark",
   addCompensation: "add_compensation",
   integrityDisposition: "integrity_disposition",
+  /**
+   * Drishti, the function's strategic profile (vivekium feature 1, C3).
+   *
+   * Deliberately NOT `editCompanyProfile`. Every client-side staff role
+   * holds that one, including the Hiring Manager, and the brief excludes the
+   * Hiring Manager by name from Drishti's audience. Asking the wider
+   * capability here would show the nav entry to somebody every one of the
+   * four endpoints then refuses, which is the failure this whole file exists
+   * to stop: the courtesy and the gate have to agree.
+   */
+  authorDrishtiProfile: "author_drishti_profile",
+  /**
+   * The job's skills, one capability per bucket (Vivekium release, Phase 1).
+   * Editing a skill is the Hiring Manager's authority, not `create_job`'s:
+   * the skills are what every candidate on the job is assessed against. The
+   * skills payload carries the per-job answer (`can_edit` per bucket,
+   * `can_save`); these are the capability half `resolvePermission` falls back
+   * to while it loads.
+   */
+  editMustHaveSkills: "edit_must_have_skills",
+  editNiceToHaveSkills: "edit_nice_to_have_skills",
+  editBehaviouralCompetencies: "edit_behavioural_competencies",
+  /** Save Skills: writes the hidden assessment context and makes the job invitable. */
+  finalizeRoleDefinition: "finalize_role_definition",
+  /**
+   * The assessment dispute path on a CLOSED job (change request 22, migration
+   * 0112): Client Super Admin only by default. It is an unlock, so the report
+   * and transcript screens answer again for the holder while a dispute is
+   * open; it never extends the thirty day retention window.
+   */
+  retrieveDisputedAssessment: "retrieve_disputed_assessment",
 } as const;
 
 export type CapabilityName = (typeof CAP)[keyof typeof CAP];

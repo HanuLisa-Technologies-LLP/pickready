@@ -1,17 +1,13 @@
-"""The override rate, divergence direction, and the no-nudge constraint.
+"""Divergence direction and the no-nudge constraint.
 
-Pure. The HTTP half of calibration lives in `test_dashboard_workflows.py` and
-`test_dashboard_rbac_matrix.py`; this file is the arithmetic and the shape.
+Pure. The HTTP half, a Team Review verdict writing its `CalibrationRecord`,
+lives in `test_dashboard_workflows.py`.
 
-THE MOST IMPORTANT TEST IN THIS FILE IS THE ONE ABOUT A FIELD SET
-------------------------------------------------------------------
-spec-doc6 §8.2 and `PRODUCT.md`: measure, never nudge. That is not enforceable
-by a comment. What makes it enforceable is that `OverrideRate` carries counts
-and a rate and nothing a UI could render as disapproval, and that
-`test_the_metric_carries_no_target_and_no_verdict` fails the day somebody adds
-an `over_target` convenience flag. A target rendered beside a recruiter's
-deviation figure does not improve calibration; it stops the deviation being
-reported, which destroys the only signal the metric exists to collect.
+The override-rate metric and the raw-numbers calibration view were DELETED
+with their routes in the Vivekium release (PLAN-p7 WP-B6): the view returned
+the raw D1-D5 numbers to a client and the queue had no screen. What survives
+is the RECORD of a divergence and the rule that nothing here may nudge a
+reviewer towards agreement.
 """
 from __future__ import annotations
 
@@ -21,7 +17,6 @@ import re
 import pytest
 
 from app.services import calibration, rating, team_review
-from app.services.miti import dimensions as miti_dimensions
 
 # ── The direction of a disagreement ──────────────────────────────────────────
 
@@ -96,34 +91,7 @@ def test_the_written_assessment_values_are_the_columns_own():
     } <= allowed
 
 
-# ── The override rate ────────────────────────────────────────────────────────
-
-
-def test_the_metric_carries_no_target_and_no_verdict():
-    """MEASURE, NEVER NUDGE, as a property of the type.
-
-    Counts and a rate. No target, no threshold, no severity, no colour, no
-    boolean. Asserted on the FIELD SET rather than on the absence of specific
-    names, because a future field called `status` would pass a narrower check
-    and reach a screen.
-    """
-    rate = calibration.OverrideRate(comparable=10, diverged=3)
-    assert set(rate.as_dict()) == {"comparable", "diverged", "rate"}
-    assert set(rate.__dataclass_fields__) == {"comparable", "diverged"}
-
-
-def test_the_rate_is_divergent_over_comparable():
-    assert calibration.OverrideRate(comparable=10, diverged=3).rate == 0.3
-    assert calibration.OverrideRate(comparable=4, diverged=4).rate == 1.0
-
-
-def test_nothing_comparable_reads_as_zero_and_says_so():
-    """Zero here means "no reviews with a machine grade yet", NOT perfect
-    agreement. `comparable` travels beside the rate so a reader can tell the
-    two apart, which a bare 0.0 cannot."""
-    empty = calibration.OverrideRate(comparable=0, diverged=0)
-    assert empty.rate == 0.0
-    assert empty.as_dict()["comparable"] == 0
+# ── No target travels with the record ────────────────────────────────────────
 
 
 def test_the_module_names_no_target_anywhere():
@@ -145,89 +113,6 @@ def test_the_module_names_no_target_anywhere():
         if not line.lstrip().startswith("#") and "0.15" in line
     ]
     assert not code, f"a deviation target reached the measurement: {code}"
-
-
-# ── The audited raw-numbers view ─────────────────────────────────────────────
-
-
-def test_the_calibration_view_carries_the_numbers_and_the_profile_panel_does_not():
-    """spec-doc6 D8, from both sides in one test.
-
-    The panel and this view read the SAME evaluation. What separates them is
-    which fields each one is built from, and asserting only that the view has
-    the numbers would leave the panel free to have them too.
-    """
-    from app.services import dashboard
-
-    evaluation = {
-        "id": "11111111-1111-4111-8111-111111111111",
-        "dimension_scores": {
-            "verified_competence": {"band": "strong", "evidence_refs": ["ev-1"]},
-            "authenticity_consistency": {"band": "partial", "evidence_refs": []},
-        },
-        "competency_scores": {"kafka": {"band": "solid"}},
-        "aggregate_json": {
-            "raw_composite": 81.0,
-            "adjusted_composite": 74.5,
-            "authenticity_factor": 0.92,
-            "category_scores": {"must_have": 78.0},
-            "category_grades": {"must_have": rating.GRADE_MATCHING},
-            "overall_grade": rating.GRADE_MATCHING,
-            "confidence": "medium",
-        },
-        "gate_results_json": [],
-        "triangulation_json": {},
-        "confidence": "medium",
-    }
-
-    view = calibration.calibration_view(evaluation)
-    assert view["raw_composite"] == 81.0
-    assert view["adjusted_composite"] == 74.5
-    assert view["authenticity_factor"] == 0.92
-    assert view["category_scores"] == {"must_have": 78.0}
-    # The raw per-dimension score, which is the field D8 keeps off every other
-    # surface. It is the representative score the aggregator itself used.
-    strong = next(d for d in view["dimensions"] if d["band"] == "strong")
-    assert strong["raw_score"] == miti_dimensions.band_for("strong")
-
-    panel = dashboard.profile_panel(
-        evaluation=evaluation,
-        candidate_name="Test Candidate Zero",
-        system_id="AAAA-BBBB-CCCC",
-        under_integrity_review=False,
-    )
-    flat = repr(panel)
-    for number in ("81.0", "74.5", "0.92", "78.0", str(miti_dimensions.band_for("strong"))):
-        assert number not in flat, f"{number} reached the Ready Pick Profile panel"
-
-
-def test_every_dimension_appears_in_the_view_even_when_unrated():
-    """A dimension the evaluators never reached reports a null band and a null
-    score, not a zero. Somebody auditing the engine needs to see the gap."""
-    view = calibration.calibration_view(
-        {"id": "x", "dimension_scores": {}, "aggregate_json": {}}
-    )
-    assert [d["dimension"] for d in view["dimensions"]] == list(
-        miti_dimensions.DIMENSIONS
-    )
-    assert all(d["raw_score"] is None for d in view["dimensions"])
-
-
-def test_an_unknown_band_reports_no_number_rather_than_a_guess():
-    """This view exists for people auditing the engine. A fabricated score here
-    would be a fabrication inside the audit itself."""
-    view = calibration.calibration_view(
-        {
-            "id": "x",
-            "dimension_scores": {"verified_competence": {"band": "excellent"}},
-            "aggregate_json": {},
-        }
-    )
-    entry = next(
-        d for d in view["dimensions"] if d["dimension"] == "verified_competence"
-    )
-    assert entry["band"] == "excellent"
-    assert entry["raw_score"] is None
 
 
 def test_the_two_calibration_sources_are_named_and_closed():

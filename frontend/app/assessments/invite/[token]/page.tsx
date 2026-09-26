@@ -47,7 +47,6 @@ interface InvitationResolve {
   job_title: string | null;
   company_name: string | null;
   message: string;
-  recent_prior_report: boolean;
 }
 
 /** States that mean "go there now" rather than "read this". */
@@ -82,14 +81,10 @@ export default function AssessmentInvitePage() {
           );
           return;
         }
-        // One exception to forwarding: a candidate who was assessed for
-        // another role inside the last six months is owed the reason they are
-        // answering questions again before they start typing. Under PPI the
-        // framework comes from each job's own JD, so nothing carries over --
-        // but silently reasking is what makes that feel like a bug.
-        const explainRetake =
-          data.recent_prior_report && data.state === "ready";
-        if (FORWARDING.has(data.state) && data.redirect_to && !explainRetake) {
+        // Every assessment starts fresh against its own job's skills and
+        // nothing carries across roles, so there is no exception to explain
+        // here: a ready invitation forwards straight to the assessment.
+        if (FORWARDING.has(data.state) && data.redirect_to) {
           router.replace(data.redirect_to);
           return;
         }
@@ -148,7 +143,7 @@ export default function AssessmentInvitePage() {
         description={forWhat ?? undefined}
       >
         <div className="space-y-5">
-          <p className="flex items-start gap-2.5 text-sm leading-6">
+          <p className="flex items-start gap-2.5 text-sm">
             <ShieldAlert
               className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
               aria-hidden="true"
@@ -186,32 +181,13 @@ export default function AssessmentInvitePage() {
     );
   }
 
-  if (result.recent_prior_report && result.redirect_to) {
-    return (
-      <AuthShell
-        title="A fresh assessment for this role"
-        description={forWhat ?? undefined}
-      >
-        <p className="text-sm leading-6">
-          You completed an assessment for another role recently. Each role is
-          evaluated against criteria written from its own job description, so
-          nothing carries across and this one starts fresh. Your answers save as
-          you go.
-        </p>
-        <Button asChild className="mt-6 w-full">
-          <Link href={result.redirect_to}>Start the assessment</Link>
-        </Button>
-      </AuthShell>
-    );
-  }
-
   if (result.state === "completed") {
     return (
       <AuthShell
         title="You have already sent this one"
         description={forWhat ?? undefined}
       >
-        <p className="flex items-start gap-2.5 text-sm leading-6">
+        <p className="flex items-start gap-2.5 text-sm">
           <CheckCircle2
             className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
             aria-hidden="true"
@@ -238,7 +214,7 @@ export default function AssessmentInvitePage() {
 
   return (
     <AuthShell title={title} description={forWhat ?? undefined}>
-      <p className="flex items-start gap-2.5 text-sm leading-6">
+      <p className="flex items-start gap-2.5 text-sm">
         <Clock
           className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
           aria-hidden="true"

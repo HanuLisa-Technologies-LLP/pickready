@@ -7,7 +7,7 @@ from pydantic import (
     BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator,
 )
 
-from app.models.enums import JobStatus, PipelineStatus
+from app.models.enums import JobStatus
 
 #: E.164-ish: an optional leading '+' and 7-15 digits. Separators (spaces,
 #: dashes, dots, parentheses) are accepted from the client and stripped before
@@ -22,12 +22,13 @@ class MeOut(BaseModel):
 
     `email` is READ-ONLY here: Firebase owns credentials and account recovery
     (claude.md rule 2), so changing it is a Firebase operation, never a
-    ReadyPick database write.
+    Vivekium database write.
     """
 
     id: uuid.UUID
     full_name: str | None
-    # Nullable: a phone-only (Firebase phone provider) account has no email.
+    # Nullable for history only: accounts created by the phone sign-in removed
+    # on 2026-09-24 carry no email. Every new account has one.
     email: str | None
     phone: str | None
     role: str
@@ -80,31 +81,6 @@ class MeUpdateIn(BaseModel):
         return self
 
 
-class AspectOut(BaseModel):
-    id: int
-    prompt: str
-
-
-class OutreachInfoOut(BaseModel):
-    """What the outreach link asks the candidate to provide (FR-5.1/6.1)."""
-    job_title: str | None
-    company_name: str | None
-    already_submitted: bool
-    # Personal fields (FR-5.1 a-d) still missing on the candidate record
-    personal_fields: list[str]
-    # The 40 aspects minus any covered by the personal fields (FR-5.1)
-    aspects: list[AspectOut]
-    resume_required: bool = True
-    max_employer_emails: int = 3
-
-
-class OutreachSubmitOut(BaseModel):
-    profile_id: uuid.UUID
-    aspects_received: int
-    verification_requests_created: int
-    parse_task: str = "queued"
-
-
 class PortalJobOut(BaseModel):
     """A published job as the candidate portal shows it.
 
@@ -117,7 +93,10 @@ class PortalJobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
+    # NO `level`. The free-text level column predates the experience band and
+    # the grade (2026-07-28); a candidate board that printed it beside the
+    # grade showed two answers to one question. The column stays in the
+    # database as history (CONTRACT S4) and nothing on this surface reads it.
     company_name: str | None
     #: Slug of the employer's PUBLIC page (/employers/{slug}), when one is
     #: visible; None when the page is hidden, so the portal never links to a
@@ -138,6 +117,17 @@ class PortalJobOut(BaseModel):
     company_culture: str | None = None
     company_industry: str | None = None
     company_benefits: str | None = None
+
+    # ── This candidate's relationship to the job ─────────────────────────────
+    #: True when the candidate already holds an APPLICATION on this job. A
+    #: recruiter's `sourced` databank entry is not one: it is somebody else's
+    #: act, and reporting it as "applied" would dead-end a candidate who is
+    #: acting on the recruiter's own invitation (Gate 5).
+    already_applied: bool = False
+    #: The application's link id when `already_applied`, so the board can link
+    #: straight to it on Applied Jobs instead of opening an apply form that can
+    #: only answer 409.
+    application_id: uuid.UUID | None = None
 
     # Serialization mirrors, matching JobDetailOut/PublicJobOut: the frontend
     # reads `jd` and `grade`, the canonical columns are `jd_json` and
@@ -161,21 +151,21 @@ class PortalJobsOut(BaseModel):
 
 
 class ApplyOut(BaseModel):
+    """What an application (or a grace-period edit of one) answers.
+
+    Deliberately says nothing about an assessment. Applying is not being
+    assessed: the invitation is a separate, recruiter-initiated act
+    (`assessment_conversations` IS the invitation), so an application answer
+    that talked about "the assessment" pointed the candidate at a page that
+    would refuse them.
+    """
+
     link_id: uuid.UUID
     job_id: uuid.UUID
     profile_id: uuid.UUID
-    # True when the resume was carried over from a previous application
+    # True when the resume was carried over from the candidate's main resume
     # (reuse_previous) rather than freshly uploaded (FR-6.2 / FR-9.2).
     resume_reused: bool = False
-    aspects_received: int = 0
-    parse_task: str = "queued"
-    # ── Six-month retake rule (spec §5.1) ────────────────────────────────────
-    # False when a recent assessment was reused, so the portal can say "nothing
-    # further to do" instead of pointing at an assessment that will not exist.
-    assessment_required: bool = True
-    #: The sentence explaining a reuse or a retake. None on a first assessment,
-    #: which needs no preamble.
-    assessment_notice: str | None = None
 
 
 class StatusEventOut(BaseModel):
@@ -193,13 +183,10 @@ class ApplicationOut(BaseModel):
     #: Slug of the employer's PUBLIC page, same contract as PortalJobOut.
     company_slug: str | None = None
     applied_at: datetime
-    # Latest pipeline status; None means still in review.
-    #
-    # RETAINED for backwards compatibility: this is the OLD five-value enum
-    # (shortlisted/rejected/hold/offered/joined) and it is null for every
-    # application sitting in one of the new pipeline stages. New clients should
-    # read `status`/`stage_label` below, which cover all ten.
-    stage: PipelineStatus | None
+    # The OLD five-value `stage` projection (shortlisted/rejected/hold/
+    # offered/joined, null for every newer stage) was DELETED at the 2026-09
+    # compatibility cutoff: no client read it, and `status`/`stage_label`
+    # below cover all ten stages.
     assessment_status: str | None = None
     conversation_status: str | None = None
     report_ready: bool = False
@@ -288,6 +275,121 @@ class MarkUpdatesReadIn(BaseModel):
     """
 
     ids: list[uuid.UUID] | None = None
+
+
+class DeletionNoticeOut(BaseModel):
+    """The smart warning screen, authored by the server (feature 7).
+
+    Every string here comes from `services/account_deletion`. The screen
+    renders them and writes none of its own, for the reason
+    `components/permission-notice.tsx` exists: a client that authors copy about
+    a server-side rule keeps promising whatever it promised on the day it was
+    written, and this particular rule is irreversible.
+    """
+
+    heading: str
+    warnings: list[str]
+    confirmation_phrase: str
+    instruction: str
+
+
+class DeleteMeIn(BaseModel):
+    """DELETE /portal/me. The typed confirmation, checked on the SERVER.
+
+    A confirmation only the browser checks is a speed bump: the route is
+    reachable by anything holding the session cookie. Same shape as the
+    Provider's tenant delete, where the operator retypes the company name.
+    """
+
+    confirmation: str = Field(
+        max_length=40,
+        description="Must be the phrase from GET /portal/me/deletion-notice.",
+    )
+
+
+class DeleteMeOut(BaseModel):
+    """What the erasure actually did. Counts, never content.
+
+    Mirrors `erasure.ErasureReceipt` rather than inventing a second vocabulary
+    for the same event, so the number the candidate is shown and the number in
+    the audit row are the same number.
+    """
+
+    deleted: bool
+    #: Echoed so a support conversation can be had about a specific erasure
+    #: without anybody needing to find the candidate row, which is gone.
+    candidate_id: uuid.UUID
+    erased_at: datetime
+    chunks_deleted: int
+    profile_vectors_cleared: int
+    projects_deleted: int
+    cache_keys_deleted: int
+    sign_in_accounts_deleted: int
+    #: How many stored files (resumes, recordings, staged originals, files on
+    #: the candidate's conversations) this erasure has to remove. Reported
+    #: because the row half and the OBJECT half of an erasure finish at
+    #: different moments, and telling somebody "deleted" while an unknown
+    #: number of their documents are still queued is the kind of half-truth
+    #: `deletion_state` exists to replace.
+    objects_total: int
+    #: Where the erasure stands, from `services/deletion_requests`. It is
+    #: `rows_erased` when the request returns, which is the honest word for
+    #: "you are out of the product and your stored files are being removed";
+    #: the object pass runs in `pickready.cascade_erasure` and is swept until
+    #: every file is verifiably gone.
+    deletion_state: str
+    #: Whether the Firebase sign-in identity was deleted with the profile. True
+    #: in the ordinary case. False only when the same address is ALSO a staff
+    #: sign-in on this platform, because that identity is not the candidate's
+    #: alone to delete; `sign_in_identity_note` then says so in the server's
+    #: words.
+    sign_in_identity_deleted: bool = False
+    sign_in_identity_note: str | None = None
+
+
+class RenewConsentIn(BaseModel):
+    """POST /portal/consent/renew. The one-click link's own payload.
+
+    The token is the whole authorization and it authorises exactly one act. It
+    is never a session, never identifies the holder to any other route, and is
+    consumed by the renewal itself. See `services/consent_renewal`.
+    """
+
+    token: str = Field(min_length=16, max_length=200)
+
+
+class ConsentRenewalOut(BaseModel):
+    """GET /portal/me/consent/renewal: where the candidate stands on the
+    "keep my profile" cycle (feature 8).
+
+    Every value is DERIVED by `services/consent_lifecycle` from timestamps on
+    the candidate row, exactly as the sweep derives it, so the card and the
+    sweep cannot disagree. `message` is the server's sentence.
+    """
+
+    #: When the current consent period began (registration or last renewal).
+    consented_at: datetime
+    #: When confirmation is next asked for.
+    renewal_due_at: datetime
+    #: `consent_lifecycle` stage: active | reminder_due | final_warning_due |
+    #: deletion_due. A stage, never a count of days.
+    stage: str
+    #: True once `renewal_due_at` has passed, whatever letters have gone out.
+    renewal_needed: bool
+    message: str
+
+
+class ConsentRenewedOut(BaseModel):
+    """What a renewal answers, on both the signed-in and the one-click path.
+
+    `message` is the SERVER's sentence, for the reason every other rule
+    sentence in this product is: the page must not be able to promise
+    something different from what was written.
+    """
+
+    renewed: bool
+    renewed_at: datetime
+    message: str
 
 
 class ApplicationsOut(BaseModel):

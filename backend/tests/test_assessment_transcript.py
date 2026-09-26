@@ -24,6 +24,16 @@ import pytest
 from sqlalchemy import text
 
 
+def _http_request(path: str = "/api/v2/assessments/reports", method: str = "GET"):
+    """A real Starlette Request: the report routes read its method and path
+    for the audit row they write."""
+    from starlette.requests import Request
+
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": [], "query_string": b""}
+    )
+
+
 async def _factory_or_skip():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -58,7 +68,6 @@ async def _seed(factory, fx: _Fx, messages: list[tuple[str, str, str, str]]) -> 
     from app.models.assessment import (
         AssessmentConversation,
         AssessmentMessage,
-        CandidateTechnicalQuestion,
         JobCompetency,
     )
     from app.models.candidate import JobCandidateLink
@@ -85,11 +94,12 @@ async def _seed(factory, fx: _Fx, messages: list[tuple[str, str, str, str]]) -> 
                                     name="Incident response", ordinal=1,
                                     required_level=82))
                 await s.flush()
-                s.add(CandidateTechnicalQuestion(
-                    id=fx.tech_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
-                    job_candidate_link_id=fx.link_id, ordinal=1, skill="Kafka",
-                    prompt="stored", rubric_json={},
-                ))
+                # The technical criterion is a Nice-to-have competency now: the
+                # separate technical track and its table are gone (0128).
+                s.add(JobCompetency(id=fx.tech_id, tenant_id=fx.tenant_id,
+                                    job_id=fx.job_id, category="nice_to_have",
+                                    name="Kafka", ordinal=1,
+                                    required_level=75))
                 s.add(AssessmentConversation(
                     id=fx.conv_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
                     job_candidate_link_id=fx.link_id, grade="non_managerial",
@@ -126,13 +136,13 @@ def _user(fx: _Fx):
 
 
 async def _fetch(fx: _Fx, factory, **kwargs):
-    from app.api import assessments as mod
+    from app.api import assessment_reports as mod
     from app.core.db import superadmin_scope
 
     async with factory() as s:
         async with superadmin_scope(s):
             return await mod.get_transcript(
-                fx.link_id, user=_user(fx), session=s, **kwargs
+                fx.link_id, request=_http_request(), user=_user(fx), session=s, **kwargs
             )
 
 
@@ -155,7 +165,7 @@ async def test_questions_pair_with_their_own_answers() -> None:
         assert out.exchanges[0].question.startswith("How did you tune Kafka")
         assert out.exchanges[0].answer == "I moved to a larger consumer group."
         assert out.exchanges[1].answer == "The payments outage in March."
-        # Criteria resolved to WORDS, from both scorers' key spaces.
+        # Criteria resolved to WORDS, one per competency key.
         assert out.exchanges[0].criterion == "Kafka"
         assert out.exchanges[1].criterion == "Incident response"
         assert out.candidate_name == "Transcript Candidate"
@@ -303,7 +313,7 @@ async def test_pagination_is_bounded_and_cannot_be_argued_out_of() -> None:
         assert page.exchanges[0].answer == "A2."
 
         # A caller asking for more than the ceiling gets the ceiling, not more.
-        from app.api import assessments as mod
+        from app.api import assessment_reports as mod
 
         clamped = await _fetch(fx, factory, limit=10_000)
         assert clamped.limit == mod.TRANSCRIPT_MAX_LIMIT

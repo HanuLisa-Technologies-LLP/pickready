@@ -1,7 +1,18 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,27 +79,53 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     )
     subscription_status: Mapped[str | None] = mapped_column(String(20))
     subscription_current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Derived from the ledger (balance < 0) but STORED: the invitation gate runs
-    # on every send and must not re-aggregate the whole ledger to answer it.
-    credit_deficit: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
+    # ── Subscription month (change request 27, migration 0111) ───────────────
+    #: When this customer's subscription first CHARGED successfully. The
+    #: product had no subscription-start date at all until now: it knew the
+    #: current period's END (`subscription_current_end`, restamped by Razorpay
+    #: on every renewal) and therefore could not answer "which month of their
+    #: subscription is this customer in", which the month 10 and 11 usage
+    #: summaries are keyed on. Stamped by `_grant_for_payment` on the FIRST
+    #: grant and never moved: a /subscribe click is an intent to pay, and
+    #: counting months from it would start the clock on a card that was never
+    #: charged.
+    subscription_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
+    #: The highest subscription month for which the informational usage summary
+    #: has been sent. The idempotency latch, in the same checked-UPDATE shape
+    #: as `credit_warning_1_sent`: the sweep claims a month with
+    #: `WHERE ... < :month RETURNING id`, so a re-run, a redelivered dispatch
+    #: and two sweeps racing all send exactly one letter.
+    usage_alert_last_month: Mapped[int | None] = mapped_column(Integer)
+    # The stored deficit flag (a copy of "the ledger sums below zero") is
+    # DROPPED by migration 0128: nothing read it, and the comment that said it
+    # drove a dunning email and a deficit banner described neither. The
+    # ledger is the balance; ask `credits.balance_subunits`.
+    #
     # A permanent demonstration company (Sarkar Corp, ACRM Corp, Specter & Co.).
     # Billing still RECORDS everything for these tenants -- a demo of a billing
     # page with no usage on it proves nothing -- but it never refuses anything:
-    # `credits.has_credit_headroom` is unconditionally true and `credit_deficit`
-    # is never set. Kept as a column rather than a UUID list in Python so the
+    # every billing gate (`credits.has_positive_balance`,
+    # `credits.can_start_assessment`) answers yes for it. Kept as a column rather than a UUID list in Python so the
     # exemption is visible in the table and a future demo tenant is an UPDATE
     # rather than a release (migration 0037).
     is_demo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    #: How much an assessed candidate's rank rests on their Tatva Assessment
+    #: (the rest is Yukti's resume reading), 0..100 by CHECK, 70 by default
+    #: (migration 0122, CONTRACT v2). INTERNAL: read by the ranking SQL and by
+    #: nothing that serializes. No route and no capability writes it; a change
+    #: is operator SQL until the owner rules on who may set it (PLAN-p2 Q4).
+    yukti_assessment_weight_pct: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=70, server_default="70"
+    )
     # ── Two-tier credit warnings (Master Directive Part 5 §4) ────────────────
     # "Sent" flags for the LOW (<= 20 credits) and CRITICAL (<= 10 credits)
     # warning emails. Rule 5: BOTH reset to false on every new purchase, so the
-    # warning system starts fresh after each top-up. Stored here for the same
-    # reason `credit_deficit` is: the check runs after every deduction and must
-    # not re-aggregate the ledger.
+    # warning system starts fresh after each top-up. Stored because each is a
+    # LATCH (was this warning sent?), which the ledger cannot answer.
     credit_warning_1_sent: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -211,15 +248,3 @@ class AuditLog(Base, UUIDPKMixin):
     # recorded; spec-doc6 C13 requires the same of an HR Manager publish).
     exceptional: Mapped[bool | None] = mapped_column(Boolean)
 
-
-class LLMProviderKey(Base, UUIDPKMixin, CreatedAtMixin):
-    """Nine keys (3× Groq/Gemini/OpenRouter), encrypted at rest, with a
-    circuit-breaker health flag (ESD §8.4). Global table."""
-    __tablename__ = "llm_provider_keys"
-
-    provider: Mapped[str] = mapped_column(String(30), nullable=False)
-    key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    role_hint: Mapped[str] = mapped_column(String(30), nullable=False)
-    priority: Mapped[int] = mapped_column(nullable=False, default=0)
-    healthy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

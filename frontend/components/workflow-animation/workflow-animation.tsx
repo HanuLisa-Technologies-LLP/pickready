@@ -22,7 +22,7 @@ const STEPS = [
   { short: "Profiles", title: "Candidate evidence arrives", duration: 2400 },
   { short: "Match", title: "AI matching settles", duration: 3000 },
   { short: "Assess", title: "Invite the strongest profiles", duration: 2800 },
-  { short: "PPI", title: "Read the PPI Assessment Report", duration: 3500 },
+  { short: "PRISM", title: "Read the PRISM Report", duration: 3500 },
   { short: "Decide", title: "Shortlist and communicate", duration: 2700 },
 ] as const;
 

@@ -1,6 +1,6 @@
 """Tenant email-template rendering + .ics building (ESD §11/§12, FR-8.5).
 
-ReadyPick ships no fixed email copy — each tenant maintains editable,
+Vivekium ships no fixed email copy — each tenant maintains editable,
 versioned templates (EmailTemplate rows). Rendering picks the tenant's
 highest active version by name; if the tenant has no template yet, a
 deliberately minimal default keeps the pipeline functional (the product
@@ -30,18 +30,10 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # (Owner/super_admin) who have no tenant and therefore no tenant-authored
     # templates. The body carries the code; it is never logged (ESD §16).
     "otp": (
-        "Your ReadyPick verification code",
-        "Your ReadyPick one-time password is {{code}}. It is valid for "
+        "Your Vivekium verification code",
+        "Your Vivekium one-time password is {{code}}. It is valid for "
         "{{ttl_minutes}} minutes.\n\n"
         "If you did not request this code, you can ignore this email.",
-    ),
-    "outreach": (
-        "Information request regarding a role at {{company_name}}",
-        "Dear {{candidate_name}},\n\n"
-        "We are considering you for a role at {{company_name}}. Please complete "
-        "your candidate page (personal details, updated resume, and "
-        "questionnaire) using this link:\n\n{{outreach_link}}\n\n"
-        "Regards,\n{{company_name}} People Team",
     ),
     # AI/manual outreach is composed and approved in the UI before it reaches
     # the worker. Keep a built-in pass-through so delivery remains available
@@ -63,14 +55,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # arriving, and the first the customer would otherwise hear of it is a
     # refused invitation. Deliberately carries no amount and no card detail.
     "payment_failed": (
-        "Your ReadyPick payment did not go through",
+        "Your Vivekium payment did not go through",
         "Hello,\n\n"
         "We could not process this month's subscription payment for "
         "{{company_name}}. Your credit balance is unchanged, and any credits "
         "already in your pool remain available.\n\n"
         "Update your payment method to keep new assessment invitations "
         "flowing:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # Master Directive Part 5 §4 — the two credit-balance warning tiers. The
     # figures are computed at send time by the worker; the copy states balance,
@@ -82,7 +74,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "At current usage, this covers approximately "
         "{{estimated_assessments}} more assessments.{{stem_note}}\n\n"
         "Top up now to keep your pipeline moving:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "credit_warning_critical": (
         "Critical: only {{balance_credits}} credits remaining",
@@ -92,22 +84,52 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "usage, this covers approximately {{estimated_assessments}} more "
         "assessments.{{stem_note}}\n\n"
         "Top up immediately:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # Master Directive Part 5 §7.3 — the GST invoice email that accompanies a
     # settled credit-pack purchase. The invoice itself is a PDF attachment
     # rendered by the worker; the body only confirms the top-up and points at
     # the billing page, where the invoice stays downloadable.
     "credit_invoice": (
-        "Your ReadyPick credit purchase and invoice {{invoice_number}}",
+        "Your Vivekium credit purchase and invoice {{invoice_number}}",
         "Hello,\n\n"
         "Your credit purchase for {{company_name}} is confirmed. "
-        "{{credits_total}} credits have been added to your account and never "
-        "expire.\n\n"
+        "{{credits_total}} credits have been added to your account."
+        "\n\n{{validity_sentence}}\n\n"
         "Invoice {{invoice_number}} (total Rs. {{total_inr}} incl. GST) is "
         "attached, and remains available from your billing page:\n\n"
         "{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
+    ),
+    # Change request 27: the month 10 and month 11 usage summary.
+    # INFORMATIONAL, and the copy has to carry that difference. The balance
+    # warnings above end with "Top up immediately" because the customer is
+    # about to be unable to run an assessment; this one fires on a calendar
+    # at a moment when nothing is wrong, so it states facts, offers the pack,
+    # and says in as many words that doing nothing is a normal choice.
+    # Borrowing the warning's urgency here is how a customer learns to
+    # ignore the warning.
+    "subscription_usage_summary": (
+        "Your Vivekium usage summary, month {{subscription_month}}",
+        "Hello,\n\n"
+        "This is a summary of how {{company_name}} has used Vivekium so "
+        "far. Nothing about your subscription changes because of this "
+        "email, and no action is required.\n\n"
+        "Assessments completed to date: {{assessments_used}}\n"
+        "Credit balance: {{balance_credits}} credits\n"
+        "Carried over from last month: {{rollover_credits}} credits\n"
+        "{{expiry_line}}\n"
+        "At your own average of {{average_credits}} credits per "
+        "assessment, your balance covers approximately "
+        "{{assessments_remaining}} more assessments.\n\n"
+        "If that is enough for the hiring you have planned, there is "
+        "nothing to do and this email needs no reply.\n\n"
+        "If you expect to need more, the {{starter_pack_label}} is "
+        "{{starter_pack_credits}} assessments for Rs. "
+        "{{starter_pack_price}} plus GST, and you can buy it from your "
+        "billing page:\n\n"
+        "{{billing_url}}\n\n"
+        "Regards,\nVivekium",
     ),
     "interview_invite": (
         "Interview invitation, {{job_title}} at {{company_name}}",
@@ -124,55 +146,159 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # email_log row, no audit_log row, and nothing the user could see. The
     # invariant is enforced by tests/test_email_delivery.py, which walks every
     # literal name passed to pickready.send_email in backend/app.
-    #
-    # api/verification.py sends this exact name; the "outreach" entry above
-    # kept the older name and was never reached.
-    "candidate_outreach": (
-        "Information request regarding the {{job_title}} role at {{company_name}}",
-        "Dear {{candidate_name}},\n\n"
-        "We are considering you for the {{job_title}} role at "
-        "{{company_name}}. Please complete your candidate page (personal "
-        "details, updated resume, and questionnaire) using this link:\n\n"
-        "{{outreach_url}}\n\n"
-        "Regards,\n{{company_name}} People Team",
-    ),
-    # api/email_senders.py: the corporate sender mailbox-ownership code
-    # (Corporate Email System spec sections 3 and 4). This is NOT a login OTP;
-    # it proves a client's POC controls the mailbox being registered as an
-    # automated sender. The code is in the context and is never logged.
-    "sender_verification": (
-        "Your ReadyPick sender verification code",
-        "Hello {{sender_name}},\n\n"
-        "{{company_name}} is registering this mailbox as an authorized sender "
-        "for automated recruitment email on ReadyPick.\n\n"
-        "Your verification code is {{otp_code}}. It is valid for "
-        "{{ttl_minutes}} minutes.\n\n"
-        "If you were not expecting this, you can ignore this email and "
-        "nothing will change.\n\n"
-        "Regards,\nReadyPick",
-    ),
+    # The `sender_verification` template was REMOVED with the mailbox OTP on
+    # 2026-09-08. It was the only carrier of a six-digit code into a client
+    # mailbox, and nothing dispatches it any more. Left in place it would be
+    # a renderable OTP email one dispatch call away from coming back.
     # api/admin.py, when the platform owner creates a customer.
+    # BACKGROUND VERIFICATION, and it is deliberately a PASS-THROUGH.
+    #
+    # Every other entry here is a template because the product writes the
+    # words. This one is not: the recruitment team reviews and EDITS the draft
+    # the BGV agent produced, and the whole point of that review step is that
+    # their version is what the employer receives. A template would silently
+    # rewrite it.
+    #
+    # It still routes through this module rather than around it, so the BGV
+    # email inherits everything the delivery path already guarantees: the
+    # verified-sender selection, the SES transport, the `email_log` row, the
+    # permanent-versus-transient failure taxonomy and the retry policy.
+    # The candidate asked for their own profile to be deleted and it has been
+    # (feature 7, DPDP Act 2023). DELIBERATELY EMPTY OF CONTEXT: it carries no
+    # name, no application, no verification and no count, because by the time
+    # this is dispatched there is no record left to describe and describing one
+    # would mean the erasure had kept a copy in order to write this letter.
+    # The recipient address is the only personal datum involved, and it is
+    # already the thing being written to.
+    "account_deleted": (
+        "Your Vivekium profile has been deleted",
+        "Your profile and all of the data held with it have been permanently "
+        "deleted at your request. This cannot be undone.\n\n"
+        "You are no longer visible to employer clients registered on the "
+        "platform, and any assessment or shortlisting in progress has been "
+        "cancelled.\n\n"
+        "If you did not ask for this, reply to this message immediately.\n\n"
+        "Regards,\nVivekium",
+    ),
+    # Feature 8, the six-month renewal. THE ONE SLOT EACH OF THESE CARRIES IS
+    # `renewal_url`, and it is the thing that makes their own instruction true.
+    # They said "sign in and confirm" for the whole time there was nothing
+    # anywhere to confirm with: `consent_renewed_at` was read in three places
+    # and written in none, so a candidate who did exactly as asked still
+    # advanced to the deletion stage.
+    #
+    # No name slot, and the original reason for that stands: the sweep that
+    # sends these iterates every candidate, and a template with a name in it is
+    # one a loop variable will eventually fill with the wrong person's. The
+    # link is different in kind rather than an exception to the rule, because
+    # it is minted for one candidate inside the same expression that reads
+    # their address, and following somebody else's renewal link can only ever
+    # keep a profile that asked to stay.
+    "consent_renewal_reminder": (
+        "Confirm you would like to stay on Vivekium",
+        "It has been six months since you joined or last confirmed your "
+        "details, so we are checking that you would still like your profile "
+        "kept on the platform.\n\n"
+        "Confirm here to stay visible to employer clients registered on the "
+        "platform:\n{{renewal_url}}\n\n"
+        "You can also sign in and confirm from your profile. If we do not "
+        "hear from you we will write once more before removing your "
+        "profile.\n\n"
+        "Regards,\nVivekium",
+    ),
+    # THE SENTENCE THIS LETTER HAS TO EARN. It says deletion has not happened
+    # yet, so the sweep opens a second window after sending it rather than
+    # erasing in the same pass. See the ASSUMPTION in
+    # services/consent_lifecycle: read literally the brief puts this letter and
+    # the deletion at the same instant, which would warn somebody about
+    # something already done.
+    "consent_final_warning": (
+        "Action needed to keep your Vivekium profile",
+        "We wrote recently asking you to confirm that you would like to stay "
+        "on the platform, and we have not heard back.\n\n"
+        "If you do not confirm, your profile will be permanently deleted. "
+        "That removes your background verification record, which would have "
+        "to be obtained again from the beginning, and takes you out of job "
+        "matching entirely.\n\n"
+        "Confirm here to keep your profile:\n{{renewal_url}}\n\n"
+        "You can also sign in and confirm from your profile.\n\n"
+        "Regards,\nVivekium",
+    ),
+    # Feature 8, the INACTIVITY rule, and this letter is the whole of change
+    # 17. The dormancy path used to read one boolean and erase: no warning, no
+    # window, no notice of any kind. A retention rule that deletes without
+    # telling anybody is indistinguishable from data loss.
+    #
+    # It describes the ACT that clears the clock rather than a link, and that
+    # is deliberate: the inactivity clock is reset by USING the platform, not
+    # by confirming a consent, so a one-click link would be a button that
+    # claimed to fix something it does not touch. Signing in is what resets it,
+    # which is why that is what the letter asks for.
+    "dormancy_deletion_warning": (
+        "Your Vivekium profile will be removed unless you sign in",
+        "Your profile has been inactive for a long time, and profiles that "
+        "are not being used are removed from the platform.\n\n"
+        "Sign in to keep your profile. If you do not, it will be permanently "
+        "deleted along with your assessment data and any background "
+        "verification record, and that record would have to be obtained again "
+        "from the beginning.\n\n"
+        "Regards,\nVivekium",
+    ),
+    "bgv_verification": ("{{subject}}", "{{body}}"),
+    # Vivekium feature 4, the three candidate-facing BGV letters. Email 2
+    # deliberately shares NO verification detail with the candidate (the
+    # brief's own rule); emails 3 and 4 carry the HR address PARTIALLY MASKED
+    # ({{masked_hr_email}} is produced by bgv_form.masked_email and no route
+    # ever passes the full address into a template context).
+    "bgv_completed": (
+        "Your employment verification is complete",
+        "Hello {{candidate_name}},\n\n"
+        "A previous employer has completed the employment verification we "
+        "requested as part of your application. There is nothing you need "
+        "to do.\n\n"
+        "Regards,\nVivekium",
+    ),
+    "bgv_no_response": (
+        "Your previous employer has not responded yet",
+        "Hello {{candidate_name}},\n\n"
+        "We asked your previous employer's HR team ({{masked_hr_email}}) to "
+        "verify your employment three days ago and have not received a "
+        "response.\n\n"
+        "It may help to contact their HR team directly and ask them to "
+        "complete the verification link we sent. A verification that is not "
+        "completed can hold up an offer.\n\n"
+        "Regards,\nVivekium",
+    ),
+    "bgv_bounced": (
+        "We could not reach your previous employer",
+        "Hello {{candidate_name}},\n\n"
+        "The verification email we sent to your previous employer's HR "
+        "address ({{masked_hr_email}}) could not be delivered.\n\n"
+        "Please sign in, open your employment history and correct the HR "
+        "email address so we can send the request again.\n\n"
+        "Regards,\nVivekium",
+    ),
     "client_invite": (
-        "Your {{tenant_name}} workspace on ReadyPick is ready",
+        "Your {{tenant_name}} workspace on Vivekium is ready",
         "Hello,\n\n"
-        "A ReadyPick workspace has been created for {{tenant_name}}. Accept "
+        "A Vivekium workspace has been created for {{tenant_name}}. Accept "
         "your invitation and sign in here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "ReadyPick never asks you to set a separate password.\n\n"
-        "Regards,\nReadyPick",
+        "Vivekium never asks you to set a separate password.\n\n"
+        "Regards,\nVivekium",
     ),
     # api/companies.py seeds a tenant-EDITABLE row for this name on first use,
     # but a default belongs here too: the seeding and the send are separate
     # steps, and a missing row must degrade to generic copy rather than to a
     # silently lost invitation.
     "staff_invite": (
-        "You have been invited to {{company_name}} on ReadyPick",
+        "You have been invited to {{company_name}} on Vivekium",
         "Hi {{full_name}},\n\n"
-        "{{invited_by}} has invited you to join {{company_name}} on ReadyPick "
+        "{{invited_by}} has invited you to join {{company_name}} on Vivekium "
         "as a {{role_label}}.\n\n"
         "Accept your invitation here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "ReadyPick never asks you to set a separate password.\n\n"
+        "Vivekium never asks you to set a separate password.\n\n"
         "This link expires on {{expires_on}}.\n\n"
         "Regards,\nThe {{company_name}} team",
     ),
@@ -186,7 +312,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Employment verification request regarding {{candidate_name}}",
         "Dear HR team at {{employer_name}},\n\n"
         "{{candidate_name}} has listed {{employer_name}} as a previous "
-        "employer on their ReadyPick candidate profile and has asked us to "
+        "employer on their Vivekium candidate profile and has asked us to "
         "request a standard employment verification. Could you please reply "
         "to this email confirming the following, to the extent your policy "
         "allows:\n\n"
@@ -203,7 +329,35 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "This request was initiated by the candidate. If you are not the "
         "right contact, we would appreciate a forward to the appropriate "
         "team.\n\n"
-        "Regards,\nReadyPick Verification",
+        "Regards,\nVivekium Verification",
+    ),
+    # ── In-product support (2026-09-10) ─────────────────────────────────────
+    #
+    # workers/tasks.py `pickready.notify_support_message`, both directions.
+    #
+    # NEITHER TEMPLATE CARRIES THE MESSAGE BODY, and that is deliberate rather
+    # than an omission. The body is free text a human typed, it may quote
+    # something a customer pasted out of the product, and an email is the one
+    # copy of it this product cannot recall. The notification says a message
+    # arrived and where to read it; the reader signs in for the rest. It is
+    # also what keeps the candidate boundary structural: there is no
+    # substitution here that could carry candidate material even if somebody
+    # had pasted some into the thread.
+    "support_reply_to_customer": (
+        "Vivekium has replied about: {{subject_line}}",
+        "Hello,\n\n"
+        "A member of the Vivekium team has replied to your support "
+        "conversation, {{subject_line}}.\n\n"
+        "Read the reply and respond here:\n\n{{support_url}}\n\n"
+        "Regards,\nVivekium Support",
+    ),
+    "support_message_for_staff": (
+        "{{company_name}} is waiting on a reply: {{subject_line}}",
+        "Hello,\n\n"
+        "{{company_name}} has written in about {{subject_line}} and the "
+        "conversation is waiting on a reply.\n\n"
+        "Open it here:\n\n{{support_url}}\n\n"
+        "Regards,\nVivekium",
     ),
 }
 
@@ -273,12 +427,12 @@ def text_to_html(body: str) -> str:
         'border-radius:14px;background:#ffffff">'
         '<div style="padding:20px 28px;border-bottom:1px solid #ede9fe;'
         'font-family:Arial,sans-serif;font-size:20px;font-weight:800;color:#111827">'
-        'ReadyPick<span style="color:#7c3aed">.</span></div>'
+        'Vivekium<span style="color:#7c3aed">.</span></div>'
         '<div style="padding:28px;font-family:Arial,sans-serif;font-size:15px;'
         f'line-height:1.65;color:#374151">{content_html}</div>'
         '<div style="padding:16px 28px;background:#fafafa;font-family:Arial,sans-serif;'
         'font-size:12px;line-height:1.5;color:#6b7280">'
-        'This message was sent through a secure ReadyPick workflow.'
+        'This message was sent through a secure Vivekium workflow.'
         '</div></div></div>'
     )
 
@@ -354,7 +508,7 @@ def build_ics(
     from icalendar import Calendar, Event, vCalAddress, vText
 
     cal = Calendar()
-    cal.add("prodid", "-//ReadyPick//Interview Scheduling//EN")
+    cal.add("prodid", "-//Vivekium//Interview Scheduling//EN")
     cal.add("version", "2.0")
     cal.add("method", "REQUEST")
 

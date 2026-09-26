@@ -26,6 +26,7 @@ from app.models.email_sender import (
     SENDER_DISABLED,
     SENDER_EMAIL_VERIFIED,
     SENDER_PENDING_VERIFICATION,
+    SENDER_REJECTED,
     SENDER_REVOKED,
     SENDER_STATUSES,
     SENDER_VERIFICATION_EXPIRED,
@@ -44,17 +45,31 @@ __all__ = [
 #: `revoked` is terminal: the spec's section 11 removal has no way back, and a
 #: client who wants the mailbox again registers and verifies it afresh.
 TRANSITIONS: dict[str, frozenset[str]] = {
+    # THE SUPER ADMIN'S DECISION IS THE ONLY GATE OUT OF PENDING. `active` is
+    # approve, `rejected` is reject. The mailbox OTP that used to sit between
+    # them is gone: SES identity verification already proves this account may
+    # send as that address, and a second proof of the same fact bought nothing
+    # but an OTP screen in a portal that bans OTP everywhere else.
     SENDER_PENDING_VERIFICATION: frozenset(
-        {SENDER_EMAIL_VERIFIED, SENDER_VERIFICATION_EXPIRED, SENDER_REVOKED}
+        {SENDER_ACTIVE, SENDER_REJECTED, SENDER_REVOKED}
     ),
-    SENDER_VERIFICATION_EXPIRED: frozenset(
-        # A resend re-arms verification; nothing else leaves this state alive.
-        {SENDER_PENDING_VERIFICATION, SENDER_REVOKED}
-    ),
-    SENDER_EMAIL_VERIFIED: frozenset({SENDER_ACTIVE, SENDER_REVOKED}),
     SENDER_ACTIVE: frozenset({SENDER_DISABLED, SENDER_REVOKED}),
     SENDER_DISABLED: frozenset({SENDER_ACTIVE, SENDER_REVOKED}),
     SENDER_REVOKED: frozenset(),
+    # Terminal. A rejected sender is re-proposed by registering it again, so
+    # the refusal stays on the record instead of being edited away.
+    SENDER_REJECTED: frozenset(),
+    # ── Legacy states ────────────────────────────────────────────────────────
+    # Reachable only by rows written before the OTP was withdrawn. Nothing
+    # moves INTO either any more, and both keep a way OUT so a sender that was
+    # mid-verification at deploy time can still be approved or refused rather
+    # than stranded in a state with no edges.
+    SENDER_EMAIL_VERIFIED: frozenset(
+        {SENDER_ACTIVE, SENDER_REJECTED, SENDER_REVOKED}
+    ),
+    SENDER_VERIFICATION_EXPIRED: frozenset(
+        {SENDER_ACTIVE, SENDER_REJECTED, SENDER_REVOKED}
+    ),
 }
 
 # The map must cover the vocabulary exactly; a status the CHECK constraint

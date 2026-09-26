@@ -19,6 +19,19 @@
 //
 // Section order is fixed (spec doc 4, part 3) and lives in ONE place,
 // `REPORT_SECTION_ORDER` in components/functional-skills-report.
+//
+// THE DOWNLOAD HAS TWO GATES AND BOTH ARE THE SERVER'S. The candidate's
+// retention consent (`report_download_allowed`) and gate G4
+// (`pdf_available`): a report routed to a person is not downloaded until
+// somebody has recorded a decision on it. When G4 holds it, the server's own
+// sentence (`pdf_blocked_reason`) is shown instead of a button the route
+// would refuse with 409. That notice is not a permission message and does
+// not go through `permission-notice`: nobody lacks a grant, a decision is
+// simply owed.
+//
+// CITATIONS ARE FETCHED ON DEMAND, AT MOST ONCE PER OPEN. Every read of them
+// is an audited read of the candidate's answers, so opening the report must
+// not record one; the first remark a reader expands does.
 
 import * as React from "react";
 import dynamic from "next/dynamic";
@@ -34,6 +47,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { FunctionalReport } from "@/components/functional-skills-report";
+import type { ReportCitations } from "@/components/report-citations";
 import { AssessmentVideoSection } from "@/components/assessment-video-section";
 import { Button } from "@/components/ui/button";
 
@@ -63,6 +77,26 @@ export function PPIReportModal({
   const [report, setReport] = React.useState<FunctionalReport | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // One request per open report, shared by every remark: the promise is kept
+  // so a second click (or a second remark) reuses the first fetch.
+  const citationsRequest = React.useRef<Promise<ReportCitations> | null>(null);
+  React.useEffect(() => {
+    citationsRequest.current = null;
+  }, [open, linkId]);
+  const loadCitations = React.useCallback(() => {
+    if (!linkId) return Promise.reject(new Error("No report is open."));
+    if (!citationsRequest.current) {
+      const request = apiGet<ReportCitations>(
+        `/api/v2/assessments/reports/links/${linkId}/citations`
+      );
+      // A failed fetch is not cached, so the next click can try again.
+      request.catch(() => {
+        if (citationsRequest.current === request) citationsRequest.current = null;
+      });
+      citationsRequest.current = request;
+    }
+    return citationsRequest.current;
+  }, [linkId]);
 
   React.useEffect(() => {
     if (!open || !linkId) return;
@@ -97,7 +131,7 @@ export function PPIReportModal({
           <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
             <div>
               <DialogTitle>PRISM Report</DialogTitle>
-              <p className="text-sm">Predictive Role Intelligence &amp; Suitability Mapping</p>
+              <p className="text-sm">Evidence-Based Role Intelligence &amp; Suitability Mapping</p>
               <p className="mt-1 text-sm font-medium">
                 {candidateName}
                 {jobTitle ? ` (${jobTitle})` : ""}
@@ -113,7 +147,19 @@ export function PPIReportModal({
               ) : null}
             </div>
             {linkId && report ? (
-              report.report_download_allowed ? (
+              !report.report_download_allowed ? (
+                // No dead button: the candidate chose view-only retention, so
+                // the server answers 403 to the PDF route. Say why instead.
+                <p className="flex items-center gap-1.5 text-xs font-medium">
+                  <Lock className="h-3.5 w-3.5" aria-hidden />
+                  View only, at the candidate&apos;s request
+                </p>
+              ) : report.pdf_available === false ? (
+                // Gate G4: the server's own sentence, verbatim.
+                <p className="max-w-xs text-xs font-medium">
+                  {report.pdf_blocked_reason}
+                </p>
+              ) : (
                 <Button asChild size="sm" variant="outline">
                   <a
                     href={`/api/v2/assessments/reports/links/${linkId}/pdf`}
@@ -123,13 +169,6 @@ export function PPIReportModal({
                     Download PDF
                   </a>
                 </Button>
-              ) : (
-                // No dead button: the candidate chose view-only retention, so
-                // the server answers 403 to the PDF route. Say why instead.
-                <p className="flex items-center gap-1.5 text-xs font-medium">
-                  <Lock className="h-3.5 w-3.5" aria-hidden />
-                  View only, at the candidate&apos;s request
-                </p>
               )
             ) : null}
           </div>
@@ -146,7 +185,7 @@ export function PPIReportModal({
         ) : error ? (
           <p className="py-10 text-center text-sm">{error}</p>
         ) : report ? (
-          <FunctionalSkillsReportView report={report} />
+          <FunctionalSkillsReportView report={report} loadCitations={loadCitations} />
         ) : null}
 
         {/* Assessment video (2026-09-05 dashboard/video spec section 20).

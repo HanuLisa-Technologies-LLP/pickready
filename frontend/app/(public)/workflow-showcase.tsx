@@ -1,8 +1,21 @@
+/**
+ * The animated product tour.
+ *
+ * IT WAS HELD BACK ONCE, AND THE REASON IS WORTH KEEPING.
+ * `components/workflow-animation` used to render a percentage beside each
+ * candidate in its ranking scene (`{candidate.score}%`, 94 / 89 / 84 / 76).
+ * That is a number attached to a rated person on a client-facing surface,
+ * which is the rule this product breaks least willingly, and it contradicted
+ * the hero's own promise of plain language and no scores to argue about. The
+ * section was left unmounted rather than deleted until the data shape was
+ * fixed. `step-scenes.tsx` now carries the four grade WORDS, with the bar's
+ * width as an undisplayed rendering coordinate, so it is composed again.
+ */
 import Link from "next/link";
 import { ArrowRight, PlayCircle } from "lucide-react";
 
 import { WorkflowAnimation } from "@/components/workflow-animation";
-import { Pressable, Reveal } from "@/components/motion";
+import { Reveal } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -10,12 +23,9 @@ export function WorkflowShowcase() {
   return (
     <section
       id="workflow"
-      className="relative scroll-mt-24 overflow-hidden border-y border-border bg-[#070812] py-20 text-white lg:py-28"
+      className="relative scroll-mt-24 overflow-hidden border-y border-border bg-navy-900 py-20 text-white lg:py-28"
       aria-labelledby="workflow-title"
     >
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute left-1/2 top-0 h-96 w-[52rem] -translate-x-1/2 rounded-full bg-teal-700/20 blur-[120px]" />
-      </div>
       <div className="relative mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="mx-auto max-w-3xl text-center">
           <Badge className="border-teal-400/20 bg-teal-400/10 text-teal-100">
@@ -28,10 +38,9 @@ export function WorkflowShowcase() {
           >
             Watch the work move. Your team keeps the decision.
           </h2>
-          <p className="mx-auto mt-5 max-w-2xl text-pretty text-base leading-7 text-white/65 sm:text-lg">
+          <p className="mx-auto mt-5 max-w-2xl text-pretty text-base sm:text-lg">
             From a live role to AI matching, structured assessment, the PRISM
-            Assessment Report and a clear shortlist - one continuous evidence
-            trail.
+            Report and a clear shortlist, one continuous evidence trail.
           </p>
         </Reveal>
 

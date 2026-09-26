@@ -1,0 +1,39 @@
+id: adversarial.a_duplicate_delivery_writes_one_history
+version: 1
+tier: adversarial
+description: >
+  The same pipeline transition is delivered twice, which is what a retried
+  request, a double click and a redelivered message all look like from the
+  handler's side. The append-only history and the candidate's Updates feed each
+  record the move ONCE. This is the product's own at-least-once case rather
+  than the SES or Razorpay webhook: both of those authenticate on a signature
+  the harness deliberately does not configure, and a scenario that supplied one
+  would be measuring a secret the run is contractually not allowed to hold.
+tags: [pipeline, idempotency, at-least-once]
+
+given:
+  world: job_with_applicant
+
+workload:
+  - advance_pipeline
+  - advance_pipeline_again
+
+expect:
+  state:
+    - job_candidate_links.status == assessment_invited
+    - pipeline_status.count_for_link == 1
+    - candidate_updates.count_for_link == 1
+  output:
+    - status.advance_pipeline == 200
+  trajectory:
+    - transition_applied
+    - transition_retried
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

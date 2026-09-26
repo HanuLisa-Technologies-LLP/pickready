@@ -163,12 +163,14 @@ class Envelope:
 
     # ── who authorised this run (RBAC 34) ────────────────────────────────────
     #: The HUMAN the agent is acting for. Optional on the dataclass and NOT
-    #: optional on the live Part A path: `require_principal` raises, and
-    #: `orchestration.enforcement.run_stage` calls it before any handler runs.
+    #: optional on the live Part A path: `require_principal` raises. The
+    #: enforcement door that called it before any handler ran was deleted in
+    #: the Vivekium release with the rest of the unreachable orchestration
+    #: package, so a caller that needs the guarantee calls it itself.
     #:
-    #: It is optional here only because the legacy publishers in `ppi`,
-    #: `matching` and `swot_intake` build envelopes today and are being deleted
-    #: rather than migrated. `tests/test_no_silent_degradation.py` ratchets that
+    #: It is optional here only because the legacy publishers in `ppi` and
+    #: `matching` build envelopes today and are being deleted rather than
+    #: migrated. `swot_intake` was the third and was deleted on 2026-09-20. `tests/test_no_silent_degradation.py` ratchets that
     #: set so it can shrink and cannot grow.
     principal: provenance.Principal | None = None
 

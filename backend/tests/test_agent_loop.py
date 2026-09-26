@@ -357,27 +357,36 @@ def test_similarity_gate_names_the_conflicting_pair() -> None:
     assert critique.defects[0].location == "narratives[0,1]"
 
 
-@pytest.mark.asyncio
-async def test_loop_trace_receives_gate_and_budget_metadata(monkeypatch) -> None:
-    ended: list[dict] = []
+@pytest.fixture
+def exported_spans():
+    """A REAL in-memory OpenTelemetry pipeline, restored afterwards.
 
-    class Handle:
-        def end(self, **payload):
-            ended.append(payload)
-
-    class Trace:
-        def __enter__(self):
-            return Handle()
-
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setattr(
-        agent_loop.tracing,
-        "trace_agent_loop",
-        lambda *_args, **_kwargs: Trace(),
+    The same shape `test_otel_span_shape.py` uses: the assertion reads the span
+    the SDK exporter actually received, not a mock that was called.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
     )
 
+    from app.services.observability import otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    otel.enable(provider, MeterProvider(metric_readers=[InMemoryMetricReader()]))
+    try:
+        yield exporter
+    finally:
+        otel._pipeline = None
+        otel._configured = False
+
+
+@pytest.mark.asyncio
+async def test_loop_span_carries_gate_and_budget_metadata(exported_spans) -> None:
     async def execute(_reflection: str) -> str:
         return "accepted"
 
@@ -389,16 +398,62 @@ async def test_loop_trace_receives_gate_and_budget_metadata(monkeypatch) -> None
     )
 
     assert result.degraded is False
-    assert ended == [
-        {
-            "attempts": 1,
-            "degraded": False,
-            "elapsed_ms": result.elapsed_ms,
-            "generated_tokens": result.generated_tokens,
-            "defects": [],
-            "error": None,
-        }
+    (span,) = [s for s in exported_spans.get_finished_spans() if s.name == "agent_loop traced"]
+    attributes = dict(span.attributes)
+    assert attributes["readypick.loop.name"] == "traced"
+    assert attributes["readypick.loop.attempts"] == 1
+    assert attributes["readypick.loop.degraded"] is False
+    assert attributes["readypick.loop.generated_tokens"] == result.generated_tokens
+    assert attributes["readypick.loop.max_attempts"] == agent_loop.INTERACTIVE_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_loop_span_carries_defect_types_and_never_a_defect_detail(
+    exported_spans,
+) -> None:
+    """A defect's detail can quote the output it rejected, and the output was
+    written from a candidate's answers, so only the TYPE may reach a span."""
+    leaked = "the candidate wrote SECRET-ANSWER-TEXT"
+
+    async def execute(_reflection: str) -> str:
+        return leaked
+
+    def evaluate(_value: str) -> agent_loop.Critique:
+        return agent_loop.reject_defects(
+            agent_loop.Defect("length", "answer", f"too long: {leaked}")
+        )
+
+    result = await agent_loop.run_loop(
+        name="rejecting",
+        execute=execute,
+        evaluate=evaluate,
+        fallback="fb",
+    )
+
+    assert result.degraded is True
+    (span,) = [
+        s for s in exported_spans.get_finished_spans() if s.name == "agent_loop rejecting"
     ]
+    attributes = dict(span.attributes)
+    assert attributes["readypick.loop.degraded"] is True
+    assert tuple(attributes["readypick.loop.defect_types"]) == ("length",)
+    assert all("SECRET-ANSWER-TEXT" not in str(v) for v in attributes.values())
+
+
+@pytest.mark.asyncio
+async def test_a_loop_runs_identically_with_tracing_off() -> None:
+    """Export off is the test-suite and local default; the loop must not care."""
+    async def execute(_reflection: str) -> str:
+        return "accepted"
+
+    result = await agent_loop.run_loop(
+        name="untraced",
+        execute=execute,
+        evaluate=_accept_all,
+        fallback="fb",
+    )
+    assert result.value == "accepted"
+    assert result.degraded is False
 
 
 def test_reflection_is_empty_when_there_is_nothing_to_reflect_on() -> None:

@@ -191,3 +191,30 @@ variable "reserve_lambda_concurrency" {
   type        = bool
   default     = false
 }
+
+variable "monthly_budget_usd" {
+  description = <<-EOT
+    The monthly cost ceiling, in US dollars, that `aws_budgets_budget.monthly`
+    notifies against.
+
+    THE DEFAULT IS NOT AN ESTIMATE OF WHAT THIS ENVIRONMENT COSTS. Nobody has
+    measured that, and inventing a number here would be worse than leaving the
+    budget out: a limit chosen to look plausible is one that nobody questions
+    and that silently stops notifying the month the environment legitimately
+    grows past it.
+
+    It is set LOW on purpose. An unset budget that alerts early is noisy and
+    visible; an unset budget that alerts late is a surprise invoice. THE OWNER
+    MUST SET A REAL NUMBER for each environment, in that environment's
+    `terraform.tfvars`, once one month of actual spend exists to set it from.
+    Until then, treat the notification as "the default is still in place"
+    rather than as "this environment is overspending".
+  EOT
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.monthly_budget_usd > 0
+    error_message = "A budget of zero or less notifies on the first cent of spend, every month, for ever, which is how a billing alert gets muted."
+  }
+}

@@ -1,19 +1,19 @@
-"""Candidate portal — open application + resume reuse (PRD v1.0, FR-3.5/6.2/9.2).
+"""Candidate portal: open application + resume reuse (PRD v1.0, FR-3.5/6.2/9.2).
 
 One live integration test class proving the open-application model:
 - ANY authenticated candidate can apply to ANY published (ratified) job, with
   no prior-contact gate (the old outreach gate is gone).
 - `reuse_previous=true` carries the last resume forward without a re-upload.
 - A fresh upload still mints a NEW Profile per application.
-- The 40-aspect JSON is captured on the Profile.
+- The candidate's My Profile answers are snapshotted onto that Profile.
 - Bad resume files are still rejected (413/422).
+- Applying creates no assessment and dispatches only after the commit.
 
 The suite SKIPS cleanly when no database is reachable and runs for real inside
 the backend container (same convention as test_resume_upload.py)."""
 from __future__ import annotations
 
 import io
-import json
 import uuid
 from datetime import datetime, timezone
 
@@ -45,7 +45,8 @@ def _asset(url: str) -> ResumeAsset:
     )
 
 
-_ASPECTS = json.dumps({str(n): f"answer {n}" for n in range(5, 40)} | {"40": True})
+#: What the seeded candidate has on My Profile. The application snapshots it.
+_PROFILE_FORM = {"current_city": "Pune", "declaration_full_name": "Open Applicant"}
 
 
 
@@ -91,7 +92,8 @@ async def _seed(factory, fx: _Fixture) -> None:
                            status=UserStatus.active))
                 await s.flush()
                 cand = Candidate(id=uuid.uuid4(), email=fx.email, user_id=fx.user_id,
-                                 full_name="Open Applicant", consent_databank=False)
+                                 full_name="Open Applicant", consent_databank=False,
+                                 profile_form_json=dict(_PROFILE_FORM))
                 s.add(cand)
                 fx.jobs = [uuid.uuid4() for _ in range(3)]
                 for jid in fx.jobs:
@@ -137,7 +139,6 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -148,12 +149,15 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     out = await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
         assert out.job_id == fx.jobs[0]
         assert out.resume_reused is False
-        assert out.aspects_received == 36  # aspects 5..40
+        # The answer names the application and nothing about an assessment:
+        # applying is not being invited.
+        assert set(out.model_dump()) == {"link_id", "job_id", "profile_id", "resume_reused"}
 
         async with factory() as s:
             async with s.begin():
@@ -165,9 +169,12 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
                         select(Profile).where(Profile.id == out.profile_id)
                     )).scalar_one()
         assert link.candidate_id == fx.cand_id
-        # aspects captured + completion stamped
-        assert profile.aspects_json.get("40") is True
+        # My Profile snapshotted onto the application + completion stamped
+        assert profile.aspects_json == _PROFILE_FORM
         assert profile.aspects_completed_at is not None
+        # A portal-board application is direct, and the person is an applicant.
+        assert link.application_source == "direct"
+        assert link.source_type == "applied"
         assert profile.resume_url == "https://res.cloudinary.com/x/raw/upload/fresh.pdf"
     finally:
         await _cleanup(factory, fx)
@@ -189,7 +196,6 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -202,7 +208,8 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     first = await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
         first_url = uploads[0]
@@ -212,7 +219,8 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     second = await portal_mod.apply_to_job(
-                        fx.jobs[1], _ASPECTS, None, True,
+                        fx.jobs[1], resume=None, reuse_previous=True,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
         assert second.resume_reused is True
@@ -242,7 +250,6 @@ async def test_fresh_upload_creates_a_new_profile(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -255,7 +262,8 @@ async def test_fresh_upload_creates_a_new_profile(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         out = await portal_mod.apply_to_job(
-                            jid, _ASPECTS, _upload(), False,
+                            jid, resume=_upload(), reuse_previous=False,
+                            application_source="direct",
                             user=user, session=s, validation=_VALIDATION,
                         )
                         profile_ids.append(out.profile_id)
@@ -278,8 +286,6 @@ async def test_reuse_without_any_previous_resume_is_422(monkeypatch) -> None:
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
 
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
-
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
     try:
@@ -290,7 +296,8 @@ async def test_reuse_without_any_previous_resume_is_422(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         await portal_mod.apply_to_job(
-                            fx.jobs[0], _ASPECTS, None, True,
+                            fx.jobs[0], resume=None, reuse_previous=True,
+                            application_source="direct",
                             user=user, session=s, validation=_VALIDATION,
                         )
         assert exc.value.status_code == 422
@@ -304,8 +311,6 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
 
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
-
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
     try:
@@ -317,7 +322,8 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         await portal_mod.apply_to_job(
-                            fx.jobs[0], _ASPECTS, bad, False,
+                            fx.jobs[0], resume=bad, reuse_previous=False,
+                            application_source="direct",
                             user=user, session=s, validation=_VALIDATION,
                         )
         assert exc.value.status_code == 422
@@ -327,7 +333,7 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
 
 
 async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) -> None:
-    """The apply page asks for this BEFORE showing 40 questions: is there a
+    """The apply page asks for this BEFORE showing the form: is there a
     resume to reuse, and has this candidate already applied? (FR-6.2/9.2.)"""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
@@ -336,7 +342,6 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
         return _asset("https://res.cloudinary.test/ctx.pdf")
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -352,13 +357,15 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
                         fx.jobs[0], user=user, session=s
                     )
         assert before.already_applied is False
+        assert before.application_id is None
         assert before.resume.has_resume is False
 
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
-                    await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
+                    applied = await portal_mod.apply_to_job(
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
 
@@ -375,51 +382,13 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
                     stored = await portal_mod.my_stored_resume(user=user, session=s)
         assert same.already_applied is True
         assert same.applied_at is not None
+        # The public page's "View your application" link opens this card.
+        assert same.application_id == applied.link_id
         assert other.already_applied is False
+        assert other.application_id is None
         assert other.resume.has_resume is True
         assert other.resume.filename == "cv.pdf"
         assert stored.has_resume is True
-    finally:
-        await _cleanup(factory, fx)
-        await engine.dispose()
-
-
-async def test_apply_persists_personal_details_on_the_candidate(monkeypatch) -> None:
-    """The apply form's personal fields (FR-5.1 a–d) land on the Candidate, not
-    only inside aspects_json — otherwise the ATS shows a nameless applicant."""
-    from app.api import portal as portal_mod
-    from app.core.db import superadmin_scope
-    from app.models import Candidate
-
-    async def fake_store(_resume):
-        return _asset("https://res.cloudinary.test/personal.pdf")
-
-    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
-
-    engine, factory = await _factory_or_skip()
-    fx = _Fixture()
-    try:
-        await _seed(factory, fx)
-        user = _user(fx)
-        async with factory() as s:
-            async with s.begin():
-                async with superadmin_scope(s):
-                    await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
-                        full_name="Renamed Applicant", residing_city="Chennai",
-                        age=31, gender="female", user=user, session=s,
-                        validation=_VALIDATION,
-                    )
-        async with factory() as s:
-            async with s.begin():
-                async with superadmin_scope(s):
-                    cand = await s.get(Candidate, fx.cand_id)
-                    assert cand is not None
-                    assert cand.full_name == "Renamed Applicant"
-                    assert cand.city == "Chennai"
-                    assert cand.age == 31
-                    assert cand.gender == "female"
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -490,19 +459,20 @@ async def test_portal_job_read_carries_the_job_description() -> None:
         await engine.dispose()
 
 
-async def test_applying_enqueues_question_generation_immediately(monkeypatch) -> None:
-    """The fix for the wait between applying and being able to start.
+async def test_applying_to_a_ready_job_creates_no_assessment(monkeypatch) -> None:
+    """Applying is not being invited, even to a job that is ready to assess.
 
-    Question generation used to be enqueued LAZILY, by
-    `_ensure_conversation_ready`, which runs the first time the candidate
-    presses Start. So the candidate applied, opened the assessment, and got
-    409 "We are preparing your assessment. Please try again in a moment."
-    while an LLM chain ran -- refreshing a page that kept saying the same
-    thing. Enqueuing at apply time means generation is already under way
-    while they are still on the confirmation screen.
+    This used to create an `assessment_conversations` row and dispatch
+    `generate_candidate_questions` the moment somebody applied to a job whose
+    setup was approved. That row IS the invitation, so every applicant held a
+    half-made invitation the assessment page then refused (403, no
+    `invitation_sent_at`), and the matrix lock counted it as an issued
+    contract before a recruiter had invited anybody. The invitation is the
+    recruiter's act (`select-candidates`) and nothing else's.
 
-    Asserted here because nothing else covers it: adding the enqueue left all
-    901 tests green, which said nothing either way.
+    Read back on a SECOND connection after the commit, and the dispatches are
+    read from the record the commit hook wrote, so a dispatch that fired
+    before the commit, or a row that rolled back, cannot pass this.
     """
     from sqlalchemy import update as sa_update
 
@@ -510,24 +480,18 @@ async def test_applying_enqueues_question_generation_immediately(monkeypatch) ->
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
     from app.models import Job
+    from app.workers import dispatch as dispatch_mod
 
     async def fake_store(_resume):
-        return _asset("https://res.cloudinary.com/x/raw/upload/eager.pdf")
+        return _asset("https://res.cloudinary.com/x/raw/upload/ready.pdf")
 
-    enqueued: list[str] = []
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(
-        portal_mod, "dispatch",
-        lambda name, *a, **k: enqueued.append(name),
-    )
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
     try:
         await _seed(factory, fx)
-        # The branch only runs for a job whose setup is approved; the seed
-        # leaves jobs at questions_pending_review.
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
@@ -540,55 +504,65 @@ async def test_applying_enqueues_question_generation_immediately(monkeypatch) ->
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
-                    await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
+                    out = await portal_mod.apply_to_job(
+                        fx.jobs[0], resume=_upload(), reuse_previous=False,
+                        application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
                     )
-        assert "pickready.generate_candidate_questions" in enqueued, (
-            "applying did not start question generation, so the candidate will "
-            f"wait on the lazy path when they press Start (enqueued: {enqueued})"
-        )
+                    # Nothing leaves the process while the transaction is open.
+                    assert dispatch_mod.recorded_names() == []
+
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    conversations = (await s.execute(
+                        text("SELECT count(*) FROM assessment_conversations "
+                             "WHERE job_candidate_link_id = :l"),
+                        {"l": str(out.link_id)},
+                    )).scalar_one()
+                    questions = (await s.execute(
+                        text("SELECT count(*) FROM candidate_questions "
+                             "WHERE job_candidate_link_id = :l"),
+                        {"l": str(out.link_id)},
+                    )).scalar_one()
+        assert conversations == 0, "applying created an assessment invitation"
+        assert questions == 0, "applying issued assessment questions"
+        names = dispatch_mod.recorded_names()
+        assert "pickready.generate_candidate_questions" not in names
+        assert names == [
+            "pickready.parse_resume",
+            "pickready.send_application_confirmation",
+        ]
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
 
 
-async def test_applying_to_an_unapproved_job_does_not_enqueue_generation(
-    monkeypatch,
-) -> None:
-    """The mirror. A job still at questions_pending_review has no approved
-    framework, so generating this candidate's questions against it would
-    produce questions for criteria a human has not confirmed."""
-    from app.api import candidates as cand_mod
+async def test_a_refused_application_dispatches_nothing(monkeypatch) -> None:
+    """A refused application rolls back, and nothing reaches the dispatcher:
+    every dispatch on the apply path is registered for AFTER the commit, so a
+    request that never commits sends nothing about a row that was never
+    stored."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
-
-    async def fake_store(_resume):
-        return _asset("https://res.cloudinary.com/x/raw/upload/pending.pdf")
-
-    enqueued: list[str] = []
-    monkeypatch.setattr(cand_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(
-        portal_mod, "dispatch",
-        lambda name, *a, **k: enqueued.append(name),
-    )
+    from app.workers import dispatch as dispatch_mod
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
     try:
         await _seed(factory, fx)
         user = _user(fx)
-        async with factory() as s:
-            async with s.begin():
-                async with superadmin_scope(s):
-                    await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False,
-                        user=user, session=s, validation=_VALIDATION,
-                    )
-        assert "pickready.generate_candidate_questions" not in enqueued
-        # The application itself still went through normally.
-        assert "pickready.parse_resume" in enqueued
+        with pytest.raises(portal_mod.HTTPException) as exc:
+            async with factory() as s:
+                async with s.begin():
+                    async with superadmin_scope(s):
+                        await portal_mod.apply_to_job(
+                            fx.jobs[0], resume=None, reuse_previous=True,
+                            application_source="direct",
+                            user=user, session=s, validation=_VALIDATION,
+                        )
+        assert exc.value.status_code == 422
+        assert dispatch_mod.recorded_names() == []
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()

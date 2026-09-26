@@ -21,7 +21,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import jwt
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
@@ -30,73 +30,43 @@ from app.models.candidate import (
     CandidateTeamReview,
     Interview,
     JobCandidateLink,
-    PipelineStatusEntry,
     Profile,
     SOURCE_TYPE_SOURCED,
-    VerificationRequest,
-    source_type_label,
 )
-from app.models.enums import LinkSource, PipelineStatus
+from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.candidates import (
     CandidateOut,
-    DecisionIn,
-    GrantAccessOut,
     InterviewIn,
     InterviewOut,
-    JobLinksOut,
     LinkArchiveOut,
-    LinkOut,
     ProfileOut,
-    RankingCommentsOut,
-    StatusIn,
-    StatusOut,
     TeamReviewIn,
     TeamReviewOut,
     TeamReviewRewriteIn,
     TeamReviewRewriteOut,
     TeamReviewsOut,
     UploadResumeOut,
-    VerificationRequestSummary,
-)
+    )
+from app.services import candidate_identity, hiring_pipeline
 from app.services import capabilities as caps
 from app.services import email_render
-from app.services import telemetry_events
 from app.services import rbac
 from app.services import team_review
 from app.services.audit import audit
-from app.services.matching import client_breakdown, ranking_payload
 from app.services import llm_router
 from app.services.resume_storage import (
-    ALLOWED_RESUME_CONTENT_TYPES,
-    ALLOWED_RESUME_EXTENSIONS as ALLOWED_RESUME_EXTS,
-    MAX_RESUME_BYTES,
     apply_resume_asset,
     fetch_resume_bytes,
-    read_validated_resume,
     ResumeStorageError,
     store_resume,
 )
 from app.services.resume_access import issue_resume_token, verify_resume_token
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
-
-#: Statuses that move an application FORWARD. `offer_extended` is the current
-#: name for `offered` (migration 0018 kept both valid), and omitting it meant a
-#: fresh-sourced candidate advanced under the new name was not treated as
-#: progressed at all.
-FORWARD_STATUSES = {
-    PipelineStatus.shortlisted,
-    PipelineStatus.interview_scheduled,
-    PipelineStatus.interview_completed,
-    PipelineStatus.offered,
-    PipelineStatus.offer_extended,
-    PipelineStatus.joined,
-}
-
 
 async def _get_link(
     session: AsyncSession, user: CurrentUser, link_id: uuid.UUID
@@ -105,24 +75,6 @@ async def _get_link(
     if link is None or link.tenant_id != user.tenant_id:  # defense in depth
         raise HTTPException(status_code=404, detail="Link not found")
     return link
-
-
-async def _latest_status(
-    session: AsyncSession, link_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, PipelineStatusEntry]:
-    if not link_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(PipelineStatusEntry)
-            .where(PipelineStatusEntry.job_candidate_link_id.in_(link_ids))
-            .order_by(PipelineStatusEntry.at)
-        )
-    ).scalars().all()
-    latest: dict[uuid.UUID, PipelineStatusEntry] = {}
-    for row in rows:  # ordered ascending, so the last write wins
-        latest[row.job_candidate_link_id] = row
-    return latest
 
 
 @router.post(
@@ -139,8 +91,14 @@ async def upload_resume(
     user: CurrentUser = Depends(require_capability(caps.UPLOAD_RESUMES)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> UploadResumeOut:
-    """Recruiter uploads a freshly sourced resume (FR-4.3): creates
-    candidate + profile + link (source=fresh) and enqueues parsing."""
+    """Recruiter uploads ONE resume they found outside Vivekium (FR-4.3).
+
+    Creates the candidate, the profile and a link that enters at `sourced`
+    with its history row (`hiring_pipeline.start_sourced`): a person whose
+    resume a recruiter found has not read this job or applied to it, and this
+    route used to record them as `applied` (audit Part 1 #5). The parse is
+    dispatched AFTER the commit, and the parse dispatches Yukti's reading.
+    """
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -148,9 +106,10 @@ async def upload_resume(
         # ASSUMPTION: sourcing starts once the job has reached HR (FR-3.4).
         raise HTTPException(status_code=409, detail="Job is not ratified yet")
 
-    candidate = (
-        await session.execute(select(Candidate).where(Candidate.email == email))
-    ).scalars().first()
+    # The CANONICAL record for this address, case-insensitively, through the
+    # one resolver: an exact, unordered match here attached the same person to
+    # a different record depending on how the recruiter typed the address.
+    candidate = await candidate_identity.find_canonical_by_email(session, email)
     if candidate is None:
         candidate = Candidate(
             tenant_id=user.tenant_id, email=email, full_name=full_name, phone=phone
@@ -182,13 +141,17 @@ async def upload_resume(
         # elsewhere is `sourced`, not `databank`. Databank is specifically the
         # bulk upload (POST /jobs/{id}/candidates/databank, up to 25 files);
         # this single-file route predates it and describes a candidate the
-        # recruiter procured from outside ReadyPick.
+        # recruiter procured from outside Vivekium.
         source_type=SOURCE_TYPE_SOURCED,
     )
-    session.add(link)
-    await session.flush()
+    await hiring_pipeline.start_sourced(
+        session,
+        link,
+        actor_user_id=user.user_id,
+        remarks="Uploaded to the job by the recruitment team",
+    )
 
-    dispatch("pickready.parse_resume", args=[str(profile.id)])
+    dispatch_after_commit(session, "pickready.parse_resume", args=[str(profile.id)])
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="resume_uploaded", target_type="profile", target_id=profile.id,
                 metadata={"job_id": str(job.id), "candidate_id": str(candidate.id),
@@ -197,6 +160,25 @@ async def upload_resume(
         candidate_id=candidate.id, profile_id=profile.id, link_id=link.id,
         source=LinkSource.fresh, resume_public_id=asset.public_id, resume_url=asset.secure_url,
     )
+
+
+async def _require_full_profile_access(session: AsyncSession, user: CurrentUser) -> None:
+    """Refuse a caller who does not hold SEND_OUTREACH, BEFORE any file is read.
+
+    This used to have a second half: a caller holding only VIEW_REVIEW_SCREEN
+    (a Hiring Manager) could also read a candidate once HR had set
+    `job_candidate_links.hm_access_granted` on one of that candidate's links.
+    The one route that set the flag was deleted in the 2026-09 route scrap
+    (`tests/test_dead_routes_removed.py`) and nothing else writes it, so the
+    data half could only ever answer "not granted". Reading a flag nobody can
+    set is a permission rule that exists in prose only; the column survives in
+    the database (server default false, pilot holds no link rows) and is read
+    by nothing.
+    """
+    if not await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    ):
+        raise HTTPException(status_code=403, detail="Profile access not granted")
 
 
 @router.get("/{candidate_id}/profile", response_model=ProfileOut)
@@ -208,31 +190,14 @@ async def get_profile(
 ) -> ProfileOut:
     """Full Profile for the HR Review Screen (FR-7.1/7.2).
 
-    # ASSUMPTION: full access to any profile is derived from the HR-exclusive
-    # SEND_OUTREACH capability; holders of only VIEW_REVIEW_SCREEN (Hiring
-    # Managers) can read a candidate solely when HR has granted access on at
-    # least one of that candidate's links (FR-8.1) — capability + data, no
-    # role branch.
+    Full access to any profile is the SEND_OUTREACH capability, and nothing
+    else: see `_require_full_profile_access` for the grant flag it replaced.
     """
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     profile_query = select(Profile).where(Profile.candidate_id == candidate_id)
     if profile_id is not None:
@@ -244,9 +209,9 @@ async def get_profile(
         raise HTTPException(status_code=404, detail="No profile for this candidate")
     if profile_id is not None:
         # EXISTENCE check only. The same (candidate, tenant, profile) triple
-        # legitimately appears on many rows — one per job the candidate is
+        # legitimately appears on many rows, one per job the candidate is
         # linked to in this tenant, and a reused resume keeps the same profile
-        # — so `scalar_one_or_none()` here raised MultipleResultsFound (500)
+        # so `scalar_one_or_none()` here raised MultipleResultsFound (500)
         # for any candidate linked to more than one job, which the review
         # screen surfaced as "Could not load this candidate's profile".
         scoped_profile_link = (
@@ -263,13 +228,8 @@ async def get_profile(
         if scoped_profile_link is None:
             raise HTTPException(status_code=404, detail="No profile for this candidate")
 
-    vrs = (
-        await session.execute(
-            select(VerificationRequest)
-            .where(VerificationRequest.profile_id == profile.id)
-            .order_by(VerificationRequest.employer_seq)
-        )
-    ).scalars().all()
+    # The tenant-owned verification_requests read that sat here is RETIRED
+    # (vivekium C8); the recruiter's verification surface is the BGV panel.
     return ProfileOut(
         id=profile.id,
         candidate=CandidateOut.model_validate(candidate),
@@ -282,7 +242,6 @@ async def get_profile(
         aspects_json=profile.aspects_json,
         parsed_fields_json=profile.parsed_fields_json,
         aspects_completed_at=profile.aspects_completed_at,
-        verification_requests=[VerificationRequestSummary.model_validate(v) for v in vrs],
     )
 
 
@@ -321,21 +280,7 @@ async def get_project_evidence(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
     return {"projects": await project_context.recruiter_views(session, candidate_id)}
 
 
@@ -345,7 +290,7 @@ async def preview_resume(
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> HTMLResponse:
-    """Render a DOCX resume inside ReadyPick as safe, monochrome HTML.
+    """Render a DOCX resume inside Vivekium as safe, monochrome HTML.
 
     Browsers cannot natively display Word documents. The server downloads only
     the trusted private asset already stored on the profile, extracts
@@ -366,11 +311,7 @@ async def preview_resume(
     ).scalars().first()
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access and not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     try:
         resume_bytes = await fetch_resume_bytes(profile)
@@ -451,11 +392,7 @@ async def resume_file(
     ).scalars().first()
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access and not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
     if access_token is None:
         query = urlencode(
             {
@@ -489,60 +426,6 @@ async def resume_file(
     )
 
 
-@router.get("/{candidate_id}/ranking", response_model=RankingCommentsOut)
-async def get_candidate_ranking(
-    candidate_id: uuid.UUID,
-    job_id: uuid.UUID | None = Query(default=None),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> RankingCommentsOut:
-    """Return only the five human-readable ranking comments for a candidate.
-
-    A candidate may be ranked for several jobs. Callers should pass `job_id`;
-    when omitted, the newest ranking in the current tenant is returned for
-    backwards compatibility with the path-only contract.
-    """
-    filters = [
-        JobCandidateLink.candidate_id == candidate_id,
-        JobCandidateLink.tenant_id == user.tenant_id,
-    ]
-    if job_id is not None:
-        filters.append(JobCandidateLink.job_id == job_id)
-    link = (
-        await session.execute(
-            select(JobCandidateLink)
-            .where(*filters)
-            .order_by(JobCandidateLink.created_at.desc())
-        )
-    ).scalars().first()
-    if link is None:
-        raise HTTPException(status_code=404, detail="Ranking not found")
-    payload = ranking_payload(link.match_breakdown_json)
-    return RankingCommentsOut(
-        skills_match_comment=payload["skills_match_comment"],
-        experience_comment=payload["experience_comment"],
-        role_alignment_comment=payload["role_alignment_comment"],
-        education_comment=payload["education_comment"],
-        overall_comment=payload["overall_comment"],
-    )
-
-
-@router.post("/links/{link_id}/grant-access", response_model=GrantAccessOut)
-async def grant_access(
-    link_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> GrantAccessOut:
-    """HR grants Hiring Manager access to a reviewed profile (FR-8.1).
-    # ASSUMPTION: gated by SEND_OUTREACH — the HR-exclusive candidate-management
-    # capability — since the PRD matrix has no dedicated grant capability."""
-    link = await _get_link(session, user, link_id)
-    link.hm_access_granted = True
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="hm_access_granted", target_type="job_candidate_link",
-                target_id=link.id)
-    return GrantAccessOut(link_id=link.id)
 
 
 @router.delete("/links/{link_id}", response_model=LinkArchiveOut)
@@ -586,49 +469,6 @@ async def restore_candidate_application(
             target_id=link.id,
         )
     return LinkArchiveOut(link_id=link.id, archived=False)
-
-
-@router.post("/links/{link_id}/decision", response_model=StatusOut)
-async def decide_profile(
-    link_id: uuid.UUID,
-    body: DecisionIn,  # hold without remarks -> 422 (schema validator)
-    user: CurrentUser = Depends(require_capability(caps.DECIDE_PROFILE)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> StatusOut:
-    """Hiring Manager decision: Rejected / Shortlisted / Hold (FR-8.2)."""
-    link = await _get_link(session, user, link_id)
-    if not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted (FR-8.1)")
-
-    entry = PipelineStatusEntry(
-        tenant_id=user.tenant_id, job_candidate_link_id=link.id,
-        status=PipelineStatus(body.status), remarks=body.remarks, set_by=user.user_id,
-    )
-    session.add(entry)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="profile_decision", target_type="job_candidate_link",
-                target_id=link.id, metadata={"status": body.status, "remarks": body.remarks})
-    # Talent Intelligence spec section 5.1: EV_HM_DECISION, an explicit
-    # accept/reject/hold on a presented profile. Feeds PRL and SLA_PR
-    # (services/intelligence_metrics.py). Never allowed to fail the decision.
-    await telemetry_events.emit(
-        session,
-        tenant_id=user.tenant_id,
-        event_code=telemetry_events.EV_HM_DECISION,
-        job_id=link.job_id,
-        candidate_id=link.candidate_id,
-        job_candidate_link_id=link.id,
-        actor_user_id=user.user_id,
-        correlation_id=(
-            await session.execute(
-                select(Job.correlation_id).where(Job.id == link.job_id)
-            )
-        ).scalar_one_or_none(),
-        payload={"decision": body.status},
-    )
-    return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
-                     at=entry.at or datetime.now(timezone.utc))
 
 
 #: Display and tie-break order only; nothing scores these. Read from the one
@@ -814,44 +654,6 @@ async def rewrite_team_review(
     return TeamReviewRewriteOut(rewritten_remarks=rewritten, used_ai=used_ai)
 
 
-@router.post("/links/{link_id}/status", response_model=StatusOut)
-async def update_pipeline_status(
-    link_id: uuid.UUID,
-    body: StatusIn,
-    user: CurrentUser = Depends(require_capability(caps.UPDATE_PIPELINE_STATUS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> StatusOut:
-    """Mandatory pipeline status update (FR-8.4). Fresh candidates cannot be
-    moved FORWARD until the outreach + all employer verifications are
-    submitted or explicitly overridden (FR-5.5)."""
-    link = await _get_link(session, user, link_id)
-    new_status = PipelineStatus(body.status)
-
-    # PRD v1.0: employer verification is out of scope (§5 non-goal). A candidate
-    # applies openly and completes the 40-aspect questionnaire AT application, so
-    # the only forward-gate is that the questionnaire is complete — the old
-    # VerificationRequest requirement is removed so open applicants aren't blocked.
-    if new_status in FORWARD_STATUSES and link.source == LinkSource.fresh:
-        profile = await session.get(Profile, link.profile_id) if link.profile_id else None
-        if profile is None or profile.aspects_completed_at is None:
-            raise HTTPException(
-                status_code=409,
-                detail="Candidate has not completed the 40-question application yet",
-            )
-
-    entry = PipelineStatusEntry(
-        tenant_id=user.tenant_id, job_candidate_link_id=link.id,
-        status=new_status, remarks=body.remarks, set_by=user.user_id,
-    )
-    session.add(entry)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="pipeline_status_updated", target_type="job_candidate_link",
-                target_id=link.id, metadata={"status": body.status})
-    return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
-                     at=entry.at or datetime.now(timezone.utc))
-
-
 @router.post(
     "/links/{link_id}/interviews",
     response_model=InterviewOut,
@@ -864,7 +666,7 @@ async def schedule_interview(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> InterviewOut:
     """Interview invite with .ics, sent ONLY from the tenant's verified
-    sending domain (FR-8.3 / claude.md rule 5) — never Gmail/Outlook."""
+    sending domain (FR-8.3 / claude.md rule 5), never Gmail/Outlook."""
     link = await _get_link(session, user, link_id)
     candidate = await session.get(Candidate, link.candidate_id)
     tenant = await session.get(Tenant, user.tenant_id)
@@ -904,7 +706,11 @@ async def schedule_interview(
         attendee_emails=[candidate.email] if candidate.email else [],
         description=body.notes or "",
     )
-    dispatch(
+    # After the COMMIT: the invitation names the interview row written above,
+    # and a rolled-back schedule must not send a calendar invite for a slot
+    # that does not exist. A lost invoke is logged at ERROR by the commit hook.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(user.tenant_id), candidate.email, "interview_invite",
@@ -932,84 +738,6 @@ async def schedule_interview(
                 action="interview_scheduled", target_type="interview",
                 target_id=interview.id, metadata={"link_id": str(link.id)})
     return InterviewOut.model_validate(interview)
-
-
-@router.get("/jobs/{job_id}", response_model=JobLinksOut)
-async def list_job_links(
-    job_id: uuid.UUID,
-    include_archived: bool = Query(default=False),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=1, le=100),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_DATABANK)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobLinksOut:
-    """One page of candidate links for a job, with score/tier/current status.
-
-    Joined and paginated: this used to load every link for the job and then
-    fetch each candidate individually, so a job with 400 applicants was 401
-    queries and a response nobody could render.
-    """
-    job = await session.get(Job, job_id)
-    if job is None or job.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    filters = [JobCandidateLink.job_id == job.id]
-    if not include_archived:
-        filters.append(JobCandidateLink.archived_at.is_(None))
-
-    total = (
-        await session.execute(
-            select(func.count()).select_from(JobCandidateLink).where(*filters)
-        )
-    ).scalar_one()
-    rows = (
-        await session.execute(
-            select(JobCandidateLink, Candidate)
-            .join(Candidate, Candidate.id == JobCandidateLink.candidate_id)
-            .where(*filters)
-            # `id` makes the order total, so page boundaries are stable when
-            # two links share a score.
-            .order_by(
-                JobCandidateLink.match_score.desc().nulls_last(),
-                JobCandidateLink.id,
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).all()
-    latest = await _latest_status(session, [link.id for link, _ in rows])
-    out: list[LinkOut] = []
-    for link, candidate in rows:
-        entry = latest.get(link.id)
-        out.append(LinkOut(
-            link_id=link.id,
-            candidate=CandidateOut.model_validate(candidate),
-            profile_id=link.profile_id,
-            source=link.source,
-            source_type=link.source_type,
-            source_type_label=source_type_label(link.source_type),
-            tier=link.tier,
-            # Numeric parameter scores are internal ranking data and never
-            # cross this boundary (claude.md) — comments + scoring_mode only.
-            breakdown=client_breakdown(link.match_breakdown_json),
-            # Comments-only projection (always present; see services.matching).
-            **ranking_payload(link.match_breakdown_json),
-            hm_access_granted=link.hm_access_granted,
-            archived_at=link.archived_at,
-            current_status=entry.status if entry else None,
-            status_remarks=entry.remarks if entry else None,
-        ))
-    total_pages = max(1, (int(total) + page_size - 1) // page_size)
-    return JobLinksOut(
-        job_id=job.id,
-        links=out,
-        total=int(total),
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
-        has_next=page < total_pages,
-        has_previous=page > 1,
-    )
 
 
 # ── Background verification, recruiter view (add-features spec 2026-09-05) ──
@@ -1053,21 +781,7 @@ async def get_bgv_results(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    full_access = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.SEND_OUTREACH
-    )
-    if not full_access:
-        granted = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.candidate_id == candidate_id,
-                    JobCandidateLink.tenant_id == user.tenant_id,
-                    JobCandidateLink.hm_access_granted.is_(True),
-                )
-            )
-        ).scalars().first()
-        if granted is None:
-            raise HTTPException(status_code=403, detail="Profile access not granted")
+    await _require_full_profile_access(session, user)
 
     inquiries = (
         await session.execute(
@@ -1117,4 +831,15 @@ async def get_bgv_results(
             items.append(
                 {"shared": False, "note": "Not shared by the candidate"}
             )
-    return {"inquiries": items}
+    # Destinations two and three of the brief's "three destinations"
+    # (vivekium feature 6): the BGV record and the candidate page in the
+    # Executive Profile both read the SAME candidate_consents table the
+    # candidate's own portal reads, so the three surfaces cannot disagree.
+    # Stamps and server-authored wording only; no free text of the
+    # candidate's crosses here.
+    from app.services import consent_catalog
+
+    return {
+        "inquiries": items,
+        "consent_items": await consent_catalog.items_for(session, candidate_id),
+    }

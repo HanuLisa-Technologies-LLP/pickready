@@ -52,6 +52,30 @@ see that only the transport changed.
 request handler has the polling id before the invoke completes. The frontend's
 `task_id` and `task_ids` fields are unchanged.
 
+### A task about a row is dispatched after the row is committed (2026-09-25)
+
+A request that WRITES the row a task reads uses
+
+```python
+from app.workers.dispatch import dispatch_after_commit
+
+handle = dispatch_after_commit(session, "pickready.run_matching", args=[str(job.id)])
+```
+
+The handle (and its client-side id) comes back at once; the invoke runs from
+SQLAlchemy's `after_commit` through `core/after_commit.on_commit`. A rollback,
+or a session closed without committing, dispatches nothing. The task name, the
+backend and the JSON-ness of the arguments are checked at the call; a
+`DispatchError` from the invoke itself is logged at ERROR after the commit and
+never raised out of `commit()`, so each call site names the sweep that repairs
+a lost invoke. Never call it and then raise: the raise rolls the dispatch back.
+A callback registered inside a SAVEPOINT that later rolls back still fires on
+the outer commit, so register after the savepoint.
+`tests/test_dispatch_after_commit_sweep.py` refuses a new bare `dispatch` in
+`app/api`, `services/proctoring` and `services/video`; its legacy allowlist is
+empty. A test inspecting a dispatch inside a transaction it rolls back reads
+`after_commit.pending_labels(session)`.
+
 ### The three backends are three deployments
 
 | `TASK_DISPATCH_BACKEND` | What happens | Where |
@@ -300,10 +324,21 @@ run-status record a recruiter is watching".
 1. Write the function in `backend/app/workers/tasks.py`. It is a plain
    synchronous function; use `_run(...)` and `_worker_session()` for async
    service code.
-2. Decorate it with `@task(name="pickready.<name>", route=...)`. The route is
-   the cost decision in section 3, not a preference.
+2. Decorate it with `@task(name="pickready.<name>", route=..., rls=...)`. The
+   route is the cost decision in section 3, not a preference. `rls` is
+   REQUIRED (2026-09-25): `"tenant"` opens `tenant_worker_session(tenant_id)`,
+   scoped by asyncpg STARTUP parameters (role, tenant, bypass off) on a private
+   engine so a replaced connection keeps the scope, and needs a test that runs
+   the body under the policy against real Postgres and reads back from a
+   second connection; `"bypass"` opens `worker_session` and must carry
+   `rls_reason` in words. `resolve_tenant_id(kind, id)` is the one bypass read
+   of a tenant from an allowlisted table. `tests/test_worker_tenant_session.py`
+   checks the declaration against the body. A task in a new `tasks_*.py`
+   module is registered only by the import at the bottom of
+   `workers/tasks.py`.
 3. Dispatch it from wherever it belongs with
-   `dispatch("pickready.<name>", args=[...])`.
+   `dispatch("pickready.<name>", args=[...])`, or from a request that writes
+   the row it reads with `dispatch_after_commit(session, ...)`.
 4. If it is periodic, add an entry to `app/workers/schedule.py` **and** to every
    environment's `module "scheduler"` block. `test_schedule_parity.py` fails if
    you do one and not the other, and `test_task_registry.py` fails if a

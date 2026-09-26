@@ -9,20 +9,98 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+import { Check, X } from "lucide-react";
+
 import { RatingLabel } from "@/components/rating-label";
+import { CitedRemark, type CitationsLoader } from "@/components/report-citations";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RATING_GRADES, type ProctoringReport, type RatingGrade } from "@/lib/types";
 
 export type { RatingGrade };
 
+/** The word a rated row carries when its evaluation could not be completed. */
+export const NOT_ASSESSED_WORD = "Not assessed";
+
 export interface ReportDimension {
   name: string;
   description?: string | null;
-  /** One of the four grades. Never a number, a percentage, or a letter. */
-  grade: RatingGrade;
-  /** What the job requires of this item. Null on AI Score and technical rows. */
+  /** One of the four grades, or "Not assessed" when `status` is
+   *  `not_assessed`. Never a number, a percentage, or a letter. */
+  grade: RatingGrade | typeof NOT_ASSESSED_WORD;
+  /** The row's stored status. Absent on a report written before it existed,
+   *  which reads as graded. */
+  status?: "graded" | "unanswered" | "not_assessed";
+  /** The server's sentence beside a `not_assessed` row. */
+  status_note?: string | null;
+  /** What the job requires of this item. Null on legacy AI Match and
+   *  technical rows. */
   required_level?: RatingGrade | null;
   remark: string;
+  /** The server's marker for a remark a fixed template wrote because the
+   *  writing model was unavailable. */
+  remark_note?: string | null;
+  /** The citation trail's marker for a remark its evidence did not clearly
+   *  support. */
+  support_note?: string | null;
+  /**
+   * EVIDENCE CONFIDENCE: "High", "Moderate", "Low" or "Insufficient evidence".
+   *
+   * How well corroborated the evidence behind the grade is, never a statement
+   * about the candidate. The server derives it after scoring from the distinct
+   * ORIGINATORS behind the line, so it cannot move the grade beside it.
+   *
+   * Absent on every report written before it existed, and the card renders
+   * without the line rather than with an invented word: a report is immutable
+   * and the evidence set an older one was written from is not reconstructable.
+   */
+  evidence_confidence?: string | null;
+  /** The named sources it rests on. Empty on a report written before them. */
+  evidence_sources?: string[];
+}
+
+export interface ValidationPoint {
+  area: string;
+  /** `confidence | borderline | contradiction`. Why the area is listed. */
+  driver: string;
+  confidence?: string | null;
+  reason: string;
+  /** One interview probe. Advisory, and never an advance or reject decision. */
+  probe: string;
+}
+
+/**
+ * Recommended Human Validation Points.
+ *
+ * DELIBERATELY NOT the Gap Analysis. That section is GRADE driven and
+ * unbounded; this one is CONFIDENCE and CONTRADICTION driven and stops at
+ * five. A Highly Matching item resting on the candidate's own unchecked
+ * account is invisible to the first and is the first row of the second, which
+ * is why both are rendered and why they are not adjacent on the page.
+ */
+export interface ValidationPoints {
+  note?: string;
+  points: ValidationPoint[];
+  no_points_statement?: string | null;
+}
+
+export interface ClaimEvidenceEntry {
+  area?: string;
+  /** What the candidate asserted, in the ledger's normalised wording. */
+  claim: string;
+  /**
+   * What was found when it was looked for. ABSENCE OF EVIDENCE IS NEVER
+   * RENDERED AS THE CLAIM BEING FALSE: the server's sentence for an
+   * unevidenced claim says in so many words that it is a gap in what was
+   * examined, and this component prints that sentence rather than writing one.
+   */
+  evidence: string;
+  confidence?: string | null;
+}
+
+export interface ClaimEvidence {
+  note?: string;
+  entries: ClaimEvidenceEntry[];
+  no_claims_statement?: string | null;
 }
 
 /**
@@ -36,8 +114,10 @@ export interface ReportDimension {
  */
 export interface RadarAxis {
   axis: string;
-  requirement_band: RatingGrade;
-  requirement_index: number;
+  /** Null when the report recorded no requirement for this spoke: the chart
+   *  then draws the candidate's shape only, never a requirement nobody stated. */
+  requirement_band: RatingGrade | null;
+  requirement_index: number | null;
   candidate_band: RatingGrade;
   candidate_index: number;
 }
@@ -96,7 +176,14 @@ export const REPORT_SECTION_ORDER = [
   "must_have",
   "nice_to_have",
   "behavioural",
+  // The Evidence vs Claim Summary sits with the rated sections and the
+  // Recommended Human Validation Points sit with the plan, which is why they
+  // are not adjacent. The first annotates the grades above it; the second is
+  // the other thing an interviewer acts on, beside the Gap Analysis. Gap
+  // Analysis still precedes Validation, unchanged.
+  "claim_evidence",
   "gap_analysis",
+  "validation_points",
   "validation",
   // The Proctoring Report is LAST (proctoring spec section 7). It is
   // informational, it moves no grade, and it sits after everything that does.
@@ -115,6 +202,21 @@ export const REPORT_SECTION_ORDER = [
  */
 export const RENDERED_CHART_KEYS = ["overall", "must_have", "nice_to_have"] as const;
 
+export interface AiMatchTag {
+  text: string;
+  polarity: "positive" | "negative";
+}
+
+/** The AI Match of a report written from the Vivekium release on: the
+ *  pre-assessment check, frozen when the report was written. A grade word, a
+ *  header sentence and evidence tags; no remark, no chart, no number. */
+export interface AiMatchSnapshot {
+  status: "scored" | "not_assessed" | "pending";
+  grade?: RatingGrade | null;
+  header?: string;
+  tags?: AiMatchTag[];
+}
+
 export interface FunctionalReport {
   id: string;
   job_candidate_link_id: string;
@@ -122,9 +224,14 @@ export interface FunctionalReport {
    *  table can be matched by eye. A label, never a permission. */
   reference_code?: string;
   grade: string;
-  /** The pre-assessment resume snapshot: the job's own matching categories. */
+  /** LEGACY: the four resume-only rows of a report written before the
+   *  Vivekium release. Empty on a newer report, which carries
+   *  `ai_score_snapshot`. The key keeps its stored name. */
   ai_score: ReportDimension[];
-  overall_grade: RatingGrade;
+  ai_score_snapshot?: AiMatchSnapshot | null;
+  /** "Not assessed" exactly when `overall_status` is `not_assessed`. */
+  overall_grade: RatingGrade | typeof NOT_ASSESSED_WORD;
+  overall_status?: "graded" | "not_assessed";
   overall_summary: string;
   must_have: ReportDimension[];
   nice_to_have: ReportDimension[];
@@ -136,6 +243,10 @@ export interface FunctionalReport {
   validation: ValidationBlock;
   /** Gap Analysis & Action Plan (spec 9.6). */
   gap_analysis?: GapAnalysis;
+  /** Evidence vs Claim Summary. Absent on a report written before it. */
+  claim_evidence?: ClaimEvidence;
+  /** Recommended Human Validation Points. Same reading of absent. */
+  validation_points?: ValidationPoints;
   /** RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
    *  before Draft v4, which still renders what it was actually written with. */
   suggested_interview_questions?: string[];
@@ -153,6 +264,11 @@ export interface FunctionalReport {
    *  server enforces the same rule on the PDF route, this flag just keeps the
    *  UI from offering a button the server would refuse. */
   report_download_allowed?: boolean;
+  /** Whether gate G4 releases the PDF now. False, with the server's sentence
+   *  in `pdf_blocked_reason`, while a report routed to a person has no
+   *  recorded decision. Absent reads as available, as before the gate. */
+  pdf_available?: boolean;
+  pdf_blocked_reason?: string | null;
 }
 
 interface ValidationField {
@@ -184,15 +300,20 @@ const REQUIREMENT_COLOR = "#64748b";
 const CANDIDATE_COLOR = "#5028E0";
 
 function DimensionSection({
+  sectionKey,
   title,
   dimensions,
   chart,
   series,
+  loadCitations,
 }: {
+  /** The report section key, which is how the citation trail names it. */
+  sectionKey: string;
   title: string;
   dimensions: ReportDimension[];
   chart?: RadarChartSpec;
   series: string[];
+  loadCitations?: CitationsLoader;
 }) {
   if (dimensions.length === 0) return null;
   return (
@@ -210,19 +331,75 @@ function DimensionSection({
               {dimension.description ? (
                 <p className="text-xs">{dimension.description}</p>
               ) : null}
+              {dimension.status_note ? (
+                <p className="text-xs">{dimension.status_note}</p>
+              ) : null}
               {dimension.required_level ? (
                 <p className="text-xs">
                   This role requires: <RatingLabel label={dimension.required_level} />
                 </p>
               ) : null}
+              <EvidenceConfidence dimension={dimension} />
             </CardHeader>
             <CardContent>
-              <p className="text-sm leading-6">{dimension.remark}</p>
+              <CitedRemark
+                remark={dimension.remark}
+                section={sectionKey}
+                item={dimension.name}
+                load={loadCitations}
+              />
+              <RemarkNotes dimension={dimension} />
             </CardContent>
           </Card>
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * The server's two markers under a remark: written from a fixed template
+ * while the writing model was unavailable, and not clearly supported by the
+ * evidence it cites. Both are the server's words; neither is derived here.
+ */
+function RemarkNotes({ dimension }: { dimension: ReportDimension }) {
+  const notes = [dimension.remark_note, dimension.support_note].filter(
+    (note): note is string => Boolean(note)
+  );
+  if (notes.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      {notes.map((note) => (
+        <p key={note} className="text-xs italic">
+          {note}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The Evidence Confidence line under a grade.
+ *
+ * It renders NOTHING when the server sent no confidence, which is every report
+ * written before the field existed. That is the same rule `chartFor` follows
+ * for the fourth chart: a report is immutable, so the renderer is the only
+ * thing that can hold a rule for documents written under a different one, and
+ * the only honest rendering of a value that was never computed is no line.
+ *
+ * The word is the server's. This component never derives one, never maps a
+ * code, and never colours it: a tinted chip beside "Low" would state a
+ * judgement about the candidate, and confidence is a statement about the
+ * record.
+ */
+function EvidenceConfidence({ dimension }: { dimension: ReportDimension }) {
+  if (!dimension.evidence_confidence) return null;
+  const sources = dimension.evidence_sources ?? [];
+  return (
+    <p className="text-xs">
+      Evidence confidence: {dimension.evidence_confidence}
+      {sources.length > 0 ? <> {"\u00b7"} Sources: {sources.join(", ")}</> : null}
+    </p>
   );
 }
 
@@ -237,12 +414,18 @@ function DimensionSection({
  */
 function DualRadar({ chart, series }: { chart: RadarChartSpec; series: string[] }) {
   if (chart.axes.length < 3) return null;
-  const [requirementLabel = "Job Requirement", candidateLabel = "Candidate Assessment"] =
-    series;
+  // The requirement shape is drawn only when every spoke on THIS chart states
+  // a requirement. A spoke with none would otherwise sit at the centre, which
+  // states "requires nothing": a requirement nobody recorded. The server
+  // sends one series label when no spoke anywhere carries a requirement.
+  const drawsRequirement =
+    series.length > 1 && chart.axes.every((entry) => entry.requirement_index !== null);
+  const requirementLabel = series.length > 1 ? series[0] : "Job Requirement";
+  const candidateLabel = series[series.length - 1] ?? "Candidate Assessment";
 
   const data = chart.axes.map((entry) => ({
     dimension: entry.axis,
-    [requirementLabel]: entry.requirement_index,
+    ...(drawsRequirement ? { [requirementLabel]: entry.requirement_index } : {}),
     [candidateLabel]: entry.candidate_index,
   }));
 
@@ -253,17 +436,19 @@ function DualRadar({ chart, series }: { chart: RadarChartSpec; series: string[] 
           <RadarChart data={data} outerRadius="70%">
             <PolarAngleAxis dataKey="dimension" tick={{ fontSize: 11, fill: "currentColor" }} />
             <PolarRadiusAxis domain={[0, RATING_GRADES.length]} tick={false} axisLine={false} />
-            <Radar
-              name={requirementLabel}
-              dataKey={requirementLabel}
-              stroke={REQUIREMENT_COLOR}
-              strokeWidth={2}
-              strokeDasharray="5 4"
-              fill={REQUIREMENT_COLOR}
-              fillOpacity={0.1}
-              dot={false}
-              isAnimationActive={false}
-            />
+            {drawsRequirement ? (
+              <Radar
+                name={requirementLabel}
+                dataKey={requirementLabel}
+                stroke={REQUIREMENT_COLOR}
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                fill={REQUIREMENT_COLOR}
+                fillOpacity={0.1}
+                dot={false}
+                isAnimationActive={false}
+              />
+            ) : null}
             <Radar
               name={candidateLabel}
               dataKey={candidateLabel}
@@ -375,7 +560,15 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
   );
 }
 
-export function FunctionalSkillsReportView({ report }: { report: FunctionalReport }) {
+export function FunctionalSkillsReportView({
+  report,
+  loadCitations,
+}: {
+  report: FunctionalReport;
+  /** Fetches what each remark rests on. Called on the first remark a reader
+   *  opens, never on render; omitted where no citations route exists. */
+  loadCitations?: CitationsLoader;
+}) {
   const series = report.radar_series ?? ["Job Requirement", "Candidate Assessment"];
 
   // Keyed by the section identifiers in REPORT_SECTION_ORDER and rendered by
@@ -388,6 +581,8 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
     must_have: (
       <DimensionSection
         key="must_have"
+        sectionKey="must_have"
+        loadCitations={loadCitations}
         title="Must-have"
         dimensions={report.must_have}
         chart={chartFor(report, "must_have")}
@@ -397,6 +592,8 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
     nice_to_have: (
       <DimensionSection
         key="nice_to_have"
+        sectionKey="nice_to_have"
+        loadCitations={loadCitations}
         title="Nice-to-have"
         dimensions={report.nice_to_have}
         chart={chartFor(report, "nice_to_have")}
@@ -407,12 +604,20 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
     behavioural: (
       <DimensionSection
         key="behavioural"
+        sectionKey="behavioural"
+        loadCitations={loadCitations}
         title="Behavioural Competencies"
         dimensions={report.behavioural}
         series={series}
       />
     ),
+    claim_evidence: (
+      <ClaimEvidenceSection key="claim_evidence" summary={report.claim_evidence} />
+    ),
     gap_analysis: <GapAnalysisSection key="gap_analysis" report={report} />,
+    validation_points: (
+      <ValidationPointsSection key="validation_points" points={report.validation_points} />
+    ),
     validation: <ValidationSection key="validation" validation={report.validation} />,
     proctoring: <ProctoringSection key="proctoring" report={report.proctoring ?? null} />,
   };
@@ -424,18 +629,61 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
   );
 }
 
-/** The pre-assessment resume snapshot (spec doc 4, part 3). */
+/** The section's heading: the product's name for the pre-assessment check,
+ *  the same words the candidate table uses. The payload key stays `ai_score`
+ *  because stored reports carry it; the PDF prints the same heading. */
+export const AI_MATCH_TITLE = "AI Match";
+
+/**
+ * The AI Match: the resume check made before the assessment, frozen when the
+ * report was written (spec doc 4, part 3).
+ *
+ * A report written from the Vivekium release on carries the snapshot: a grade
+ * word, the server's header sentence and evidence tags, each marked with a
+ * check or a cross icon (never an emoji) and named for a screen reader. An
+ * older report carries the four legacy rows it was written with, rendered as
+ * they were written because a report is immutable.
+ */
 function AiScoreSection({ report }: { report: FunctionalReport }) {
+  const snapshot = report.ai_score_snapshot;
+  const legacy = report.ai_score ?? [];
+  if (!snapshot && legacy.length === 0) return null;
   return (
-      <section aria-label="AI Score">
-        <h3 className="mb-1 text-lg font-semibold">AI Score</h3>
-        <p className="mb-3 text-xs">
-          A resume-based snapshot generated before the assessment. A close match with the Tatva
-          Assessment below confirms the resume was accurate; a gap between them is itself
-          useful signal.
-        </p>
+    <section aria-label={AI_MATCH_TITLE}>
+      <h3 className="mb-1 text-lg font-semibold">{AI_MATCH_TITLE}</h3>
+      <p className="mb-3 text-xs">
+        A resume-based check made before the assessment. A close match with the Tatva
+        Assessment below confirms the resume was accurate; a gap between them is itself
+        worth knowing.
+      </p>
+      {snapshot ? (
+        <div className="rounded-lg border p-4">
+          <RatingLabel label={snapshot.grade ?? NOT_ASSESSED_WORD} />
+          {snapshot.header ? <p className="mt-2 text-sm">{snapshot.header}</p> : null}
+          {snapshot.tags && snapshot.tags.length > 0 ? (
+            <ul className="mt-3 flex flex-wrap gap-2" aria-label="Evidence tags">
+              {snapshot.tags.map((tag) => (
+                <li
+                  key={`${tag.polarity}-${tag.text}`}
+                  className="flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                >
+                  {tag.polarity === "positive" ? (
+                    <Check className="h-3.5 w-3.5 text-teal-700 dark:text-teal-300" aria-hidden />
+                  ) : (
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  <span className="sr-only">
+                    {tag.polarity === "positive" ? "Evidenced:" : "Not evidenced:"}
+                  </span>
+                  {tag.text}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {report.ai_score.map((dimension) => (
+          {legacy.map((dimension) => (
             <Card key={`ai-${dimension.name}`}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-3">
@@ -445,14 +693,16 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
                 {dimension.description ? (
                   <p className="text-xs">{dimension.description}</p>
                 ) : null}
+                <EvidenceConfidence dimension={dimension} />
               </CardHeader>
               <CardContent>
-                <p className="text-sm leading-6">{dimension.remark}</p>
+                <p className="text-sm">{dimension.remark}</p>
               </CardContent>
             </Card>
           ))}
         </div>
-      </section>
+      )}
+    </section>
   );
 }
 
@@ -566,6 +816,97 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
         Advisory input for the interviewer, grounded in what the candidate actually said. It
         identifies what to probe, never whether to advance or reject.
       </p>
+    </section>
+  );
+}
+
+export const CLAIM_EVIDENCE_TITLE = "Evidence vs Claim Summary";
+export const VALIDATION_POINTS_TITLE = "Recommended Human Validation Points";
+
+/**
+ * Evidence vs Claim Summary.
+ *
+ * Every sentence in it is the server's. In particular the sentence for a claim
+ * nothing addressed is printed verbatim and is never shortened to "no evidence
+ * found": the server's wording says in so many words that it is a gap in what
+ * was examined rather than a finding about the claim, and that second half is
+ * the whole reason the section is safe to render beside a hiring decision.
+ */
+function ClaimEvidenceSection({ summary }: { summary?: ClaimEvidence }) {
+  const entries = summary?.entries ?? [];
+  const statement = summary?.no_claims_statement;
+  if (!summary || (entries.length === 0 && !statement)) return null;
+
+  return (
+    <section aria-label={CLAIM_EVIDENCE_TITLE}>
+      <h3 className="mb-1 text-lg font-semibold">{CLAIM_EVIDENCE_TITLE}</h3>
+      {summary.note ? <p className="mb-3 text-xs">{summary.note}</p> : null}
+      {entries.length === 0 ? (
+        <p className="rounded-md border p-3 text-sm">{statement}</p>
+      ) : (
+        <ul className="space-y-3">
+          {entries.map((entry, index) => (
+            <li key={`${entry.claim}-${index}`} className="rounded-md border p-4">
+              {entry.area ? (
+                <p className="mb-1 text-xs uppercase tracking-wide">{entry.area}</p>
+              ) : null}
+              <p className="font-medium leading-7">{entry.claim}</p>
+              <p className="mt-2 text-sm leading-7">{entry.evidence}</p>
+              {entry.confidence ? (
+                <p className="mt-2 text-xs">Evidence confidence: {entry.confidence}</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Recommended Human Validation Points.
+ *
+ * Rendered as its own section rather than folded into the Gap Analysis, and
+ * the separation is the product decision: the Gap Analysis answers "where is
+ * this person weaker than the role needs", this answers "where is this report
+ * least safe to act on", and an item can be in either without being in both.
+ *
+ * No icons, no colour codes and no severity column, for the same reason the
+ * Proctoring Report has none: order carries what weight the section is
+ * entitled to state, and a tinted chip beside an area would be a judgement the
+ * product has not earned.
+ */
+function ValidationPointsSection({ points }: { points?: ValidationPoints }) {
+  const rows = points?.points ?? [];
+  const statement = points?.no_points_statement;
+  if (!points || (rows.length === 0 && !statement)) return null;
+
+  return (
+    <section aria-label={VALIDATION_POINTS_TITLE}>
+      <h3 className="mb-1 text-lg font-semibold">{VALIDATION_POINTS_TITLE}</h3>
+      {points.note ? <p className="mb-3 text-xs">{points.note}</p> : null}
+      {rows.length === 0 ? (
+        <p className="rounded-md border p-3 text-sm">{statement}</p>
+      ) : (
+        <ul className="space-y-3">
+          {rows.map((point, index) => (
+            <li key={`${point.area}-${index}`} className="rounded-md border p-4">
+              <div className="mb-1 flex flex-wrap items-center gap-3">
+                <span className="font-medium">{point.area}</span>
+                {point.confidence ? (
+                  <span className="text-xs">
+                    Evidence confidence: {point.confidence}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-sm leading-7">{point.reason}</p>
+              <p className="mt-2 rounded-md border border-dashed p-3 text-sm">
+                {point.probe}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

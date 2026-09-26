@@ -39,25 +39,25 @@ class DashboardSummaryOut(BaseModel):
 
 # ── The Candidate Dashboard (spec-doc6 §8, Dashboard Specification) ──────────
 #
-# THE ONE PLACE IN THIS PRODUCT WHERE A SCORE CROSSES THE API BOUNDARY.
+# NO ASSESSMENT NUMBER AND NO LETTER GRADE CROSSES THIS BOUNDARY (D3, C8).
 #
-# spec-doc6 D8 rules that the Ready Pick Score (0-100, plus band, plus
-# confidence) is a DASHBOARD TRIAGE ARTIFACT: it renders in the candidate list
-# and nowhere else, and it must be technically impossible for it to enter a
-# delivered PRISM Report. Two things make that hold here rather than by
-# convention:
+# SUPERSEDES spec-doc6 D8, which made the row's numeric Vivekium Score the
+# one place a 0-100 score reached a client. The Vivekium brief removed that
+# exception with no replacement: column 3 (AI Match) and column 4 (Vivekium
+# Grade) are the four `services/rating` words plus a STATE the browser styles
+# by, both chosen server-side in `services/dashboard.py`.
+# `tests/test_dashboard_numbers.py` walks every model in this module and fails
+# on a numeric field that is not a COUNT, so a score cannot come back by a
+# field somebody adds next month.
 #
-#   * `DashboardRowOut.ready_pick_score` is the only numeric assessment field
-#     in any response schema, and `tests/test_dashboard_numbers.py` walks the
-#     schema package to keep it that way.
-#   * `ReadyPickProfileOut` and the PRISM report schemas are different types
-#     over different tables (C10). The profile panel carries NAMED per-dimension
-#     ratings and no raw D1-D5 number; `CalibrationInternalsOut` is where the
-#     raw numbers live, behind a route only Super Admin and HR Manager reach.
+# The profile panel carries NAMED per-dimension ratings and no raw D1-D5
+# number. No schema carries the raw numbers any more: the audited calibration
+# view was deleted in the Vivekium release (PLAN-p7 WP-B6), because it returned
+# them to a client.
 #
-# Every schema below is words-plus-one-number by construction. Nothing is
-# assembled by filtering a wider dict, because a filter is a list somebody has
-# to remember to extend.
+# Every schema below is words by construction. Nothing is assembled by
+# filtering a wider dict, because a filter is a list somebody has to remember
+# to extend.
 import datetime as _dt
 from typing import Any, Literal
 
@@ -101,33 +101,32 @@ class DashboardRowOut(BaseModel):
     source_type: str
     source_label: str
 
-    # 3. Pre-Screen Grade. A / B / C / Hold, or null before Yukti has graded
-    #    the resume. Rendered muted and outline ONLY, never a solid fill; that
-    #    styling rule is enforced by a component test, not by this schema.
-    pre_screen_grade: str | None = None
-    pre_screen_label: str
+    # 3. AI Match. Yukti's reading of the RESUME alone: one of the four
+    #    `rating` words, or "Not checked yet" / "Not assessed" with the reason.
+    #    Rendered muted and outline ONLY, never a solid fill; that styling rule
+    #    is enforced by a component test, not by this schema.
+    ai_match_state: str
+    ai_match_label: str
+    ai_match_screen_reader_label: str
+    ai_match_note: str
 
-    # 4. Ready Pick Score. The number D8 permits, and the band and confidence
-    #    beside it. A null score with a `pending` or `under_review` band is the
-    #    documented honest state, never a zero.
-    ready_pick_score: int | None = None
-    band: str
-    band_label: str
-    band_screen_reader_label: str
+    # 4. Vivekium Grade. The word for the ONE rank the ranked table also sorts
+    #    by (`yukti.ranking`): the resume check blended with the Tatva
+    #    Assessment and capped by a failed Must-have. Withheld as "Under Review"
+    #    while an integrity finding is open.
+    ranking_state: str
+    ranking_label: str
+    ranking_screen_reader_label: str
+    ranking_note: str
     confidence: str | None = None
     confidence_indicator: str
     confidence_label: str
-    #: Always null today: no uncertainty interval is published by the
-    #: evaluator, and inventing one would print a number with no provenance
-    #: beside one that has some. `score_range_note` says so in the hover.
-    score_range: str | None = None
-    score_range_note: str
 
-    # 5. Ready Pick Note.
+    # 5. Vivekium Note.
     note: str
     note_is_pending: bool
 
-    # 6. Ready Pick Profile.
+    # 6. Vivekium Profile.
     profile: ReadyPickProfileRefOut | None = None
     profile_pending_reason: str | None = None
 
@@ -184,8 +183,6 @@ class DashboardControlsOut(BaseModel):
     team_review_disabled_reason: str | None = None
     #: HR Manager by right, Super Admin by audited override (spec-doc6 C7).
     can_disposition_integrity: bool
-    #: The audited raw-numbers view (D8).
-    can_view_calibration: bool
     #: True when this caller sees only the jobs they are assigned to.
     scoped_to_assignments: bool
 
@@ -208,8 +205,9 @@ class DashboardPageOut(BaseModel):
     source_labels: dict[str, str] = Field(
         default_factory=lambda: dict(_dashboard.SOURCE_LABELS)
     )
-    pre_screen_grades: list[str] = Field(
-        default_factory=lambda: list(_dashboard.PRE_SCREEN_GRADES)
+    #: The AI Match filter's domain: the four grade words, never a range.
+    ai_match_grades: list[str] = Field(
+        default_factory=lambda: list(_dashboard.AI_MATCH_GRADES)
     )
     stages: list[str] = Field(default_factory=list)
     sort_keys: list[str] = Field(default_factory=lambda: list(_dashboard.SORT_KEYS))
@@ -257,7 +255,6 @@ class ReadyPickProfileOut(BaseModel):
     under_integrity_review: bool = False
     needs_human_review: bool = False
     scorecard_version: int | None = None
-    company_dna_version: int | None = None
     evaluated_at: _dt.datetime | None = None
     scoring_mode: str | None = None
 
@@ -320,77 +317,3 @@ class IntegrityDispositionIn(BaseModel):
     note: str | None = None
 
 
-class OverrideRateOut(BaseModel):
-    """The Dashboard Specification's calibration metric, as counts and a rate.
-
-    NO TARGET, NO THRESHOLD, NO VERDICT. spec-doc6 8.2 and `PRODUCT.md`:
-    measure, never nudge. A payload carrying "under target" would be one
-    component away from a scoreboard beside a recruiter's name, and a target
-    that quietly discourages disagreement destroys the signal it measures.
-    """
-
-    comparable: int
-    diverged: int
-    rate: float
-
-
-class DivergenceOut(BaseModel):
-    id: uuid.UUID
-    job_id: uuid.UUID | None = None
-    job_title: str | None = None
-    link_id: uuid.UUID | None = None
-    candidate_id: uuid.UUID | None = None
-    candidate_name: str | None = None
-    reviewer_user_id: uuid.UUID | None = None
-    reviewer_email: str | None = None
-    reviewer_role: str | None = None
-    verdict: str | None = None
-    predicted_grade: str | None = None
-    predicted_confidence: str | None = None
-    outcome_assessment: str | None = None
-    created_at: _dt.datetime
-
-
-class DivergenceListOut(BaseModel):
-    divergences: list[DivergenceOut]
-    override_rate: OverrideRateOut
-
-
-class CalibrationDimensionOut(BaseModel):
-    dimension: str
-    label: str
-    band: str | None = None
-    #: RAW. This is the field D8 keeps off every other surface.
-    raw_score: int | None = None
-    insufficient_evidence: bool = False
-    evidence_refs: list[str] = Field(default_factory=list)
-
-
-class CalibrationInternalsOut(BaseModel):
-    """Raw D1-D5 numbers and aggregation internals. Super Admin / HR Manager.
-
-    Every read of this shape writes an audit row before the response is built
-    (D8: "always logged when viewed"). The route is the enforcement; this type
-    exists so the numbers have exactly one schema and cannot be reached through
-    a wider one.
-    """
-
-    artifact: Literal["calibration_internals"] = "calibration_internals"
-    evaluation_id: uuid.UUID
-    scorecard_version: int | None = None
-    company_dna_version: int | None = None
-    situation_type: str | None = None
-    scoring_mode: str | None = None
-    dimensions: list[CalibrationDimensionOut]
-    competency_scores: dict[str, Any] = Field(default_factory=dict)
-    category_scores: dict[str, float] = Field(default_factory=dict)
-    raw_composite: float | None = None
-    adjusted_composite: float | None = None
-    authenticity_factor: float | None = None
-    authenticity_reason: str | None = None
-    must_have_cap_applied: bool = False
-    confidence: str | None = None
-    insufficient_dimensions: list[str] = Field(default_factory=list)
-    review_reasons: list[str] = Field(default_factory=list)
-    gate_results: list[dict] = Field(default_factory=list)
-    triangulation: dict[str, Any] = Field(default_factory=dict)

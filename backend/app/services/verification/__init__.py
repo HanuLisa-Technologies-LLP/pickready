@@ -13,8 +13,6 @@ degradation accounting it already had.
 
 WHAT EACH CRITIC IS FOR
 -----------------------
-  ranking       the AI Score's four parameters, their 25-30 word comments, and
-                whether a ranked list actually discriminates between people
   ppi_report    graded items, 45-50 word remarks, the Must-have cap, and the
                 rule that no number reaches a client
   email         the transition it claims, its link, its placeholders, and the
@@ -26,12 +24,13 @@ WHAT EACH CRITIC IS FOR
 
 THE SPEC THIS IMPLEMENTS WAS WRITTEN AGAINST AN OLDER PRODUCT
 --------------------------------------------------------------
-Two of its checks are deliberately absent, each documented where it would have
-gone: the ranking weight-sum check (there are no weights, and
-`tests/test_scoring.py` asserts there are none) and the five-label scale
-(collapsed into the four grades of `services.rating` on 2026-07-30). Both were
-translated rather than dropped -- the property each was protecting is still
-checked, by a check that matches what the product does today.
+Two of its checks are deliberately absent: the ranking weight-sum check (there
+are no weights) and the five-label scale (collapsed into the four grades of
+`services.rating` on 2026-07-30). The `ranking` critic that stood in for the
+first, judging the retired AI Score's four parameters and their 25-30 word
+comments, is DELETED with that AI Score (Vivekium release, Phase 2 WP-F): Yukti
+writes no comment to judge, and its evidence is grounded deterministically in
+`services/yukti/grounding.py` before anything is stored.
 """
 from __future__ import annotations
 
@@ -41,7 +40,6 @@ from app.services.verification import (
     generic_language,
     ppi_report,
     probes,
-    ranking,
 )
 from app.services.verification.base import (
     CONFIDENCE_FLOOR,
@@ -74,7 +72,6 @@ __all__ = [
     "medium",
     "ppi_report",
     "probes",
-    "ranking",
     "verdict",
     "words_in",
 ]

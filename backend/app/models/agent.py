@@ -1,11 +1,10 @@
-"""Agent framework tables: episodic traces and extracted learnings (0055)."""
+"""Agent framework tables: episodic traces (0055) and tool approval rules (0089)."""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,27 +49,35 @@ class AgentExecutionTrace(Base, UUIDPKMixin, CreatedAtMixin):
     failure_category: Mapped[str | None] = mapped_column(String(40))
 
 
-class AgentLearning(Base, UUIDPKMixin, CreatedAtMixin):
-    """A failure pattern and the adjustment that fixed it.
+# The `agent_learnings` table is UNMAPPED since the Vivekium release:
+# the experience memory that was its only writer and reader could not be
+# reached from any route or worker and was deleted. The TABLE is kept as
+# history (S4 posture) and is still reached by raw SQL in the legacy reset
+# classification and the AI baseline count.
 
-    Not tenant-scoped: a lesson about how an agent misreads a JD is a property
-    of the product, and scoping it per customer would mean every customer
-    relearns it separately.
+
+class AgentToolApprovalRule(Base, UUIDPKMixin, CreatedAtMixin):
+    """A tenant requiring a human to approve a risk class the platform would
+    otherwise run automatically (0089).
+
+    THE TABLE HAS NO BOOLEAN, AND THAT IS THE DESIGN. A row's existence is the
+    requirement. A `requires_approval` column would have a False, and a False
+    row would be a customer switching OFF a requirement the platform declared,
+    which would make `tools.policy.RiskClass` decorative through the back door.
+    There is no column here that can express "less", so no admin screen and no
+    support override can ever write it. Same shape as `hiring/layers.py`:
+    a lower layer may tune within declared bounds and may never suspend.
     """
 
-    __tablename__ = "agent_learnings"
+    __tablename__ = "agent_tool_approval_rules"
 
-    agent_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    task_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    #: The defect type that triggered it, e.g. "remark_word_count".
-    failure_pattern: Mapped[str] = mapped_column(String(120), nullable=False)
-    #: The instruction to prepend on a later attempt at the same task.
-    applied_fix: Mapped[str] = mapped_column(Text, nullable=False)
-    observations: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    successes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    @property
-    def success_rate(self) -> float:
-        return round(self.successes / self.observations, 4) if self.observations else 0.0
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: One of `tools.policy.RiskClass`, pinned by a database CHECK.
+    risk_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )

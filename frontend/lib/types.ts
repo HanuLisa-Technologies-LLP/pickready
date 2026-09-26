@@ -8,7 +8,7 @@ export type Role =
   | "recruiter"
   | "hiring_manager"
   | "candidate"
-  // Business Development: ReadyPick's own sales staff. Platform staff, so
+  // Business Development: Vivekium's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
   | "bd";
 
@@ -20,6 +20,7 @@ export interface User {
   email: string;
   email_verified: boolean;
   phone_verified: boolean;
+  password_enabled?: boolean;
   workspace_name: string;
 }
 
@@ -57,7 +58,7 @@ export function isContextsResponse(
     && (res as AuthContextsResponse).contexts.length > 0;
 }
 
-// ---- Provider Portal (the ReadyPick owner's view of its customers) ----
+// ---- Provider Portal (the Vivekium owner's view of its customers) ----
 //
 // A "customer" is one onboarded client company. It is the same underlying row
 // the Owner console has always called a tenant, `Tenant` below stays for the
@@ -161,22 +162,6 @@ export interface CustomerListResponse {
 
 // ---- Admin ----
 
-export interface Tenant {
-  id: string;
-  name: string;
-  domain: string;
-  spf_dkim_status?: string;
-  industry?: string | null;
-  culture?: string | null;
-  details?: string | null;
-  client_email?: string;
-  client_phone?: string;
-  client_name?: string | null;
-  client_status?: string | null;
-  staff_count?: number;
-  created_at?: string;
-}
-
 export interface TenantProfile {
   id: string;
   name: string;
@@ -188,12 +173,6 @@ export interface TenantProfile {
   client_name?: string | null;
   client_phone?: string | null;
   editable: boolean;
-}
-
-export interface PermissionEntry {
-  role: string;
-  capability: string;
-  allowed: boolean;
 }
 
 export interface AuditLogEntry {
@@ -233,7 +212,7 @@ export interface StaffMember {
 }
 
 /**
- * Row from GET /admin/bd-users, ReadyPick's own Business Development team.
+ * Row from GET /admin/bd-users, Vivekium's own Business Development team.
  *
  * There is no tenant on this record and there never will be: a BD user is
  * platform staff. `signed_in` is false until Firebase binds an identity on the
@@ -265,14 +244,25 @@ export type ApprovalLevelsConfig = Record<
   ApprovalLevelConfigEntry
 >;
 
-export interface EmailTemplate {
-  id?: string;
-  name: string;
-  subject: string;
-  body: string;
-}
-
 // ---- Jobs ----
+
+/**
+ * GET /jobs/{id}/assessment-retention, and the body of both dispute routes.
+ *
+ * Dates only: no candidate detail and no count of assessed people, because
+ * the route exists precisely where assessment facts are withheld. `message`
+ * is the server's own sentence and is rendered verbatim.
+ */
+export interface AssessmentRetention {
+  state: "live" | "pending_deletion" | "purged";
+  closed_at: string | null;
+  purge_due_at: string | null;
+  purged_at: string | null;
+  dispute_open: boolean;
+  days_remaining: number | null;
+  message: string | null;
+  dispute_reason: string | null;
+}
 
 export interface JobJD {
   description: string;
@@ -315,12 +305,9 @@ export interface Job {
   id: string;
   title: string;
   department: string;
-  /**
-   * Legacy free-text seniority. Superseded 2026-07-28 by the experience band
-   * below and no longer collected on the Create Job form, but still returned
-   * for jobs created before that change.
-   */
-  level: string;
+  // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
+  // free-text seniority any more. The grade and the experience band replaced
+  // it; the column survives in the database as history only.
   /** The experience band this role expects, in years. */
   experience_min_years?: number | null;
   experience_max_years?: number | null;
@@ -514,13 +501,8 @@ export const RATING_GRADES = [
 ] as const;
 export type RatingGrade = (typeof RATING_GRADES)[number];
 
-/** @deprecated Use RATING_GRADES. Kept so older imports keep compiling. */
-export const MATCHING_LABELS = RATING_GRADES;
-export type MatchingLabel = RatingGrade;
-
 export type RatingWordLabel = RatingGrade;
 
-/** One row of the job page's inline candidate table. Carries no numbers. */
 /** The three ways a candidate reaches a job. See `RankedCandidate.source_type`. */
 export type CandidateProcurement = "applied" | "sourced" | "databank";
 
@@ -560,14 +542,22 @@ export interface ValidationAnswer {
   group?: string;
 }
 
-/** One matching category this candidate was ACTUALLY scored on. */
-export interface MatchingCategoryResult {
-  key: string;
-  name: string;
-  comment: string | null;
-  label: RatingGrade | null;
+/** One piece of evidence the resume check found, or a Must-have it did not.
+ *  Mirrors `schemas/ranking.EvidenceTagOut`. `text` is the skill's CURRENT
+ *  name or a short server-vetted phrase; `shown_in_row` is the SERVER's choice
+ *  of which tags fit on the table row (the Details dialog shows them all). */
+export interface EvidenceTag {
+  text: string;
+  polarity: "positive" | "negative";
+  shown_in_row: boolean;
 }
 
+/** What the resume check holds for a row. `legacy` is a grade carried over
+ *  from the retired matcher until AI Matching runs again. */
+export type AiMatchStatus = "pending" | "scored" | "not_assessed" | "legacy";
+
+/** One row of the job page's inline candidate table. Carries no numbers:
+ *  mirrors `schemas/ranking.RankedCandidateOut`, which forbids extra keys. */
 export interface RankedCandidate {
   link_id: string;
   candidate_id: string;
@@ -580,28 +570,38 @@ export interface RankedCandidate {
    */
   reference_code?: string;
   email?: string | null;
-  /** The job's grade as a display label ("Non-managerial", "CXO", ...). */
-  level: string;
   source?: CandidateSource | null;
-  tier?: Tier | null;
   archived_at?: string | null;
   /** The application's Profile. Resumes live in private storage, so this is
    *  the handle the viewer and the download endpoint are keyed on. */
   profile_id?: string | null;
-  resume_url?: string | null;
+  /**
+   * Whether a resume exists, and NOT where it is.
+   *
+   * This replaced `resume_url`, which carried the raw `s3://bucket/key`
+   * object reference. A browser cannot fetch that, so the only thing this
+   * screen ever did with it was ask whether it was truthy, while it handed
+   * every recruiter's browser the bucket name and the object key for nothing.
+   * The resume itself is read through the authorized proxy route, built by
+   * `resumeTabUrl` from `profile_id` plus the two descriptive fields below.
+   */
+  has_resume?: boolean;
   resume_filename?: string | null;
   resume_mime_type?: string | null;
   has_report: boolean;
   report_ready_at?: string | null;
   /** Where this applicant came from (spec §1.1). */
-  application_source?: "direct" | "sourced" | null;
+  application_source?: "direct" | "sourced" | "external_link" | null;
   /** How this candidate was procured. Applied means they came through
-   *  ReadyPick themselves, sourced means a third-party link, databank means
+   *  Vivekium themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
    *  matched and assessed identically; this is display and filtering only. */
   source_type: CandidateProcurement;
   /** Server-rendered display text for `source_type`. */
   source_type_label: string;
+  /** "Databank, not an applicant" / "Sourced, not an applicant" while the
+   *  candidate has not applied, null once they have. Server-worded. */
+  applicant_label?: string | null;
   /** `old` when this application arrived BEFORE the job's current 30-day
    *  posting window, i.e. the job has since been renewed. Presentation and
    *  billing only: an Old Profile is ranked, listed and openable exactly like
@@ -626,36 +626,45 @@ export interface RankedCandidate {
    *  `allowed_transitions`: the labels come from the server, so the UI never
    *  has to hardcode a stage name it might get wrong. */
   allowed_transition_options: TransitionOption[];
-  ranking_status: "not_scored" | "ready";
-  skills_match_comment?: string | null;
-  experience_comment?: string | null;
-  role_alignment_comment?: string | null;
-  education_comment?: string | null;
-  overall_comment?: string | null;
-  skills_match_label?: MatchingLabel | null;
-  experience_label?: MatchingLabel | null;
-  role_alignment_label?: MatchingLabel | null;
-  education_label?: MatchingLabel | null;
-  overall_label?: MatchingLabel | null;
+  /** AI Match (Yukti), words only. The grade word is blended with the Tatva
+   *  Assessment once there is one; null when there is no grade at all, in
+   *  which case `ai_match_status_word` says why ("Not checked yet" /
+   *  "Not assessed"). No score, percentage or rank ever arrives here. */
+  ai_match_status: AiMatchStatus;
+  ai_match_label: RatingGrade | null;
+  ai_match_status_word: string | null;
+  /** Positives first, in the server's order. */
+  evidence_tags: EvidenceTag[];
+  /** Where the grade came from, as server-written sentences. */
+  provenance: string[];
+  /** The skills or the resume changed after the check: a rerun refreshes it. */
+  ai_match_stale: boolean;
   validation_answers: ValidationAnswer[];
-  /** How the assessment was conducted: 'conversational' | 'video_interview',
-   *  or null before any session opens (2026-09-05 dashboard/video spec 4.1). */
-  assessment_mode?: AssessmentMode | null;
-  /** "Video interview" / "Conversational" / "Not started", server-rendered. */
-  assessment_mode_label?: string;
   /** PRISM Report availability word: Available / Processing / Not available. */
   prism_report_status?: string;
   /** Proctoring Report availability word, same vocabulary. */
   proctoring_report_status?: string;
-  /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
-   *  words come from the server so the table never invents a state. */
-  video_status?: string;
+  /** "Within range" / "Above range" / "Below range", or null for "Not
+   *  stated". Derived server-side; nothing here computes a comparison. */
+  ctc_match_label?: string | null;
+  /** The brief's notice bucket ("Immediate", "Within 30 days", ...), or
+   *  null when the candidate stated none. */
+  notice_period_label?: string | null;
+  /** "Match" / "Partial match" / "No match", or null when either the JD or
+   *  the candidate is silent about education. */
+  education_match_label?: string | null;
+  /** Raw derived BGV status ('verified' | 'pending' | ...), for logic. */
+  bgv_status?: string;
+  /** "Done" / "Pending" / "Not Started" / "Not Required" / "Not Confirmed",
+   *  server-worded; detail lives inside the candidate's profile only. */
+  bgv_status_label?: string;
 }
 
 export interface RankedCandidatesResponse {
   job_id: string;
   grade: JobGrade;
-  level: string;
+  /** The one line above the table, written by the server. */
+  ranking_header: string;
   results: RankedCandidate[];
   total: number;
   page: number;
@@ -808,24 +817,7 @@ export const jobCompensation = (
 ): Record<string, unknown> =>
   (job?.compensation ?? job?.compensation_json ?? {}) as Record<string, unknown>;
 
-export interface ApprovalTransition {
-  id?: string;
-  level: string;
-  decision?: "approved" | "rejected" | "skipped" | string;
-  actor?: string | null;
-  actor_name?: string | null;
-  remarks?: string | null;
-  created_at?: string;
-  skipped?: boolean;
-}
-
 // ---- Candidates & matching ----
-
-export type Tier =
-  | "highly_matching"
-  | "moderately_matching"
-  | "matching"
-  | "not_matching";
 
 export type CandidateSource = "fresh" | "databank";
 
@@ -838,126 +830,15 @@ export type PipelineStatus =
   | "pending"
   | string;
 
-export interface CandidateSummary {
-  id: string;
-  full_name: string;
-  email: string;
-  phone?: string | null;
-}
-
-/** Client-safe projection of one stored ranking dimension. */
-export interface MatchComment {
-  comment: string;
-}
-
-/**
- * Comments-only API projection. Numeric ranking values remain server-side.
- */
-export interface MatchBreakdown {
-  skills_match?: MatchComment;
-  experience_relevance?: MatchComment;
-  role_alignment?: MatchComment;
-  education_fit?: MatchComment;
-  overall?: MatchComment;
-  scoring_mode?: string;
-}
-
-export interface CandidateLink {
-  link_id: string;
-  candidate: CandidateSummary;
-  source: CandidateSource;
-  tier?: Tier | null;
-  status?: PipelineStatus | null;
-  current_status?: PipelineStatus | null;  // backend LinkOut field name
-  status_remarks?: string | null;
-  hm_access_granted?: boolean;
-  rationale?: string | null;
-  profile_id?: string | null;
-  breakdown?: MatchBreakdown | null;
-  ranking_status?: "not_scored" | "ready";
-  skills_match_comment?: string | null;
-  experience_comment?: string | null;
-  role_alignment_comment?: string | null;
-  education_comment?: string | null;
-  overall_comment?: string | null;
-  archived_at?: string | null;
-}
-
-export interface MatchingResult {
-  link_id: string;
-  candidate: CandidateSummary;
-  source: CandidateSource;
-  tier: Tier;
-  rationale?: string | null;
-  breakdown?: MatchBreakdown | null;
-}
-
-export interface AspectResponse {
-  aspect_id: number;
-  question?: string;
-  answer: string | number | boolean | null;
-}
-
-export interface VerificationRequest {
-  id: string;
-  employer_email: string;
-  status: string;
-  designation?: string | null;
-  doj?: string | null;
-  doe?: string | null;
-  last_drawn_ctc?: string | null;
-  last_drawn_gross?: string | null;
-  noc_status?: string | null;
-  exit_formalities_complete?: boolean | null;
-  bgv_status?: string | null;
-  proofs_details?: string | null;
-  prior_experience_details?: string | null;
-  overridden?: boolean;
-  override_reason?: string | null;
-}
-
-export interface CandidateProfile {
-  id?: string;
-  candidate: CandidateSummary;
-  profile_id?: string;
-  resume_fields?: {
-    skills?: string[];
-    experience?: unknown;
-    education?: unknown;
-    employment_history?: unknown;
-    [key: string]: unknown;
-  } | null;
-  personal?: {
-    full_name?: string;
-    residing_city?: string;
-    age?: number;
-    gender?: string;
-  } | null;
-  aspects?: AspectResponse[] | null;
-  verification?: VerificationRequest[] | null;
-  resume_url?: string | null;
-  resume_original_filename?: string | null;
-  resume_mime_type?: string | null;
-  parsed_fields_json?: CandidateProfile["resume_fields"];
-  aspects_json?: Record<string, string | number | boolean | null> | null;
-  verification_requests?: VerificationRequest[] | null;
-}
-
 // ---- Portal ----
 
-export interface OutreachRequestInfo {
-  candidate_name?: string;
-  job_title?: string;
-  tenant_name?: string;
-  fields_requested?: string[];
-  aspects?: { id: number; question: string }[];
-}
 
 export interface PortalJob {
   id: string;
   title: string;
   department?: string;
-  level?: string;
+  // No `level`: the portal job payload stopped carrying it (the experience
+  // band and the grade answer that question; the column is history only).
   tenant_name?: string;
   company_name?: string;
   /**
@@ -965,6 +846,11 @@ export interface PortalJob {
    * page is hidden, so the portal never links to a URL that 404s.
    */
   company_slug?: string | null;
+  /** True when this candidate already holds an APPLICATION on the job. A
+   *  recruiter's sourced databank entry is not one. */
+  already_applied?: boolean;
+  /** The application's id when `already_applied`, for the Applied Jobs link. */
+  application_id?: string | null;
   /** Present on the single-job read; the list endpoint may omit it. */
   jd?: Record<string, unknown> | null;
   jd_json?: Record<string, unknown> | null;
@@ -988,23 +874,7 @@ export interface PortalApplication {
 
 // ---- Verification form (public) ----
 
-export interface VerificationFormInfo {
-  candidate_name: string;
-  fields?: string[];
-}
 
-export interface VerificationFormSubmission {
-  designation: string;
-  doj: string;
-  doe: string;
-  last_drawn_ctc: string;
-  last_drawn_gross: string;
-  noc_status: string;
-  exit_formalities_complete: boolean;
-  bgv_status: string;
-  proofs_details: string;
-  prior_experience_details: string;
-}
 
 // ---- Dashboard ----
 
@@ -1048,7 +918,10 @@ export type CreditEventType =
   | "incomplete_assessment"
   | "no_show"
   | "old_profile_review"
-  | "adjustment";
+  | "adjustment"
+  // A credit lot reaching its expiry with sub-units left (2026-09-22, new
+  // grants only). The ledger has written it since then; the type had not.
+  | "expiry";
 
 export interface PricingPlan {
   id: string;
@@ -1116,6 +989,9 @@ export interface CreditSummary {
   average_credits_per_assessment?: number;
   alert_message: string | null;
   unlimited: boolean;
+  /** How long a NEW grant stays spendable. Credits granted before expiry
+   *  was introduced carry no expiry at all (change request 25). */
+  credit_validity_months: number;
 }
 
 export interface CreditLedgerEntry {
@@ -1218,7 +1094,7 @@ export interface ProviderBillingRow {
 }
 
 /**
- * GET /matching/tasks/{task_id}.
+ * GET /matching/jobs/{job_id}/tasks/{task_id}.
  *
  * `stages` is the inline reasoning the job page renders while a run is under
  * way. It is a fixed vocabulary the backend pipeline emits as it reaches each
@@ -1239,6 +1115,10 @@ export interface MatchingTaskStatus {
   /** Counts of candidate ROWS being processed. Never a score or a rank. */
   candidate_count: number;
   scored_count: number;
+  /** True when the run could not do everything it set out to, with the
+   *  server's own sentences saying what. */
+  degraded: boolean;
+  degraded_reasons: string[];
 }
 
 // ---- Proctoring (proctoring spec sections 6 and 7) ----
@@ -1412,22 +1292,39 @@ export interface BgvList {
 
 export type EmailSenderStatus =
   | "pending_verification"
-  | "email_verified"
   | "active"
-  | "verification_expired"
   | "disabled"
-  | "revoked";
+  | "revoked"
+  | "rejected"
+  // Retired with the mailbox OTP on 2026-09-08 and KEPT IN THE UNION, because
+  // rows written before it still carry them. A union missing a value the API
+  // can return makes every consumer of that row a type error or, worse, an
+  // empty render.
+  | "email_verified"
+  | "verification_expired";
 
 export interface EmailSender {
   id: string;
   name: string;
   email: string;
   status: EmailSenderStatus;
+  // Retained for rows verified under the withdrawn mailbox check. Nothing
+  // sets it any more; the provider's own identity verification is the
+  // ownership check now.
   email_verified: boolean;
-  authorized_by: string | null;
   authorized_at: string | null;
   created_at: string;
-  updated_at: string;
+  /** Whether mail would actually leave for this address, asked of the
+   *  provider at read time. Never a stored copy: the answer changes without
+   *  this product being told. */
+  can_send: boolean;
+  /** One plain sentence for the Super Admin. Deliberately carries no AWS
+   *  vocabulary: not SES, not an identity, not DKIM. */
+  sending_detail: string;
+  /** The tenant's ONE default sender: what every email that does not name a
+   *  sender goes out under, the automatic ones included. Only an active
+   *  sender can hold it, and leaving `active` clears it on the server. */
+  is_default: boolean;
 }
 
 export interface EmailSenderList {
@@ -1437,59 +1334,62 @@ export interface EmailSenderList {
 }
 
 /** The code itself is never in a response; it travels only to the mailbox. */
-export interface EmailSenderOtpIssue {
-  sender_id: string;
-  status: EmailSenderStatus;
-  resend_cooldown_seconds: number;
-  expires_in_seconds: number;
+// EmailSenderOtpIssue was REMOVED on 2026-09-08 with the sender mailbox OTP.
+
+// EmailSenderVerifyResult went with it: nothing verifies a code any more.
+
+// ── The single-mode assessment (2026-09-24, Appendix B section 1) ────────────
+//
+// There is one assessment mode. The dual-mode types that lived here (the mode
+// choice, the per-mode consent state and the video interview's question list)
+// are deleted with the screens that used them. A mode is still STORED on old
+// rows, so the recruiter-side payloads that describe a recording carry it as
+// the server's plain string; nothing on the candidate side reads or sends one.
+
+/** The mode a stored session was taken in: "conversational" for every new
+ *  session, "video_interview" only on rows written before 2026-09-24. */
+export type StoredAssessmentMode = string;
+
+/** One consent item, server-authored (vivekium feature 6). The version is the
+ *  wording's, bumped whenever the text changes, and it is stored with the
+ *  tick so a later rewording cannot re-describe an agreement already given. */
+export interface ConsentCatalogueItem {
+  key: string;
+  stage: string;
+  text: string;
+  version: number;
+  /** Whether declining it stops the candidate. The stage says WHEN an item is
+   *  asked; this says what refusing costs. An optional item never blocks. */
+  required: boolean;
 }
 
-export interface EmailSenderVerifyResult {
-  verified: boolean;
-  reason: string;
-  attempts_remaining: number;
-  status: EmailSenderStatus;
+/** A consent item as the candidate's own record shows it: the current wording
+ *  beside what they actually agreed to and when. `wording_current` false means
+ *  their standing consent is to words that have since been replaced. */
+export interface ConsentItemStatus extends ConsentCatalogueItem {
+  consented_at: string | null;
+  consented_version: number | null;
+  wording_current: boolean;
 }
 
-// ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
-
-export type AssessmentMode = "conversational" | "video_interview";
-
-/** One mode's consent terms, exactly as the server will stamp them. */
+/** The assessment's consent terms, exactly as the server will stamp them.
+ *  One text for the one mode; the versions travel with it so the screen shows
+ *  what the server will record. */
 export interface AssessmentConsentTerms {
-  assessment_mode: AssessmentMode;
   text: string;
   consent_version: string;
   privacy_policy_version: string;
   terms_version: string;
+  /** The Stage B per-item catalogue, rendered verbatim on the screen;
+   *  acceptance stamps each item individually server-side. */
+  items?: ConsentCatalogueItem[];
 }
 
-/** Where the session stands in the mode/consent flow. */
-export interface AssessmentModeState {
-  mode: AssessmentMode;
-  mode_frozen: boolean;
+/** GET and POST /assessments/conversations/links/{id}/consent: whether this
+ *  session has been consented to, and the terms that apply to it. */
+export interface AssessmentConsentState {
   consented: boolean;
   consent: AssessmentConsentTerms;
-}
-
-export interface VideoInterviewQuestion {
-  ordinal: number;
-  prompt: string;
-  question: {
-    id: string;
-    question_type: string;
-    payload: Record<string, unknown>;
-    time_allocation_seconds: number;
-  };
-}
-
-export interface VideoInterviewStart {
-  conversation_id: string;
-  recording_id: string;
-  status: string;
-  questions: VideoInterviewQuestion[];
-  max_upload_bytes: number;
-  max_duration_seconds: number;
 }
 
 export interface VideoRecordingStatus {
@@ -1507,7 +1407,7 @@ export interface VideoAccess {
   job_candidate_link_id: string;
   /** Null when no recording exists (every conversational session today). */
   recording_id: string | null;
-  assessment_mode: AssessmentMode | null;
+  assessment_mode: StoredAssessmentMode | null;
   /** "Video interview" / "Conversational" / "Not started". */
   assessment_mode_label: string;
   /** "Ready" / "Processing" / "Failed" / "No recording". */
@@ -1536,11 +1436,94 @@ export interface VideoDelivery {
   filename: string | null;
 }
 
+// ── In-product support (2026-09-10) ─────────────────────────────────────────
+//
+// Two audiences, one conversation. `SupportThread` is what a customer sees of
+// their own thread; `ProviderSupportThread` adds the fact Vivekium staff need
+// and the customer already knows, which is WHOSE thread it is.
+//
+// The status names WHO OWES THE NEXT MOVE, which is the only thing a support
+// queue is ever sorted by. "awaiting_customer" rather than "pending" so a
+// reader cannot get the direction backwards.
+
+export type SupportThreadStatus = "open" | "awaiting_customer" | "resolved";
+
+export type SupportMessageSide = "customer" | "staff";
+
+export interface SupportMessage {
+  id: string;
+  /** Stored at write time, never re-derived from the author's current role. */
+  author_side: SupportMessageSide;
+  /** Null once the author's account is gone. Rendered as an absence, never as
+   *  "Deleted user", which is a claim about what happened to them. */
+  author_name: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SupportThread {
+  id: string;
+  subject: string;
+  status: SupportThreadStatus;
+  created_at: string;
+  last_message_at: string;
+  /** Operational: about a queue, never about a person. */
+  message_count: number;
+}
+
+export interface SupportThreadDetail extends SupportThread {
+  messages: SupportMessage[];
+}
+
+export interface ProviderSupportThread extends SupportThread {
+  tenant_id: string;
+  tenant_name: string;
+  /** The first staff member who replied. Claimed by replying; there is no
+   *  separate claim action. */
+  assigned_to: string | null;
+  assigned_to_name: string | null;
+}
+
+export interface ProviderSupportThreadDetail extends ProviderSupportThread {
+  messages: SupportMessage[];
+}
+
+export interface SupportThreadPage {
+  items: SupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface ProviderSupportThreadPage {
+  items: ProviderSupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  /** Threads waiting on Vivekium across every customer, UNNARROWED by the
+   *  page filters: it answers how much is owed, not how much is on screen. */
+  open_total: number;
+}
+
 // ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----
 
-/** not_generated | generated | failed | edited. */
+/**
+ * not_generated | generating | generated | failed | edited.
+ *
+ * `generating` (Vivekium release, Phase 1): generation is DISPATCHED work now,
+ * so the document says it is being drafted and the panel polls. A draft that
+ * outlives the server's stale window is served as `failed`, never as
+ * generating for ever.
+ */
 export type SwotAnalysisStatus =
   | "not_generated"
+  | "generating"
   | "generated"
   | "failed"
   | "edited";
@@ -1562,6 +1545,13 @@ export interface SwotAnalysis {
   last_modified_by_name: string | null;
   version: number;
   can_restore_previous: boolean;
+  /**
+   * True when the saved SWOT is newer than the version the skills were drafted
+   * from and the skills are not locked. The panel offers "Re-draft skills from
+   * the updated SWOT"; nothing is re-drafted without that click. Absent on a
+   * backend that predates the Skills step.
+   */
+  skills_redraft_available?: boolean;
   /**
    * The effective answer for this user on THIS job: the capability AND the
    * assignment scope AND the lifecycle state, resolved server-side by the same

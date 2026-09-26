@@ -73,6 +73,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import bgv_workflow
+
 SOURCED = "sourced"
 APPLIED = "applied"
 ASSESSMENT_INVITED = "assessment_invited"
@@ -88,6 +90,11 @@ HOLD = "hold"
 
 #: Legacy synonym retained so historic rows stay readable. Normalised on read.
 OFFERED = "offered"
+
+#: The stages that ARE a selection. Both, because `offered` is a legacy synonym
+#: that historic rows still carry and a gate that knew only the canonical name
+#: would be a gate with a documented way around it.
+OFFER_STAGES: frozenset[str] = frozenset({OFFER_EXTENDED, OFFERED})
 
 #: Display order — the pipeline view groups candidates by this sequence.
 PIPELINE_ORDER: tuple[str, ...] = (
@@ -237,7 +244,33 @@ def can_transition(current: str | None, target: str) -> bool:
 # The API now returns the allowed manual set (GET /pipeline/applications/{id}
 # /transitions and every candidate row), so this rule lives in one place and
 # the UI never hardcodes a stage list of its own.
-MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED})
+#
+# `assessment_in_progress` is withdrawn too (Vivekium release, stage 2
+# integration, from PLAN-p3 WP1). It promises that the candidate has OPENED
+# the assessment, and it has a system writer that keeps that promise: the
+# start routes move the application when the session begins. A hand move to
+# it claimed a started session that did not exist. `api/pipeline.change_status`
+# refuses it as a target, not only the dropdown. `assessment_completed` went
+# the same way in Phase 5 (WP5-D): it promises that a PRISM Report exists, and
+# the report's one writer (`assessment_pipeline.persistence.
+# mark_assessment_completed`) moves the application in the same transaction
+# as the insert. A hand move claimed a report that did not exist.
+MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset(
+    {SHORTLISTED, ASSESSMENT_IN_PROGRESS, ASSESSMENT_COMPLETED}
+)
+
+#: Targets `api/pipeline.change_status` refuses outright, because a system
+#: writer owns them and a hand move would claim an event that did not happen.
+SYSTEM_ONLY_TARGETS: frozenset[str] = frozenset(
+    {ASSESSMENT_IN_PROGRESS, ASSESSMENT_COMPLETED}
+)
+
+#: The sentence a refused hand move to a system-only target answers with.
+SYSTEM_ONLY_REFUSAL = (
+    "An application moves to Assessment in progress when the candidate opens "
+    "the assessment, and to Assessment completed when its PRISM Report is "
+    "written. Neither can be set by hand."
+)
 
 
 def manual_transitions(current: str | None) -> frozenset[str]:
@@ -329,6 +362,38 @@ async def apply_transition(
 
     previous = normalize(row["status"])
     status = assert_transition(previous, target)
+
+    # ── THE BACKGROUND-VERIFICATION GATE ─────────────────────────────────────
+    #
+    # Here, and not in a route, for the reason the Updates feed row is written
+    # here: this function has six callers and a rule enforced at one of them is
+    # a rule the other five do not have. A recruiter can reach an offer from
+    # the pipeline board, the dashboard, the job page and the portal, and every
+    # one of those paths arrives at this line.
+    #
+    # BEFORE ANY WRITE. A refusal that had already moved the status would have
+    # blocked the email while recording the promotion, which is the worst of
+    # both: the candidate reads as offered and never hears from anyone.
+    #
+    # Only the offer stages. Rejection is deliberately NOT gated: refusing to
+    # let a recruiter reject somebody until their previous employers have
+    # replied would hold a candidacy open for a decision that has been made,
+    # and BGV exists to check a hire, not to prolong one.
+    if status in OFFER_STAGES:
+        blocked = await bgv_workflow.offer_blocked(
+            session,
+            tenant_id=tenant_id,
+            candidate_id=uuid.UUID(str(row["candidate_id"])),
+        )
+        if blocked is not None:
+            raise bgv_workflow.BGVIncomplete(
+                blocked,
+                await bgv_workflow.candidate_status(
+                    session,
+                    tenant_id=tenant_id,
+                    candidate_id=uuid.UUID(str(row["candidate_id"])),
+                ),
+            )
     label = STAGE_LABELS.get(status, status.replace("_", " ").title())
 
     await session.execute(
@@ -355,6 +420,33 @@ async def apply_transition(
         },
     )
     await _record_candidate_update(session, link_id=link_id, status=status)
+    # ── THE SECOND SHORTLIST TRIGGER ─────────────────────────────────────────
+    #
+    # The specification's event map, wiring 2: "Shortlisting fires two parallel
+    # triggers: assessment start AND the BGV email. Neither waits for the
+    # other." Here for the same reason the gate above and the feed row are
+    # here: six callers reach this function, and a trigger wired into one route
+    # is a trigger the other five do not have.
+    #
+    # AFTER the writes, never before. A verification opened against a stage
+    # change that then failed would email a previous employer about a shortlist
+    # that did not happen.
+    #
+    # `on_shortlist` NEVER RAISES and runs each employer inside its own
+    # savepoint, so a BGV failure cannot fail the move and cannot poison this
+    # transaction; a fresher falls out of its first branch and nothing is sent.
+    if status == SHORTLISTED:
+        from app.services import bgv_autostart  # noqa: PLC0415 -- cyclic at module scope
+
+        await bgv_autostart.on_shortlist(
+            session,
+            tenant_id=tenant_id,
+            candidate_id=uuid.UUID(str(row["candidate_id"])),
+            link_id=link_id,
+            job_id=uuid.UUID(str(row["job_id"])) if row["job_id"] else None,
+            actor_user_id=actor_user_id,
+            now=now,
+        )
     # A FOURTH write, and the same chokepoint argument as the feed row above:
     # a stage that IS a section 5.1 lifecycle milestone (interview completed,
     # offer extended, joined) emits its telemetry event here so none of the
@@ -385,6 +477,66 @@ async def apply_transition(
         stage_label=label,
         email_type=TRANSITION_EMAIL.get(status),
         changed_at=now,
+    )
+
+
+async def start_sourced(
+    session: AsyncSession,
+    link: Any,
+    *,
+    actor_user_id: uuid.UUID | None = None,
+    remarks: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Enter a link the recruitment team or AI Matching CREATED at `sourced`.
+
+    The one way a non-applicant enters a job (audit Part 1 #5). Three callers
+    make such a link: the databank bulk upload, the single recruiter upload and
+    the matching run's databank discovery. Each used to set the mirror by hand
+    or not at all, so a link the matcher minted read `applied` (the column
+    default) and none of the three wrote the `pipeline_status` row the rest of
+    this module treats as authoritative. Here, the same two writes
+    `apply_transition` makes, for the one stage that is ENTERED rather than
+    reached: there is no previous status, so there is no transition to assert.
+
+    CREATION ONLY. `link` must be new in this session (transient or pending):
+    a link that already exists has a stage, and moving it is a transition,
+    which is `apply_transition`'s job and has its own rules. The caller's
+    transaction commits both writes; nothing is committed here.
+
+    No Updates feed row, deliberately: `sourced` is not an event the candidate
+    caused (the 2026-09-04 rule), and `candidate_updates.for_stage` has no
+    entry for it.
+    """
+    from sqlalchemy import inspect as sa_inspect  # noqa: PLC0415
+
+    state = sa_inspect(link)
+    if not (state.transient or state.pending):
+        raise ValueError(
+            f"link {getattr(link, 'id', None)} already exists: start_sourced "
+            "only enters a link being created; move an existing one with "
+            "apply_transition"
+        )
+    now = now or datetime.now(timezone.utc)
+    link.status = SOURCED
+    link.status_updated_at = now
+    link.current_stage = STAGE_LABELS[SOURCED]
+    session.add(link)
+    await session.flush()
+    await session.execute(
+        text(
+            "INSERT INTO pipeline_status "
+            "(id, tenant_id, job_candidate_link_id, status, remarks, set_by, at) "
+            "VALUES (gen_random_uuid(), :tid, :lid, :status, :remarks, :actor, :at)"
+        ),
+        {
+            "tid": str(link.tenant_id),
+            "lid": str(link.id),
+            "status": SOURCED,
+            "remarks": remarks,
+            "actor": str(actor_user_id) if actor_user_id else None,
+            "at": now,
+        },
     )
 
 
@@ -514,7 +666,7 @@ async def timeline(session: AsyncSession, link_id: uuid.UUID) -> list[dict[str, 
 # This module already had a validated ten-value pipeline, and it is the one
 # production rows sit in. So there are three vocabularies:
 #
-#   1. RBAC 17's JOB lifecycle          8 states, on `jobs`
+#   1. RBAC 17's JOB lifecycle          6 states, on `jobs`
 #   2. The Dashboard's CANDIDATE stages 6 coarse stages, presentation only
 #   3. This module's PIPELINE_ORDER    10 stages + `offered`, on
 #                                       `job_candidate_links.status` and
@@ -543,11 +695,16 @@ class JobLifecycleState(str, Enum):
     draws as one terminal box. This product already archives a job with
     `jobs.archived_at` and closes one by the end of its 30-day posting window,
     so the two are recorded there and this is the single terminal state.
+
+    SIX STATES, NOT EIGHT (Vivekium release). The two approval-chain states
+    between DRAFT and FINALIZED are DELETED with the routes that wrote them:
+    one of them had a single writer nobody called, the other had none at all.
+    DRAFT goes to FINALIZED through Save Skills (`services/skills.save`), which
+    is the record that the Hiring-Manager-controlled components exist.
+    Migration 0119 tightens `ck_jobs_lifecycle_state` to exactly these values.
     """
 
     DRAFT = "DRAFT"
-    SENT_TO_HIRING_MANAGER = "SENT_TO_HIRING_MANAGER"
-    IN_REVIEW = "IN_REVIEW"
     FINALIZED = "FINALIZED"
     PUBLISHED = "PUBLISHED"
     CANDIDATE_APPLICATIONS = "CANDIDATE_APPLICATIONS"
@@ -558,8 +715,6 @@ class JobLifecycleState(str, Enum):
 #: 17's order, which is also the legal forward path.
 JOB_LIFECYCLE_ORDER: tuple[JobLifecycleState, ...] = (
     JobLifecycleState.DRAFT,
-    JobLifecycleState.SENT_TO_HIRING_MANAGER,
-    JobLifecycleState.IN_REVIEW,
     JobLifecycleState.FINALIZED,
     JobLifecycleState.PUBLISHED,
     JobLifecycleState.CANDIDATE_APPLICATIONS,
@@ -569,14 +724,9 @@ JOB_LIFECYCLE_ORDER: tuple[JobLifecycleState, ...] = (
 
 #: States in which the role definition is still being drafted. RBAC 24***
 #: limits the Recruiter's JD editing to exactly these, and 19 describes the
-#: Hiring Manager working inside them.
-DRAFTING_STATES: frozenset[str] = frozenset(
-    {
-        JobLifecycleState.DRAFT.value,
-        JobLifecycleState.SENT_TO_HIRING_MANAGER.value,
-        JobLifecycleState.IN_REVIEW.value,
-    }
-)
+#: Hiring Manager working inside them. One state since the approval chain
+#: went (Vivekium release); kept a SET so every reader stays unchanged.
+DRAFTING_STATES: frozenset[str] = frozenset({JobLifecycleState.DRAFT.value})
 
 #: FINALIZED and everything after it. 21 makes this the precondition for
 #: publication and 22 makes it the point after which criteria stop being
@@ -595,9 +745,7 @@ FINALIZED_OR_LATER: frozenset[str] = frozenset(
 #: candidate pipeline does: a job is archived, which is CLOSED_ARCHIVED, and
 #: that is reachable from anywhere.
 _LIFECYCLE_FORWARD: dict[JobLifecycleState, frozenset[JobLifecycleState]] = {
-    JobLifecycleState.DRAFT: frozenset({JobLifecycleState.SENT_TO_HIRING_MANAGER}),
-    JobLifecycleState.SENT_TO_HIRING_MANAGER: frozenset({JobLifecycleState.IN_REVIEW}),
-    JobLifecycleState.IN_REVIEW: frozenset({JobLifecycleState.FINALIZED}),
+    JobLifecycleState.DRAFT: frozenset({JobLifecycleState.FINALIZED}),
     JobLifecycleState.FINALIZED: frozenset({JobLifecycleState.PUBLISHED}),
     JobLifecycleState.PUBLISHED: frozenset({JobLifecycleState.CANDIDATE_APPLICATIONS}),
     JobLifecycleState.CANDIDATE_APPLICATIONS: frozenset(

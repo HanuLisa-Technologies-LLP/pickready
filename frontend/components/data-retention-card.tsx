@@ -2,7 +2,7 @@
 
 // Data retention choices on My Profile (Consent & Privacy spec, 2026-09-05).
 //
-// Two consents, each answering one plain question: may ReadyPick keep this
+// Two consents, each answering one plain question: may Vivekium keep this
 // record for FUTURE jobs, or for this job only? A choice that was never made
 // is treated exactly like "this job only", the safe direction, and the card
 // says so rather than letting an off toggle silently stand in for an answer.

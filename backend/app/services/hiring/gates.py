@@ -1,6 +1,6 @@
 """G1-G4: the four pipeline gates, as real checks (spec-doc5 §A.5, Runbook §56).
 
-    G1  SCORECARD APPROVED    before evaluation can run at all
+    G1  CONTRACT LOCKED       before evaluation can run at all
     G2  EVIDENCE SUFFICIENCY  checked at aggregation
     G3  INTEGRITY             authenticity / contradiction, at aggregation
     G4  HUMAN REVIEW          disposition recorded before delivery
@@ -44,9 +44,12 @@ do on its own.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from app.services.verification import base as verification
+
+if TYPE_CHECKING:
+    from app.services.assessment_contract import AssessmentContract
 
 __all__ = [
     "G1",
@@ -55,6 +58,7 @@ __all__ = [
     "G4",
     "GATES",
     "GateResult",
+    "contract_gate",
     "scorecard_gate",
     "evidence_sufficiency_gate",
     "integrity_gate",
@@ -115,7 +119,65 @@ class GateResult:
         )
 
 
-# ── G1: the scorecard must be approved ───────────────────────────────────────
+# ── G1: the assessment contract must be locked ───────────────────────────────
+
+
+def contract_gate(contract: "AssessmentContract | None") -> GateResult:
+    """GATE G1 FOR GRADING, asked of the LOCKED ASSESSMENT CONTRACT. Blocking.
+
+    Miti (the sole grading authority since the Vivekium release, WP5-B) asks
+    this and nothing else before it grades. The contract a candidate was
+    assessed against is the snapshot their conversation is bound to
+    (`assessment_contract.load_contract_for_conversation`, which also refuses a
+    stored digest that disagrees with the snapshot), and it must be:
+
+      * LOCKED, with a lock time: a snapshot row exists. An unlocked contract
+        is the live rows, which may change after the candidate answered;
+        grading against it is grading against criteria nobody froze. When
+        scoring runs a conversation exists by definition, so an unlocked
+        contract here is an upstream defect and it refuses rather than reading
+        around it;
+      * non-empty, with at least one Must-have and one Behavioural skill, the
+        same floor the Skills step enforces at save.
+
+    Pure: the contract is a frozen value, so the verdict is reproducible from
+    the evaluation record alone. THE TABLE FIRST, THE STAMP SECOND is kept in
+    the form this gate can state it: a lock with no skills in it refuses.
+    """
+    from app.services.assessment_contract import BUCKET_BEHAVIOURAL, BUCKET_MUST_HAVE
+
+    reasons: list[str] = []
+    if contract is None:
+        reasons.append("No assessment contract was loaded, so nothing can be graded.")
+        return GateResult(G1, False, blocking=True, reasons=tuple(reasons))
+    if not contract.locked or contract.locked_at is None:
+        reasons.append(
+            "The assessment contract is not locked. A candidate is graded only "
+            "against the skills snapshot their assessment started under."
+        )
+    buckets = {skill.bucket for skill in contract.skills}
+    if not contract.skills:
+        reasons.append(
+            "The assessment contract has no skills. A stamp is not evidence that "
+            "work happened; the gate reads the contract."
+        )
+    else:
+        if BUCKET_MUST_HAVE not in buckets:
+            reasons.append("The assessment contract has no Must-have skill.")
+        if BUCKET_BEHAVIOURAL not in buckets:
+            reasons.append("The assessment contract has no Behavioural skill.")
+    return GateResult(G1, not reasons, blocking=True, reasons=tuple(reasons))
+
+
+# ── G1, matrix form: RETIRING ────────────────────────────────────────────────
+#
+# `scorecard_gate` is the frozen-MATRIX form of G1. Grading no longer asks it
+# (Miti asks `contract_gate` above); its one remaining caller is
+# `hiring.scorecard.require_frozen_matrix`, which question generation still
+# reaches until the assessment phase moves it onto the contract. PLAN-p1
+# section 7 schedules the deletion of both together, with the scorecard read
+# half. Kept here, beside the gate that replaces it, so there is exactly one
+# module where G1 is stated.
 
 
 def scorecard_gate(
@@ -320,7 +382,7 @@ def run_gate(name: str, **kwargs: Any) -> GateResult:
     #: unannotated literal widens to `object` and the `handler(**kwargs)` call
     #: below becomes a call on an unknown type under `mypy --strict`.
     handlers: dict[str, Callable[..., GateResult]] = {
-        G1: scorecard_gate,
+        G1: contract_gate,
         G2: evidence_sufficiency_gate,
         G3: integrity_gate,
         G4: human_review_gate,

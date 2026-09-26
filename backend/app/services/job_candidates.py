@@ -1,38 +1,36 @@
-"""Ranked candidate list for the job detail page (2026-07-27 spec §2).
+"""Ranked candidate list for the job detail page.
 
-The candidate table lives INLINE on the job page — there is no separate review
-screen — so this service owns the one thing that page cannot do for itself:
-deciding the order.
+The candidate table lives INLINE on the job page, so this service owns the one
+thing that page cannot do for itself: deciding the order, and saying in words
+what each row's AI Match is.
 
 WHY THE SORT IS SERVER-SIDE
 ---------------------------
 The table is paginated at 25 rows. If the browser sorted each page, a candidate
 could appear on two pages (or on none) as soon as scores changed between
 requests, because page 2 would be cut from a differently-ordered list than page
-1. Ordering therefore happens once, in SQL, with a total order — including an
-explicit tiebreak — so page boundaries are stable.
+1. Ordering therefore happens once, in SQL, with a total order, including an
+explicit tiebreak, so page boundaries are stable.
 
-THE GRADE-DRIVEN ORDER (spec §2.3)
-----------------------------------
-  non_managerial : skills -> experience -> behavioural
-  everything else: skills -> behavioural -> experience
+ONE KEY, DERIVED AT READ TIME (Vivekium release, Phase 2)
+---------------------------------------------------------
+The order is `yukti.ranking.order_by_sql()`: Yukti's pre-assessment score,
+blended with the Tatva Assessment's overall once a report exists (the tenant's
+ratio, 70/30 by default), capped AFTER the blend when a Must-have failed, then
+arrival, then id. It SUPERSEDES both earlier orders: the grade-driven resume
+keys read out of `match_breakdown_json` (which a renamed category silently
+turned into NULL for every row) and the 2026-09-04 "assessed first, stage
+before score" rule (owner decision D2: one blended key, so an assessed
+candidate can sit below a strong resume when the assessment went badly).
 
-The reasoning is the spec's: for an individual contributor, demonstrated
-experience separates two candidates with similar skills; at managerial grade
-and above, how someone works with people matters more than another year of it.
+The key is never stored and never serialized. `ranked_candidates` selects it
+as `rank_score` only so `yukti.projection` can turn it into one of the four
+grade words; nothing numeric reaches the payload (D3, no exception).
 
-THE THREE SORT KEYS
--------------------
-`skills` and `experience` come from `job_candidate_links.match_breakdown_json`,
-written by the matching pipeline. The behavioural key is NOT stored on the link
-— it is the mean of the report's PPI Behavioural Competency scores, so it is
-derived here from `report_dimensions`. A candidate with no report yet sorts
-last on that key rather than being dropped: retrieval and scoring state must
-never decide who is *visible* (claude.md — every linked candidate is scored,
-and every linked candidate is listed).
-
-NUMBERS NEVER LEAVE THIS MODULE. The scores above are ORDER BY inputs only; the
-payload this service returns carries word labels and comments exclusively.
+Every linked candidate is LISTED, whatever Yukti holds for them: a pending or
+not-assessed row has no key and sorts last, it is never filtered out
+(claude.md: every linked candidate is scored, and every linked candidate is
+listed).
 """
 from __future__ import annotations
 
@@ -44,65 +42,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import assessment_video_access as video_access
-from app.services.matching import ranking_payload
+from app.services.yukti import projection, ranking
 
-#: Spec §2.4 — 25 rows per page.
+#: Spec section 2.4: 25 rows per page.
 PAGE_SIZE = 25
 
 #: Maximum page size a caller may request. Bounded so a hand-crafted
 #: `?page_size=100000` cannot turn one request into a full-table scan.
 MAX_PAGE_SIZE = 100
-
-#: SQL fragments for the three sort keys. Kept as named pieces so
-#: `order_by_clause` composes them rather than concatenating raw strings from
-#: caller input — nothing user-supplied ever reaches the ORDER BY.
-_SORT_KEYS: dict[str, str] = {
-    "skills": "(l.match_breakdown_json->'skills_match'->>'score')::float",
-    "experience": "(l.match_breakdown_json->'experience_relevance'->>'score')::float",
-    "behavioural": "pfi.pfi_score",
-}
-
-# ── The final ranking (workflow sections 43 and 44) ──────────────────────────
-#
-# THE PRE-ASSESSMENT ORDER IS NOT THE FINAL ORDER, AND THIS IS WHERE THAT
-# BECOMES TRUE. The three keys above are all read from the RESUME stage: two
-# come out of `match_breakdown_json`, which Yukti computes from a document the
-# candidate wrote, and the third from report dimensions. Ordered by those alone,
-# a candidate who ranked first on their resume ranks first for ever, and the
-# assessment -- the only evidence in the product that was actually observed --
-# moves nobody. The workflow document is explicit that it must: "a candidate who
-# ranked highly before assessment can move down".
-#
-# So the order is STAGE first, then the strongest evidence available at that
-# stage:
-#
-#   1. has a delivered report          the assessed shortlist, on top
-#   2. that report's overall score     the final ranking, among the assessed
-#   3. the grade's resume keys         the pre-assessment ranking, below it,
-#                                      and the tie-break above it
-#
-# STAGE FIRST, RATHER THAN ONE BLENDED NUMBER. An assessment score and a resume
-# similarity score are not on the same scale, so any fixed weighting between
-# them is a number nobody can justify and everybody eventually tunes by feel --
-# the identical argument `services/rag/fusion` makes for reading ORDER rather
-# than mixing a cosine distance with a `ts_rank`. Reading stage first also
-# matches what a recruiter is actually doing: the assessed list is the decision
-# list, and the unassessed pool below it is the list still to be worked through.
-#
-# `overall_score` is INTERNAL, like every other key here. It is an ORDER BY
-# input; the payload carries the four grade words and never the number.
-_ASSESSED_KEY = "(rep.synthesized_at IS NOT NULL)"
-_ASSESSMENT_SCORE_KEY = "rep.overall_score"
-
-#: Grade -> ordered sort-key names.
-_GRADE_SORT_ORDER: dict[str, tuple[str, ...]] = {
-    "non_managerial": ("skills", "experience", "behavioural"),
-    "managerial": ("skills", "behavioural", "experience"),
-    "leadership": ("skills", "behavioural", "experience"),
-    "cxo": ("skills", "behavioural", "experience"),
-}
-
-_DEFAULT_SORT = _GRADE_SORT_ORDER["managerial"]
 
 # ── Old Profiles vs New Profiles (spec §4.2) ─────────────────────────────────
 # Renewing an expired job restamps `jobs.posting_start_date`, which opens a new
@@ -176,7 +123,7 @@ ARRIVALS: tuple[str, ...] = (ARRIVAL_NEW, ARRIVAL_CONSIDERED)
 def profile_age(link_created_at, posting_start) -> str:
     """Pure counterpart of `_PROFILE_AGE_SQL`, for callers holding the values.
 
-    The two MUST agree — a row the SQL calls old and this function calls new
+    The two MUST agree: a row the SQL calls old and this function calls new
     would be billed at one rate and labelled at another.
     """
     if link_created_at is None or posting_start is None:
@@ -190,7 +137,11 @@ def profile_age(link_created_at, posting_start) -> str:
     return PROFILE_AGE_OLD if left < right else PROFILE_AGE_NEW
 
 
-#: Human labels for the Level column. Never shown as a raw enum value.
+#: Display labels for a job grade. The ranked table no longer shows a "Level"
+#: column (a grade belongs to the job, not to a candidate), but the label is
+#: still how a prompt or a job summary names the grade, and four modules read
+#: it from here (`hiring/sutra`, `swot_analysis`, `job_relevance`,
+#: `yukti/inputs`), so it stays in this one place.
 GRADE_LABELS: dict[str, str] = {
     "non_managerial": "Non-managerial",
     "managerial": "Managerial",
@@ -205,45 +156,13 @@ def grade_label(grade: str | None) -> str:
     return GRADE_LABELS.get(grade or "non_managerial", GRADE_LABELS["non_managerial"])
 
 
-def sort_keys_for_grade(grade: str | None) -> tuple[str, ...]:
-    """The ordered sort-key names for `grade`. Pure; unit-tested directly."""
-    return _GRADE_SORT_ORDER.get(grade or "non_managerial", _DEFAULT_SORT)
-
-
-def order_by_clause(grade: str | None) -> str:
-    """Build the ORDER BY body for `grade`.
-
-    Two stages, in this order: the assessed candidates ranked by their
-    assessment, then everyone else ranked by their resume. See the note above
-    `_ASSESSED_KEY` for why stage comes first and why the two are not blended
-    into one number.
-
-    Every key is DESC NULLS LAST so an unscored candidate sinks rather than
-    floating to the top on a NULL. The trailing `l.created_at, l.id` is what
-    makes the order TOTAL: without it, two candidates with identical scores
-    could swap places between page 1 and page 2 and one of them would vanish
-    from the paginated result.
-
-    The resume keys stay BELOW the assessment keys rather than being dropped
-    once a report exists. They are the whole order for the unassessed pool, and
-    among the assessed they break a tie between two identical assessment
-    scores, which is a real and common case on a four-band scale.
-    """
-    parts = [f"{_ASSESSED_KEY} DESC", f"{_ASSESSMENT_SCORE_KEY} DESC NULLS LAST"]
-    parts.extend(
-        f"{_SORT_KEYS[key]} DESC NULLS LAST" for key in sort_keys_for_grade(grade)
-    )
-    parts.extend(["l.created_at ASC", "l.id ASC"])
-    return ", ".join(parts)
-
-
 def normalize_page(page: int | None, page_size: int | None) -> tuple[int, int]:
     """Coerce caller pagination into a safe (page, page_size).
 
-    Pages are 1-INDEXED (spec §2.4 asks for one convention, consistently
+    Pages are 1-INDEXED (spec section 2.4 asks for one convention, consistently
     applied; 1-indexed is what the UI shows, so the API speaks the same
     language). Anything below 1, or a page size outside 1..MAX_PAGE_SIZE, is
-    clamped rather than rejected — a bad page number should not 422 a table.
+    clamped rather than rejected: a bad page number should not 422 a table.
     """
     resolved_page = max(1, page if page is not None else 1)
     # `is None` rather than `or`: 0 is a VALUE (clamp it to 1), not an absence
@@ -265,6 +184,12 @@ class RankedPage:
     #: point of the section is that these people are not on the page a
     #: recruiter is looking at.
     new_candidate_count: int = 0
+    #: Whether anybody in the table (under the same archive filter) has an
+    #: assessment overall, which decides the header sentence. Over the table
+    #: rather than this page, so the sentence does not change between pages.
+    has_assessed: bool = False
+    #: The one line above the table, from `yukti.ranking.header_sentence`.
+    ranking_header: str = ranking.HEADER_RESUME_ONLY
 
     @property
     def total_pages(self) -> int:
@@ -282,7 +207,7 @@ class RankedPage:
 
     @property
     def range_start(self) -> int:
-        """1-indexed index of the first row on this page (0 when empty) — the
+        """1-indexed index of the first row on this page (0 when empty), the
         "Showing X-Y of Z" header."""
         return 0 if not self.rows else (self.page - 1) * self.page_size + 1
 
@@ -291,30 +216,9 @@ class RankedPage:
         return 0 if not self.rows else self.range_start + len(self.rows) - 1
 
 
-# The behavioural key: mean PPI Behavioural Competency score per link. Computed
-# in a CTE so a candidate with no report LEFT JOINs to NULL and sorts last,
-# instead of being filtered out of the table entirely.
-#
-# `behavioural` is the PPI category (2026-07-30). `behavioral` is the retired
-# PFI spelling and is still matched, because reports written before the PPI
-# release carry it and would otherwise silently sort to the bottom of every
-# list as though the candidate had never been assessed.
-_PFI_CTE = """
-    WITH pfi AS (
-        SELECT r.job_candidate_link_id AS link_id,
-               AVG(d.score)::float     AS pfi_score
-        FROM functional_skills_reports r
-        JOIN report_dimensions d
-          ON d.report_id = r.id AND d.category IN ('behavioural', 'behavioral')
-        GROUP BY r.job_candidate_link_id
-    )
-"""
-
-
 async def ranked_candidates(
     session: AsyncSession,
     job_id: uuid.UUID,
-    grade: str | None,
     *,
     page: int | None = 1,
     page_size: int | None = PAGE_SIZE,
@@ -322,16 +226,21 @@ async def ranked_candidates(
     profile_age_filter: str | None = None,
     arrival_filter: str | None = None,
 ) -> RankedPage:
-    """One page of the job's candidate table, ordered per `grade`.
+    """One page of the job's candidate table, in `yukti.ranking` order.
 
-    Archived applications are excluded by default — an archived row is not part
-    of the ranking the recruiter is working through — but can be included for
+    Archived applications are excluded by default (an archived row is not part
+    of the ranking the recruiter is working through) but can be included for
     the audit view.
 
     `profile_age_filter` narrows to Old or New Profiles, and `arrival_filter`
     to the New Candidates section (workflow section 32) or to everything else.
     Both are validated against a module constant rather than interpolated, so
     nothing caller-supplied ever reaches the SQL text.
+
+    The job's skills and contract digest are read ONCE for the page
+    (`projection.job_skills_view`), never per row: a tag's text is the skill's
+    CURRENT name, and a row is out of date when the digest moved after it was
+    read.
     """
     resolved_page, resolved_size = normalize_page(page, page_size)
     offset = (resolved_page - 1) * resolved_size
@@ -362,9 +271,18 @@ async def ranked_candidates(
                     -- count narrowed by the same filter could never do.
                     COUNT(*) FILTER (
                         WHERE COALESCE({_NEW_CANDIDATE_SQL}, FALSE) {archived_filter}
-                    ) AS newly_arrived
+                    ) AS newly_arrived,
+                    -- Anybody in the table with an assessment overall: the
+                    -- header then describes the blended order, not a resume
+                    -- check. Not narrowed by the page filters either, so the
+                    -- sentence above the table does not change with them.
+                    COUNT(*) FILTER (
+                        WHERE rep.overall_score IS NOT NULL {archived_filter}
+                    ) > 0 AS has_assessed
                 FROM job_candidate_links l
                 JOIN jobs j ON j.id = l.job_id
+                LEFT JOIN functional_skills_reports rep
+                       ON rep.job_candidate_link_id = l.id
                 WHERE l.job_id = :job_id
                 """
             ),
@@ -372,27 +290,69 @@ async def ranked_candidates(
         )
     ).one()
     total, new_candidate_count = int(counts[0]), int(counts[1])
+    has_assessed = bool(counts[2])
+    # The ratio belongs to the JOB's tenant, read once for the header even
+    # when the table is empty.
+    weight_pct = (
+        await session.execute(
+            text(
+                "SELECT t.yukti_assessment_weight_pct FROM jobs j "
+                "JOIN tenants t ON t.id = j.tenant_id WHERE j.id = :job_id"
+            ),
+            {"job_id": str(job_id)},
+        )
+    ).scalar_one()
 
-    # `order_by_clause` is composed only from module constants keyed by the
-    # job's own grade — no caller input reaches the SQL text. Values are bound.
+    # Every fragment of the SQL text below is a module constant or a filter
+    # chosen from one; no caller input reaches it. Values are bound.
     rows = (
         await session.execute(
             text(
                 f"""
-                {_PFI_CTE}
                 SELECT
                     l.id                    AS link_id,
                     l.candidate_id          AS candidate_id,
                     l.profile_id            AS profile_id,
                     l.source                AS source,
-                    l.tier                  AS tier,
                     l.status                AS status,
                     l.status_updated_at     AS status_updated_at,
                     l.application_source    AS application_source,
                     l.source_type           AS source_type,
                     l.archived_at           AS archived_at,
-                    l.match_breakdown_json  AS breakdown,
                     l.validation_json       AS validation,
+                    -- Yukti: what the resume check holds for this row. The
+                    -- pre score is read only through the rank key below.
+                    l.yukti_status          AS yukti_status,
+                    l.yukti_failure_reason  AS yukti_failure_reason,
+                    l.evidence_tags_json    AS evidence_tags_json,
+                    l.yukti_provenance_json AS yukti_provenance_json,
+                    l.yukti_profile_id      AS yukti_profile_id,
+                    -- The derived sort key, read ONLY to become a grade word
+                    -- (`projection.ai_match_fields`); never serialized.
+                    {ranking.rank_score_sql()} AS rank_score,
+                    rep.overall_score       AS overall_score,
+                    COALESCE(rep.must_have_failed, FALSE) AS must_have_failed,
+                    -- The comparison inputs for the derived columns
+                    -- (services/recruiter_columns): the job's declared CTC
+                    -- range and its JD education sentence.
+                    j.compensation_json     AS compensation,
+                    j.jd_json->>'education' AS jd_education,
+                    -- BGV Status: the three inputs bgv_workflow.derive_status
+                    -- counts. candidate_employments is tenant-free by design
+                    -- (0095); bgv_verifications is filtered to THIS job's
+                    -- tenant, the same scope bgv_workflow.candidate_status
+                    -- reads.
+                    c.employment_background AS employment_background,
+                    (
+                        SELECT COUNT(*) FROM candidate_employments ce
+                         WHERE ce.candidate_id = c.id
+                    )                       AS bgv_employer_count,
+                    (
+                        SELECT COALESCE(array_agg(bv.status), '{{}}')
+                          FROM bgv_verifications bv
+                         WHERE bv.candidate_id = c.id
+                           AND bv.tenant_id = j.tenant_id
+                    )                       AS bgv_statuses,
                     -- The tenant, for the reference code. Selected rather than
                     -- taken from the session so the code is derived from the
                     -- row's own owner and cannot be built from a caller's
@@ -406,15 +366,9 @@ async def ranked_candidates(
                     p.resume_mime_type      AS resume_mime_type,
                     rep.id                  AS report_id,
                     rep.synthesized_at      AS report_ready_at,
-                    -- Assessment/video metadata for the client dashboard
-                    -- (2026-09-05 dashboard/video spec, sections 3-5).
-                    -- METADATA ONLY: rows, never S3, never media work. The
-                    -- two laterals below fetch the newest session and the
-                    -- newest recording per link inside this one statement, so
-                    -- the page stays a single query with no per-row read.
-                    sess.mode               AS assessment_mode,
+                    -- The conversation's status, for the PRISM Report word.
+                    -- METADATA ONLY: rows, never S3, never media work.
                     sess.status             AS conversation_status,
-                    vid.status              AS video_recording_status,
                     EXISTS (
                         SELECT 1 FROM proctoring_reports pr
                         JOIN proctoring_sessions psess
@@ -439,29 +393,24 @@ async def ranked_candidates(
                 FROM job_candidate_links l
                 JOIN candidates c ON c.id = l.candidate_id
                 JOIN jobs j ON j.id = l.job_id
+                -- The ratio is the JOB's tenant's, the same row the header
+                -- reads, so a link can never be blended by another ratio.
+                JOIN tenants t ON t.id = j.tenant_id
                 LEFT JOIN profiles p ON p.id = l.profile_id
-                LEFT JOIN pfi ON pfi.link_id = l.id
                 LEFT JOIN functional_skills_reports rep
                        ON rep.job_candidate_link_id = l.id
                 LEFT JOIN LATERAL (
                     -- `sess`, not `conv`: `_NEW_CANDIDATE_SQL` already uses
                     -- `conv` for its own scalar subquery over this table, and
                     -- two aliases one shadowing the other is a review trap.
-                    SELECT ac.mode, ac.status
+                    SELECT ac.status
                     FROM assessment_conversations ac
                     WHERE ac.job_candidate_link_id = l.id
                     ORDER BY ac.created_at DESC, ac.id DESC
                     LIMIT 1
                 ) sess ON TRUE
-                LEFT JOIN LATERAL (
-                    SELECT vr.status
-                    FROM video_recordings vr
-                    WHERE vr.job_candidate_link_id = l.id
-                    ORDER BY vr.created_at DESC, vr.id DESC
-                    LIMIT 1
-                ) vid ON TRUE
                 WHERE l.job_id = :job_id {archived_filter} {age_filter} {arrival}
-                ORDER BY {order_by_clause(grade)}
+                ORDER BY {ranking.order_by_sql()}
                 LIMIT :limit OFFSET :offset
                 """
             ),
@@ -469,29 +418,56 @@ async def ranked_candidates(
         )
     ).mappings().all()
 
-    level = grade_label(grade)
+    view = await projection.job_skills_view(session, job_id)
     return RankedPage(
-        rows=[_row_payload(row, level, job_id) for row in rows],
+        rows=[_row_payload(row, view, job_id, weight_pct=weight_pct) for row in rows],
         total=total,
         page=resolved_page,
         page_size=resolved_size,
         new_candidate_count=new_candidate_count,
+        has_assessed=has_assessed,
+        ranking_header=ranking.header_sentence(
+            has_assessed=has_assessed, weight_pct=weight_pct
+        ),
     )
 
 
-def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
-    """One table row. Carries the five comments and word labels — never a score.
+def _row_payload(
+    row: Any,
+    view: projection.JobSkillsView,
+    job_id: Any = None,
+    *,
+    weight_pct: int | float,
+) -> dict[str, Any]:
+    """One table row: every field `schemas.ranking.RankedCandidateOut`
+    declares, and nothing else (the schema forbids extras, so a key added
+    here without a declaration fails the request instead of vanishing).
 
-    `ranking_payload` already re-enforces the 25-30 word contract on the way
-    out and reports `ranking_status = "not_scored"` for a link the matching
-    pipeline has not reached yet, so the UI can distinguish "no comment" from
-    "not scored" instead of rendering a silent blank.
+    Words only. `rank_score`, `overall_score` and the ratio are read by
+    `projection.ai_match_fields` to become a grade word and provenance
+    sentences, and are never copied onto the payload.
     """
     from app.models.candidate import SOURCE_TYPE_APPLIED, source_type_label
-    from app.services import hiring_pipeline, reference_code
+    from app.services import (
+        bgv_workflow,
+        hiring_pipeline,
+        recruiter_columns,
+        reference_code,
+    )
 
     status = hiring_pipeline.normalize(row["status"])
+    # The BGV word, derived once per row from the same three counts the offer
+    # gate reads (bgv_workflow.candidate_status), fetched in the page query
+    # rather than per candidate. `.get()` rather than indexing, the file's own
+    # precedent: a caller holding a pre-existing row shape (test fixtures,
+    # notably) reads the honest empty state rather than crashing.
+    bgv_status = bgv_workflow.derive_status(
+        background=row.get("employment_background"),
+        employer_count=int(row.get("bgv_employer_count") or 0),
+        statuses=list(row.get("bgv_statuses") or []),
+    )
     source_type = row["source_type"] or SOURCE_TYPE_APPLIED
+    validation = row.get("validation") if isinstance(row.get("validation"), dict) else None
     return {
         "link_id": row["link_id"],
         # Where the candidate came from, and where they are in the pipeline.
@@ -500,6 +476,9 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # a candidate is parsed, embedded, matched or assessed.
         "source_type": source_type,
         "source_type_label": source_type_label(source_type),
+        # "Databank, not an applicant": somebody AI Matching found, or a
+        # recruiter uploaded, has not asked for this job (owner ruling).
+        "applicant_label": projection.applicant_label(status, source_type),
         "status": status,
         "stage_label": hiring_pipeline.STAGE_LABELS.get(status, status),
         "status_updated_at": row["status_updated_at"],
@@ -509,46 +488,32 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         "allowed_transition_options": hiring_pipeline.transition_options(status),
         "candidate_id": row["candidate_id"],
         # COMPANY-JOB-CANDIDATE, rendered under the name in every surface that
-        # shows this row. One stable handle for "this application", because a
-        # name is not unique and a UUID is not something a person can carry
-        # between a screen, an email and a phone call. Derived, never stored,
-        # and one-way: see services/reference_code.
+        # shows this row. Derived, never stored, and one-way: see
+        # services/reference_code.
         "reference_code": reference_code.reference_code(
             row["tenant_id"], job_id, row["candidate_id"]
         ),
-        # The profile is what the resume viewer and the download endpoint are
-        # keyed on. It was SELECTed and then dropped here, which is the whole of
-        # the "resumes cannot be viewed or downloaded" report: resumes moved to
-        # PRIVATE OBJECT STORAGE on 2026-08-0x, so `resume_url` is an `s3://`
-        # object reference a browser cannot fetch (it was `gs://` before the AWS
-        # migration) and every read now goes through
-        # /candidates/profiles/{id}/resume-file. Without this id the viewer had
-        # nothing to ask for and fell through to its "missing its secure profile
-        # reference" panel, with the Download button pointing at an unfetchable
-        # object reference.
+        # The only handle the resume viewer and the download endpoint accept:
+        # resumes live in PRIVATE object storage and every read goes through
+        # /candidates/profiles/{id}/resume-file.
         "profile_id": row["profile_id"],
         "full_name": row["full_name"] or row["email"] or "Unnamed candidate",
         "email": row["email"],
-        "level": level,
         "source": row["source"],
-        "tier": row["tier"],
         "archived_at": row["archived_at"],
-        "resume_url": row["resume_url"],
+        # A STORAGE URI MUST NOT CROSS AN API BOUNDARY. `profiles.resume_url`
+        # is an `s3://bucket/key` reference a browser cannot fetch, so the row
+        # carries the one thing it answers, a boolean, and never the URI.
+        "has_resume": bool(row["resume_url"]),
         "resume_filename": row["resume_filename"],
         "resume_mime_type": row["resume_mime_type"],
-        # The PPI Report button is only actionable once a report exists.
+        # The PRISM Report button is only actionable once a report exists.
         "has_report": row["report_id"] is not None,
         "report_ready_at": row["report_ready_at"],
-        # ── Assessment/video metadata (2026-09-05 dashboard/video spec) ──────
-        # Words derived server-side from row presence alone; the query above
-        # touched no media and this payload carries no score and no internal
-        # lifecycle identifier beyond the raw mode value the UI already knows.
-        # `.get()` rather than indexing: the absent-key state IS the honest
-        # empty state (no session, no recording), so a caller holding a
-        # pre-existing row shape reads "Not started" / "No recording" rather
-        # than crashing.
-        "assessment_mode": row.get("assessment_mode"),
-        "assessment_mode_label": video_access.mode_label(row.get("assessment_mode")),
+        # Report availability words, derived server-side from row presence
+        # alone. `.get()` rather than indexing: the absent-key state IS the
+        # honest empty state. The mode and video words left this table in the
+        # stage 3 final sweeps (see `schemas/ranking.py`).
         "prism_report_status": video_access.prism_status_word(
             has_report=row["report_id"] is not None,
             conversation_status=row.get("conversation_status"),
@@ -557,33 +522,35 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
             has_proctoring_report=bool(row.get("has_proctoring_report")),
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
-        "video_status": video_access.video_status_word(
-            row.get("video_recording_status")
-        ),
-        # Old Profile / New Profile. Presentation and billing only: an Old
-        # Profile is ranked, listed and openable exactly like a new one.
+        # Old Profile / New Profile. Presentation and billing only.
         "profile_age": row["profile_age"],
         "profile_age_label": PROFILE_AGE_LABELS.get(row["profile_age"], ""),
         # New Candidate (workflow section 32): arrived after the last
-        # assessment round on this job. Presentation only, exactly like
-        # `profile_age` -- it changes no score, no ranking and no access, it
-        # only stops the person from being invisible.
+        # assessment round on this job. Presentation only.
         "is_new_candidate": bool(row["is_new_candidate"]),
         "review_charged": bool(row["review_charged"]),
-        # The validation questionnaire, as an explicit Q&A the recruiter can
-        # read on the row (spec §29). Paired SERVER-side against the field list
-        # so the questions and the answers cannot drift, and shown exactly as
-        # submitted: nothing scores, interprets or judges this data, and the
-        # recruiter decides whether stated interest is genuine (spec §14).
-        #
-        # Two sources, both server-assembled so they can never drift from their
-        # form definitions: the six mandatory APPLICATION fields, then the
-        # full 38-item candidate PROFILE questionnaire (2026-08-16 report — the
-        # column was showing only the application's six fields, when every one
-        # of the 38 profile answers a candidate fills in once and reuses across
-        # every job must be visible here too).
+        # The application answers and the profile questionnaire as an explicit
+        # Q&A, paired SERVER-side against the field lists. Never rated.
         "validation_answers": validation_answers(row["validation"], row["profile_form"]),
-        **ranking_payload(row["breakdown"]),
+        # The recruiter columns: derived words, never stored, all from
+        # services/recruiter_columns. None means "Not stated". Declared on the
+        # response schema since the Vivekium release: before it these were
+        # computed here and dropped by pydantic, so they never reached a
+        # browser (PLAN-p2 NF-1).
+        "ctc_match_label": recruiter_columns.ctc_match(
+            validation.get("expected_ctc") if validation else None,
+            row.get("compensation"),
+        ),
+        "notice_period_label": recruiter_columns.notice_period_bucket(
+            validation.get("notice_period") if validation else None,
+        ),
+        "education_match_label": recruiter_columns.education_match(
+            row.get("profile_form"), row.get("jd_education")
+        ),
+        "bgv_status": bgv_status,
+        "bgv_status_label": recruiter_columns.bgv_status_word(bgv_status),
+        # AI Match: a grade word, evidence tags and provenance sentences.
+        **projection.ai_match_fields(row, view, weight_pct=weight_pct),
     }
 
 

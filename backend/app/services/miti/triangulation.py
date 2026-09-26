@@ -423,22 +423,25 @@ def triangulate(
     report: detector.ContradictionReport,
     *,
     sources: Sequence[Mapping[str, Any]] = (),
-    generated: Mapping[str, Sequence[BenignExplanation]] | None = None,
 ) -> TriangulationResult:
     """Apply independence counting and the benign rule to a whole report.
 
-    `generated` is the model's per-axis explanations from the reasoning half of
-    this stage. It is MERGED with the deterministic stock list rather than
-    replacing it, so the two-explanation floor holds during a provider outage --
-    an outage that silently disabled integrity escalation would be the worst
-    possible failure mode for this stage, because it looks like a clean run.
+    THE EXPLANATIONS ARE THE DETERMINISTIC STOCK LIST, AND ONLY THAT (WP5-B).
+    This function used to take `generated`, the model's per-axis explanations,
+    and merge them in front of the stock list. Nothing on the live path ever
+    wrote that input: `EvaluationInputs.benign_explanations` was declared and
+    never filled, so every real run already used the stock list alone. An
+    input that is always empty is a second path nobody exercises, and it was
+    deleted rather than wired. The stock list guarantees the two-explanation
+    floor during a provider outage, which is the property that matters: an
+    outage that silently disabled integrity escalation would look like a clean
+    run.
     """
     result = TriangulationResult()
     result.independence = count_independence(sources) or 1
-    supplied = dict(generated or {})
 
     for contradiction in report.contradictions:
-        explanations = list(supplied.get(contradiction.axis, ()))
+        explanations: list[BenignExplanation] = []
         for stock in standard_explanations(contradiction.axis):
             if len(explanations) >= REQUIRES_BENIGN_EXPLANATIONS:
                 break

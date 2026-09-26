@@ -22,7 +22,7 @@ export function RoleTypeBadge({
 }) {
   const stem = classification === "STEM";
   const cost = creditCost ?? (stem ? 1.5 : 1.0);
-  const costLine = `${cost.toFixed(1)} credit${cost === 1 ? "" : "s"} per ReadyPick Intelligence Report`;
+  const costLine = `${cost.toFixed(1)} credit${cost === 1 ? "" : "s"} per Vivekium Intelligence Report`;
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <span
@@ -43,7 +43,7 @@ export function RoleTypeBadge({
       >
         {stem ? "STEM Role" : "Non-STEM Role"}
       </span>
-      <span className="text-2xs opacity-70">{costLine}</span>
+      <span className="text-2xs">{costLine}</span>
     </div>
   );
 }

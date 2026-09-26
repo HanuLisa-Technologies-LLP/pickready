@@ -347,8 +347,10 @@ async def test_grants_and_charges_are_idempotent_and_sum_to_the_balance() -> Non
 
 @pytest.mark.asyncio
 async def test_a_completed_assessment_is_charged_even_into_deficit() -> None:
-    """The charge is never refused — the work is already done and cannot be
-    un-done. What the deficit blocks is the NEXT invitation."""
+    """The charge is never refused: the work is already done and cannot be
+    undone. What the deficit blocks is the NEXT start, and the ledger itself
+    is the recovery condition: there is no stored flag to clear (the one that
+    existed was dropped by migration 0128)."""
     from sqlalchemy import text
 
     engine, factory = await _factory_or_skip()
@@ -361,7 +363,7 @@ async def test_a_completed_assessment_is_charged_even_into_deficit() -> None:
                 session, tenant_id=tenant_id, subunits=SUBUNITS_PER_CREDIT,
                 idempotency_key=f"grant-{tenant_id}",
             )
-            assert await credits.has_credit_headroom(session, tenant_id)
+            assert await credits.has_positive_balance(session, tenant_id)
 
             for index in range(2):
                 assert await credits.consume(
@@ -369,29 +371,16 @@ async def test_a_completed_assessment_is_charged_even_into_deficit() -> None:
                     idempotency_key=f"done-{tenant_id}-{index}",
                 )
             assert await credits.balance_subunits(session, tenant_id) == -60
-            assert not await credits.has_credit_headroom(session, tenant_id)
+            assert not await credits.has_positive_balance(session, tenant_id)
+            assert (await credits.summarize(session, tenant_id)).in_deficit
 
-            flag = (
-                await session.execute(
-                    text("SELECT credit_deficit FROM tenants WHERE id = :tid"),
-                    {"tid": str(tenant_id)},
-                )
-            ).scalar_one()
-            assert flag is True
-
-            # A new grant restores headroom with no flag to clear by hand.
+            # A new grant restores the balance with no flag to clear by hand.
             await credits.grant(
                 session, tenant_id=tenant_id, subunits=SUBUNITS_PER_CREDIT * 2,
                 idempotency_key=f"grant2-{tenant_id}",
             )
-            assert await credits.has_credit_headroom(session, tenant_id)
-            recovered = (
-                await session.execute(
-                    text("SELECT credit_deficit FROM tenants WHERE id = :tid"),
-                    {"tid": str(tenant_id)},
-                )
-            ).scalar_one()
-            assert recovered is False
+            assert await credits.has_positive_balance(session, tenant_id)
+            assert not (await credits.summarize(session, tenant_id)).in_deficit
 
             await session.rollback()
     finally:

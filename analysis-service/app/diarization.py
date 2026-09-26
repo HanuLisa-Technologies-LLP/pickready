@@ -81,6 +81,11 @@ class DecodedAudio:
 class DiarizationResult:
     speaker_count: int
     speech_seconds: float
+    #: Seconds each separated speaker spoke, longest first, one entry per
+    #: speaker. The backend flags a second voice only when the SECOND entry is
+    #: long enough to be a real voice rather than a cough or the diarizer
+    #: splitting the candidate's own voice (master prompt, Phase 3).
+    speaker_seconds: tuple[float, ...]
 
 
 class Pipeline(Protocol):
@@ -185,16 +190,28 @@ def load_pipeline(settings: Settings) -> Pipeline:
 
 
 def summarise(output: Any) -> DiarizationResult:
-    """Reduce a pipeline output to the two numbers the backend reads.
+    """Reduce a pipeline output to the figures the backend reads.
 
     pyannote 4 returns a `DiarizeOutput` whose `speaker_diarization` is the
     `Annotation`; the legacy path returns the `Annotation` itself. Both are the
     library's own types and both are handled here, once.
+
+    `speech_seconds` is the union of every speaker's turns (overlaps counted
+    once); `speaker_seconds` is each label's own total (`label_duration`),
+    sorted longest first, so two people talking over each other both count in
+    full on their own entries.
     """
     annotation = getattr(output, "speaker_diarization", output)
     speakers = annotation.labels()
     speech = annotation.get_timeline().support().duration()
-    return DiarizationResult(speaker_count=len(speakers), speech_seconds=float(speech))
+    per_speaker = sorted(
+        (float(annotation.label_duration(label)) for label in speakers), reverse=True
+    )
+    return DiarizationResult(
+        speaker_count=len(speakers),
+        speech_seconds=float(speech),
+        speaker_seconds=tuple(per_speaker),
+    )
 
 
 def diarize(chunk: bytes, pipeline: Pipeline, decoder: Decoder, settings: Settings) -> DiarizationResult:

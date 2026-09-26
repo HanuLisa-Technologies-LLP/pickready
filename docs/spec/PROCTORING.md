@@ -5,15 +5,24 @@ Hanulisa Technologies LLP). This file records how the specification landed in
 this codebase and where each rule is enforced. The specification's seven
 product principles are locked; this document does not soften any of them.
 
+**Amended 2026-09-25 (Vivekium simplification release, `claude.md` top
+section).** A lost camera or microphone PAUSES the assessment (Path P) rather
+than ending it; every paused second is a row the server wrote in
+`assessment_pauses`; the rules the candidate reads are served from the same
+settings the pipeline enforces; the audio rules measure a second voice and
+log speech during non-audio questions; every blocked paste is itemised; the
+session recording arrives in segments and is purged at ninety days or the
+job-closure purge (D4). The sections below are the current state.
+
 ## The seven principles, and where each one is enforced
 
 | # | Principle | Enforced by |
 |---|---|---|
-| P1 | No video is ever stored | The browser infers over frames in a Web Worker and discards them; the worker posts detections only. `backend/tests/test_proctoring_no_media.py` fails the build if a write path for a frame, an image or an audio buffer appears in the proctoring module. The analysis service decodes audio from bytes in memory and deletes the buffer; its own test makes `tempfile` and file writes raise during a request. |
+| P1 | **REVERSED 2026-09-22.** Assessment media IS stored; the PROCTORING module still stores none | Owner ruling, verbatim: "Media storage is required. The assessment video must be compressed and stored securely in S3, linked to the candidate assessment." The browser still infers over frames in a Web Worker and posts detections only, and the analysis service still decodes audio from bytes in memory and deletes the buffer. Assessment media is written by ONE pipeline, `services/video/`, onto ONE table, `video_recordings`, encrypted at rest, retrievable only by an authorized hiring-team member inside the tenant, and reachable by both candidate erasure and the thirty day job-closure purge. `backend/tests/test_proctoring_no_media.py` was rewritten rather than deleted and now fails the build on a media write outside that pipeline, on a bucket name or object key crossing an API boundary, and on a scorer reaching the media package. P3 and P4 are UNCHANGED. |
 | P2 | No human review during a live session | There is no live proctor route, no review queue and no mid-session write path for staff. Decisions are made by `services/proctoring/ingestion.py` in the request that carries the event. |
 | P3 | Proctoring never affects any score or ranking | Nothing under `services/proctoring/` is imported by any scorer, by the Tatva matrix, by Miti, by Siddhi, by the dashboard or by any ranking query. `backend/tests/test_proctoring_scoring_isolation.py` asserts the import graph. The report is appended to the PRISM Report as its final, informational section and read nowhere else. |
 | P4 | Proctoring is mandatory | `services/proctoring/gate.require_active` runs first in both `start_conversation` and `respond`. There is no enable flag and no role bypass. The earlier optional screen-capture consent component was removed because it contradicted this principle and P1. |
-| P5 | The candidate is always informed | The consent screen (spec 8.1 content, verbatim) requires an explicit "I understand and agree" and the timestamp lands on `proctoring_sessions.consented_at`, which is NOT NULL. |
+| P5 | The candidate is always informed | The rules screen renders the server's `candidate_rules` (`GET /proctoring/config`, composed by `phrasing.candidate_rules` from the same numbers the pipeline applies; no fallback text when they cannot load), and the consent screen requires an explicit "I understand and agree" and the timestamp lands on `proctoring_sessions.consented_at`, which is NOT NULL. |
 | P6 | Recruiter-facing language has zero internal terminology | `services/proctoring/phrasing.py` is a lookup table; `tests/test_proctoring_report.py` sweeps every generated sentence for the forbidden words. |
 | P7 | Never state or imply certainty of cheating | The phrasing library describes what was detected, never what it means, and adds context sentences where a finding could be misread. |
 
@@ -67,6 +76,79 @@ deliberately. Four identifiers were added to the specification's catalog for
 rules it states in prose without naming an event: `MONITORING_INTERRUPTED`,
 `INTEGRITY_CHECK_FAILED`, `IDENTITY_CHECK_MISMATCH` and `CAMERA_STREAM_FAILED`.
 
+**Path P, the device pause (2026-09-25).** `CAMERA_PERMISSION_LOST`,
+`MIC_PERMISSION_LOST`, `CAMERA_STREAM_FAILED` and `MIC_STREAM_FAILED` were
+Path A and are now a fourth path, P: a loss PAUSES the assessment and its
+clock. The candidate has `proctoring_device_grace_seconds` (120) to restore
+the device, at most `proctoring_device_max_pauses` (2) pauses per session.
+The next loss after that (`DEVICE_PAUSE_LIMIT_EXCEEDED`) or a grace EXCEEDED
+(`DEVICE_RECOVERY_TIMED_OUT`; the boundary is inclusive, ties go to the
+candidate) ends the session as `technical_failure`, whatever caused it. A
+loss shorter than `proctoring_device_glitch_seconds` (5) pauses nothing and is
+stored as `CAMERA_STREAM_INTERRUPTED` or `MIC_STREAM_INTERRUPTED` on Path C.
+Downgrade only: a browser cannot earn a graver path by sending a longer
+number.
+
+- **The state is the pause row, not a flag**: "paused" is an open
+  `device_loss` row in `assessment_pauses`; pauses used is a COUNT of rows.
+  Concurrency is a row lock on the proctoring session (`device_pause.lock`).
+- **Times are the server's**: a pause opens when the server receives the loss
+  and closes when it receives the recovery; a loss reported after it ended is
+  dated back by its measured duration, never by more than the grace.
+- **An expired pause is settled on the next thing that arrives** (an event
+  batch, a heartbeat, or the hourly `reconcile_proctoring_sessions`), which
+  RETURNS the termination so it commits.
+- **A heartbeat gap is recorded, never a termination**: a dead network, the
+  platform's own outage and a deploy look identical from the server.
+- **While paused no answer is taken** (`gate.require_answerable`, 409); the
+  start route returns `SessionOut.pause` so a reload lands on the pause
+  screen. Every ingest and heartbeat response carries `pause: {paused,
+  message, grace_deadline_at, pauses_used, max_pauses}`.
+- **The browser decides none of it**: `lib/proctoring/device-watch.ts` is the
+  only place a loss becomes an event; `DEVICE_RECOVERED` is sent once, when
+  every device lost in the episode is live again; the integrity episode does
+  not count a device the pause owns.
+
+## One pause record for every reason the clock stops
+
+`assessment_pauses` (migration 0125) and
+`services/assessment_conversation/pauses.py` are the one implementation, with
+three reasons: `device_loss` (above), `warning` (a Path B warning that does
+not end the session opens one; `POST /proctoring/sessions/{id}/warnings/ack`
+closes it, capped at `assessment_warning_pause_max_seconds`, 30) and
+`transcription` (a spoken answer being transcribed). The turn timer reads the
+union; overlaps count once. `expires_at` is a cap every reader applies; a
+close may be scheduled and only ever brought forward; the partial UNIQUE index
+`uq_assessment_pauses_open` allows one open row per reason. The module imports
+nothing from proctoring. This replaces the client-reported `paused_ms`.
+
+## Audio rules
+
+- **A second voice is flagged only when it is strong.** `/diarize` answers
+  `speaker_seconds` (each speaker's own total, longest first). A chunk counts
+  toward `SECOND_VOICE_DETECTED` only when the SECOND entry reaches
+  `proctoring_second_voice_min_seconds` (3.0), in
+  `proctoring_second_voice_consecutive_chunks` (2) consecutive chunks. An
+  answer without the per-speaker list is a bad answer, not "one speaker".
+- **Speaking during a question that takes no spoken answer is logged, never
+  punished.** Speech of at least `proctoring_speech_min_seconds` (2.0) in a
+  chunk while no spoken answer is being captured (decided by the server
+  against its own `voice_answers` stamps; the browser sends no capture
+  window) is `SPEECH_DURING_NON_AUDIO_QUESTION`, Path C, ONE event per run of
+  speaking chunks. It is listed under Audio Monitoring every time and lifted
+  into the summary from `proctoring_speech_highlight_threshold` (3)
+  occurrences.
+
+## Every blocked paste is on its own line
+
+`BLOCKED_ACTION_ATTEMPTED` carries the refused action in `metadata.action`
+(`paste`, `copy`, `cut`, `drop`, others; a Clipboard API read reports
+`paste`, a write `copy`). Every attempt is its own Path C row. The report
+itemises paste, copy or cut, drag and drop, and everything else, in that
+order, so a paste is never hidden inside a total; an unknown action is
+counted under "another blocked action", never dropped. Answer fields and the
+coding editor refuse the act and report it once, with its kind.
+
 The server decides. The browser reports a mismatch; the server counts the
 second consecutive one. The browser reports a focus loss; the server ignores
 one under two seconds. Cooldowns are held in Redis so a phone on the desk
@@ -78,7 +160,8 @@ cannot burn three warnings in six seconds. Redis being unreachable answers
 `jobs.proctoring_warning_policy`, `terminate` or `continue_and_note`, default
 `continue_and_note`. Set on the job page's setup review (the "Assessment
 monitoring" card, with the specification's exact label, help text and two
-options) and applied to every candidate on the job. It moves no score.
+options, on the job page's JD tab) and applied to every candidate on the
+job. It moves no score.
 
 ## The report (spec section 7)
 
@@ -91,7 +174,10 @@ are clock times in the date line and the activity log. That is what lets the
 report travel inside `FunctionalReportOut` under the serialiser-level number
 ban unchanged. The section order of the PRISM Report is now eight entries,
 with `proctoring` last, written once per renderer and pinned by
-`tests/test_prism_report.py` as before.
+`tests/test_prism_report.py` as before. `GET /proctoring/links/{id}/report`
+calls `job_assessment_retention.require_readable` after the tenant check and
+before loading, so a closed job answers 410 exactly as the PRISM Report does.
+A termination orders the PRISM Report after commit.
 
 ## Retention
 
@@ -101,6 +187,14 @@ cascade the same way. `proctoring_event_retention_days` is 0 by default,
 meaning "the platform's policy"; a positive value enables the hourly
 `pickready.purge_proctoring_events`. Choosing a number is an owner decision
 and this implementation does not invent one.
+
+The SESSION RECORDING (not a proctoring artifact: `services/video/`) follows
+owner decision D4: `video_recordings.media_purge_due_at` is stamped once at
+finalize, and `pickready.reconcile_assessment_recordings` purges at
+`LEAST(media_purge_due_at, jobs.assessment_purge_due_at)`, ninety days
+(`assessment_media_retention_days`) or the job-closure purge, whichever is
+first. The S3 lifecycle rule is the backstop, not the clock. See `claude.md`
+and `docs/operations/INFRA_TOPOLOGY.md`.
 
 ## What is honest about the limits
 

@@ -34,7 +34,11 @@ AGENT_PPI_REPORT = "ppi_report"    # services/functional_assessment + ppi
 AGENT_EMAIL = "email"              # services/lifecycle_email
 AGENT_PROBE = "probe"              # services/gap_analysis
 AGENT_INTERVIEWER = "interviewer"  # services/interviewer + ppi_interview
-AGENT_JOB_SETUP = "job_setup"      # services/ppi.generate_framework, swot_intake
+# Job setup is TWO surfaces, one per agent (Vivekium release). A single
+# `job_setup` surface ran both Bodha and Sutra and therefore held the union of
+# their reach; least privilege is one runtime id per agent.
+AGENT_SWOT = "swot"                # services/swot_analysis (Bodha)
+AGENT_SKILLS = "skills"            # services/hiring/sutra + services/skills (Sutra)
 # Miti, the Tatva Scoring Agent. Split out on 2026-08-23 and NOT merely renamed:
 # scoring previously ran inside the report agent's grant, which meant the scorer
 # held `extract_jd`. The specification's security boundary says Miti "cannot
@@ -49,7 +53,8 @@ AGENTS: tuple[str, ...] = (
     AGENT_EMAIL,
     AGENT_PROBE,
     AGENT_INTERVIEWER,
-    AGENT_JOB_SETUP,
+    AGENT_SWOT,
+    AGENT_SKILLS,
     AGENT_SCORING,
 )
 
@@ -82,13 +87,19 @@ AGENT_TOOLS: dict[str, frozenset[str]] = {
     AGENT_INTERVIEWER: frozenset(
         {
             "extract_jd",
+            "extract_project_evidence",
             "extract_resume",
             "extract_framework",
             "retrieve_context",
             "validate_output",
         }
     ),
-    AGENT_JOB_SETUP: frozenset({"extract_jd", "retrieve_context", "validate_output"}),
+    # Bodha drafts the SWOT from the JD. Sutra drafts the skills from the JD
+    # and the SAVED SWOT, which it is handed directly rather than retrieving,
+    # so neither holds `retrieve_context`: the old shared grant carried it for
+    # a matrix compiler that no longer exists.
+    AGENT_SWOT: frozenset({"extract_jd", "validate_output"}),
+    AGENT_SKILLS: frozenset({"extract_jd", "validate_output"}),
     # NO `extract_jd`. Miti scores an answer against the LOCKED matrix and its
     # rubric; the JD is what Sutra used to BUILD that matrix, and a scorer that
     # can re-read it can quietly grade against the source rather than against
@@ -148,43 +159,32 @@ def agents_holding(tool: str) -> frozenset[str]:
 # would have had to re-derive all six and would have drifted on the first one
 # somebody forgot.
 #
-# THE SIX NAMED AGENTS
-# --------------------
-# specdoc5 and spec-doc6 name six agents by role. They map onto the tool-grant
-# names already in this module rather than replacing them: the tool grants are
-# about what an agent READS, and the capability declarations below are about
-# what a principal must be able to AUTHORISE. Both are needed and neither
-# subsumes the other.
-
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
-AGENT_BODHA = "bodha"
-#: Sutra, the seven-stage matrix compiler.
-AGENT_SUTRA = "sutra"
-#: Yukti, resume-stage pre-screen grading.
-AGENT_YUKTI = "yukti"
-#: Vaada, evidence graphs.
-AGENT_VAADA = "vaada"
-#: Miti, the five-dimension scorer.
-AGENT_MITI = "miti"
-#: Siddhi, the PRISM report writer.
-AGENT_SIDDHI = "siddhi"
-
-NAMED_AGENTS: tuple[str, ...] = (
-    AGENT_BODHA,
-    AGENT_SUTRA,
-    AGENT_YUKTI,
-    AGENT_VAADA,
-    AGENT_MITI,
-    AGENT_SIDDHI,
-)
-
-
 # ── RBAC 34: the six named agents ────────────────────────────────────────────
 #
 # specdoc5 and spec-doc6 name six agents by role. They are recorded here beside
 # the runtime ids because both are agent IDENTITY, and `agents/identity.py`
 # already maps each name onto the runtime surface that executes it today.
+#
+# They map onto the tool-grant names above rather than replacing them: the tool
+# grants are about what an agent READS, and the capability declarations in
+# `services/rbac` are about what a principal must be able to AUTHORISE. Both
+# are needed and neither subsumes the other.
+#
+# THIS BLOCK WAS DECLARED TWICE, AND THE SECOND DECLARATION SILENTLY WON.
+# ----------------------------------------------------------------------
+# Until 2026-09-09 the six constants and `NAMED_AGENTS` appeared once here and
+# again forty lines above, so `AGENT_VAADA` carried the docstring "evidence
+# graphs" in one copy and "the candidate conversational agent" in the other --
+# two answers to what Vaada IS, inside the module that enforces what each agent
+# may reach, with Python's last-assignment-wins deciding which one a reader of
+# the source would be wrong about. Neither copy was wrong at runtime, which is
+# exactly why it survived: a duplicated constant block has no symptom until the
+# two copies disagree about a VALUE, and by then the disagreement is a
+# permission decision.
+#
+# One implementation per concept, applied inside the module that enforces
+# reach. `tests/test_tool_permissions_single_definition.py` now fails the build
+# on a second module-level assignment to any of these names.
 #
 # WHY THEIR CAPABILITY DECLARATIONS LIVE IN `services/rbac` AND NOT HERE
 # ----------------------------------------------------------------------
@@ -201,10 +201,9 @@ NAMED_AGENTS: tuple[str, ...] = (
 # agent may CAUSE is an authorization question and lives with the other
 # authorization questions.
 
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
+#: Bodha, the per-job SWOT intake agent.
 AGENT_BODHA = "bodha"
-#: Sutra, the seven-stage matrix compiler.
+#: Sutra, the skills drafter and assessment-context writer.
 AGENT_SUTRA = "sutra"
 #: Yukti, resume-stage pre-screen grading.
 AGENT_YUKTI = "yukti"

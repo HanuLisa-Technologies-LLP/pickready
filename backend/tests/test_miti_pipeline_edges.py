@@ -97,14 +97,16 @@ def test_no_role_anchor_leaves_the_dimension_anchor_exactly_as_it_was() -> None:
 def test_an_evaluator_only_carries_the_competencies_on_its_own_dimension() -> None:
     """The isolation boundary, at the routing half."""
     inputs = pipeline.EvaluationInputs(
-        competency_dimensions={
-            "Stream processing": "verified_competence",
-            "Ownership": "trajectory_potential",
+        skill_buckets={
+            "Stream processing": "must_have",
+            "Ownership": "behavioural",
         }
     )
     by_dimension = {p.dimension: p.competencies for p in pipeline.build_evaluator_inputs(inputs)}
     assert by_dimension["verified_competence"] == ("Stream processing",)
-    assert by_dimension["trajectory_potential"] == ("Ownership",)
+    assert by_dimension["role_context_fit"] == ("Ownership",)
+    # Trajectory is cross-cutting and reads every skill.
+    assert by_dimension["trajectory_potential"] == ("Ownership", "Stream processing")
 
 
 # ── The three ways an evaluator fails to answer ──────────────────────────────

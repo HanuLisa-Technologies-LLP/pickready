@@ -18,6 +18,16 @@
  * can say attempts occurred without ever saying what was attempted to be
  * copied: no clipboard content, no key sequence, no text ever reaches this
  * callback.
+ *
+ * PASTE IS NAMED AS PASTE, WHICHEVER DOOR IT TRIED (Phase 3, 2026-09-24). The
+ * proctoring report now states paste attempts on their own, because pasting a
+ * prepared answer is the attempt a hiring team most needs to see. A paste
+ * event, a drop and a script reading the clipboard are three routes to the
+ * same act, so a clipboard READ reports `paste` and a clipboard WRITE reports
+ * `copy`, each with `via: "clipboard_api"` so the route is not lost. These
+ * listeners run in the CAPTURE phase on the document, ahead of every field,
+ * so they cover a textarea, a contenteditable and a code editor's hidden
+ * input alike: the editor never receives the event it would paste from.
  */
 
 export type BlockedAction =
@@ -31,9 +41,11 @@ export type BlockedAction =
   | "save"
   | "find"
   | "view_source"
-  | "clipboard_api"
   | "history_navigation"
   | "leave_page";
+
+/** How an attempt was made, when it was not the ordinary browser event. */
+export type BlockedVia = "clipboard_api";
 
 export interface LockdownHandle {
   release(): void;
@@ -44,7 +56,7 @@ export interface LockdownHandle {
 }
 
 export interface LockdownOptions {
-  onBlocked: (action: BlockedAction) => void;
+  onBlocked: (action: BlockedAction, via?: BlockedVia) => void;
   document?: Document;
   window?: Window;
 }
@@ -152,7 +164,13 @@ export function installLockdown(options: LockdownOptions): LockdownHandle {
   const patched: Array<[Record<string, unknown>, string, unknown]> = [];
   if (clipboard) {
     const prototype = Object.getPrototypeOf(clipboard) as Record<string, unknown> | null;
-    for (const method of ["readText", "writeText", "read", "write"]) {
+    const actionFor: Record<string, BlockedAction> = {
+      readText: "paste",
+      read: "paste",
+      writeText: "copy",
+      write: "copy",
+    };
+    for (const method of Object.keys(actionFor)) {
       const target = Object.prototype.hasOwnProperty.call(clipboard, method)
         ? clipboard
         : prototype && typeof prototype[method] === "function"
@@ -161,7 +179,7 @@ export function installLockdown(options: LockdownOptions): LockdownHandle {
       if (!target || typeof target[method] !== "function") continue;
       patched.push([target, method, target[method]]);
       target[method] = () => {
-        report("clipboard_api");
+        report(actionFor[method], "clipboard_api");
         return Promise.reject(new Error("The clipboard is not available during a monitored assessment."));
       };
     }

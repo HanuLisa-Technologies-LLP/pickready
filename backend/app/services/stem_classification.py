@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 STEM = "STEM"
 NON_STEM = "NON_STEM"
 
-#: Part 5 §2.1 — credits deducted per completed ReadyPick Intelligence Report.
+#: Part 5 §2.1 — credits deducted per completed Vivekium Intelligence Report.
 CREDIT_COST: dict[str, Decimal] = {
     STEM: Decimal("1.5"),
     NON_STEM: Decimal("1.0"),
@@ -538,6 +538,14 @@ class OccupationVerdict:
 
     verdict: str | None
     basis: str
+    #: The occupation's head noun ("engineer", "developer"), or "" when the
+    #: title named a field with no head noun. Set on a STEM verdict only.
+    head: str = ""
+    #: Every STEM domain that qualifies the head noun, phrases included
+    #: ("machine_learning", "software"). Set on a STEM verdict only. Kept as
+    #: data so a second question about the SAME parse (is this a computing
+    #: occupation) is answered from this parse rather than from a second one.
+    domains: tuple[str, ...] = ()
 
     @property
     def signal(self) -> str | None:
@@ -591,6 +599,9 @@ def classify_occupation(job_title: str) -> OccupationVerdict:
             break
 
     qualifiers = [t for t in tokens if t != head] + stem_phrases
+    stem_domains = tuple(
+        q for q in qualifiers if q in _STEM_DOMAINS or q in stem_phrases
+    )
     stem_qualifier = next((q for q in qualifiers if q in _STEM_DOMAINS), None)
     if stem_qualifier is None and stem_phrases:
         stem_qualifier = stem_phrases[0]
@@ -601,25 +612,102 @@ def classify_occupation(job_title: str) -> OccupationVerdict:
     if head in _QUANTITATIVE_ONLY_HEAD_NOUNS:
         if quantitative_qualifier:
             return OccupationVerdict(
-                _STEM_OCCUPATION, f"{quantitative_qualifier}_{head}"
+                _STEM_OCCUPATION,
+                f"{quantitative_qualifier}_{head}",
+                head=head,
+                domains=stem_domains,
             )
         return OccupationVerdict(None, "")
 
     if head and (head in _STEM_HEAD_NOUNS or _is_scientific_suffix(head)):
         basis = f"{stem_qualifier}_{head}" if stem_qualifier else head
-        return OccupationVerdict(_STEM_OCCUPATION, basis)
+        return OccupationVerdict(
+            _STEM_OCCUPATION, basis, head=head, domains=stem_domains
+        )
 
     if head in _QUALIFIED_HEAD_NOUNS and stem_qualifier:
-        return OccupationVerdict(_STEM_OCCUPATION, f"{stem_qualifier}_{head}")
+        return OccupationVerdict(
+            _STEM_OCCUPATION,
+            f"{stem_qualifier}_{head}",
+            head=head,
+            domains=stem_domains,
+        )
 
     if head in _NON_STEM_HEAD_NOUNS:
         return OccupationVerdict(_NON_STEM_OCCUPATION, head)
 
     # A bare STEM domain with no head noun at all ("Data Science", "VLSI").
     if not head and stem_qualifier:
-        return OccupationVerdict(_STEM_OCCUPATION, stem_qualifier)
+        return OccupationVerdict(
+            _STEM_OCCUPATION, stem_qualifier, domains=stem_domains
+        )
 
     return OccupationVerdict(None, "")
+
+
+# ── Computing occupations: who is asked to write code (Vivekium Phase 3) ────
+#
+# A STEM verdict decides credits and the question budget; it does NOT decide
+# who is handed a coding question. A Civil, Mechanical or Chemical Engineer is
+# STEM and must not be asked to write a program (CONTRACT v2, owner default
+# "Coding for non-software STEM roles: no"). So the coding question asks a
+# NARROWER question of the SAME title parse: is the occupation itself the
+# writing of software.
+#
+# ASSUMPTION (reported): the head noun must be one whose practice is building
+# things (an engineer, developer, programmer, scientist or architect). A
+# manager, director, consultant, technician or administrator in a computing
+# field is not asked to code, because what the role is hired to DO is not
+# writing the program. The title decides nothing when it is not recognised:
+# an unrecognised occupation gets no coding question, the safe direction for
+# a question that takes twenty minutes and cannot be answered in prose.
+
+#: Head nouns whose occupation is writing software on its own.
+COMPUTING_HEAD_NOUNS: frozenset[str] = frozenset({
+    "developer", "developers", "programmer", "programmers", "coder",
+    "sysadmin", "devops",
+})
+
+#: Head nouns that build things, and so write software when a computing
+#: domain qualifies them ("Software Engineer", "Data Scientist").
+_BUILDER_HEAD_NOUNS: frozenset[str] = frozenset({
+    "engineer", "engineers", "engineering", "scientist", "scientists",
+    "architect", "architects", "technologist",
+})
+
+#: Domains (single tokens and extracted phrases) whose practice is software.
+#: Deliberately NOT here: "systems", "network", "security", "hardware",
+#: "electronics", "automation" and "quality_assurance". Each names engineers
+#: who may or may not program for a living, and a coding question is not a
+#: fair instrument for the ones who do not.
+COMPUTING_DOMAINS: frozenset[str] = frozenset({
+    "software", "firmware", "embedded", "backend", "frontend", "fullstack",
+    "web", "mobile", "android", "ios", "api", "microservices", "blockchain",
+    "devops", "sre", "cloud", "platform", "infrastructure", "database",
+    "data", "ai", "ml", "nlp", "algorithms", "computational", "computing",
+    "computer", "cryptography", "bioinformatics",
+    "machine_learning", "deep_learning", "artificial_intelligence",
+    "computer_vision", "natural_language", "data_science",
+    "data_engineering", "data_platform", "site_reliability", "full_stack",
+    "front_end", "back_end", "test_automation", "computer_science",
+    "cloud_infrastructure", "web3",
+})
+
+
+def is_computing_occupation(job_title: str) -> bool:
+    """Whether the title names an occupation whose work is writing software.
+
+    Read from `classify_occupation`'s parse, never from a second one, so the
+    two answers about one title cannot disagree about what its head noun is.
+    """
+    verdict = classify_occupation(job_title)
+    if verdict.verdict != _STEM_OCCUPATION:
+        return False
+    if verdict.head in COMPUTING_HEAD_NOUNS:
+        return True
+    if verdict.head and verdict.head not in _BUILDER_HEAD_NOUNS:
+        return False
+    return any(domain in COMPUTING_DOMAINS for domain in verdict.domains)
 
 
 def classify(raw_jd_text: str, job_title: str = "") -> ClassificationResult:

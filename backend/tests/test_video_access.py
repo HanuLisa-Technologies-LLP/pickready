@@ -11,7 +11,9 @@ Four layers:
 * the ROUTES, against the migrated test database (skip cleanly without it):
   metadata states for ready / processing / failed / conversational-no-video,
   the preview URL plus its audit row, the download consent gate in both
-  directions, and the cross-tenant 404;
+  directions, the cross-tenant 404, and the HIRING TEAM scope (2026-09-24):
+  a Recruiter not assigned to the job is refused while an HR Manager, who
+  reaches every job in the tenant, is not;
 * the LEAK sweep over a real metadata response body.
 """
 from __future__ import annotations
@@ -50,9 +52,10 @@ def test_every_lifecycle_status_maps_to_exactly_one_dashboard_word() -> None:
     assert video_access.video_status_word(None) == video_access.VIDEO_NONE
 
 
-def test_a_conversational_session_reads_no_recording_not_failed() -> None:
-    """Plan resolution 5: proctoring stores no media, so a conversational
-    assessment has no video today. That is a normal state, never an error."""
+def test_a_session_with_no_recording_reads_no_recording_not_failed() -> None:
+    """A session that never opened its recording (one recorded before the
+    2026-09-22 ruling, or one that never started) is a normal state, never an
+    error."""
     word = video_access.video_status_word(None)
     assert word == video_access.VIDEO_NONE
     assert "No video was recorded" in video_access.VIDEO_STATUS_DETAIL[word]
@@ -114,10 +117,11 @@ def test_servable_requires_ready_plus_the_playable_object() -> None:
         status = lifecycle.READY
         s3_compressed_key = "assessment-compressed/x/y/assessment.mp4"
         stored_format = "mp4"
+        media_deleted_at = None
 
     rec = _Rec()
     assert video_access.is_servable(rec)
-    rec.status = lifecycle.PROCESSING
+    rec.status = lifecycle.COMPRESSING
     assert not video_access.is_servable(rec)
     rec.status = lifecycle.READY
     rec.stored_format = "webm"
@@ -126,6 +130,30 @@ def test_servable_requires_ready_plus_the_playable_object() -> None:
     rec.s3_compressed_key = ""
     assert not video_access.is_servable(rec)
     assert not video_access.is_servable(None)
+
+
+def test_deleted_media_is_not_servable_however_ready_the_row_looks() -> None:
+    """Retention and erasure delete OBJECTS; the row survives as provenance.
+    A signed URL onto a key that is gone renders as a broken player, which is
+    a worse answer than the sentence the dashboard already has for it."""
+    from datetime import datetime, timezone
+
+    class _Rec:
+        status = lifecycle.READY
+        s3_compressed_key = "assessment-compressed/x/y/assessment.mp4"
+        stored_format = "mp4"
+        media_deleted_at = None
+
+    rec = _Rec()
+    assert video_access.is_servable(rec)
+    assert not video_access.media_deleted(rec)
+    rec.media_deleted_at = datetime.now(timezone.utc)
+    assert not video_access.is_servable(rec)
+    assert video_access.media_deleted(rec)
+    assert (
+        video_access.video_status_word(lifecycle.READY, media_deleted=True)
+        == video_access.VIDEO_NONE
+    )
 
 
 def test_can_retry_mirrors_the_lifecycles_own_retryable_set() -> None:
@@ -186,15 +214,22 @@ def test_the_metadata_path_touches_no_media_and_no_object_store() -> None:
 
 def test_the_dashboard_queries_read_the_recording_in_one_statement() -> None:
     """No N+1: the latest recording and the latest session are LATERAL joins
-    inside the same statement as everything else, never a per-row query."""
+    inside the same statement as everything else, never a per-row query.
+
+    The job page's candidate table reads the session only: its mode and
+    video words left it in the stage 3 final sweeps, so a recording join
+    there would be a query for a column nothing renders."""
     for module in ("services/job_candidates.py", "services/dashboard.py"):
         source = (BACKEND / "app" / module).read_text(encoding="utf-8")
         assert "LEFT JOIN LATERAL" in source, module
-        assert "video_recordings vr" in source, module
         assert "assessment_conversations ac" in source, module
         # The pipeline package stays untouched by the dashboard read path;
         # the words come from the delivery layer's pure functions.
         assert "from app.services.video import" not in source, module
+    dashboard = (BACKEND / "app" / "services" / "dashboard.py").read_text(encoding="utf-8")
+    assert "video_recordings vr" in dashboard
+    table = (BACKEND / "app" / "services" / "job_candidates.py").read_text(encoding="utf-8")
+    assert "video_recordings" not in table
 
 
 def test_the_audit_actions_are_the_specifications() -> None:
@@ -222,6 +257,7 @@ async def _factory_or_skip():
 
 class _Fx:
     def __init__(self) -> None:
+        self.hr_user_id = uuid.uuid4()
         self.tenant_id = uuid.uuid4()
         self.other_tenant_id = uuid.uuid4()
         self.job_id = uuid.uuid4()
@@ -239,6 +275,7 @@ async def _seed(
     mode: str = "video_interview",
     recording_status: str | None = None,
     download_consent: bool | None = None,
+    assigned: bool = True,
 ) -> None:
     from app.core.db import superadmin_scope
     from app.models import Candidate, Job, JobStatus, LinkSource, Tenant
@@ -255,9 +292,33 @@ async def _seed(
                     s.add(Tenant(id=tenant_id, name=f"Vx {tenant_id.hex[:6]}",
                                  domain=f"{tenant_id}.vx.test"))
                 await s.flush()
+                # The two staff members the scope tests act as. The recruiter
+                # is ASSIGNED to the job unless the test says otherwise: a
+                # recording belongs to the job's hiring team (2026-09-24).
+                for user_id, role in (
+                    (fx.user_id, "recruiter"), (fx.hr_user_id, "hr_manager"),
+                ):
+                    await s.execute(
+                        text(
+                            "INSERT INTO users (id, tenant_id, email, full_name, "
+                            "role, status) VALUES (:u, :t, :e, 'Staff', :r, 'active')"
+                        ),
+                        {"u": user_id, "t": fx.tenant_id,
+                         "e": f"{user_id.hex[:12]}@vx.test", "r": role},
+                    )
                 s.add(Job(id=fx.job_id, tenant_id=fx.tenant_id, title="Engineer",
                           jd_json={}, status=JobStatus.ratified, ratified_at=now,
                           assessment_grade="non_managerial"))
+                await s.flush()
+                if assigned:
+                    await s.execute(
+                        text(
+                            "INSERT INTO job_assignments (tenant_id, job_id, "
+                            "user_id, assignment_role, active) "
+                            "VALUES (:t, :j, :u, 'recruiter', true)"
+                        ),
+                        {"t": fx.tenant_id, "j": fx.job_id, "u": fx.user_id},
+                    )
                 s.add(Candidate(id=fx.cand_id, email=f"c{fx.cand_id.hex[:8]}@t.test",
                                 full_name="Video Access Candidate",
                                 consent_databank=False,
@@ -288,8 +349,10 @@ async def _seed(
                         stored_format="mp4" if ready else None,
                         duration_seconds=1840.0 if ready else None,
                         compressed_size_bytes=48_324_721 if ready else None,
-                        s3_raw_key=keys.raw_key(fx.conv_id, fx.recording_id,
-                                                "video/webm"),
+                        # The single raw object a pre-0126 row names; no
+                        # builder for it survives, the stored key is the record.
+                        s3_raw_key=(f"assessment-raw/{fx.conv_id}/"
+                                    f"{fx.recording_id}/raw.webm"),
                         s3_compressed_key=keys.compressed_key(fx.conv_id,
                                                               fx.recording_id),
                         raw_deleted=ready,
@@ -311,14 +374,15 @@ async def _cleanup(factory, fx: _Fx) -> None:
                                 {"c": str(fx.cand_id)})
 
 
-def _user(fx: _Fx, *, tenant_id: uuid.UUID | None = None):
+def _user(fx: _Fx, *, tenant_id: uuid.UUID | None = None, hr: bool = False):
     from app.api.deps import CurrentUser
     from app.core.security import AUDIENCE_ORG
     from app.models import Role
 
-    return CurrentUser(user_id=fx.user_id,
+    return CurrentUser(user_id=fx.hr_user_id if hr else fx.user_id,
                        tenant_id=tenant_id or fx.tenant_id,
-                       role=Role.recruiter, audience=AUDIENCE_ORG)
+                       role=Role.hr_manager if hr else Role.recruiter,
+                       audience=AUDIENCE_ORG)
 
 
 async def _metadata(fx: _Fx, factory, **user_kwargs):
@@ -354,9 +418,11 @@ async def test_metadata_states_across_the_lifecycle() -> None:
         assert not out.preview_available and not out.download_available
         await _cleanup(factory, fx)
 
-        # Mid-pipeline video interview: Processing, nothing offered yet.
+        # A row written by the deleted video-interview mode, mid-pipeline:
+        # it still reads, labelled for what it was. Processing, nothing
+        # offered yet.
         fx = _Fx()
-        await _seed(factory, fx, recording_status=lifecycle.PROCESSING)
+        await _seed(factory, fx, recording_status=lifecycle.COMPRESSING)
         out = await _metadata(fx, factory)
         assert out.assessment_mode_label == "Video interview"
         assert out.video_status == "Processing"
@@ -480,7 +546,7 @@ async def test_preview_refuses_while_processing() -> None:
     engine, factory = await _factory_or_skip()
     fx = _Fx()
     try:
-        await _seed(factory, fx, recording_status=lifecycle.PROCESSING)
+        await _seed(factory, fx, recording_status=lifecycle.UPLOADED)
         async with factory() as s:
             async with superadmin_scope(s):
                 with pytest.raises(HTTPException) as excinfo:
@@ -568,7 +634,8 @@ async def test_download_succeeds_with_consent_and_audits(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_the_job_table_row_carries_the_new_metadata_words() -> None:
     """End to end through `ranked_candidates`: one query, and the row carries
-    the mode label, the report words and the video word."""
+    the report words. The mode and video words left the table in the stage 3
+    final sweeps: the recording is reached from the report's video section."""
     from app.core.db import superadmin_scope
     from app.services import job_candidates
 
@@ -578,15 +645,89 @@ async def test_the_job_table_row_carries_the_new_metadata_words() -> None:
         await _seed(factory, fx, recording_status=lifecycle.READY)
         async with factory() as s:
             async with superadmin_scope(s):
-                page = await job_candidates.ranked_candidates(
-                    s, fx.job_id, "non_managerial"
-                )
+                page = await job_candidates.ranked_candidates(s, fx.job_id)
         assert page.total == 1
         row = page.rows[0]
-        assert row["assessment_mode_label"] == "Video interview"
-        assert row["video_status"] == "Ready"
+        assert "assessment_mode_label" not in row
+        assert "video_status" not in row
         assert row["prism_report_status"] == "Not available"
         assert row["proctoring_report_status"] == "Not available"
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+# ── The hiring team, not the tenant (Vivekium release, 2026-09-24) ───────────
+
+
+def test_every_video_route_asks_for_the_hiring_team() -> None:
+    """The route dependency answers "may this role review at all"; the scope
+    answer is `require_hiring_team`, and every route reaches it through the
+    one gate function they already share."""
+    source = (BACKEND / "app" / "api" / "videos.py").read_text(encoding="utf-8")
+    gate = source[source.index("async def _link_or_404"):]
+    gate = gate[: gate.index("\nasync def ", 1)]
+    assert "video_access.require_hiring_team(" in gate
+    # Scope BEFORE the closure gate and before anything is loaded.
+    assert gate.index("require_hiring_team") < gate.index("require_readable")
+
+
+@pytest.mark.asyncio
+async def test_a_recruiter_not_assigned_to_the_job_cannot_watch_it(
+    monkeypatch,
+) -> None:
+    """`view_review_screen` is SCOPED for the Recruiter (RBAC 24). Holding it
+    on SOME job is not holding it on this one, so an unassigned Recruiter in
+    the SAME tenant is refused with a 403, before any URL is minted."""
+    from fastapi import HTTPException
+
+    from app.api import videos as mod
+    from app.core.db import superadmin_scope
+    from app.services import object_storage
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fx()
+    calls: list = []
+    monkeypatch.setattr(object_storage, "presigned_get_url", _fake_presigner(calls))
+    try:
+        await _seed(factory, fx, recording_status=lifecycle.READY,
+                    download_consent=True, assigned=False)
+        with pytest.raises(HTTPException) as metadata:
+            await _metadata(fx, factory)
+        assert metadata.value.status_code == 403
+        async with factory() as s:
+            async with superadmin_scope(s):
+                with pytest.raises(HTTPException) as preview:
+                    await mod.request_video_preview(
+                        fx.link_id, user=_user(fx), session=s
+                    )
+        assert preview.value.status_code == 403
+        assert calls == [], "a URL was minted for a refused request"
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_an_hr_manager_reaches_every_job_in_their_tenant(monkeypatch) -> None:
+    """The HR Manager's cell is unscoped, exactly as for the report and the
+    transcript: no assignment is needed, and nothing about the new scope may
+    narrow a role the matrix does not narrow."""
+    from app.api import videos as mod
+    from app.core.db import superadmin_scope
+    from app.services import object_storage
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fx()
+    monkeypatch.setattr(object_storage, "presigned_get_url", _fake_presigner([]))
+    try:
+        await _seed(factory, fx, recording_status=lifecycle.READY, assigned=False)
+        async with factory() as s:
+            async with superadmin_scope(s):
+                out = await mod.request_video_preview(
+                    fx.link_id, user=_user(fx, hr=True), session=s
+                )
+        assert out.disposition == "inline"
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()

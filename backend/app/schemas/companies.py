@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.models.enums import APPROVAL_CHAIN
 
@@ -159,51 +159,6 @@ class InviteAcceptOut(BaseModel):
     company_name: str
 
 
-class ApprovalLevelEntry(BaseModel):
-    active: bool = False
-    approver_user_id: uuid.UUID | None = None
-
-    @model_validator(mode="after")
-    def _approver_required_when_active(self) -> "ApprovalLevelEntry":
-        if self.active and self.approver_user_id is None:
-            raise ValueError("an active level requires approver_user_id")
-        return self
-
-
-class ApprovalLevelsIn(BaseModel):
-    config: dict[str, ApprovalLevelEntry]
-
-    @model_validator(mode="after")
-    def _only_known_levels(self) -> "ApprovalLevelsIn":
-        valid = {s.value for s in APPROVAL_CHAIN}
-        unknown = set(self.config) - valid
-        if unknown:
-            raise ValueError(f"unknown approval levels: {sorted(unknown)}")
-        return self
-
-
-class ApprovalLevelsOut(BaseModel):
-    config: dict[str, ApprovalLevelEntry]
-
-
-class EmailTemplateIn(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    subject: str = Field(min_length=1, max_length=500)
-    body: str = Field(min_length=1)
-
-
-class EmailTemplateOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    name: str
-    subject: str
-    body: str
-    version: int
-    is_active: bool
-    created_at: datetime
-
-
 class CompanyProfileResearchOut(BaseModel):
     """A researched DRAFT of the three profile sections (spec §30).
 
@@ -216,6 +171,13 @@ class CompanyProfileResearchOut(BaseModel):
     about_company: str = ""
     work_life: str = ""
     benefits: str = ""
+    #: Section name -> a key in `generation_sufficiency.EMPTY_STATE_COPY`, for
+    #: each section the sufficiency gate refused. A KEY, never a sentence:
+    #: the whole point of the gate is that the model never gets to narrate
+    #: its own uncertainty into a public page, and shipping a sentence here
+    #: would reopen that by a different door. Empty when every section had
+    #: enough material, so an older client simply sees nothing new.
+    empty_state_keys: dict[str, str] = {}
     #: The pages the sections were written from, so a recruiter can check them.
     #: Never a social-media host: `company_research.is_allowed_source` refuses
     #: Facebook, X, Reddit and Instagram on the URL rather than only in the

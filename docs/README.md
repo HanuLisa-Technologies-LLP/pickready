@@ -1,4 +1,4 @@
-# ReadyPick documentation
+# Vivekium documentation
 
 Everything written about this product lives under `docs/`. Five files stay at
 the repository root because a tool or a convention resolves them there:
@@ -15,11 +15,25 @@ design tooling reads them from the project root).
 | Understand how it is built | [architecture/ESD.md](architecture/ESD.md) |
 | Run it locally | [operations/SETUP.md](operations/SETUP.md) |
 | Deploy it | [operations/DEPLOY_AWS.md](operations/DEPLOY_AWS.md) |
+| Get the data back | [operations/DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) |
 | Know who may do what | [spec/RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) |
 | Know how candidates are evaluated | [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md) |
 | Follow a candidate or a job end to end | [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) |
+| Set up a job: JD, SWOT, Skills, publish, the lock | [spec/JOB_SETUP_FLOW.md](spec/JOB_SETUP_FLOW.md) |
+| Follow an assessment from invitation to PRISM Report | [spec/ASSESSMENT_FLOW.md](spec/ASSESSMENT_FLOW.md) |
+| Run or grade a candidate's code | [spec/CODE_EXECUTION.md](spec/CODE_EXECUTION.md) |
+| Know what runs where on AWS | [operations/INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) |
 | Add, route or debug a background task | [spec/BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) |
+| Prove a change works end to end, or reproduce a failure | [spec/HARNESS.md](spec/HARNESS.md) |
 | Change code without breaking a rule | [../claude.md](../claude.md) |
+
+Current job setup (the Vivekium simplification release, 2026-09-25): Sutra
+drafts Skills from the JD, the saved SWOT and the Company Profile; the team
+edits and saves them; the skills and the grade lock at the first candidate's
+start, and that snapshot is what every candidate is assessed against. Company
+Profile supplies company context and Drishti is optional context text only.
+There is no matrix, no Save Matrix and no freeze. Company DNA is a retired
+feature mentioned only in historical records and migration history.
 
 ## Precedence, when two documents disagree
 
@@ -57,6 +71,8 @@ document.
 | File | What it holds |
 |---|---|
 | [ESD.md](architecture/ESD.md) | Engineering and system design, implementation-aligned |
+| [AI_RUNTIME.md](architecture/AI_RUNTIME.md) | The AI runtime AS BUILT: retrieval, the reranker, the scoring lock, the eval layer and the release gate. Names what is NOT built, in the same document |
+| [ENGINEERING_AUDIT_2026-09-11.md](architecture/ENGINEERING_AUDIT_2026-09-11.md) | The LLD brief's seventeen audit deliverables, measured against this tree: three real gaps found and fixed, the refusals with reasons, and the honest debt inventory |
 | [adr/](architecture/adr/) | Architecture decision records |
 
 ### `spec/` — normative specifications
@@ -64,11 +80,20 @@ document.
 |---|---|
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
 | [HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) | The end-to-end candidate and client journeys, and the eight gates that hold them together |
+| [JOB_SETUP_FLOW.md](spec/JOB_SETUP_FLOW.md) | Job setup since the Vivekium release: the draft-only create, the dispatched SWOT, the Skills step and Save Skills, the three-step publish gate, the contract lock, the sweeps and the scenarios that pin each rule. Supersedes HIRING_WORKFLOW's Gates 3 and 4 |
+| [CANDIDATE_COMMUNICATIONS.md](spec/CANDIDATE_COMMUNICATIONS.md) | Who a signed-in candidate is, the idle rule, the one application form, messages and their notifications, reply threading (inert on pilot), the one outbound email writer and its sender, and what Delete My Profile does to the Firebase identity. "Email" means outbound email plus portal threads; there is no inbox sync |
+| [AI_RUNTIME_UPGRADE.md](spec/AI_RUNTIME_UPGRADE.md) | RPN-AI-UP-001, precedence rank 3a. The AI runtime, retrieval, evaluation and AI security. **Read it beside [verification/AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md)**, which records where its own section 2 audit turned out to be wrong |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
-| [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
+| [ASSESSMENT_FLOW.md](spec/ASSESSMENT_FLOW.md) | The Tatva Assessment end to end since the Vivekium release: invitation, the question budget and mix, the start and the contract lock, the server's turn clock, spoken answers, the four-stage scoring pipeline, and the Miti and Siddhi interfaces |
+| [CODE_EXECUTION.md](spec/CODE_EXECUTION.md) | Executed coding questions: the sandbox port, languages and limits, the private answer key, question writing proven in the sandbox, Run, Submit, review and score, the sweeps and the editor. Ships disabled on pilot, and says so |
+| [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths (including the Path P device pause), the one pause record, the audio rules, the report, retention |
 | [ASSESSMENT_QUESTION_FORMATS.md](spec/ASSESSMENT_QUESTION_FORMATS.md) | The six question formats and the evidence-dominance rule |
 | [BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) | How background work is dispatched, routed, retried and scheduled after Celery |
+| [RETRIEVAL.md](spec/RETRIEVAL.md) | Candidate Retrieval (Yukti) and Evidence RAG (Vaada, Miti, Siddhi): two use cases, the shared primitives and their one owner each, the tool-layer boundary, index provenance and repair |
+| [HARNESS.md](spec/HARNESS.md) | RPN-HARNESS-001. The engineering harness: scenarios, fault injection at the real seams, run identity and replay, the layered evaluators, baselines and the tiers CI fails on. It is the contract `backend/harness/` conforms to, and it records the findings the harness itself produced |
+| [VIVEKIUM_SPRINT_FEATURES.md](spec/VIVEKIUM_SPRINT_FEATURES.md) | The eight-feature sprint brief, RECONCILED. Its section 3 is the conflict register: seven places where the brief and a standing hard rule cannot both be true. Read that before building anything from it |
+| [ARCHITECTURE.md](spec/ARCHITECTURE.md) | Normative architecture decisions. AD-1: the database is authoritative, and A2A artifacts are provenance and hand-off records only |
 | [ARCHITECTURE_DIRECTION_2026-08-28.md](spec/ARCHITECTURE_DIRECTION_2026-08-28.md) | Advisory direction, not a requirement |
 
 ### `operations/` — running it
@@ -76,9 +101,14 @@ document.
 |---|---|
 | [SETUP.md](operations/SETUP.md) | Local development from a clean clone |
 | [DEPLOY_AWS.md](operations/DEPLOY_AWS.md) | AWS deployment runbook |
+| [INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) | What runs where on pilot: compute, data, the object store's prefixes and backstop lifecycle, network, schedules, the alarms this release added, and the switches that are off |
+| [DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) | Restoring the database, and what Redis and S3 do not restore with it. Written, never rehearsed, and says so |
 | [DATABASE_CREDENTIAL_MIGRATION.md](operations/DATABASE_CREDENTIAL_MIGRATION.md) | Rotating database credentials |
+| [JUDGE0_RUNBOOK.md](operations/JUDGE0_RUNBOOK.md) | The code sandbox: topology, monthly cost, the staged rollout, and the outage runbook. Not yet provisioned, and says so |
+| [PICKREADY_APP_ADDRESSES.md](operations/PICKREADY_APP_ADDRESSES.md) | The two `pickready.app` mailboxes still in the code, where they are, and the owner question they wait on |
 | [TEST_BASELINE.md](operations/TEST_BASELINE.md) | What the suite covers and the current numbers |
 | [SKIPS.md](operations/SKIPS.md) | The declared skip inventory, enforced by a test |
+| [LEGACY_TABLES.md](operations/LEGACY_TABLES.md) | Every table and column dropped behind an emptiness guard, and every one kept as history, with the pilot counts and the reason (owner ruling S4) |
 
 ### `reference/` — lookup material
 | File | What it holds |
@@ -91,6 +121,11 @@ document.
 | [VERIFICATION_RESULTS.md](verification/VERIFICATION_RESULTS.md) | Live vendor runs that succeeded, with dates |
 | [VERIFICATION_PENDING.md](verification/VERIFICATION_PENDING.md) | What remains unproven, stated plainly |
 | [PROCTORING_AND_FORMATS_VERIFICATION.md](verification/PROCTORING_AND_FORMATS_VERIFICATION.md) | What was executed for proctoring and question formats, and what was not |
+| [AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md) | RPN-AI-UP-001 W0. What was reachable, what was exercised, and the live pilot row counts on 2026-09-09. A measurement, not a description: never edit it to match new behaviour |
+| [SECURITY_REPORT.md](verification/SECURITY_REPORT.md) | The 2026-09-17 production hardening pass. Nineteen findings by severity, each with its root cause, its fix and what was actually run to verify it, plus a closing list of what could NOT be verified |
+| [PRODUCTION_READINESS.md](verification/PRODUCTION_READINESS.md) | Whether this is safe to deploy and what is still owed. Read the go/no-go table first |
+| [PERFORMANCE_REPORT.md](verification/PERFORMANCE_REPORT.md) | Query patterns, indexes, caching and bundle cost. Reasoned from code and tests, not profiled: it says so at the top and again at the bottom |
+| [SEO_REPORT.md](verification/SEO_REPORT.md) | The public web surface, and the indexability of everything that must stay OUT of the index |
 
 These two are load-bearing: `backend/tests/test_no_live_vendor_claims.py`
 reads them, so a claim about a live call must be evidenced in
@@ -112,7 +147,7 @@ contract:
 
 | Path | Read by |
 |---|---|
-| `docs/product/Readypick Hiring Philosophy.md` | `services/hiring/dna_compilation.py`, `tests/test_runbook_parity.py`, `tests/test_runbook_reconciliation.py` |
+| `docs/product/Readypick Hiring Philosophy.md` | `services/hiring/runbook_data/`, `tests/test_runbook_parity.py`, `tests/test_runbook_reconciliation.py` |
 | `docs/operations/SKIPS.md` | `tests/test_skip_inventory.py` |
 | `docs/verification/VERIFICATION_*.md` | `tests/test_no_live_vendor_claims.py` |
 | `docs/history/LEGACY_RESET_SURVEY.md` | written by `app/scripts/legacy_reset.py --survey` |

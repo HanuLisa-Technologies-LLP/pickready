@@ -5,12 +5,13 @@ THREE THINGS THE BROWSER IS NOT TRUSTED WITH
 1. THE PATH. The browser sends an identifier; `catalog.spec_for` says which
    consequence path it takes, and `classify` below moves an event DOWN a path
    when its own duration does not clear the rule the identifier claims. A
-   focus loss under the ignore window is logged, not warned. A camera failure
-   that recovered inside the recovery window is an interruption, not a
-   termination. A browser cannot escalate by naming a graver identifier.
+   focus loss under the ignore window is logged, not warned. A camera or
+   microphone loss shorter than the glitch window is an interruption, not a
+   pause. A browser cannot escalate by naming a graver identifier.
 2. THE COUNT. The warning number comes from `state.increment_warning`, an
    atomic Redis INCR, and is mirrored onto the row afterwards. The browser
-   never sends a count and would not be believed if it did.
+   never sends a count and would not be believed if it did. The same holds for
+   the pause count, which is the number of pause rows (`device_pause.py`).
 3. THE VERDICT. Whether the third warning ends the assessment is the
    recruiter's job-level setting, read from `jobs.proctoring_warning_policy`
    at the moment it matters and never cached in the browser.
@@ -24,24 +25,43 @@ warning lands. The first warning-worthy event in a batch takes the warning;
 the rest are recorded with `warning_issued = false` so the report can still
 say how many times the thing happened.
 
+A WARNING STOPS THE CLOCK WHILE IT IS ON THE SCREEN (PLAN-p3 3.7). A warning
+that is not the end of the session opens a `warning` pause, closed by the
+candidate's acknowledgement (`acknowledge_warning`) and capped at
+`assessment_warning_pause_max_seconds` whether or not the acknowledgement ever
+arrives. The time a candidate spends reading what they must fix is not taken
+from their answer.
+
+THE DEVICE PAUSE (the fourth path, 2026-09-24)
+---------------------------------------------
+A camera or microphone loss that clears the glitch window pauses the
+assessment (`device_pause.py` decides; this module records and acts). Every
+batch and every heartbeat first asks whether an open pause has run past its
+grace (`enforce_pause`), because a candidate who never comes back sends no
+recovery for anything to react to, and the answer must not wait for the
+hourly sweep when a request is already here.
+
 WHAT A TERMINATION DOES, IN ORDER
 ---------------------------------
 Records the event, closes the proctoring session with its outcome and reason,
-marks the conversation terminated so `gate.require_active` refuses the next
-turn, enqueues `pickready.run_functional_assessment` so the PRISM Report is
-written from the answers saved so far, and returns a plain-language message
-for the candidate's screen. It never deletes an answer.
+closes any pause still open, marks the conversation terminated so
+`gate.require_active` refuses the next turn, hands
+`pickready.run_functional_assessment` to the dispatcher to run AFTER the
+transaction commits (so the scorer can never read a session the request then
+rolled back), and returns a plain-language message for the candidate's screen.
+It never deletes an answer.
 """
 from __future__ import annotations
 
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.assessment import AssessmentConversation
 from app.models.proctoring import (
     ENDED_OUTCOMES,
@@ -60,10 +80,12 @@ from app.schemas.proctoring import (
     EventIn,
     HeartbeatOut,
     IngestOut,
+    PauseOut,
     TerminationOut,
     WarningOut,
 )
-from app.services.proctoring import catalog, identity, phrasing, state
+from app.services.assessment_conversation import pauses
+from app.services.proctoring import catalog, device_pause, identity, phrasing, state
 from app.services.proctoring.config import ProctoringConfig, get_config
 
 logger = logging.getLogger(__name__)
@@ -78,6 +100,12 @@ __all__ = [
     "NOTE_WITHIN_DISTANCE",
     "NOTE_NO_WARNING_LEFT",
     "NOTE_BATCH_ALREADY_WARNED",
+    "NOTE_PAUSE_OPENED",
+    "NOTE_ALREADY_PAUSED",
+    "NOTE_PAUSE_LIMIT",
+    "NOTE_RESUMED",
+    "NOTE_NOT_PAUSED",
+    "NOTE_RECOVERED_TOO_LATE",
     "RateLimited",
     "SessionEnded",
     "Classified",
@@ -86,12 +114,15 @@ __all__ = [
     "decide_warning",
     "outcome_for_termination",
     "session_quality_for",
-    "enqueue_assessment",
+    "enqueue_after_commit",
     "ingest",
     "apply_server_event",
     "heartbeat",
     "terminate",
     "end_session",
+    "enforce_pause",
+    "pause_out",
+    "acknowledge_warning",
     "termination_out",
 ]
 
@@ -102,8 +133,8 @@ __all__ = [
 CONVERSATION_TERMINATED = "terminated"
 
 #: `metadata_json` key under which the server records WHY an event took a
-#: different path from the one its identifier names. Internal; the report
-#: reads it to decide what counts as an occurrence.
+#: different path from the one its identifier names, or what it did about it.
+#: Internal; the report reads it to decide what counts as an occurrence.
 NOTE_KEY = "server_note"
 NOTE_WITHIN_COOLDOWN = "within_cooldown"
 NOTE_ALREADY_REPORTED = "already_reported_this_session"
@@ -112,22 +143,36 @@ NOTE_DOWNGRADED_FROM = "downgraded_from"
 NOTE_WITHIN_DISTANCE = "within_distance_threshold"
 NOTE_NO_WARNING_LEFT = "no_warning_left"
 NOTE_BATCH_ALREADY_WARNED = "batch_already_warned"
+#: The device pause notes. A loss either opened a pause, arrived while one
+#: was already open (the same interruption, not a new occurrence), or arrived
+#: with every pause used. A recovery either resumed the assessment, found
+#: nothing paused, or came after the grace.
+NOTE_PAUSE_OPENED = "pause_opened"
+NOTE_ALREADY_PAUSED = "already_paused"
+NOTE_PAUSE_LIMIT = "pause_limit_reached"
+NOTE_RESUMED = "resumed"
+NOTE_NOT_PAUSED = "not_paused"
+NOTE_RECOVERED_TOO_LATE = "recovered_after_grace"
 
 #: Consecutive-evidence counter names in `state`.
 _IDENTITY_RUN = "identity_mismatch"
 
 #: Terminations that are a technical failure rather than candidate behaviour
 #: (section 7.3: "A candidate whose laptop camera died must never be presented
-#: as suspicious"). `CAMERA_STREAM_FAILED` always is. `INTEGRITY_CHECK_FAILED`
-#: is ambiguous (a dead tab or a candidate poking at the page look the same
-#: from the server), so it is treated as technical ONLY when the session had
-#: issued no warning at all: nothing else in the session suggested the
-#: candidate was doing anything, and the honest reading of an unexplained
-#: failure on a clean session is that something broke.
-_ALWAYS_TECHNICAL = frozenset({"CAMERA_STREAM_FAILED"})
+#: as suspicious"). Both ends of the device pause always are: the report
+#: names the device and what happened to it, and the outcome does not guess
+#: why. `INTEGRITY_CHECK_FAILED` is ambiguous (a dead tab or a candidate
+#: poking at the page look the same from the server), so it is treated as
+#: technical ONLY when the session had issued no warning at all: nothing else
+#: in the session suggested the candidate was doing anything, and the honest
+#: reading of an unexplained failure on a clean session is that something
+#: broke.
+_ALWAYS_TECHNICAL = catalog.DEVICE_REASONS
 _TECHNICAL_WHEN_CLEAN = frozenset({"INTEGRITY_CHECK_FAILED"})
 
 _MS_PER_SECOND = 1000
+
+Enqueue = Callable[[str], None]
 
 
 class RateLimited(RuntimeError):
@@ -177,8 +222,10 @@ def classify(event: EventIn, config: ProctoringConfig) -> Classified:
         return Classified(kind, catalog.PATH_C, {NOTE_KEY: NOTE_UNDER_IGNORE_WINDOW})
     if kind == "INTEGRITY_CHECK_FAILED" and _below(duration, config.integrity_failure_termination_seconds):
         return Classified("INTEGRITY_CHECK_WARNING", catalog.PATH_C, {NOTE_DOWNGRADED_FROM: kind})
-    if kind == "CAMERA_STREAM_FAILED" and _below(duration, config.camera_recovery_seconds):
-        return Classified("CAMERA_STREAM_INTERRUPTED", catalog.PATH_C, {NOTE_DOWNGRADED_FROM: kind})
+    if kind in catalog.PAUSING and _below(duration, config.device_glitch_seconds):
+        return Classified(
+            catalog.INTERRUPTED_FORM[kind], catalog.PATH_C, {NOTE_DOWNGRADED_FROM: kind}
+        )
     if kind == "CAMERA_OBSTRUCTED" and _below(duration, config.obstruction_seconds):
         return Classified("FACE_ABSENT_BRIEF", catalog.PATH_C, {NOTE_DOWNGRADED_FROM: kind})
     if kind == "FACE_ABSENT_EXTENDED" and _below(duration, config.face_absent_extended_seconds):
@@ -225,12 +272,26 @@ def session_quality_for(measured_fps: float | None, config: ProctoringConfig) ->
     return QUALITY_GOOD
 
 
-def enqueue_assessment(link_id: str) -> None:
-    """Score what was answered and write the PRISM Report. The proctoring
-    report is generated by that task afterwards, so the two never race."""
-    from app.workers.dispatch import dispatch
+def enqueue_after_commit(session: AsyncSession) -> Enqueue:
+    """The default way a termination orders the PRISM Report: score what was
+    answered, AFTER this transaction commits.
 
-    dispatch("pickready.run_functional_assessment", args=[link_id])
+    Dispatching before the commit (what this replaced) let the scorer start
+    against a session the request could still roll back, and a request that
+    raised afterwards left a task running about a termination that never
+    happened. `dispatch_after_commit` resolves the task and serialises the
+    arguments now, inside the request, and invokes from SQLAlchemy's
+    `after_commit`; a lost invoke is repaired by `release_held_assessments`,
+    hourly. The proctoring report is generated by that task afterwards, so
+    the two never race.
+    """
+
+    def _enqueue(link_id: str) -> None:
+        from app.workers.dispatch import dispatch_after_commit
+
+        dispatch_after_commit(session, "pickready.run_functional_assessment", args=[link_id])
+
+    return _enqueue
 
 
 def termination_out(ps: ProctoringSession) -> TerminationOut:
@@ -251,7 +312,7 @@ class _Run:
     policy: str
     config: ProctoringConfig
     now: datetime
-    enqueue: Callable[[str], None]
+    enqueue: Enqueue
     warnings_used: int
     warned_this_batch: bool = False
     accepted: int = 0
@@ -275,8 +336,13 @@ def _store(
     metadata: dict[str, Any],
     warning_issued: bool = False,
     warning_number: int | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> ProctoringEvent:
+    # The id is set HERE, not left to the column default: a SQLAlchemy default
+    # lands at INSERT, and a pause opened for this event names it before any
+    # flush has happened.
     row = ProctoringEvent(
+        id=event_id or uuid.uuid4(),
         tenant_id=run.ps.tenant_id,
         proctoring_session_id=run.ps.id,
         event_type=event_type,
@@ -305,7 +371,10 @@ async def end_session(
     """Close the proctoring session and the conversation under it.
 
     Shared by every way a session can end early: a Path A event, the third
-    warning under a terminate policy, and the reconciler's abandonment sweep.
+    warning under a terminate policy, the end of the device pause, and the
+    reconciler's abandonment sweep. Any pause still open is closed at `now` (or
+    at its own cap, if that came first): an ended assessment has no clock left
+    to stop.
     """
     ps.outcome = outcome
     ps.ended_at = now
@@ -314,6 +383,7 @@ async def end_session(
     conversation = await session.get(AssessmentConversation, ps.conversation_id)
     if conversation is not None and conversation.completed_at is None:
         conversation.status = CONVERSATION_TERMINATED
+    await pauses.close_all_open(session, ps.conversation_id, at=now)
     await session.flush()
     await state.clear_session(ps.id)
 
@@ -328,14 +398,15 @@ async def terminate(
     duration_ms: int | None = None,
     confidence: float | None = None,
     metadata: dict[str, Any] | None = None,
-    enqueue: Callable[[str], None] = enqueue_assessment,
+    enqueue: Enqueue | None = None,
 ) -> TerminationOut:
-    """Path A. Records the terminating event, ends the session, enqueues the
-    report and returns the candidate's message."""
+    """Path A. Records the terminating event, ends the session, orders the
+    report after commit and returns the candidate's message."""
     if reason_code not in catalog.TERMINATING:
         raise ValueError(f"{reason_code!r} is not a Path A event")
     session.add(
         ProctoringEvent(
+            id=uuid.uuid4(),
             tenant_id=ps.tenant_id,
             proctoring_session_id=ps.id,
             event_type=reason_code,
@@ -355,8 +426,214 @@ async def terminate(
         "proctoring.terminated session_id=%s reason=%s outcome=%s",
         ps.id, reason_code, outcome,
     )
-    enqueue(str(ps.job_candidate_link_id))
+    (enqueue or enqueue_after_commit(session))(str(ps.job_candidate_link_id))
     return termination_out(ps)
+
+
+# ── The device pause ─────────────────────────────────────────────────────────
+
+
+async def _terminate_timed_out(
+    session: AsyncSession,
+    ps: ProctoringSession,
+    config: ProctoringConfig,
+    now: datetime,
+    pause_row,
+    *,
+    enqueue: Enqueue | None,
+    source: str,
+) -> TerminationOut:
+    deadline = device_pause.grace_deadline(pause_row, config)
+    return await terminate(
+        session, ps, "DEVICE_RECOVERY_TIMED_OUT", now,
+        occurred_at=deadline,
+        duration_ms=int((deadline - pause_row.started_at).total_seconds() * _MS_PER_SECOND),
+        metadata={"source": source},
+        enqueue=enqueue,
+    )
+
+
+async def enforce_pause(
+    session: AsyncSession,
+    ps: ProctoringSession,
+    *,
+    now: datetime,
+    enqueue: Enqueue | None = None,
+) -> TerminationOut | None:
+    """End the session if its device pause has run past the grace.
+
+    Returns the termination rather than raising it, so the caller's
+    transaction COMMITS the ended session: a raise would roll the ending back
+    and the next request would find the same expired pause again. Called on
+    every event batch and heartbeat, by the hourly reconciler for a browser
+    that never came back, and by any assessment route that wants the answer
+    before it proceeds.
+    """
+    config = get_config()
+    row = await device_pause.expired_pause(session, ps, now=now, config=config)
+    if row is None:
+        return None
+    return await _terminate_timed_out(
+        session, ps, config, now, row, enqueue=enqueue, source="grace_exceeded"
+    )
+
+
+async def pause_out(session: AsyncSession, ps: ProctoringSession) -> PauseOut | None:
+    """The device pause for the candidate's screen, or None once the session
+    has ended (the termination is what the screen shows then)."""
+    if ps.outcome in ENDED_OUTCOMES:
+        return None
+    config = get_config()
+    current = await device_pause.state(session, ps, config=config)
+    message = None
+    if current.paused:
+        message = phrasing.pause_message(
+            current.opened_by,
+            pauses_used=current.pauses_used,
+            max_pauses=current.max_pauses,
+            grace_seconds=config.device_grace_seconds,
+        )
+    return PauseOut(
+        paused=current.paused,
+        message=message,
+        grace_deadline_at=current.grace_deadline_at,
+        pauses_used=current.pauses_used,
+        max_pauses=current.max_pauses,
+    )
+
+
+async def _pause(
+    run: _Run,
+    classified: Classified,
+    *,
+    occurred_at: datetime,
+    duration_ms: int | None,
+    confidence: float | None,
+    question_id: uuid.UUID | None,
+    metadata: dict[str, Any],
+) -> None:
+    """A camera or microphone loss that cleared the glitch window."""
+    kind = classified.event_type
+    event_id = uuid.uuid4()
+    completed_loss = duration_ms is not None
+    started_at = None
+    if completed_loss:
+        # The browser reports a loss it already saw end (its batch was held
+        # while it was offline). The pause is dated back by the measured
+        # duration so the clock is credited, and settled at once below.
+        started_at = run.now - timedelta(milliseconds=duration_ms)
+    decision = await device_pause.begin(
+        run.session, run.ps, now=run.now, ref_id=event_id, config=run.config,
+        started_at=started_at,
+    )
+    if decision is device_pause.Decision.SESSION_ENDED:
+        run.termination = termination_out(run.ps)
+        return
+    note = {
+        device_pause.Decision.PAUSED: NOTE_PAUSE_OPENED,
+        device_pause.Decision.ALREADY_PAUSED: NOTE_ALREADY_PAUSED,
+        device_pause.Decision.LIMIT_EXCEEDED: NOTE_PAUSE_LIMIT,
+        device_pause.Decision.TIMED_OUT: NOTE_ALREADY_PAUSED,
+    }[decision]
+    _store(
+        run, event_type=kind, path=catalog.PATH_P, occurred_at=occurred_at,
+        duration_ms=duration_ms, confidence=confidence, question_id=question_id,
+        metadata={**metadata, **classified.note, NOTE_KEY: note}, event_id=event_id,
+    )
+    if decision is device_pause.Decision.LIMIT_EXCEEDED:
+        run.accepted += 1
+        run.termination = await terminate(
+            run.session, run.ps, "DEVICE_PAUSE_LIMIT_EXCEEDED", run.now,
+            occurred_at=occurred_at, metadata={"device_event": kind}, enqueue=run.enqueue,
+        )
+        return
+    if decision is device_pause.Decision.TIMED_OUT:
+        await _recover_or_end(run, occurred_at=occurred_at, metadata={}, record=False)
+        return
+    logger.info(
+        "proctoring.device_pause session_id=%s event=%s decision=%s",
+        run.ps.id, kind, decision.value,
+    )
+    if decision is device_pause.Decision.PAUSED and completed_loss:
+        if duration_ms > _ms(run.config.device_grace_seconds):
+            # The device was gone for longer than the grace before the browser
+            # could say so. The rule is the same whether the server heard
+            # about it live or afterwards.
+            pause_row = await pauses.unclosed_pause(
+                run.session, run.ps.conversation_id, pauses.PAUSE_DEVICE_LOSS
+            )
+            if pause_row is None:  # pragma: no cover - begin() just opened it
+                raise RuntimeError(f"device pause vanished under the lock on {run.ps.id}")
+            run.accepted += 1
+            run.termination = await _terminate_timed_out(
+                run.session, run.ps, run.config, run.now, pause_row,
+                enqueue=run.enqueue, source="reported_after_grace",
+            )
+            return
+        await _recover_or_end(
+            run, occurred_at=occurred_at, metadata={"source": "reported_after_recovery"},
+            record=True,
+        )
+
+
+async def _recover_or_end(
+    run: _Run, *, occurred_at: datetime, metadata: dict[str, Any], record: bool
+) -> None:
+    """The recovery half: close the pause inside the grace, or end the session.
+
+    `record` is False when the caller already stored the event that triggered
+    this (a loss that found the grace already spent), so the activity log does
+    not show a recovery nobody reported.
+    """
+    decision, elapsed_ms = await device_pause.recover(
+        run.session, run.ps, now=run.now, config=run.config
+    )
+    if decision is device_pause.Decision.SESSION_ENDED:
+        run.termination = termination_out(run.ps)
+        return
+    note = {
+        device_pause.Decision.RESUMED: NOTE_RESUMED,
+        device_pause.Decision.NOT_PAUSED: NOTE_NOT_PAUSED,
+        device_pause.Decision.TIMED_OUT: NOTE_RECOVERED_TOO_LATE,
+    }[decision]
+    if record:
+        _store(
+            run, event_type=catalog.DEVICE_RECOVERED, path=catalog.PATH_C,
+            occurred_at=occurred_at, duration_ms=elapsed_ms, confidence=None,
+            question_id=None, metadata={**metadata, NOTE_KEY: note},
+        )
+    if decision is device_pause.Decision.TIMED_OUT:
+        pause_row = await pauses.unclosed_pause(
+            run.session, run.ps.conversation_id, pauses.PAUSE_DEVICE_LOSS
+        )
+        run.accepted += 1
+        if pause_row is None:  # pragma: no cover - recover() just found it open
+            raise RuntimeError(f"device pause vanished under the lock on {run.ps.id}")
+        run.termination = await _terminate_timed_out(
+            run.session, run.ps, run.config, run.now, pause_row,
+            enqueue=run.enqueue, source="recovered_after_grace",
+        )
+        return
+    logger.info(
+        "proctoring.device_recovery session_id=%s decision=%s",
+        run.ps.id, decision.value,
+    )
+
+
+
+# ── The state machine ────────────────────────────────────────────────────────
+
+
+async def _open_warning_pause(run: _Run, event_id: uuid.UUID) -> None:
+    """Stop the clock while the warning is on the candidate's screen."""
+    await pauses.open_pause(
+        run.session,
+        run.ps.conversation_id,
+        pauses.PAUSE_WARNING,
+        at=run.now,
+        ref_id=event_id,
+        max_seconds=get_settings().assessment_warning_pause_max_seconds,
+    )
 
 
 async def _apply(
@@ -368,8 +645,13 @@ async def _apply(
     confidence: float | None,
     question_id: uuid.UUID | None,
     metadata: dict[str, Any],
+    event_id: uuid.UUID | None = None,
 ) -> None:
-    """Apply one classified event to the session. The whole state machine."""
+    """Apply one classified event to the session. The whole state machine.
+
+    `event_id` names the row a logged-only event is stored under, for a
+    caller that needs to find it again (the speech rule extends one event's
+    duration across a run of chunks)."""
     kind, path = classified.event_type, classified.path
     spec = catalog.spec_for(kind)
     meta = {**metadata, **classified.note}
@@ -383,11 +665,22 @@ async def _apply(
         )
         return
 
+    if path == catalog.PATH_P:
+        await _pause(
+            run, classified, occurred_at=occurred_at, duration_ms=duration_ms,
+            confidence=confidence, question_id=question_id, metadata=metadata,
+        )
+        return
+
+    if kind == catalog.DEVICE_RECOVERED:
+        await _recover_or_end(run, occurred_at=occurred_at, metadata=meta, record=True)
+        return
+
     if path == catalog.PATH_C:
         _store(
             run, event_type=kind, path=path, occurred_at=occurred_at,
             duration_ms=duration_ms, confidence=confidence,
-            question_id=question_id, metadata=meta,
+            question_id=question_id, metadata=meta, event_id=event_id,
         )
         if kind == "IDENTITY_CHECK_MISMATCH":
             await _identity_check(run, meta)
@@ -444,7 +737,7 @@ async def _apply(
             run.ps.id, spec.cooldown_key, getattr(run.config, spec.cooldown)
         )
     decision = decide_warning(number, run.config.max_warnings, run.policy)
-    _store(
+    stored = _store(
         run, event_type=kind, path=path, occurred_at=occurred_at,
         duration_ms=duration_ms, confidence=confidence, question_id=question_id,
         metadata=meta, warning_issued=True, warning_number=number,
@@ -461,6 +754,7 @@ async def _apply(
         run.enqueue(str(run.ps.job_candidate_link_id))
         run.termination = termination_out(run.ps)
         return
+    await _open_warning_pause(run, stored.id)
     run.warning = WarningOut(
         number=number,
         max_warnings=run.config.max_warnings,
@@ -500,19 +794,27 @@ async def _start(
     ps: ProctoringSession,
     policy: str,
     now: datetime,
-    enqueue: Callable[[str], None],
+    enqueue: Enqueue | None,
 ) -> _Run:
     if ps.outcome in ENDED_OUTCOMES:
         raise SessionEnded(ps.outcome)
     config = get_config()
     used = await state.seed_warnings(ps.id, ps.warnings_used)
-    return _Run(
+    run = _Run(
         session=session, ps=ps, policy=policy, config=config, now=now,
-        enqueue=enqueue, warnings_used=used,
+        enqueue=enqueue or enqueue_after_commit(session), warnings_used=used,
     )
+    # A pause that ran past its grace is settled before anything in this
+    # batch is applied: whatever the batch carries happened after the moment
+    # the rules had already ended the session.
+    termination = await enforce_pause(session, ps, now=now, enqueue=run.enqueue)
+    if termination is not None:
+        run.accepted += 1
+        run.termination = termination
+    return run
 
 
-def _out(run: _Run) -> IngestOut:
+async def _out(run: _Run) -> IngestOut:
     return IngestOut(
         accepted=run.accepted,
         warnings_used=run.warnings_used,
@@ -520,6 +822,7 @@ def _out(run: _Run) -> IngestOut:
         status=run.ps.outcome,
         warning=run.warning,
         termination=run.termination,
+        pause=await pause_out(run.session, run.ps),
     )
 
 
@@ -530,7 +833,7 @@ async def ingest(
     batch: EventBatchIn,
     *,
     now: datetime,
-    enqueue: Callable[[str], None] = enqueue_assessment,
+    enqueue: Enqueue | None = None,
 ) -> IngestOut:
     """One client batch. Raises `SessionEnded`, `RateLimited` or
     `state.StateUnavailable`; the API maps those to 409, 429 and 503."""
@@ -554,7 +857,7 @@ async def ingest(
             metadata=dict(event.metadata),
         )
     await session.flush()
-    return _out(run)
+    return await _out(run)
 
 
 async def apply_server_event(
@@ -565,22 +868,44 @@ async def apply_server_event(
     *,
     now: datetime,
     duration_ms: int | None = None,
+    question_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
-    enqueue: Callable[[str], None] = enqueue_assessment,
+    enqueue: Enqueue | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> IngestOut:
-    """A SERVER-derived event (second voice, a heartbeat gap) through the same
-    machinery a client event goes through, so a derived warning counts on the
-    same counter and obeys the same policy."""
+    """A SERVER-derived event (second voice, speech during a question that
+    takes no spoken answer) through the same machinery a client event goes
+    through, so a derived warning counts on the same counter and obeys the
+    same policy."""
     if catalog.spec_for(event_type).client_emittable:
         raise ValueError(f"{event_type!r} is a client event; send it through ingest")
     run = await _start(session, ps, policy, now, enqueue)
-    await _apply(
-        run, Classified(event_type, catalog.spec_for(event_type).path),
-        occurred_at=now, duration_ms=duration_ms, confidence=None,
-        question_id=None, metadata=dict(metadata or {}),
-    )
+    if not run.ended:
+        await _apply(
+            run, Classified(event_type, catalog.spec_for(event_type).path),
+            occurred_at=now, duration_ms=duration_ms, confidence=None,
+            question_id=question_id, metadata=dict(metadata or {}), event_id=event_id,
+        )
     await session.flush()
-    return _out(run)
+    return await _out(run)
+
+
+async def acknowledge_warning(
+    session: AsyncSession, ps: ProctoringSession, *, now: datetime
+) -> bool:
+    """The candidate dismissed the warning on their screen: the clock runs
+    again. True when a warning pause was open and this closed it; a repeat
+    acknowledgement, or one for a warning whose cap already passed, is a
+    no-op rather than an error, because the browser retries on a lost reply."""
+    if ps.outcome in ENDED_OUTCOMES:
+        return False
+    open_pause = await pauses.current_pause(
+        session, ps.conversation_id, pauses.PAUSE_WARNING, at=now
+    )
+    if open_pause is None:
+        return False
+    await pauses.close_pause(session, ps.conversation_id, pauses.PAUSE_WARNING, at=now)
+    return True
 
 
 async def heartbeat(
@@ -590,29 +915,45 @@ async def heartbeat(
     identity_matched: bool | None,
     monitoring: dict[str, bool],
     now: datetime,
+    enqueue: Enqueue | None = None,
 ) -> HeartbeatOut:
     """Section 9. A gap over `heartbeat_gap_seconds` is a monitoring
     interruption and appears in the report; a heartbeat that reports a
-    matching identity check resets the consecutive-mismatch run.
+    matching identity check resets the consecutive-mismatch run; a device
+    pause past its grace ends the session here, on the next heartbeat.
 
     An ended session answers with its termination rather than a 409, because
     the browser that missed the terminating response is exactly the one still
     sending heartbeats.
+
+    A GAP IS RECORDED, NEVER A TERMINATION. PLAN-p3 3.0 item 7 proposed ending
+    a session whose heartbeats stopped for longer than the grace. Not done:
+    from here a candidate's dead network and this platform's own outage or a
+    deploy look identical, and ending every in-flight assessment because the
+    API was unreachable for three minutes is the unfair termination the plan's
+    own risk list forbids. The gap is stated in the report with its length,
+    and a camera or microphone the browser saw stop is paused and timed out
+    on its own evidence.
     """
     config = get_config()
+    if ps.outcome not in ENDED_OUTCOMES:
+        await enforce_pause(session, ps, now=now, enqueue=enqueue)
     if ps.outcome in ENDED_OUTCOMES:
+        await session.flush()
         return HeartbeatOut(
             status=ps.outcome,
             warnings_used=ps.warnings_used,
             server_time=now,
             interval_seconds=config.heartbeat_interval_seconds,
             termination=termination_out(ps),
+            pause=None,
         )
     previous = ps.last_heartbeat_at or ps.started_at or ps.consented_at
     gap_ms = int((now - previous).total_seconds() * _MS_PER_SECOND)
     if gap_ms > _ms(config.heartbeat_gap_seconds):
         session.add(
             ProctoringEvent(
+                id=uuid.uuid4(),
                 tenant_id=ps.tenant_id,
                 proctoring_session_id=ps.id,
                 event_type="MONITORING_INTERRUPTED",
@@ -635,6 +976,7 @@ async def heartbeat(
         # still leaves a trace in the report.
         session.add(
             ProctoringEvent(
+                id=uuid.uuid4(),
                 tenant_id=ps.tenant_id,
                 proctoring_session_id=ps.id,
                 event_type="INTEGRITY_CHECK_WARNING",
@@ -651,4 +993,5 @@ async def heartbeat(
         server_time=now,
         interval_seconds=config.heartbeat_interval_seconds,
         termination=None,
+        pause=await pause_out(session, ps),
     )

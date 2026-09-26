@@ -14,7 +14,6 @@ capability-gated on SEND_OUTREACH and runs on the RLS tenant session
 """
 from __future__ import annotations
 
-import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,12 +38,13 @@ from app.schemas.outreach import (
     SkippedRecipient,
 )
 from app.services import capabilities as caps
+from app.services import engagement
 from app.services import outreach_content
 from app.services.audit import audit
+from app.services.yukti import projection
 from app.workers import status as task_status
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -158,6 +158,9 @@ async def _resolve(
 
     company, company_culture = await _company_context(session, user)
     links = await _load_links(session, user, job, payload.link_ids)
+    # The job's CURRENT skill names, read once: an evidence tag names a skill
+    # by id, and the email says what the skill is called today.
+    skill_names = (await projection.job_skills_view(session, job.id)).names
 
     # Batch-load the candidates instead of one SELECT per recipient. A send to
     # 50 selected candidates was 50 extra round trips before the first email was
@@ -192,12 +195,17 @@ async def _resolve(
             )
             continue
 
+        # The skills the resume EVIDENCED (positive skill tags, by name), and
+        # never a grade word, a score or a model-written tag: a candidate must
+        # not be able to reconstruct an internal rating from their email.
+        evidenced = projection.skill_list_phrase(
+            projection.strengths_for_prompt(link.evidence_tags_json, skill_names)
+        )
         if payload.mode == "manual":
-            breakdown = link.match_breakdown_json or {}
             strengths = (
-                (breakdown.get("overall") or {}).get("comment")
-                or (breakdown.get("skills_match") or {}).get("comment")
-                or "the experience outlined in your profile"
+                f"your experience with {evidenced}"
+                if evidenced
+                else "the experience outlined in your profile"
             )
             ctx = {
                 "candidate_name": name,
@@ -209,15 +217,17 @@ async def _resolve(
             body = _substitute(payload.body or "", ctx)
             ai_fallback = False
         else:
-            breakdown = link.match_breakdown_json or {}
+            # Only the evidenced skills reach the prompt, under the one
+            # evidence key they answer; the other keys stay absent, which
+            # `generation_sufficiency.outreach_evidence` reads as "nothing
+            # recorded" rather than as a sentence about the record.
             email = await outreach_content.generate_outreach_email(
                 {
                     "name": candidate.full_name,
                     "email": candidate.email,
-                    "skills_comment": (breakdown.get("skills_match") or {}).get("comment", ""),
-                    "experience_comment": (breakdown.get("experience_relevance") or {}).get("comment", ""),
-                    "role_comment": (breakdown.get("role_alignment") or {}).get("comment", ""),
-                    "education_comment": (breakdown.get("education_fit") or {}).get("comment", ""),
+                    "skills_comment": (
+                        f"the {evidenced} experience on your resume" if evidenced else ""
+                    ),
                 },
                 {"title": job.title},
                 {"name": company, "culture": company_culture},
@@ -303,7 +313,6 @@ async def preview_outreach(
 
 
 @router.post("/send", response_model=OutreachSendOut)
-@router.post("/send-email", response_model=OutreachSendOut)
 async def send_outreach(
     payload: OutreachSendIn,
     user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
@@ -327,36 +336,39 @@ async def send_outreach(
     queued: list[str] = []
     task_ids: list[str] = []
     for rec in recipients:
-        try:
-            task = dispatch(
-                "pickready.send_email",
-                args=[
-                    str(user.tenant_id),
-                    rec.email,
-                    DIRECT_TEMPLATE_NAME,
-                    {"subject": rec.subject, "body": rec.body},
-                ],
-            )
-        except Exception as exc:  # noqa: BLE001 — broker down must not 500 silently
-            logger.exception("outreach.enqueue_failed link_id=%s", rec.link_id)
-            skipped.append(
-                SkippedRecipient(
-                    link_id=rec.link_id,
-                    candidate_id=rec.candidate_id,
-                    name=rec.name,
-                    reason=f"Could not be queued for sending ({type(exc).__name__})",
-                )
-            )
-            continue
+        # After the COMMIT (CONTRACT v5), so the engagement stamp and the audit
+        # row below and the send are one outcome. The invoke is no longer
+        # attempted inside the request, so there is no per-recipient enqueue
+        # failure left to report here: a lost invoke is logged at ERROR by the
+        # commit hook, and the task id returned below reads as PENDING on the
+        # outreach modal's delivery poll, which is where the recruiter looks.
+        # A programming error (unknown task, unserialisable argument) raises,
+        # as it should, before anything is sent.
+        task = dispatch_after_commit(
+            session,
+            "pickready.send_email",
+            args=[
+                str(user.tenant_id),
+                rec.email,
+                DIRECT_TEMPLATE_NAME,
+                {"subject": rec.subject, "body": rec.body},
+            ],
+        )
         queued.append(rec.email)
         task_ids.append(task.id)
+        # THE CANDIDATE DID NOT HAVE TO DO ANYTHING FOR THIS TO COUNT. Feature
+        # 8 treats a job-matching email the candidate RECEIVES as engagement,
+        # because it resets the retention clock for somebody the platform is
+        # still actively putting in front of employers. Recorded here rather
+        # than in the delivery task on purpose: the delivery task sends EVERY
+        # letter, including the one warning them that an unused profile is
+        # about to be removed, and stamping engagement there would make that
+        # warning cancel the very clock it exists to announce.
+        await engagement.record_engagement_by_id(session, rec.candidate_id)
 
-    if not queued:
-        raise HTTPException(
-            status_code=503,
-            detail="Could not queue any emails right now. Please try again in a moment.",
-        )
-
+    # No "nothing could be queued" 503 any more: `_resolve` already refuses an
+    # empty recipient list with a 422, and a send can no longer fail to
+    # enqueue inside the request, so every recipient here is queued.
     await audit(
         session,
         tenant_id=user.tenant_id,

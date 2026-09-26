@@ -14,9 +14,17 @@ from app.schemas.outreach import OutreachComposeIn, OutreachSendIn, RecipientOve
 from app.schemas.outreach import OutreachDeliveryStatusIn
 from app.services import email_render, outreach_content
 
-_CANDIDATE = {"name": "Ada Lovelace", "email": "ada@example.com"}
+# A RECORDED RANKING COMMENT, since 2026-09-09. `generation_sufficiency` refuses
+# to call a model for a candidate with nothing recorded on any of the four
+# categories, so a fixture without one exercises the deterministic template and
+# stops testing the generated path these tests are about.
+_CANDIDATE = {
+    "name": "Ada Lovelace",
+    "email": "ada@example.com",
+    "skills_comment": "Eight years of distributed systems work in Python",
+}
 _JOB = {"title": "Staff Engineer"}
-_COMPANY = {"name": "Hanulisa Technologies"}
+_COMPANY = {"name": "Varpitech Technologies"}
 
 
 def _words(text: str) -> int:
@@ -38,9 +46,9 @@ def test_enforce_word_count_trims_a_long_body() -> None:
 
 
 def test_enforce_word_count_keeps_signoff_last() -> None:
-    body = "Hi Ada, short note.\n\nWarm regards,\nHanulisa Talent Team"
+    body = "Hi Ada, short note.\n\nWarm regards,\nVarpitech Talent Team"
     out = outreach_content.enforce_word_count(body)
-    assert out.strip().endswith("Hanulisa Talent Team")
+    assert out.strip().endswith("Varpitech Talent Team")
     assert outreach_content.WORD_MIN <= _words(out) <= outreach_content.WORD_MAX
 
 
@@ -111,13 +119,13 @@ async def test_long_llm_body_is_trimmed(monkeypatch) -> None:
 def test_manual_placeholders_substituted() -> None:
     ctx = {
         "candidate_name": "Ada Lovelace",
-        "company": "Hanulisa Technologies",
+        "company": "Varpitech Technologies",
         "job_title": "Staff Engineer",
     }
     out = outreach_api._substitute(
         "Hi {{candidate_name}}, about {{ job_title }} at {{company}}.", ctx
     )
-    assert out == "Hi Ada Lovelace, about Staff Engineer at Hanulisa Technologies."
+    assert out == "Hi Ada Lovelace, about Staff Engineer at Varpitech Technologies."
 
 
 def test_manual_unknown_placeholder_is_left_alone() -> None:
@@ -190,7 +198,8 @@ def test_present_smtp_config_has_no_warning(monkeypatch) -> None:
         outreach_api,
         "get_settings",
         lambda: type(
-            "S", (), {"missing_delivery_keys": lambda self: ["MSG91_API_KEY"]}
+            # A missing NON-SMTP key must not read as an SMTP warning.
+            "S", (), {"missing_delivery_keys": lambda self: ["OTHER_PROVIDER_KEY"]}
         )(),
     )
     ok, warning = outreach_api._delivery_status()

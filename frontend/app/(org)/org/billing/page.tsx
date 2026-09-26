@@ -25,7 +25,6 @@ import { usePermissions } from "@/lib/use-permissions";
 import { openCheckout, openOrderCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
-  CreditEventType,
   CreditPack,
   CreditPacksResponse,
   CreditPurchaseRow,
@@ -34,6 +33,11 @@ import type {
   SubscribeResponse,
 } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
+import { CancelSubscriptionDialog } from "@/components/billing/cancel-subscription-dialog";
+import {
+  CREDIT_EVENT_LABELS,
+  CreditStatement,
+} from "@/components/billing/credit-statement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,16 +55,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
-
-/** Human labels for ledger event types. A raw enum never reaches the page. */
-const EVENT_LABELS: Record<CreditEventType, string> = {
-  grant: "Monthly top up",
-  completed_assessment: "Assessment completed",
-  incomplete_assessment: "Assessment started, not finished",
-  no_show: "Invitation never opened",
-  old_profile_review: "Earlier applicant reviewed",
-  adjustment: "Adjustment",
-};
 
 /** How many of each event make one credit. Shown so the rate is never a mystery. */
 const EVENT_RATE: Record<string, string> = {
@@ -211,7 +205,7 @@ export default function BillingPage() {
           keyId: order.razorpay_key_id,
           orderId: order.razorpay_order_id,
           amountInr: order.total_inr,
-          name: "ReadyPick",
+          name: "Vivekium",
           description: `${order.credits} Intelligence Report credits, one-time purchase`,
           prefill: {
             email: user?.email ?? undefined,
@@ -398,7 +392,7 @@ export default function BillingPage() {
                 <p className="mt-1 text-pretty leading-7">
                   {data.credits.deficit_message}
                 </p>
-                <p className="mt-1 text-sm leading-6">
+                <p className="mt-1 text-sm">
                   Assessments already in progress are unaffected, and every
                   candidate profile stays exactly where it is.
                 </p>
@@ -502,7 +496,7 @@ export default function BillingPage() {
                 {/* Directive Part 3 §7.3: projected assessments remaining,
                     split by role type. */}
                 {Number(data.credits.balance_credits) > 0 ? (
-                  <span className="mt-1 block text-sm leading-6">
+                  <span className="mt-1 block text-sm">
                     At 1.0 credit/report (Non-STEM): ~
                     {Math.floor(Number(data.credits.balance_credits))} more
                     reports. At 1.5 credits/report (STEM): ~
@@ -512,6 +506,23 @@ export default function BillingPage() {
                 ) : null}
               </DetailItem>
             </dl>
+            {/* Only the account's billing manager, only while there is a
+                live subscription to stop. A cancelled one has nothing left
+                to cancel, and the route would refuse it anyway. */}
+            {canManage &&
+            data.subscription.razorpay_subscription_id &&
+            data.subscription.status !== "cancelled" ? (
+              <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border pt-5">
+                <p className="min-w-0 flex-1 text-sm">
+                  Cancelling stops renewal at the end of this billing period.
+                  Credits already in your pool stay yours.
+                </p>
+                <CancelSubscriptionDialog
+                  subscription={data.subscription}
+                  onCancelled={load}
+                />
+              </div>
+            ) : null}
           </Section>
 
           {/* ── Usage this month ───────────────────────────────────────── */}
@@ -535,13 +546,13 @@ export default function BillingPage() {
                     key={event}
                     className="rounded-xl border border-border bg-surface p-4"
                   >
-                    <p className="text-sm font-medium leading-6">
-                      {EVENT_LABELS[event]}
+                    <p className="text-sm font-medium">
+                      {CREDIT_EVENT_LABELS[event]}
                     </p>
                     <p className="mt-2 text-2xl font-bold">
                       {toCredits(subunits, data.credits.subunits_per_credit)}
                     </p>
-                    <p className="mt-1 text-xs leading-5">
+                    <p className="mt-1 text-xs">
                       credits used, at {EVENT_RATE[event]}
                     </p>
                   </div>
@@ -575,15 +586,15 @@ export default function BillingPage() {
               legacy subscription plans further down. */}
           <div id="billing-plans" className="scroll-mt-24">
             <Section
-              title="Purchase ReadyPick Intelligence Report Credits"
+              title="Purchase Vivekium Intelligence Report Credits"
               description={
                 canManage
-                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits never expire, and volume packs add bonus credits free.`
+                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`
                   : `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Ask your Company Admin to buy credits.`
               }
             >
               {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
-              <p className="text-sm leading-6">
+              <p className="text-sm">
                 Current balance:{" "}
                 <span className="text-lg font-bold">
                   {data.credits.balance_credits}
@@ -593,7 +604,7 @@ export default function BillingPage() {
 
               {packsError ? (
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <p className="text-sm leading-6">
+                  <p className="text-sm">
                     Could not load credit packs. {packsError}
                   </p>
                   <Button variant="outline" onClick={() => void loadPacks()}>
@@ -636,7 +647,7 @@ export default function BillingPage() {
                             </p>
                           ) : null}
                           {pack.bonus_credits > 0 ? (
-                            <p className="mt-1 text-sm font-medium leading-6">
+                            <p className="mt-1 text-sm font-medium">
                               +{pack.bonus_credits} bonus credits free
                             </p>
                           ) : null}
@@ -644,7 +655,7 @@ export default function BillingPage() {
                           <p className="mt-3 font-semibold">
                             {formatInr(pack.total_inr)}
                           </p>
-                          <p className="text-xs leading-5">
+                          <p className="text-xs">
                             one-time, incl. GST
                           </p>
                         </button>
@@ -657,7 +668,7 @@ export default function BillingPage() {
                       className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
                     >
                       <p className="text-2xl font-bold">Custom</p>
-                      <p className="mt-1 text-sm leading-6">
+                      <p className="mt-1 text-sm">
                         {packs.min_custom_credits}+ credits, priced by
                         agreement. No self-serve checkout.
                       </p>
@@ -678,7 +689,7 @@ export default function BillingPage() {
                   {selectedPack ? (
                     <div className="mt-6 max-w-md rounded-xl border border-border bg-surface p-5">
                       <p className="font-semibold">Order summary</p>
-                      <dl className="mt-3 space-y-2 text-sm leading-6">
+                      <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex justify-between gap-4">
                           <dt>Credits</dt>
                           <dd className="font-medium">
@@ -741,7 +752,7 @@ export default function BillingPage() {
                         )}
                       </Button>
                       {!canManage ? (
-                        <p className="mt-2 text-xs leading-5">
+                        <p className="mt-2 text-xs">
                           Only your Company Admin can complete a purchase.
                         </p>
                       ) : null}
@@ -786,7 +797,7 @@ export default function BillingPage() {
                       {formatInr(plan.price_inr)}
                       <span className="ml-1 text-sm font-medium">/ month</span>
                     </p>
-                    <p className="mt-2 text-sm leading-6">
+                    <p className="mt-2 text-sm">
                       {plan.applications_per_month} applications, at{" "}
                       {formatInr(plan.rate_per_application_inr)} each
                     </p>
@@ -822,7 +833,7 @@ export default function BillingPage() {
                 );
               })}
             </div>
-            <p className="mt-5 text-sm leading-6">
+            <p className="mt-5 text-sm">
               Need more than 200 applications a month?{" "}
               <a
                 className="inline-flex items-center gap-1 underline"
@@ -835,66 +846,18 @@ export default function BillingPage() {
           </Section>
           ) : null}
 
-          {/* ── Statement ──────────────────────────────────────────────── */}
+          {/* ── Credit statement ───────────────────────────────────────── */}
+          {/* Every credit movement, paged from GET /billing/ledger. The
+              overview carries only the newest rows, so its newest id is the
+              token that sends the statement back to page one when a purchase
+              or a verified checkout moves the ledger. */}
           <Section
-            title="Recent activity"
-            description="Every credit movement, newest first."
+            title="Credit statement"
+            description="Every credit movement on your account, newest first."
           >
-            {data.recent_ledger.length === 0 ? (
-              <p className="leading-7">
-                Nothing yet. Activity appears here as soon as your first
-                assessment invitation goes out.
-              </p>
-            ) : (
-              <>
-                <div className="hidden md:block">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>When</TableHead>
-                        <TableHead>What happened</TableHead>
-                        <TableHead className="text-right">Credits</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.recent_ledger.map((entry) => (
-                        <TableRow key={entry.id}>
-                          <TableCell>{formatDate(entry.created_at)}</TableCell>
-                          <TableCell>
-                            {EVENT_LABELS[entry.event_type] ?? entry.event_type}
-                          </TableCell>
-                          <TableCell className="text-right font-medium">
-                            {entry.subunits_delta > 0 ? "+" : ""}
-                            {entry.credits_delta}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-                <ul className="space-y-3 md:hidden">
-                  {data.recent_ledger.map((entry) => (
-                    <li
-                      key={entry.id}
-                      className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface p-4"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">
-                          {EVENT_LABELS[entry.event_type] ?? entry.event_type}
-                        </p>
-                        <p className="mt-1 text-xs leading-5">
-                          {formatDate(entry.created_at)}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-sm font-semibold">
-                        {entry.subunits_delta > 0 ? "+" : ""}
-                        {entry.credits_delta}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
+            <CreditStatement
+              refreshToken={data.recent_ledger[0]?.id ?? "empty"}
+            />
           </Section>
 
           {/* ── Purchase history (directive Part 5 sections 7.3, 7.4) ──── */}
@@ -975,7 +938,7 @@ export default function BillingPage() {
                                 ? ` + ${row.bonus_credits} bonus`
                                 : ""}
                             </p>
-                            <p className="mt-1 text-xs leading-5">
+                            <p className="mt-1 text-xs">
                               {formatDate(row.created_at)},{" "}
                               {PURCHASE_STATUS_LABELS[row.status] ?? row.status}
                             </p>

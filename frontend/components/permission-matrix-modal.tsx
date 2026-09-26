@@ -52,9 +52,6 @@ const CAPABILITY_LABELS: Record<string, string> = {
   add_compensation: "Add compensation",
   view_dashboard: "View the dashboard",
   manage_staff: "Manage staff & permissions",
-  manage_email_templates: "Manage email templates",
-  configure_approval_levels: "Configure approval levels",
-  approve_job: "Approve jobs",
   edit_role_permissions: "Edit role permissions (platform owner)",
 };
 

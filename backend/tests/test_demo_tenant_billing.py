@@ -93,17 +93,18 @@ async def test_a_demo_tenant_is_flagged(tenant_id: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tenant_id", DEMO_IDS)
-async def test_a_demo_tenant_always_has_headroom(tenant_id: str) -> None:
+async def test_a_demo_tenant_is_never_gated(tenant_id: str) -> None:
     """Even at a negative balance. A demo company that has run assessments has
     a negative ledger like any other, which is exactly the state that must not
-    gate it."""
+    gate it. `has_positive_balance` is the live start gate since the
+    negative-balance gate was deleted with its stored flag (migration 0128)."""
     from app.core.db import superadmin_scope
 
     engine, factory = await _factory_or_skip()
     try:
         async with factory() as s:
             async with superadmin_scope(s):
-                assert await credits.has_credit_headroom(s, uuid.UUID(tenant_id))
+                assert await credits.has_positive_balance(s, uuid.UUID(tenant_id))
     finally:
         await engine.dispose()
 
@@ -152,8 +153,8 @@ async def test_a_paying_tenant_in_deficit_is_still_gated() -> None:
         async with factory() as s:
             async with superadmin_scope(s):
                 assert await credits.balance_subunits(s, fx.id) < 0
-                assert not await credits.has_credit_headroom(s, fx.id), (
-                    "a paying tenant in deficit was granted headroom; the demo "
+                assert not await credits.has_positive_balance(s, fx.id), (
+                    "a paying tenant in deficit may start new work; the demo "
                     "exemption has leaked and real customers are not being billed"
                 )
                 summary = await credits.summarize(s, fx.id)
@@ -188,7 +189,7 @@ async def test_usage_is_still_recorded_for_a_demo_tenant() -> None:
         # ... and it still does not gate them.
         async with factory() as s:
             async with superadmin_scope(s):
-                assert await credits.has_credit_headroom(s, demo)
+                assert await credits.has_positive_balance(s, demo)
     finally:
         async with factory() as s:
             async with s.begin():

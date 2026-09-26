@@ -2,19 +2,25 @@
 
 Route shape:
 
-    GET  /billing/config              public — Key ID + the price list
-    GET  /billing/overview            customer — plan, balance, usage, history
-    GET  /billing/ledger              customer — paginated statement
-    POST /billing/subscribe           customer — create a Razorpay Subscription
-    POST /billing/checkout/verify     customer — verify the Checkout handler
-    POST /billing/change-plan         customer — upgrade / downgrade
-    POST /billing/cancel              customer — cancel at cycle end
-    POST /billing/webhook/razorpay    Razorpay — signature-verified, no session
+    GET  /billing/overview            customer: plan, balance, usage, history
+    GET  /billing/ledger              customer: paginated credit statement
+    POST /billing/subscribe           customer: create a Razorpay Subscription
+    POST /billing/checkout/verify     customer: verify the Checkout handler
+    POST /billing/change-plan         customer: upgrade / downgrade
+    POST /billing/cancel              customer: cancel at cycle end
+    POST /billing/webhook/razorpay    Razorpay: signature-verified, no session
+
+The browser receives the Razorpay KEY ID on the responses that open Checkout
+(`/subscribe`, `/purchase`) and on `/overview`. There is no separate public
+config route: the one this module used to carry was DELETED in the Vivekium
+release (PLAN-p7 WP-B6). It had no caller, while comments across the repository
+claimed the browser read the key from it, and it was the one unauthenticated
+route and the one tenant-free cache key in this module.
 
 Credits are granted by ONE code path (`_grant_for_payment`) shared by the
 webhook and the checkout-verify handler, keyed on the Razorpay payment id. Both
-can therefore run for the same payment — which they routinely do, since
-Checkout returns before the webhook lands — and the customer is granted exactly
+can therefore run for the same payment, which they routinely do, since
+Checkout returns before the webhook lands, and the customer is granted exactly
 one month either way.
 """
 from __future__ import annotations
@@ -26,6 +32,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -35,10 +42,8 @@ from app.api.deps import (
     get_tenant_db,
     require_capability,
 )
-from app.core import cache
-from app.core.config import get_settings
-from app.core.db import get_session
 from app.models.billing import (
+    CREDIT_VALIDITY_MONTHS,
     GST_RATE_PERCENT,
     MIN_PURCHASE_CREDITS,
     PRICE_PER_CREDIT_INR,
@@ -58,10 +63,10 @@ from app.models.billing import (
 )
 from app.models.tenant import Tenant
 from app.schemas.billing import (
-    BillingConfigOut,
     BillingOverviewOut,
     CheckoutVerifyIn,
     CreditLedgerEntryOut,
+    CreditLotOut,
     CreditPackQuoteOut,
     CreditPacksOut,
     CreditPurchaseCreatedOut,
@@ -138,44 +143,6 @@ async def _plan_by_slug(session: AsyncSession, slug: str) -> PricingPlan:
     return plan
 
 
-# ── Public: config + price list ──────────────────────────────────────────────
-
-#: The price list changes on a migration, not on a click, and every landing
-#: page view reads it. Cached for an hour. `checkout_ready` is deliberately
-#: recomputed OUTSIDE the cache below: it depends on the server's credentials
-#: rather than on the row, and an hour of a stale "payments are off" is exactly
-#: the wrong thing to cache.
-_PLANS_CACHE_KEY = cache.key("billing", "plans")
-
-
-@router.get("/config", response_model=BillingConfigOut)
-async def billing_config(session: AsyncSession = Depends(get_session)) -> BillingConfigOut:
-    """Key ID and the price list. Public: the landing page renders this before
-    anybody has signed in, and the Key ID is a public credential by design."""
-    cfg = razorpay.config()
-
-    async def _load() -> list[dict]:
-        plans = await _active_plans(session)
-        return [_plan_out(plan).model_dump(mode="json") for plan in plans]
-
-    plans = await cache.get_or_set(
-        _PLANS_CACHE_KEY, _load, ttl=cache.TTL_PRICING_PLANS
-    )
-    return BillingConfigOut(
-        razorpay_key_id=cfg.key_id or None,
-        configured=cfg.configured,
-        plans=[
-            # Recomputed per response, never served from the cache: adding the
-            # keys to a running server must enable Subscribe immediately, not
-            # up to an hour later.
-            PlanOut.model_validate(
-                {**plan, "checkout_ready": bool(plan["is_active"]) and cfg.configured}
-            )
-            for plan in plans
-        ],
-    )
-
-
 # ── Customer: overview ───────────────────────────────────────────────────────
 
 _DEFICIT_MESSAGE = (
@@ -244,6 +211,31 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         consumed_subunits=summary.consumed_subunits,
         rollover_subunits=summary.rollover_subunits,
         rollover_credits=credits.credits_from_subunits(summary.rollover_subunits),
+        expired_subunits=summary.expired_subunits,
+        expired_credits=credits.credits_from_subunits(summary.expired_subunits),
+        non_expiring_subunits=summary.non_expiring_subunits,
+        non_expiring_credits=credits.credits_from_subunits(
+            summary.non_expiring_subunits
+        ),
+        expiring_soon_subunits=summary.expiring_soon_subunits,
+        expiring_soon_credits=credits.credits_from_subunits(
+            summary.expiring_soon_subunits
+        ),
+        expiring_soon_days=credits.EXPIRING_SOON_DAYS,
+        next_expiry_at=summary.next_expiry_at,
+        credit_validity_months=CREDIT_VALIDITY_MONTHS,
+        lots=[
+            CreditLotOut(
+                lot_id=lot.lot_id,
+                issued_at=lot.issued_at,
+                expires_at=lot.expires_at,
+                remaining_subunits=lot.remaining_subunits,
+                remaining_credits=credits.credits_from_subunits(
+                    lot.remaining_subunits
+                ),
+            )
+            for lot in summary.lots
+        ],
         usage_this_month_subunits=UsageBreakdownOut(**summary.month_by_event),
         in_deficit=summary.in_deficit,
         deficit_message=_DEFICIT_MESSAGE if summary.in_deficit else None,
@@ -379,7 +371,7 @@ async def _ensure_razorpay_plan(session: AsyncSession, plan: PricingPlan) -> str
     if plan.razorpay_plan_id:
         return plan.razorpay_plan_id
     plan_id = await razorpay.create_plan(
-        name=f"ReadyPick {plan.name}",
+        name=f"Vivekium {plan.name}",
         price_inr=plan.price_inr,
         notes={"pickready_plan_slug": plan.slug},
     )
@@ -482,6 +474,15 @@ async def _grant_for_payment(
         )
     )
     tenant.subscription_status = SUBSCRIPTION_ACTIVE
+    # The subscription month clock starts at the FIRST successful charge and
+    # never moves again (change request 27). Not at /subscribe: a created
+    # subscription is an intent to pay, and counting months from it would put
+    # a customer whose card was declined into month 10 having paid nothing.
+    # Not on every charge either, which is why the guard is `is None`:
+    # restamping on each renewal would reset the clock to month 1 forever and
+    # the month 10 letter would never be sent to anybody.
+    if tenant.subscription_started_at is None:
+        tenant.subscription_started_at = datetime.now(timezone.utc)
     # A top-up releases whatever finalisation was held for want of credits
     # (spec 11). Enqueued rather than run inline: this is a payment path, and
     # writing a batch of reports on it would make a customer's card confirmation
@@ -491,10 +492,16 @@ async def _grant_for_payment(
     # through, so a customer is released exactly once however their payment
     # arrives. The task re-checks the balance per tenant, so an extra call
     # costs a query and changes nothing.
-    from app.workers.dispatch import dispatch
+    #
+    # AFTER THE COMMIT: a release dispatched before it could run against a
+    # balance that does not yet include this grant and release nothing, or
+    # outlive a transaction that then rolled the grant back. A lost invoke is
+    # logged by the dispatcher and repaired by the hourly
+    # `pickready.release_held_assessments` sweep (`workers/schedule.py`).
+    from app.workers.dispatch import dispatch_after_commit
 
-    dispatch(
-        "pickready.release_held_assessments", args=[str(tenant.id)]
+    dispatch_after_commit(
+        session, "pickready.release_held_assessments", args=[str(tenant.id)]
     )
     return True
 
@@ -596,8 +603,10 @@ async def cancel(
     user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SubscriptionOut:
-    """Cancel at cycle end. Credits already in the pool are NOT clawed back —
-    they were paid for, and nothing expires (spec §2.2 / §3.1)."""
+    """Cancel at cycle end. Credits already in the pool are NOT clawed back:
+    they were paid for. Each lot keeps its own expiry, if it has one (credit
+    expiry applies to new grants only, 2026-09-22), and cancelling does not
+    shorten it."""
     tenant = await _tenant_or_404(session, user.tenant_id)
     if not tenant.razorpay_subscription_id:
         raise HTTPException(status_code=409, detail="There is no subscription to cancel.")
@@ -844,23 +853,52 @@ async def razorpay_webhook(
 ) -> dict:
     """Signature-verified subscription events.
 
-    Always answers 200 for anything it has authenticated, including events it
-    does not act on. A non-2xx makes Razorpay retry, and retrying an event we
-    have deliberately ignored just fills the retry queue forever.
+    Answers 200 for anything it has authenticated and HANDLED, including
+    events it deliberately does not act on and redeliveries it has already
+    recorded: a non-2xx makes Razorpay retry, and retrying an event we have
+    deliberately ignored just fills the retry queue forever. A failure to
+    RECORD the event is the opposite case and answers 5xx, because that retry
+    is the only thing that gets a paid charge granted.
     """
     raw = await request.body()
     signature = request.headers.get("X-Razorpay-Signature", "")
-    settings = get_settings()
-    if not razorpay.verify_webhook_signature(raw_body=raw, signature=signature):
-        if settings.is_production or razorpay.config().webhook_secret:
-            # A configured secret that does not match is a forgery, not a
-            # misconfiguration.
-            raise HTTPException(status_code=400, detail="Invalid webhook signature")
-        # Local development with no RAZORPAY_WEBHOOK_SECRET: accept, loudly.
-        log.warning(
-            "billing.webhook_unverified, RAZORPAY_WEBHOOK_SECRET is not set. "
-            "This is accepted in development ONLY."
+    # THE SIGNATURE IS CHECKED UNCONDITIONALLY. THERE IS NO DEVELOPMENT BYPASS.
+    #
+    # There used to be one, and it was open on the live site. It read
+    # `if settings.is_production or razorpay.config().webhook_secret: raise`,
+    # and fell through to PROCESS the event otherwise. Both halves were false in
+    # the deployment serving readypick.ai:
+    #
+    #   * `is_production` is `environment == "production"` and the live
+    #     environment sets `ENVIRONMENT=pilot`, so it is False in production;
+    #   * `RAZORPAY_WEBHOOK_SECRET` was never mounted on the api service, so
+    #     `webhook_secret` was empty.
+    #
+    # So an anonymous POST of a forged `subscription.charged` was accepted and
+    # granted credits, repeatably, because the attacker mints the idempotency
+    # keys too. Unauthenticated, remote, and it issues the thing this product
+    # sells.
+    #
+    # AN ABSENT SECRET NOW REFUSES, and that is deliberately the OPPOSITE of the
+    # inbound-email relay, where an unset secret leaves the route open. The two
+    # differ because the cost of being wrong differs. Refusing an employer's
+    # reply loses a message the product can ask for again; accepting an unsigned
+    # payment event grants money and cannot be taken back. A signature check
+    # that cannot be performed has failed, not passed.
+    #
+    # 503 rather than 400 when the secret is missing: that is our
+    # misconfiguration, not the caller's bad request, and Razorpay retries a
+    # 5xx, so a genuine event survives the window while the secret is wired.
+    if not razorpay.config().webhook_secret:
+        log.error(
+            "billing.webhook_secret_missing, refusing every webhook. "
+            "RAZORPAY_WEBHOOK_SECRET must be configured for this environment."
         )
+        raise HTTPException(
+            status_code=503, detail="Webhook verification is not configured"
+        )
+    if not razorpay.verify_webhook_signature(raw_body=raw, signature=signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
     try:
         body = await request.json()
@@ -874,12 +912,31 @@ async def razorpay_webhook(
 
     # Dedupe FIRST. Razorpay delivers at least once and a replayed
     # subscription.charged would otherwise grant a second month.
-    session.add(WebhookEvent(provider="razorpay", event_id=event_id, event_type=event_type,
-                             payload_json=body))
-    try:
-        await session.flush()
-    except Exception:  # noqa: BLE001 - unique violation means "already handled"
-        await session.rollback()
+    #
+    # ON CONFLICT ON THE ONE CONSTRAINT, NEVER A CAUGHT EXCEPTION. This used to
+    # be `except Exception` around the flush, answered 200 "duplicate". So a
+    # DataError (an event type wider than its column), a lost connection or
+    # any other failure of this INSERT told Razorpay the event was handled,
+    # Razorpay never retried it, and a paid `subscription.charged` granted
+    # nothing, silently. Stating the no-op in SQL means the database absorbs
+    # the duplicate and nothing else; every other failure propagates, the
+    # request answers 5xx, and Razorpay retries, which is exactly what a retry
+    # queue is for. The same shape `conversations` uses for its participants.
+    inserted = (
+        await session.execute(
+            pg_insert(WebhookEvent)
+            .values(
+                id=uuid.uuid4(),
+                provider="razorpay",
+                event_id=event_id,
+                event_type=event_type,
+                payload_json=body,
+            )
+            .on_conflict_do_nothing(constraint="uq_webhook_events_provider_id")
+            .returning(WebhookEvent.id)
+        )
+    ).scalar_one_or_none()
+    if inserted is None:
         return {"status": "duplicate"}
 
     if event_type not in _HANDLED_EVENTS:
@@ -983,9 +1040,15 @@ async def razorpay_webhook(
                 notes=str(payment_entity.get("error_description") or "")[:500],
             )
         )
-        from app.workers.dispatch import dispatch
+        # After the commit: an email about a failure whose recording then
+        # rolled back would describe a state the account is not in. A lost
+        # invoke is logged by the dispatcher; the billing page shows the
+        # past-due status either way.
+        from app.workers.dispatch import dispatch_after_commit
 
-        dispatch("pickready.send_payment_failed_email", args=[str(tenant.id)])
+        dispatch_after_commit(
+            session, "pickready.send_payment_failed_email", args=[str(tenant.id)]
+        )
 
     elif event_type in {"subscription.cancelled", "subscription.completed"}:
         # Future grants stop. Unused credits stay in the pool — they were paid

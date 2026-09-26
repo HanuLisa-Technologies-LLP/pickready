@@ -410,7 +410,7 @@ def test_an_empty_field_is_blank_not_the_word_none() -> None:
 
 def test_the_download_filename_is_sensible() -> None:
     name = bd_leads.csv_filename(NOW)
-    assert name == "readypick-bd-customers-2026-07-28.csv"
+    assert name == "vivekium-bd-customers-2026-07-28.csv"
     assert name.endswith(".csv")
 
 
@@ -554,7 +554,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     """Interactive, so it runs in-request, which is only acceptable because it
     is time-boxed: the request returns rather than hanging."""
     monkeypatch.setattr(web_research, "tavily_api_key", lambda: "test-key")
-    await web_research.reset_breaker()
+    await web_research._clear_breaker()
 
     class _SlowGraph:
         async def ainvoke(self, _state):
@@ -568,7 +568,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     )
     assert result["status"] == "timeout"
     assert result["jobs"] == []
-    await web_research.reset_breaker()
+    await web_research._clear_breaker()
 
 
 def test_the_graph_has_the_four_named_nodes_in_order() -> None:
@@ -620,10 +620,26 @@ def test_the_evaluate_prompt_says_retrieved_text_is_not_instructions() -> None:
     assert "UNTRUSTED SEARCH RESULTS" in prompt[1]["content"]
 
 
-def test_the_evaluator_is_told_to_drop_rather_than_guess() -> None:
+def test_the_evaluator_never_invents_and_no_longer_drops_by_default() -> None:
+    """AMENDED 2026-09-08, owner decision, and the two halves are separate.
+
+    WHAT CHANGED: the instruction used to be "drop anything you cannot
+    support", and under it a BD rep searching a role and a city got two cards.
+    The search now excludes job boards and social media at the provider, so
+    most of what reaches the judge is already a real employer's own page, and
+    gatekeeping it a second time was discarding the product's whole answer. The
+    default is now to KEEP and to express doubt through the confidence word.
+
+    WHAT DID NOT CHANGE, and is the reason this test still exists: the judge
+    may never INVENT. A company, a role or a city the content does not show is
+    still forbidden, and a URL is still never fabricated. Uncertainty is a
+    lower confidence word and a null field, never a plausible-looking guess.
+    """
     system = web_research._EVALUATE_SYSTEM
-    assert "Drop anything you cannot support" in system
+    assert "YOUR DEFAULT IS TO KEEP" in system
     assert "Never invent a URL." in system
+    assert "never by invention" in system
+    assert "Drop anything you cannot support" not in system
 
 
 def test_confidence_is_a_word_and_never_a_number() -> None:
@@ -818,3 +834,248 @@ def test_bdlead_uses_eager_defaults_so_updated_at_survives_a_flush() -> None:
         "BDLead needs eager_defaults so the UPDATE uses RETURNING; without it "
         "every mutating /bd/leads route 500s with MissingGreenlet."
     )
+
+
+# ── The 2026-09-08 volume repair ─────────────────────────────────────────────
+#
+# A BD rep searching a role and a city got two or three cards. Three causes
+# compounded, and each one below is pinned so the funnel cannot silently narrow
+# again: an under-powered judge, a candidate pool capped at the DISPLAY
+# ceiling, and result slots spent on job boards that could never become a card.
+
+
+def test_the_judge_and_the_writer_are_on_the_reasoning_tier() -> None:
+    """The root cause. Both ran under the `extraction` hint, which is Luna --
+    the tier `config/llm_providers` reserves for narrow mechanical work and
+    explicitly forbids from evaluating."""
+    from app.config import llm_providers
+
+    assert llm_providers.model_for("bd_reach_evaluate") == llm_providers.MODEL_TERRA
+    assert (
+        llm_providers.model_for("company_profile_research")
+        == llm_providers.MODEL_TERRA
+    )
+
+
+def test_the_candidate_pool_is_larger_than_the_display_ceiling() -> None:
+    """The funnel is lossy by design: the judge drops what it cannot support.
+    Capping the pool at MAX_CARDS meant the surplus needed to FILL MAX_CARDS
+    was discarded before the judge ever saw it."""
+    from app.services import web_research
+
+    assert web_research.MAX_EVALUATE_HITS > web_research.MAX_CARDS
+
+
+def test_job_boards_are_excluded_at_the_provider_not_after() -> None:
+    """A board fetched and then dropped has still consumed a result slot. The
+    exclusion has to reach Tavily, not just the post-filter.
+
+    THIS TEST SPENT ITS LIFE NOT CHECKING THE ONE HOST IT WAS ABOUT. The loop
+    read `"linkedin.com" if False else "shine.com"`, which is a construct with
+    exactly one effect: it drops `linkedin.com` and tests `shine.com` twice.
+    `linkedin` was in `_AGGREGATOR_HOSTS` and absent from
+    `EXCLUDED_SEARCH_DOMAINS` the whole time, so every LinkedIn result was
+    fetched, counted against the budget and then discarded. A disabled
+    assertion does not fail; it reports success about something nobody
+    measured.
+    """
+    from app.services import web_research
+
+    for host in ("indeed.com", "naukri.com", "linkedin.com", "shine.com"):
+        assert host in web_research.EXCLUDED_SEARCH_DOMAINS
+
+
+def test_the_two_exclusion_lists_express_the_same_judgement() -> None:
+    """`EXCLUDED_SEARCH_DOMAINS` says it is `_AGGREGATOR_HOSTS` as registrable
+    domains. Where they disagree, a host is paid for and then thrown away.
+
+    The mapping is NOT one to one and asserting equality would be wrong:
+    `jobsearch` is a subdomain pattern rather than a domain, `angel` is
+    `angel.co`, and `x.com` is caught by the post-filter's minimum-length rule
+    rather than by name. So this pins the DIRECTION that costs money (a host
+    the post-filter will discard should never have been fetched) and names the
+    remaining divergence explicitly, so it is a recorded decision rather than
+    something nobody has looked at.
+    """
+    from app.services import web_research
+
+    labels = {
+        domain.split(".")[0] for domain in web_research.EXCLUDED_SEARCH_DOMAINS
+    }
+    # Known and accepted: each is either not a registrable domain, or a host
+    # whose cost is negligible because it never appears in a hiring search.
+    accepted_gaps = {"jobsearch", "angel", "google", "bing", "wikipedia", "medium"}
+    unpaid_for = set(web_research._AGGREGATOR_HOSTS) - labels - accepted_gaps
+    assert unpaid_for == set(), (
+        "these hosts are dropped by the post-filter after being fetched, so "
+        f"each one burns a result slot for nothing: {sorted(unpaid_for)}"
+    )
+
+
+def test_every_planned_and_widened_query_names_the_role() -> None:
+    """Volume is worthless without relevance. Widening drops the industry and
+    the phrasing; it never drops the thing being searched for."""
+    from app.services import web_research
+
+    planned = web_research.plan_queries("Data Engineer", "Pune", "Fintech")
+    widened = web_research.widen_queries("Data Engineer", "Pune", "Fintech")
+    assert len(planned) >= 6
+    assert widened
+    for query in planned + widened:
+        assert "Data Engineer" in query, query
+
+
+@pytest.mark.asyncio
+async def test_a_missing_company_site_is_looked_up_rather_than_dropped(
+    monkeypatch,
+) -> None:
+    """THE LARGEST SINGLE RECOVERY. A snippet naming an employer without its
+    domain used to be discarded outright, because `shape_cards` drops a card
+    with no company_url and the judge was told to drop it first."""
+    from app.services import web_research
+
+    async def _fake_search(query: str, api_key: str, **kwargs):
+        assert "Acme Systems" in query
+        return web_research.SearchBatch(
+            results=({"url": "https://acmesystems.example/about"},)
+        )
+
+    monkeypatch.setattr(web_research, "_tavily_search", _fake_search)
+    evaluated = [{"company": "Acme Systems", "company_url": None}]
+    resolved = await web_research.resolve_company_sites(evaluated, "key")
+    assert resolved[0]["company_url"] == "https://acmesystems.example"
+
+
+@pytest.mark.asyncio
+async def test_resolution_never_invents_a_domain_from_a_name(monkeypatch) -> None:
+    """`acme.com` for "Acme Systems" is exactly the plausible-looking dead link
+    the drop rule exists to prevent. A lookup that finds nothing leaves the
+    card to be dropped, as before."""
+    from app.services import web_research
+
+    async def _empty(query: str, api_key: str, **kwargs):
+        return web_research.SearchBatch(results=())
+
+    monkeypatch.setattr(web_research, "_tavily_search", _empty)
+    evaluated = [{"company": "Acme Systems", "company_url": None}]
+    resolved = await web_research.resolve_company_sites(evaluated, "key")
+    assert resolved[0]["company_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_board_result_is_never_returned_as_the_employers_site(
+    monkeypatch,
+) -> None:
+    """If the lookup surfaces Indeed, the card must not claim Indeed is the
+    company's website."""
+    from app.services import web_research
+
+    async def _board(query: str, api_key: str, **kwargs):
+        return web_research.SearchBatch(
+            results=({"url": "https://www.indeed.com/cmp/acme-systems"},)
+        )
+
+    monkeypatch.setattr(web_research, "_tavily_search", _board)
+    resolved = await web_research.resolve_company_sites(
+        [{"company": "Acme Systems", "company_url": None}], "key"
+    )
+    assert resolved[0]["company_url"] is None
+
+
+def test_the_company_profile_word_range_meets_the_clients_own_guidance() -> None:
+    """The old range sat BELOW the client's stated floor, which is how a
+    researched profile came out reading like filler."""
+    from app.services import company_research
+
+    assert company_research.WORD_MIN >= 80
+    assert company_research.WORD_MAX >= 170
+
+
+def test_company_research_asks_the_sources_the_client_named() -> None:
+    """Wikipedia, the business press and the company's own writing were not
+    being searched for at all."""
+    from app.services import company_research
+
+    queries = " | ".join(
+        company_research._plan_queries("Acme Systems", "acme.example", "Fintech")
+    ).casefold()
+    for expected in ("wikipedia", "news", "blog", "careers", "glassdoor", "ambitionbox"):
+        assert expected in queries, expected
+
+
+def test_the_stage_timeouts_fit_inside_the_search_budget() -> None:
+    """Getting this wrong is not a slow page, it is an EMPTY one.
+
+    The budget wraps the WHOLE graph, so if the stages can sum past it a
+    pipeline whose every part succeeded still returns `status="timeout"` with
+    no cards, which from the outside is indistinguishable from a Tavily outage.
+    The budget in turn must sit under the load balancer's 65-second idle
+    timeout, or the browser gets a 504 instead of the honest timeout message.
+    """
+    from app.services import web_research
+
+    worst_case = (
+        web_research.TAVILY_TIMEOUT_SECONDS * 2  # search, then the widened round
+        + web_research.EVALUATE_TIMEOUT_SECONDS
+        + web_research.RESOLVE_BUDGET_SECONDS
+    )
+    assert worst_case < web_research.SEARCH_BUDGET_SECONDS
+    assert web_research.SEARCH_BUDGET_SECONDS < 65
+
+
+def test_one_card_per_employer_keeping_the_best_evidenced_one() -> None:
+    """Upstream dedup is by URL, which is the right key for a PAGE and the
+    wrong one for a COMPANY. careers.fisglobal.com and www.fisglobal.com are
+    two URLs and one employer, and the live search returned both."""
+    cards = web_research.shape_cards(
+        [
+            {"job_title": "A", "company": "FIS Global",
+             "company_url": "careers.fisglobal.com",
+             "confidence": "moderately matching"},
+            {"job_title": "B", "company": "FIS Global",
+             "company_url": "www.fisglobal.com", "confidence": "highly matching"},
+        ]
+    )
+    assert len(cards) == 1
+    assert cards[0]["confidence_label"] == "Highly Matching"
+
+
+def test_the_strongest_evidence_is_at_the_top() -> None:
+    cards = web_research.shape_cards(
+        [
+            {"job_title": "A", "company": "Weak", "company_url": "weak.example.com",
+             "confidence": "not matching"},
+            {"job_title": "B", "company": "Strong", "company_url": "strong.example.com",
+             "confidence": "highly matching"},
+        ]
+    )
+    assert [c["company"] for c in cards] == ["Strong", "Weak"]
+
+
+def test_the_ceiling_is_spent_on_distinct_employers() -> None:
+    """Capping before deduplicating would fill the page with one company."""
+    noisy = [
+        {"job_title": "x", "company": "Same", "company_url": f"s{n}.example.com",
+         "confidence": "matching"}
+        for n in range(web_research.MAX_CARDS + 10)
+    ]
+    assert len(web_research.shape_cards(noisy)) == 1
+
+
+def test_ai_reach_exclusions_do_not_leak_into_company_research() -> None:
+    """The two features SHARE `_tavily_search`, and their source policies are
+    opposites: AI Reach excludes Glassdoor because it wants employers rather
+    than review sites, and Company Research treats Glassdoor as one of the
+    client's named sources. Baking AI Reach's list into the transport silently
+    stripped Company Research of it, and every source it found came back from
+    one host."""
+    import inspect
+
+    from app.services import company_research, web_research
+
+    signature = inspect.signature(web_research._tavily_search)
+    assert signature.parameters["exclude_domains"].default is None
+    assert "glassdoor.com" in web_research.EXCLUDED_SEARCH_DOMAINS
+    assert "glassdoor" in company_research.PREFERRED_HOSTS
+    gather = inspect.getsource(company_research._gather)
+    assert "exclude_domains" not in gather

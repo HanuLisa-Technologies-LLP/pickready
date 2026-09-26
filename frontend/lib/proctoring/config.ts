@@ -16,6 +16,15 @@
  *
  * `lib/proctoring/model-assets.test.ts` reads the Python `CLIENT_FIELDS`
  * tuple and asserts `CLIENT_CONFIG_FIELDS` names the same set.
+ *
+ * `device_glitch_seconds` REPLACED `camera_recovery_seconds` (Phase 3,
+ * 2026-09-24). The old figure decided when a dead camera became a Path A
+ * termination; a lost device now pauses the assessment instead, and the one
+ * number the browser needs is how long a stream may be gone before the loss
+ * is reported as one. A drop shorter than that is a glitch and is logged as
+ * such; anything longer opens the server's pause. The grace and the pause
+ * allowance are NOT here: they arrive as the server's `pause` state (its
+ * deadline, its count and its sentence), because the client decides neither.
  */
 
 export const CLIENT_CONFIG_FIELDS = [
@@ -34,7 +43,7 @@ export const CLIENT_CONFIG_FIELDS = [
   "audio_max_chunk_bytes",
   "heartbeat_interval_seconds",
   "integrity_failure_termination_seconds",
-  "camera_recovery_seconds",
+  "device_glitch_seconds",
   "sampling_fps_normal",
   "sampling_fps_confirming",
   "confirming_window_seconds",

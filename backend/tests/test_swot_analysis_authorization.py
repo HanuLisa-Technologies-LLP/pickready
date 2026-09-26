@@ -29,7 +29,9 @@ import inspect
 import pytest
 from fastapi import routing
 
-from app.api import assessments
+# The routes moved from `api/assessments.py` to `api/job_setup.py` (Vivekium
+# release) with every URL and every gate unchanged.
+from app.api import job_setup
 from app.models.enums import Role
 from app.services import capabilities as caps
 from app.services import rbac
@@ -45,7 +47,7 @@ EXPECTED_GATES: dict[tuple[str, str], str] = {
 
 def _swot_analysis_routes() -> dict[tuple[str, str], routing.APIRoute]:
     found: dict[tuple[str, str], routing.APIRoute] = {}
-    for route in assessments.router.routes:
+    for route in job_setup.router.routes:
         if not isinstance(route, routing.APIRoute):
             continue
         if "swot-analysis" not in route.path:
@@ -106,13 +108,15 @@ def test_the_read_is_not_stricter_than_reading_the_job_it_belongs_to() -> None:
     """The read deliberately does NOT apply assignment scope.
 
     RBAC 24 marks `view_company_jobs` SCOPED for three of the five client
-    roles, and no workflow in this product writes `job_assignments` yet. A
-    scope check on the read would therefore refuse a Recruiter the SWOT of a
-    job whose JD is on the same page, which is stricter than the job endpoint
-    itself and is the contradiction section 5 forbids, pointing the other way.
+    roles. Since the Vivekium release the CREATOR of a job is assigned to it
+    (`rbac.assign_creator`), but nothing assigns anybody else, so a scope
+    check on the read would still refuse a Recruiter the SWOT of a job
+    somebody else created while its JD is on the same page, which is stricter
+    than the job endpoint itself and is the contradiction section 5 forbids,
+    pointing the other way.
 
-    The WRITES are unaffected and stay on the full chain. When assignments are
-    written, this test is the place the decision gets revisited.
+    The WRITES are unaffected and stay on the full chain. When an assignment
+    workflow exists, this test is the place the decision gets revisited.
     """
     source = _gate_source(_swot_analysis_routes()[("GET", "/jobs/{job_id}/swot-analysis")])
     assert "require_capability(caps.VIEW_COMPANY_JOBS)" in source

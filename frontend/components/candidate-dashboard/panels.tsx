@@ -3,7 +3,7 @@
 /**
  * The three slide-over panels the row's action columns open.
  *
- * Ready Pick Profile (the system's reasoning), Team Review (a person's
+ * Vivekium Profile (the system's reasoning), Team Review (a person's
  * independent read of it), and the Stage move. They are separate panels for
  * the reason the specification gives: conflating the first two would hide the
  * accountability layer, which is who relied on what, when, and what they
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { CandidateCasePanel } from "@/components/candidate-case-panel";
 
 import type {
   DashboardRow,
@@ -65,7 +66,7 @@ function PanelState({
   return <>{children}</>;
 }
 
-/* ── Column 6: the Ready Pick Profile panel ──────────────────────────────── */
+/* ── Column 6: the Vivekium Profile panel ──────────────────────────────── */
 
 export function ReadyPickProfilePanel({
   row,
@@ -96,7 +97,7 @@ export function ReadyPickProfilePanel({
           setError(
             cause instanceof Error
               ? cause.message
-              : "The Ready Pick Profile could not be loaded."
+              : "The Vivekium Profile could not be loaded."
           );
       })
       .finally(() => {
@@ -111,7 +112,7 @@ export function ReadyPickProfilePanel({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
         <SheetHeader>
-          <SheetTitle>Ready Pick Profile</SheetTitle>
+          <SheetTitle>Vivekium Profile</SheetTitle>
           <SheetDescription>
             {row?.full_name}
             <span className="ml-2 select-all font-mono text-[11px]">
@@ -151,9 +152,9 @@ export function ReadyPickProfilePanel({
                   <h3 className="text-xs font-semibold uppercase tracking-wide">
                     Dimension ratings
                   </h3>
-                  {/* NAMED ratings, never raw numbers (spec-doc6 D8 / C2). The
-                      raw figures live in the calibration view, which two roles
-                      reach and every read of which is logged. */}
+                  {/* NAMED ratings, never raw numbers (spec-doc6 D8 / C2). No
+                      screen shows the raw figures: the calibration view that
+                      did was deleted in the Vivekium release. */}
                   <dl className="mt-2 divide-y rounded-xl border">
                     {profile.dimensions.map((dimension) => (
                       <div key={dimension.dimension} className="p-3">
@@ -207,14 +208,25 @@ export function ReadyPickProfilePanel({
                   </h3>
                   <p className="mt-2">
                     Scorecard version {profile.scorecard_version ?? "not recorded"}.
-                    Company DNA version{" "}
-                    {profile.company_dna_version ?? "not recorded"}.
                   </p>
                   <p>Scoring mode: {profile.scoring_mode ?? "not recorded"}.</p>
                 </section>
               </>
             ) : null}
           </PanelState>
+          {row ? (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide">
+                Follow-up
+              </h3>
+              <div className="mt-2">
+                <CandidateCasePanel
+                  candidateId={row.candidate_id}
+                  candidateName={row.full_name}
+                />
+              </div>
+            </section>
+          ) : null}
         </div>
       </SheetContent>
     </Sheet>
@@ -282,7 +294,7 @@ export function TeamReviewSheet({
         { verdict, remarks }
       );
       setPanel(result);
-      // NO NUDGE. A verdict that differs from the Ready Pick Score gets exactly
+      // NO NUDGE. A verdict that differs from the Vivekium Grade gets exactly
       // this toast and nothing else: no warning, no confirmation step, no
       // "are you sure", no colour change. spec-doc6 8.2 and PRODUCT.md.
       toast({ title: "Team Review saved" });

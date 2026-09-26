@@ -83,8 +83,8 @@ class Agent:
     meaning: str
     #: The role, in the product's own words.
     role: str
-    #: The runtime id in `tools.permissions.AGENT_TOOLS` and
-    #: `orchestration.router.ROUTES`. NOT renamed to the Sanskrit name: a beat
+    #: The runtime id in `tools.permissions.AGENT_TOOLS`. NOT renamed to the
+    #: Sanskrit name: a beat
     #: entry, a queued message and a worker registration cannot all be changed
     #: atomically during a rolling deploy, and this id appears in persisted
     #: traces that must stay readable.
@@ -134,53 +134,44 @@ AGENTS: dict[str, Agent] = {
     BODHA: Agent(
         name="Bodha",
         meaning="Understanding / insight",
-        role="Hiring Manager SWOT Intake Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        role="Hiring Manager Job SWOT Agent",
+        # Its OWN runtime surface: it shared `job_setup` with Sutra, whose
+        # union reach let the SWOT writer hold the skills capabilities.
+        runtime_id=permissions.AGENT_SWOT,
         trigger="Immediately after the recruiter saves the finalised job description.",
         portal=PORTAL_CUSTOMER,
         skills=("collect_swot", "summarize_role_context", "validate_swot_completeness"),
-        implemented_by=(
-            # Bodha has TWO mandates and they are at different stages of
-            # activation, which is why this list is mixed. The Company DNA half
-            # is live: `app/api/company_dna.py` imports both modules. The SWOT
-            # half still runs the pre-Part-A intake.
-            "app.services.swot_intake",
-            "app.services.hiring.company_dna",
-            "app.services.hiring.dna_compilation",
-            "app.services.hiring.swot_quality",
-            "app.services.hiring.situations",
-        ),
-        activates_to=(
-            "app.services.hiring.company_dna",
-            "app.services.hiring.dna_compilation",
-            "app.services.hiring.swot_quality",
-            "app.services.hiring.situations",
-        ),
+        # The Role Intake conversation was retired (2026-09-20) and the Job
+        # SWOT Analysis document replaced it, so the live implementation is
+        # `swot_analysis`. `swot_intake` stayed named here after its last
+        # caller went, which is exactly what the reachability test caught: an
+        # identity map that names unreachable code claims an agent is running
+        # something nothing can invoke.
+        implemented_by=("app.services.swot_analysis",),
+        activates_to=("app.services.swot_analysis",),
         produces=("swot_evidence",),
         consumes=("job_description",),
     ),
     SUTRA: Agent(
         name="Sutra",
         meaning="Thread / framework",
-        role="Tatva Matrix Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        role="Skills Agent",
+        runtime_id=permissions.AGENT_SKILLS,
         trigger=(
             "After Bodha completes the SWOT intake. Runs in parallel with Yukti."
         ),
         portal=PORTAL_CUSTOMER,
-        skills=("build_tatva_matrix", "validate_matrix_coverage", "publish_locked_matrix"),
+        # Vivekium release: Sutra drafts the three skill buckets and, at Save
+        # Skills, writes the hidden assessment context. The seven-stage
+        # transformation and the matrix compiler it ran are deleted.
+        skills=("draft_skills", "build_assessment_context"),
         implemented_by=(
-            "app.services.ppi",
-            "app.services.hiring.scorecard",
-            "app.services.hiring.transformation",
-            "app.services.hiring.layers",
-            "app.services.hiring.department_models",
+            "app.services.hiring.sutra",
+            "app.services.skills",
         ),
         activates_to=(
-            "app.services.hiring.transformation",
-            "app.services.hiring.layers",
-            "app.services.hiring.department_models",
-            "app.services.hiring.scorecard",
+            "app.services.hiring.sutra",
+            "app.services.skills",
         ),
         produces=("tatva_matrix",),
         consumes=("job_description", "swot_evidence"),
@@ -195,15 +186,14 @@ AGENTS: dict[str, Agent] = {
             "resume is uploaded against a live job."
         ),
         portal=PORTAL_CUSTOMER,
-        skills=("build_matching_categories", "score_resume_fit", "retrieve_matching_evidence"),
+        skills=("ground_resume_evidence", "score_resume_fit", "retrieve_matching_evidence"),
         implemented_by=(
             "app.services.matching",
-            "app.services.matching_categories",
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         activates_to=(
-            "app.services.hiring.prescreen",
+            "app.services.yukti",
             "app.services.hiring.ontology",
         ),
         produces=("ai_score",),
@@ -335,7 +325,7 @@ def activation_status(reachable: frozenset[str]) -> dict[str, dict[str, object]]
     `reachable` is supplied by the caller rather than computed here on purpose.
     Working it out means walking the import graph of the whole `app` package,
     which is an AST pass this module has no business owning and which would make
-    a naming table depend on a static analyser. `orchestration_checks` owns it,
+    a naming table depend on a static analyser. `app/import_graph.py` owns it,
     and both the test and `eval_agents.py` read the same answer.
     """
     report: dict[str, dict[str, object]] = {}

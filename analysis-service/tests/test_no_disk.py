@@ -82,7 +82,9 @@ def test_a_diarize_request_completes_with_every_write_path_disabled(no_disk) -> 
         response = client.post("/diarize", files=upload(payload))
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"speaker_count": 2, "speech_seconds": 12.0}
+    assert response.json() == {
+        "speaker_count": 2, "speech_seconds": 12.0, "speaker_seconds": [6.0, 6.0],
+    }
     assert decoder.received == [payload], "the decoder saw exactly the uploaded bytes, from memory"
 
 

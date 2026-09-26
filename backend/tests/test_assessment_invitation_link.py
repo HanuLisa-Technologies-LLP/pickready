@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.api.assessments import resolve_invitation
+from app.api.assessment_conversation import resolve_invitation
 from app.models.assessment import AssessmentConversation
 from app.models.candidate import JobCandidateLink
 from app.models.job import Job
@@ -251,18 +251,6 @@ async def _resolve(link, session, *, user, monkeypatch=None):
     return await resolve_invitation(token, user=user, session=session)
 
 
-@pytest.fixture(autouse=True)
-def _no_retake_lookup(monkeypatch):
-    """`retake.decide` queries a table this fake does not model. Default it to
-    "no prior report"; the one test that cares overrides it."""
-    from app.services import retake
-
-    async def _decide(*_args, **_kwargs):
-        return retake.RetakeDecision(decision=retake.DECISION_FIRST_ASSESSMENT)
-
-    monkeypatch.setattr(retake, "decide", _decide)
-
-
 @pytest.mark.asyncio
 async def test_signed_out_is_sent_to_sign_in_and_nowhere_else() -> None:
     """The headline requirement: there is no path that skips auth. A signed-out
@@ -383,43 +371,23 @@ async def test_an_expired_token_never_reaches_the_database() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_recent_prior_report_is_reported_so_the_candidate_is_told_why(
-    monkeypatch,
-) -> None:
-    """The six-month rule. It never SKIPS the assessment -- under PPI every
-    section is scoped to the job it was written for -- but the candidate is
-    owed the reason they are answering questions again."""
-    from app.services import retake
+async def test_the_link_carries_no_prior_report_classification() -> None:
+    """REMOVED 2026-09-24: the six-month `retake.decide` classification that
+    fed `recent_prior_report`. Nothing is portable between jobs, so it only
+    ever supplied a sentence, and its `except Exception` swallowed every
+    failure of the lookup (audit P1 3.27). The resolver asks nothing about a
+    prior report, and the response has no field for one."""
+    import inspect
 
-    async def _decide(*_args, **_kwargs):
-        return retake.RetakeDecision(
-            decision=retake.DECISION_REUSE, age_days=30
-        )
-
-    monkeypatch.setattr(retake, "decide", _decide)
     link, session = _world()
     out = await _resolve(link, session, user=_candidate())
     assert out.state == "ready"
-    assert out.recent_prior_report is True
-    assert out.redirect_to == f"/portal/assessments/{link.id}"
-
-
-@pytest.mark.asyncio
-async def test_a_failing_retake_lookup_does_not_block_the_assessment(
-    monkeypatch,
-) -> None:
-    """The classification is explanatory. It must never be the reason a
-    candidate cannot open their assessment."""
-    from app.services import retake
-
-    async def _boom(*_args, **_kwargs):
-        raise RuntimeError("prior-report lookup is down")
-
-    monkeypatch.setattr(retake, "decide", _boom)
-    link, session = _world()
-    out = await _resolve(link, session, user=_candidate())
-    assert out.state == "ready"
-    assert out.recent_prior_report is False
+    assert "recent_prior_report" not in type(out).model_fields
+    source = inspect.getsource(resolve_invitation)
+    code = " ".join(
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    )
+    assert "retake" not in code
 
 
 @pytest.mark.asyncio
@@ -435,7 +403,7 @@ async def test_every_state_carries_a_real_explanation() -> None:
     """Section 1's engineering constraint, applied to this endpoint: no state
     may fall through to a generic message, and no refusal may carry a
     destination."""
-    from app.api.assessments import _INVITE_STATE_MESSAGES
+    from app.api.assessment_conversation import _INVITE_STATE_MESSAGES
 
     cases = [
         (_world(), _candidate()),

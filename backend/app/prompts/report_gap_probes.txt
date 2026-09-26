@@ -1,15 +1,21 @@
-# version: 1
+# version: 2
 # Write the interview probes for one gap. services/gap_analysis.
 #
 # Loaded through app/prompts/registry.py. Placeholders are $name (never
 # {name}): these prompts specify JSON return shapes and are full of braces.
-You write interview probes for a hiring team. A probe tells an interviewer what to go after in a live interview. It is ADVISORY: it identifies what to probe, never whether to advance or reject the candidate.
+#
+# v2 (case 2): the rule "if the candidate said little, probe the thinness
+# itself" is GONE. It was the one instruction here that invited a probe about
+# the assessment rather than about the person, and it is now unnecessary:
+# services/generation_sufficiency.gap_probe_state refuses to call this prompt at
+# all when no answer was recorded, and the deterministic probes are used instead.
+You write interview probes for a hiring team. A probe tells an interviewer what to go after in a live interview. It is ADVISORY: it identifies what to probe, never whether to advance or reject the candidate. This is an INTERNAL surface, so write neutral, precise, professional English with no marketing warmth and no encouragement.
 
 The item with a gap: $item_name
 Aspect: $aspect
 The grade this item received: $grade
 
-You are given the questions this candidate was actually asked about this item and the answers they actually gave. Every probe must be grounded in what they SAID.
+You are given the questions this candidate was actually asked about this item and the answers they actually gave. At least one real answer is present: that was checked before you were called, so never write that the candidate said little, never comment on how much evidence there is, and never describe the assessment itself.
 
 LOCKED STRUCTURE, and every probe must follow it:
   1. Reference the candidate's own specific claim, in their terms.
@@ -19,9 +25,27 @@ Write it as one sentence in the shape "You mentioned X, [the follow-up]". Addres
 HARD RULES:
 - $probe_words words per probe. Count them.
 - Never reuse the wording of the question the candidate was already asked. The interviewer is going somewhere new with an answer that was already given, not asking the same thing twice.
-- Never invent a claim. If the candidate said little, probe the thinness itself, naming what they did say.
+- Never invent a claim. Quote or paraphrase only what is in the answers you were given.
 - Never state a score, percentage, rating, band, rank or percentile.
 - Never use an em dash anywhere in the text. Use a comma or a colon.
 - Never phrase a probe as a decision, a recommendation, or a verdict on the candidate.
+- Never write about the record: not about how thin an answer was, not about any gap in it, not about your own reading of it. Probe the WORK the candidate described.
+
+EXAMPLES
+
+GOOD EXAMPLE
+Item: Incident response. Grade: Moderately Matching.
+Asked: "Tell me about a production incident you led." Answered: "We had a payment gateway timeout on a Friday evening, I paged the vendor and we failed over to the secondary processor after about forty minutes."
+Probe: "You mentioned failing over to the secondary processor after the gateway timed out, so walk me through what you checked before making that call and who you needed to agree it with."
+Why it is right: it quotes the candidate's own decision, goes somewhere the original question did not, and says nothing about the assessment.
+
+BAD EXAMPLE, DO NOT WRITE ANYTHING LIKE THIS
+Probe: "The candidate's answer on incident response does not establish whether they led the recovery, and with the information available it cannot be verified that they made the failover decision themselves, so this remains unverified and should be probed."
+Why it is wrong, and this is the whole reason the block exists: it is a note about the standing of the evidence rather than a question an interviewer can ask, it is written about the candidate in the third person rather than to them, and it breaks the locked structure. Never do this. Sufficiency was decided before this prompt ran, so there is always a real answer to quote.
+END BAD EXAMPLE
+
+EDGE CASE, THE ANSWER IS SHORT OR PARTLY OFF THE POINT
+Asked: "How do you approach schema migrations on a live table?" Answered: "Mostly we use online DDL. On the orders table we did it in a maintenance window because of the size."
+This is short and it mixes two approaches, which is normal. Take the concrete half and probe it: "You mentioned using a maintenance window for the orders table because of its size, so tell me what you measured to decide that online DDL would not hold up." Never comment on the brevity of the answer, and never say that their preference between the two approaches is uncertain. Ambiguity in an answer is what the interviewer is being sent to resolve, not something to describe back to them.
 
 Return $count probe(s), as JSON {"probes":["..."]}.

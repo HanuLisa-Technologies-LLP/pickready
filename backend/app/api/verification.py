@@ -1,275 +1,228 @@
-"""Candidate outreach + employer verification (FR-5.x / ESD §10).
+"""The inbound-email webhook: every emailed reply the product can receive.
 
-- Outreach applies to FRESHLY sourced candidates only — Databank candidates
-  never re-enter this flow (claude.md rule 7); they are reported as skipped.
-- The outreach link is a signed stateless JWT (see deps.make_outreach_token).
-- The employer form token is `verification_requests.token`
-  (secrets.token_urlsafe(32)), single-use: any status other than `pending`
-  rejects re-submission.
+A reply arrives here from the inbound-mail Lambda and is routed, most precise
+question first: a conversation thread named by the reply ADDRESS (a candidate
+answering a recruiter, or an employer answering a BGV request), then the older
+BGV inquiry reference in the body.
+
+THE TENANT-OWNED EMPLOYER-VERIFICATION SYSTEM IS RETIRED (vivekium C8,
+owner-ruled 2026-09-18). Its routes and tasks went on 2026-09-18, and its
+table went with migration 0121, which drops it only when EMPTY and raises
+otherwise. The surviving system is the candidate-owned one:
+candidate_employments, bgv_verifications and the seven-item checkbox form at
+/bgv/form/{token}.
+
+THE OUTREACH ROUTE IS RETIRED TOO (Phase 6). The recruiter's outreach POST
+on this router mailed a sourced candidate a link to a long questionnaire that no screen
+sent and nothing downstream read; the unified six-field application replaced
+it. The route and its schemas are gone, and the Phase 6 removal sweep keeps
+them gone.
 """
+import hmac
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import (
-    CurrentUser,
-    get_public_db,
-    get_tenant_db,
-    make_outreach_token,
-    require_capability,
-)
+from app.api.deps import get_public_db
 from app.core.config import get_settings
-from app.models.candidate import Candidate, JobCandidateLink, Profile, VerificationRequest
-from app.models.enums import LinkSource, SubmittedVia, VerificationStatus
-from app.models.job import Job
-from app.models.tenant import Tenant
-from app.schemas.verification import (
-    EmployerFormField,
-    EmployerFormIn,
-    EmployerFormOut,
-    FormSubmitOut,
-    InboundEmailIn,
-    InboundEmailOut,
-    OutreachIn,
-    OutreachOut,
-    OverrideIn,
-    ProfileVerificationOut,
-    VerificationRequestOut,
+from app.models.conversation import (
+    CHANNEL_EMAIL,
+    KIND_CANDIDATE,
+    PARTY_CANDIDATE,
+    PARTY_EMPLOYER_HR,
 )
-from app.services import capabilities as caps
-from app.services.audit import audit
-from app.workers.dispatch import dispatch
+from app.schemas.verification import InboundEmailIn, InboundEmailOut
+from app.services import conversations, realtime
+from app.workers.dispatch import dispatch_after_commit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-EMPLOYER_FORM_FIELDS: list[EmployerFormField] = [
-    EmployerFormField(name="designation", label="Designation"),
-    EmployerFormField(name="doj", label="Date of Joining", type="date"),
-    EmployerFormField(name="doe", label="Date of Exit", type="date"),
-    EmployerFormField(name="last_drawn_ctc", label="Last Drawn CTC"),
-    EmployerFormField(name="last_drawn_gross", label="Last Drawn Gross"),
-    EmployerFormField(name="noc_status", label="NOC Status"),
-    EmployerFormField(name="exit_formalities_complete",
-                      label="Exit Formalities Completed", type="boolean"),
-    EmployerFormField(name="bgv_status", label="BGV Status"),
-    EmployerFormField(name="proofs_details",
-                      label="Educational / Address / ID Proof Details", required=False),
-    EmployerFormField(name="prior_experience_details",
-                      label="Prior Experience / Compensation Details", required=False),
-]
-
-# Recipient scheme for inbound reply-parsing fallback: verify+<token>@<domain>
-_TOKEN_IN_ADDRESS = re.compile(r"verify\+([A-Za-z0-9_\-]+)@")
-_TOKEN_IN_BODY = re.compile(r"/verification/form/([A-Za-z0-9_\-]{20,})")
 # Background-verification replies (add-features spec 2026-09-05): the inquiry
 # email carries "Reference: BGV-<token>" in its body and asks the employer to
 # keep it in the reply, so the reply (or its quoted original) contains it.
 _BGV_TOKEN_IN_BODY = re.compile(r"BGV-([A-Za-z0-9_\-]{16,64})")
 
 
-@router.post("/outreach", response_model=OutreachOut)
-async def send_outreach(
-    body: OutreachIn,
-    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> OutreachOut:
-    """HR emails selected FRESH candidates the 40-aspect + data request
-    (FR-5.1/5.2). Databank candidates are skipped, never silently."""
-    job = await session.get(Job, body.job_id)
-    if job is None or job.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Job not found")
+#: The header the inbound-mail Lambda presents. Named rather than reused from a
+#: standard auth header so a stray `Authorization` from a proxy cannot satisfy
+#: it by accident.
+INBOUND_SECRET_HEADER = "X-ReadyPick-Webhook-Secret"
 
-    # Loaded once, outside the loop: the template addresses the candidate on
-    # behalf of a named company, and rendering it with an empty company name
-    # produces "a role at ." in the candidate's inbox.
-    tenant = await session.get(Tenant, user.tenant_id)
-    company_name = tenant.name if tenant is not None else "ReadyPick"
 
-    sent: list[uuid.UUID] = []
-    skipped_databank: list[uuid.UUID] = []
-    not_linked: list[uuid.UUID] = []
+def _require_relay_secret(request: Request) -> None:
+    """Prove the caller is our own inbound-mail Lambda, when we can.
 
-    for candidate_id in body.candidate_ids:
-        link = (
-            await session.execute(
-                select(JobCandidateLink).where(
-                    JobCandidateLink.job_id == job.id,
-                    JobCandidateLink.candidate_id == candidate_id,
-                )
-            )
-        ).scalars().first()
-        if link is None or link.profile_id is None:
-            not_linked.append(candidate_id)
-            continue
-        if link.source == LinkSource.databank:
-            # Databank profiles are reused as-is (FR-4.4 / claude.md rule 7).
-            skipped_databank.append(candidate_id)
-            continue
+    `hmac.compare_digest` rather than `==`, because a plain comparison returns
+    as soon as two bytes differ and leaks the secret's prefix to anyone willing
+    to time a few thousand requests.
 
-        candidate = await session.get(Candidate, candidate_id)
-        token = make_outreach_token(link.profile_id, job.id)
-        # The candidate page is served at /portal/outreach/[token] (see
-        # frontend/app/(candidate)/portal/outreach/[token]/page.tsx). The bare
-        # /outreach/{token} this used to build has no route, so every emailed
-        # link 404'd even once the mail itself was delivered.
-        outreach_url = f"{get_settings().frontend_url}/portal/outreach/{token}"
-        dispatch(
-            "pickready.send_email",
-            args=[
-                str(user.tenant_id), candidate.email, "candidate_outreach",
-                {"outreach_url": outreach_url,
-                 # Alias: a tenant-authored row may still use the older
-                 # {{outreach_link}} placeholder, and an unknown placeholder
-                 # renders as an empty string rather than failing loudly.
-                 "outreach_link": outreach_url,
-                 "job_title": job.title,
-                 "candidate_name": candidate.full_name,
-                 "company_name": company_name},
-            ],
+    A 403 rather than a 401: there is no authentication scheme to negotiate
+    here, so telling a caller to try again with credentials would be a lie.
+    """
+    expected = get_settings().inbound_webhook_secret
+    if not expected:
+        # See `Settings.inbound_webhook_secret`. Unconfigured is a real state,
+        # and it is logged every time rather than once so the line cannot be
+        # lost in a rotation of the log.
+        logger.warning(
+            "verification.inbound_unauthenticated "
+            "reason=no_inbound_webhook_secret_configured"
         )
-        sent.append(candidate_id)
-
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="outreach_sent", target_type="job", target_id=job.id,
-                metadata={"sent": [str(c) for c in sent],
-                          "skipped_databank": [str(c) for c in skipped_databank]})
-    return OutreachOut(sent=sent, skipped_databank=skipped_databank, not_linked=not_linked)
+        return
+    presented = request.headers.get(INBOUND_SECRET_HEADER, "")
+    if not hmac.compare_digest(presented, expected):
+        logger.warning("verification.inbound_refused reason=bad_relay_secret")
+        raise HTTPException(status_code=403, detail="Not permitted.")
 
 
-@router.get("/profile/{profile_id}", response_model=ProfileVerificationOut)
-async def profile_verification_status(
-    profile_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> ProfileVerificationOut:
-    profile = await session.get(Profile, profile_id)
-    if profile is None:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    requests = (
-        await session.execute(
-            select(VerificationRequest)
-            .where(VerificationRequest.profile_id == profile_id)
-            .order_by(VerificationRequest.employer_seq)
-        )
-    ).scalars().all()
-    return ProfileVerificationOut(
-        profile_id=profile_id,
-        requests=[VerificationRequestOut.model_validate(r) for r in requests],
-        all_resolved=bool(requests) and all(
-            r.status != VerificationStatus.pending for r in requests
-        ),
-    )
-
-
-@router.post("/requests/{request_id}/override", response_model=VerificationRequestOut)
-async def override_verification(
-    request_id: uuid.UUID,
-    body: OverrideIn,
-    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> VerificationRequestOut:
-    """Explicit HR override with a logged reason (ESD §10) — the only way a
-    fresh candidate moves forward without an employer response."""
-    vr = await session.get(VerificationRequest, request_id)
-    if vr is None or vr.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Verification request not found")
-    if vr.status != VerificationStatus.pending:
-        raise HTTPException(status_code=409, detail="Request is already resolved")
-    vr.status = VerificationStatus.overridden
-    vr.override_reason = body.reason
-    vr.responded_at = datetime.now(timezone.utc)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="verification_overridden", target_type="verification_request",
-                target_id=vr.id, metadata={"reason": body.reason})
-    return VerificationRequestOut.model_validate(vr)
-
-
-# ── PUBLIC tokenized employer form (no auth; the token is the auth) ─────────
-
-async def _pending_request_by_token(
-    session: AsyncSession, token: str
-) -> VerificationRequest:
-    vr = (
-        await session.execute(
-            select(VerificationRequest).where(VerificationRequest.token == token)
-        )
-    ).scalars().first()
-    if vr is None:
-        raise HTTPException(status_code=404, detail="Invalid link")
-    if vr.status != VerificationStatus.pending:
-        # Single-use: any resolved state rejects the link.
-        raise HTTPException(status_code=410, detail="This link has already been used")
-    return vr
-
-
-@router.get("/form/{token}", response_model=EmployerFormOut)
-async def get_employer_form(
-    token: str, session: AsyncSession = Depends(get_public_db)
-) -> EmployerFormOut:
-    vr = await _pending_request_by_token(session, token)
-    profile = await session.get(Profile, vr.profile_id)
-    candidate = await session.get(Candidate, profile.candidate_id) if profile else None
-    return EmployerFormOut(
-        candidate_name=candidate.full_name if candidate else None,
-        employer_name=vr.employer_name,
-        fields=EMPLOYER_FORM_FIELDS,
-    )
-
-
-@router.post("/form/{token}", response_model=FormSubmitOut)
-async def submit_employer_form(
-    token: str,
-    body: EmployerFormIn,
-    session: AsyncSession = Depends(get_public_db),
-) -> FormSubmitOut:
-    vr = await _pending_request_by_token(session, token)
-    vr.response_json = body.model_dump(mode="json")
-    vr.status = VerificationStatus.submitted
-    vr.submitted_via = SubmittedVia.form
-    vr.responded_at = datetime.now(timezone.utc)
-    await session.flush()
-    await audit(session, tenant_id=vr.tenant_id, actor_user_id=None,
-                action="verification_form_submitted", target_type="verification_request",
-                target_id=vr.id, metadata={"via": "form"})
-    return FormSubmitOut(status=vr.status)
-
-
-@router.post("/inbound-email", response_model=InboundEmailOut)
+@router.post(
+    "/inbound-email",
+    response_model=InboundEmailOut,
+    dependencies=[Depends(_require_relay_secret)],
+)
 async def inbound_email_webhook(
     body: InboundEmailIn, session: AsyncSession = Depends(get_public_db)
 ) -> InboundEmailOut:
-    """Resend inbound-parsing webhook: when an employer replies by email
-    instead of using the form, enqueue LLM extraction as the fallback path
-    (FR-5.3). Always returns 200 so the provider does not retry storms."""
+    """Route one emailed reply into the record it answers.
+
+    Always 200, so the relay does not retry a reply nothing here can place.
+    A reply that matches nothing is logged by the matcher that looked, and
+    answers `matched=false`.
+    """
     recipients = body.to if isinstance(body.to, list) else [body.to or ""]
-    token: str | None = None
-    for addr in recipients:
-        match = _TOKEN_IN_ADDRESS.search(addr or "")
-        if match:
-            token = match.group(1)
-            break
-    if token is None:
-        # Fallback: the reply often quotes the original form URL.
-        match = _TOKEN_IN_BODY.search(body.text or "")
-        token = match.group(1) if match else None
-    if token is not None:
-        vr = (
-            await session.execute(
-                select(VerificationRequest).where(VerificationRequest.token == token)
-            )
-        ).scalars().first()
-        if vr is not None and vr.status == VerificationStatus.pending:
-            dispatch(
-                "pickready.parse_verification_reply", args=[str(vr.id), body.text or ""]
-            )
-            return InboundEmailOut(matched=True)
+    recipients += body.cc if isinstance(body.cc, list) else [body.cc or ""]
+
+    # CONVERSATIONS FIRST, because its token is read from the ADDRESS and is
+    # therefore exact. The two older paths below match on a URL or a reference
+    # string in the BODY, which depends on the employer's mail client quoting
+    # the original; asking the precise question first means a thread reply is
+    # never mistaken for one of them.
+    routed = await _match_conversation_reply(session, body, recipients)
+    if routed is not None:
+        return routed
 
     return await _match_bgv_reply(session, body.text or "")
+
+
+async def _match_conversation_reply(
+    session: AsyncSession, body: InboundEmailIn, recipients: list[str]
+) -> InboundEmailOut | None:
+    """Post an emailed reply into the conversation its address names.
+
+    THE ADDRESS IS THE ROUTING. `conversations+<thread_token>@<inbound domain>`
+    is the Reply-To on every BGV verification request, and on every email a
+    recruiter sends a candidate and every new-message notification (Phase 6,
+    `services/email_outbox`), so the answer lands in the right thread whatever
+    the sender does to the subject line and however little of the original
+    their client quotes. Matching on a subject was considered and refused:
+    "Re: Fwd: Re:" prefixes, translated prefixes and a forwarded thread all
+    break it, and the failure is silent.
+
+    WHO IS WRITING IS THE THREAD'S KIND, never a guess from the address. A
+    reply into a CANDIDATE thread is the candidate's (`PARTY_CANDIDATE`), with
+    the quoted history stripped (`conversations.strip_quoted_reply`) because
+    the candidate's mail client quotes the whole message they are answering.
+    `author_email` records the address it actually came from, so a reply sent
+    from another mailbox is visible to the recruiter rather than silently
+    attributed. A BGV thread's reply is the employer's, unchanged, and its
+    body is kept whole: it is evidence for a verification decision.
+
+    INERT WHERE NO MAIL IS RECEIVED. With `INBOUND_EMAIL_DOMAIN` empty (pilot,
+    2026-09: its region is not an SES receiving region) no Reply-To carries a
+    token and nothing reaches this path; the code ships tested and waits on
+    the infrastructure.
+
+    THE TOKEN IS THE AUTHORIZATION, exactly as the employer form's token is.
+    This handler runs under the bypass scope (the tenant is unknown until the
+    row is found), so it reads ONE row by its unguessable token and writes only
+    inside that row's tenant.
+
+    Returns None when nothing matched, so the caller falls through to the two
+    older reply paths rather than swallowing their mail.
+    """
+    token = conversations.token_from_address(*recipients)
+    if token is None:
+        return None
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, tenant_id, kind, bgv_verification_id "
+                    "FROM conversations WHERE thread_token = :tok"
+                ),
+                {"tok": token},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        # A well-formed token nobody holds. Recorded without the token itself,
+        # which is a live routing secret for whichever thread does hold it.
+        logger.warning("conversations.inbound_unknown_thread")
+        return InboundEmailOut(matched=False)
+
+    tenant_id = uuid.UUID(str(row["tenant_id"]))
+    conversation_id = uuid.UUID(str(row["id"]))
+    from_candidate = row["kind"] == KIND_CANDIDATE
+    reply_text = (body.text or "").strip()
+    if from_candidate:
+        reply_text = conversations.strip_quoted_reply(reply_text)
+    if not reply_text:
+        # An empty reply is a real thing (an attachment with no words, an
+        # HTML-only client). Recorded as arriving rather than dropped, because
+        # "they have answered" is the fact the recruiter is waiting for.
+        reply_text = (
+            "The candidate replied with no message text."
+            if from_candidate
+            else "The employer replied with no message text."
+        )
+
+    try:
+        message = await conversations.post_message(
+            session,
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            author_party=PARTY_CANDIDATE if from_candidate else PARTY_EMPLOYER_HR,
+            body=reply_text,
+            channel=CHANNEL_EMAIL,
+            author_email=body.from_,
+            inbound_message_id=body.message_id,
+        )
+    except conversations.ConversationRefused as exc:
+        logger.warning("conversations.inbound_refused reason=%s", exc)
+        return InboundEmailOut(matched=False)
+
+    if row["bgv_verification_id"] is not None:
+        # `responded_at` is stamped, and the STATUS is not. A person decides
+        # verified or not verified after reading this; inferring either from
+        # the arrival of a reply would be the automated hiring decision the
+        # brief refuses.
+        await session.execute(
+            text(
+                "UPDATE bgv_verifications SET responded_at = now(), "
+                " updated_at = now() "
+                "WHERE id = :vid AND responded_at IS NULL"
+            ),
+            {"vid": str(row["bgv_verification_id"])},
+        )
+
+    realtime.publish_after_commit(
+        session,
+        realtime.message_event(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message=message,
+        ),
+    )
+    return InboundEmailOut(matched=True)
 
 
 async def _match_bgv_reply(
@@ -313,5 +266,11 @@ async def _match_bgv_reply(
     inquiry.status = STATUS_RESPONSE_RECEIVED
     inquiry.updated_at = now
     await session.flush()
-    dispatch("pickready.parse_bgv_reply", args=[str(inquiry.id), reply_text])
+    # AFTER the commit that stores the raw reply: the parse reads that row,
+    # and a rolled-back webhook must not parse a reply that was never kept.
+    # A lost invoke leaves the inquiry at `response_received` with the raw
+    # text stored, which is where a person can still read it.
+    dispatch_after_commit(
+        session, "pickready.parse_bgv_reply", args=[str(inquiry.id), reply_text]
+    )
     return InboundEmailOut(matched=True)

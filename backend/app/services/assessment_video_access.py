@@ -115,9 +115,16 @@ VIDEO_FAILED = "Failed"
 VIDEO_NONE = "No recording"
 
 #: What each word means, in one client-facing sentence. Served with the word so
-#: the dashboard never invents copy; a conversational session with no recording
-#: is a normal state and says so (plan resolution 5: proctoring stores no
-#: media, so conversational assessments have no video today).
+#: the dashboard never invents copy.
+#:
+#: SUPERSEDED 2026-09-22: this comment used to read "a conversational session
+#: with no recording is a normal state (plan resolution 5: proctoring stores no
+#: media, so conversational assessments have no video today)". The owner
+#: reversed that, so a proctored conversational session HAS a stored recording
+#: and reaches this layer through the same rows. `VIDEO_NONE` survives and is
+#: still honest for the cases that really have no media: a session that never
+#: started, one recorded before the ruling, and one whose media has since been
+#: deleted by erasure, job closure or the retention sweep.
 VIDEO_STATUS_DETAIL: dict[str, str] = {
     VIDEO_READY: "The assessment video is ready to preview.",
     VIDEO_PROCESSING: "The recording is still being processed. Check back shortly.",
@@ -128,15 +135,32 @@ VIDEO_STATUS_DETAIL: dict[str, str] = {
     VIDEO_NONE: "No video was recorded for this assessment.",
 }
 
+#: Shown when the recording exists and its media has been deleted. Distinct
+#: from "no video was recorded", because those are different facts and the
+#: hiring team asking the question is asking which one it is.
+VIDEO_DELETED_DETAIL = (
+    "The recording for this assessment has been deleted under the platform's "
+    "retention and deletion policy."
+)
 
-def video_status_word(status: str | None) -> str:
+
+def video_status_word(status: str | None, *, media_deleted: bool = False) -> str:
     """Collapse the lifecycle machine into the four dashboard words.
 
     None (no recording row) is No recording; `ready` is Ready; any failure
     state is Failed; everything in between -- including a recording still in
     the candidate's browser -- is Processing, because from the client's chair
     that is what it is.
+
+    DELETED MEDIA IS CHECKED FIRST and reads as No recording, whatever the
+    lifecycle status says. The status is a record of what the PIPELINE did and
+    it stays true; the question this word answers is "can I watch it", and
+    once the objects are gone the honest answer to that is no. Every caller
+    passes the flag from the row it already read, so a list surface and the
+    access route cannot disagree about whether a video exists.
     """
+    if media_deleted:
+        return VIDEO_NONE
     if status is None:
         return VIDEO_NONE
     if status == lifecycle.READY:
@@ -148,13 +172,27 @@ def video_status_word(status: str | None) -> str:
 
 def is_servable(recording: VideoRecording | None) -> bool:
     """Whether a preview URL may be minted: the pipeline finished, the
-    long-term object exists and it is the directly playable mp4."""
+    long-term object exists, it is the directly playable mp4, and the media
+    has not since been DELETED.
+
+    The deletion check is the half added with the retention lifecycle
+    (2026-09-22). Without it a recording whose objects were erased would still
+    read as Ready and mint a presigned URL onto a key that is gone, which the
+    browser would render as a broken player rather than as the honest sentence
+    the dashboard has for it.
+    """
     return (
         recording is not None
         and recording.status == lifecycle.READY
         and bool(recording.s3_compressed_key)
         and recording.stored_format == "mp4"
+        and recording.media_deleted_at is None
     )
+
+
+def media_deleted(recording: VideoRecording | None) -> bool:
+    """Whether this recording's stored media has been verifiably deleted."""
+    return recording is not None and recording.media_deleted_at is not None
 
 
 def can_retry(recording: VideoRecording | None) -> bool:
@@ -189,6 +227,42 @@ async def latest_conversation_facts(
     if row is None:
         return None, None
     return row[0], row[1]
+
+
+# ── Who may reach a recording (Vivekium release, 2026-09-24) ─────────────────
+
+
+async def require_hiring_team(session: AsyncSession, user: Any, job_id: uuid.UUID) -> None:
+    """A recording is viewable only by the job's HIRING TEAM.
+
+    `view_review_screen` is SCOPED for the Recruiter, the Hiring Manager and
+    the Interview Manager (RBAC 24), and `require_capability` alone answers
+    only "may this role do this at all", so before this every Recruiter in a
+    tenant could mint a presigned URL for the recording of any job in it. The
+    answer here is `rbac.authorize` over the job's resource facts: tenant
+    (404 across a boundary), the 24 ceiling, the grant, and the per-job
+    assignment for the scoped roles (403 inside the tenant). The Client Super
+    Admin and the HR Manager reach every job in their own tenant, as they do
+    for the report and the transcript.
+
+    The ONE definition, called by every recruiter-facing recording route
+    (`api/videos.py`) and by the staff retry (`api/assessment_recording.py`).
+    """
+    from app.services import capabilities as caps  # noqa: PLC0415
+    from app.services import rbac  # noqa: PLC0415
+
+    resource = await rbac.load_job_resource(session, job_id)
+    if resource is None:
+        from fastapi import HTTPException  # noqa: PLC0415
+
+        raise HTTPException(status_code=404, detail="Not found")
+    principal = rbac.Principal(
+        user_id=user.user_id, tenant_id=user.tenant_id, role=user.role
+    )
+    decision = await rbac.authorize(
+        session, principal, caps.VIEW_REVIEW_SCREEN, resource
+    )
+    rbac.raise_for(decision, caps.VIEW_REVIEW_SCREEN)
 
 
 # ── Delivery (spec sections 15, 16, 18) ──────────────────────────────────────

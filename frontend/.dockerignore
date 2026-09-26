@@ -9,8 +9,9 @@ node_modules
 out
 
 # Secrets never belong in an image layer. The frontend deliberately holds no
-# .env at all: the Razorpay Key ID reaches the browser from GET /billing/config
-# at runtime, so RAZORPAY_KEY_SECRET has no path into the bundle.
+# .env at all: the Razorpay Key ID reaches the browser at runtime on the API's
+# subscribe and purchase responses, so RAZORPAY_KEY_SECRET has no path into the
+# bundle.
 .env
 .env.*
 

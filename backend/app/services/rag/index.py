@@ -26,18 +26,38 @@ unreachable, and the keyword half of retrieval keeps working on them because
 pass fills them in. The alternative -- refusing to index until the GPU service
 answers -- means a resume uploaded during an outage is invisible to retrieval
 forever, since nothing would ever ask again.
+
+EVERY EMBEDDED CHUNK SAYS WHICH MODEL PRODUCED IT (2026-09-24)
+--------------------------------------------------------------
+Migration 0062 added `embedding_model`, `embedding_contract_version` and
+`embedding_generated_at` to this table, and until 2026-09-24 this function, the
+only writer of new chunks, never filled them. So "was this vector produced by
+the current model and the current text builder" had no answer for any chunk in
+any environment, and a retired model version was not merely unrepaired but
+UNDETECTABLE. The three columns are now written in the same statement as the
+vector they describe, and they are NULL together with it when the embedding
+degraded, because a model name beside no vector would assert work that did not
+happen.
+
+They are also NULL when the vector came from the deterministic development
+fallback (`embeddings.is_semantic()` is False). Those vectors are pseudo-random
+and a `voyage-4` stamp on one would be the exact lie `scripts/reembed.py`
+refuses to tell. `rag/repair` refuses to run in that state for the same reason,
+so a development index is left honestly unstamped rather than churned.
 """
 from __future__ import annotations
 
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.embeddings import EmbeddingError, embed
-from app.services.rag import chunking
+from app.config.llm_providers import EMBEDDING_CONTRACT_VERSION, EMBEDDING_MODEL
+from app.services.embeddings import EmbeddingError, embed, is_semantic
+from app.services.rag import chunking, contextual, sources
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +76,20 @@ class IndexResult:
     unchanged: int = 0
     deleted: int = 0
     embedded: int = 0
+    #: Chunks written with a generated situating prefix (W6.2).
+    prefixed: int = 0
     #: True when text was indexed with no vector because embedding failed. The
     #: chunk is searchable by keyword; it is not searchable semantically until a
     #: backfill runs. Counted rather than raised, and never silent.
     degraded: bool = False
+    #: True when a prefix was wanted and not produced. SEPARATE from
+    #: `degraded`, which is about vectors: a chunk can have a vector and no
+    #: prefix, and one count reporting both would hide which happened.
+    prefix_degraded: bool = False
+    #: Chunks whose vector was stamped with `EMBEDDING_MODEL` and the contract
+    #: version. Less than `embedded` only when the vectors came from the
+    #: development fallback, which is stamped with nothing.
+    stamped: int = 0
 
     @property
     def total(self) -> int:
@@ -68,6 +98,28 @@ class IndexResult:
 
 def _vector_literal(vector: list[float]) -> str:
     return "[" + ",".join(f"{value:.7f}" for value in vector) + "]"
+
+
+def provenance_for(vector: list[float] | None) -> dict[str, object]:
+    """The three provenance columns for one vector, as bind parameters.
+
+    ONE definition, shared with `rag/repair`, so the indexer and the sweep can
+    never disagree about what a stamped chunk looks like: a disagreement there
+    is a sweep that re-embeds its own output every hour with a bill as the only
+    symptom. NULL for all three when there is no vector, or when the vector is
+    the development fallback's (see the module docstring).
+    """
+    if vector is None or not is_semantic():
+        return {
+            "embedding_model": None,
+            "embedding_contract_version": None,
+            "embedding_generated_at": None,
+        }
+    return {
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_contract_version": EMBEDDING_CONTRACT_VERSION,
+        "embedding_generated_at": datetime.now(timezone.utc),
+    }
 
 
 async def _embed_batched(texts: list[str]) -> tuple[list[list[float] | None], bool]:
@@ -138,22 +190,50 @@ async def index_document(
     unchanged = len(pieces) - len(changed)
 
     vectors: list[list[float] | None] = []
+    prefixes: list[contextual.PrefixResult] = []
     degraded = False
+    prefix_degraded = False
     if changed:
-        vectors, degraded = await _embed_batched([piece.content for piece in changed])
+        # PREFIXES FIRST. The embedding input is the joined form, and joining
+        # after embedding would index the chunk without the situating context
+        # that is the whole point of W6.2.
+        prefixes = await contextual.generate_prefixes(
+            document=document,
+            chunk_contents=[piece.content for piece in changed],
+            source_type=source_type,
+        )
+        prefix_degraded = any(result.degraded for result in prefixes)
+        vectors, degraded = await _embed_batched(
+            [
+                contextual.embedding_input(result.prefix, piece.content)
+                for piece, result in zip(changed, prefixes)
+            ]
+        )
 
-    for piece, vector in zip(changed, vectors or [None] * len(changed)):
+    stamped = 0
+    for piece, vector, prefix in zip(
+        changed,
+        vectors or [None] * len(changed),
+        prefixes or [contextual.PrefixResult()] * len(changed),
+    ):
+        provenance = provenance_for(vector)
+        stamped += 1 if provenance["embedding_model"] is not None else 0
         await session.execute(
             text(
                 """
                 INSERT INTO context_chunks (
                     tenant_id, source_type, source_id, source_version,
                     section_type, ordinal, content, content_sha256, embedding,
-                    updated_at
+                    embedding_model, embedding_contract_version,
+                    embedding_generated_at,
+                    context_prefix, prefix_model, prefix_generated_at, updated_at
                 ) VALUES (
                     :tenant_id, :source_type, :source_id, :source_version,
                     :section_type, :ordinal, :content, :content_sha256,
-                    CAST(:embedding AS vector), now()
+                    CAST(:embedding AS vector),
+                    :embedding_model, :embedding_contract_version,
+                    :embedding_generated_at,
+                    :context_prefix, :prefix_model, :prefix_generated_at, now()
                 )
                 ON CONFLICT (source_type, source_id, ordinal) DO UPDATE SET
                     source_version = EXCLUDED.source_version,
@@ -161,6 +241,12 @@ async def index_document(
                     content        = EXCLUDED.content,
                     content_sha256 = EXCLUDED.content_sha256,
                     embedding      = EXCLUDED.embedding,
+                    embedding_model = EXCLUDED.embedding_model,
+                    embedding_contract_version = EXCLUDED.embedding_contract_version,
+                    embedding_generated_at = EXCLUDED.embedding_generated_at,
+                    context_prefix = EXCLUDED.context_prefix,
+                    prefix_model   = EXCLUDED.prefix_model,
+                    prefix_generated_at = EXCLUDED.prefix_generated_at,
                     updated_at     = now()
                 """
             ),
@@ -174,6 +260,10 @@ async def index_document(
                 "content": piece.content,
                 "content_sha256": piece.content_sha256,
                 "embedding": _vector_literal(vector) if vector else None,
+                **provenance,
+                "context_prefix": prefix.prefix,
+                "prefix_model": prefix.model,
+                "prefix_generated_at": prefix.generated_at,
             },
         )
 
@@ -226,7 +316,35 @@ async def index_document(
         unchanged=unchanged,
         deleted=deleted,
         embedded=sum(1 for vector in vectors if vector),
+        prefixed=sum(1 for result in prefixes if result.has_prefix),
         degraded=degraded,
+        prefix_degraded=prefix_degraded,
+        stamped=stamped,
     )
 
 
+async def index_source(
+    session: AsyncSession, *, source_type: str, source_id: uuid.UUID
+) -> IndexResult | None:
+    """Resolve one source document and index it: the ONE load-then-index path.
+
+    Both callers need exactly this sequence, `pickready.index_document` (the
+    dispatched indexer) and the scoring run, which indexes its own transcript
+    inline before Miti reads passages from it. One implementation, so the two
+    cannot come apart over which document a source id resolves to.
+
+    None when `sources.load` resolves nothing to index, which is a legitimate
+    state (a deleted row, a draft JD, an unparsed resume, an assessment with no
+    answered exchange) and never a failure. The caller commits and logs.
+    """
+    document = await sources.load(session, source_type=source_type, source_id=source_id)
+    if document is None:
+        return None
+    return await index_document(
+        session,
+        tenant_id=document.tenant_id,
+        source_type=document.source_type,
+        source_id=document.source_id,
+        document=document.text,
+        chunks=document.chunks,
+    )

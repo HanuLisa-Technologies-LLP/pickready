@@ -60,12 +60,12 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-#: The URI scheme durable database values use. `gs://` for rows written before
-#: the AWS migration; both are recognised on READ so a pre-migration row can be
-#: identified and reported rather than silently 404ing, and only `s3://` is ever
-#: WRITTEN.
+#: The URI scheme durable database values use. The pre-AWS `gs://` scheme and
+#: its reader were deleted in the 2026-09 final sweeps: pilot holds no such
+#: row (CONTRACT v3), and a reader for rows that do not exist is a code path
+#: nothing exercises. A value in any other scheme is refused as un-migrated by
+#: `resume_storage.fetch_resume_bytes`, without naming a store.
 S3_SCHEME = "s3://"
-LEGACY_GCS_SCHEME = "gs://"
 
 
 class ObjectStorageError(RuntimeError):
@@ -116,10 +116,34 @@ def client() -> Any:
         with _client_lock:
             if _client is None:
                 import boto3  # noqa: PLC0415 -- optional at import time
+                from botocore.config import Config  # noqa: PLC0415
 
                 settings = get_settings()
                 _client = boto3.client(
                     "s3",
+                    # EXPLICIT TIMEOUTS AND A BOUNDED RETRY COUNT, the rule
+                    # every other boto3 client in this tree already follows
+                    # (workers/dispatch, ses_service, video/processing,
+                    # email_senders/eligibility, the assessment trigger). This
+                    # client was the exception, and it is the one reached from
+                    # REQUEST HANDLERS: the resume viewer, document storage,
+                    # project intake and the video routes.
+                    #
+                    # botocore's defaults are 60s connect and 60s read under
+                    # standard retry mode, so an endpoint that accepts the
+                    # connection and then stops answering blocks a request
+                    # handler for up to three minutes. The ALB gives up at 65
+                    # seconds, so the caller already has a 504 while the worker
+                    # is still held -- and with four uvicorn workers a handful
+                    # of resume downloads is enough to stop the API answering
+                    # anything. That is the same shape as the broker publish
+                    # timeout: an unreachable endpoint that HANGS defeats every
+                    # try/except around the call, because nothing is raised.
+                    config=Config(
+                        connect_timeout=5,
+                        read_timeout=20,
+                        retries={"max_attempts": 2, "mode": "standard"},
+                    ),
                     region_name=settings.aws_region or None,
                     # `endpoint_url` exists for localstack and for the test
                     # suite. It is None in every real environment, and boto3
@@ -139,17 +163,6 @@ def reset_client() -> None:
 
 def uri_for(key: str) -> str:
     return f"{S3_SCHEME}{_bucket_name()}/{key}"
-
-
-def is_legacy_uri(uri: str | None) -> bool:
-    """True for an object written before the AWS migration.
-
-    Callers use this to raise a NAMED error rather than a 404. A row pointing at
-    `gs://` is not corrupt, it is un-migrated, and those are different problems
-    with different fixes -- `scripts/migrate_resumes_to_s3.py` is the fix for
-    one and nothing is the fix for the other.
-    """
-    return bool(uri) and str(uri).startswith(LEGACY_GCS_SCHEME)
 
 
 # ── Operations ───────────────────────────────────────────────────────────────
@@ -181,6 +194,32 @@ def _head(key: str) -> dict[str, Any] | None:
         raise ObjectStorageError(f"Object store HEAD failed: {code}") from exc
 
 
+def sse_arguments() -> dict[str, str]:
+    """The server-side encryption arguments EVERY write to the bucket carries.
+
+    `aws:kms` under this environment's own key, named explicitly: the bucket
+    policy (`infra/modules/s3`) refuses a PutObject that names any other
+    encryption, another key, or `aws:kms` with no key id (which S3 would
+    encrypt under the AWS-managed `aws/s3` key instead). This module sent
+    `AES256` until the stage 3 final sweeps, so on pilot every resume,
+    compliance, project and attachment upload was refused by the first of
+    those statements; the media transport (`services/video/storage`) had
+    already moved and now reads this function rather than its own copy.
+
+    REFUSES when `s3_kms_key_id` is empty rather than writing under the wrong
+    key, the same refusal an absent bucket gets.
+    """
+    key_id = (get_settings().s3_kms_key_id or "").strip()
+    if not key_id:
+        raise ObjectStorageNotConfigured(
+            "S3_KMS_KEY_ID is not set. The bucket policy accepts only "
+            "aws:kms uploads, and without the key id the object would be "
+            "encrypted under the AWS-managed key instead of this "
+            "environment's own."
+        )
+    return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_id}
+
+
 def put_if_absent(
     *, key: str, data: bytes, content_type: str, metadata: dict[str, str]
 ) -> StoredObject:
@@ -196,6 +235,9 @@ def put_if_absent(
     from botocore.exceptions import ClientError  # noqa: PLC0415
 
     bucket = _bucket_name()
+    # Before any network call, so an unconfigured key refuses the write
+    # instead of spending a HEAD first.
+    sse = sse_arguments()
     existing = _head(key)
     if existing is None:
         try:
@@ -205,12 +247,12 @@ def put_if_absent(
                 Body=data,
                 ContentType=content_type,
                 Metadata=metadata,
-                # Server-side encryption is also enforced by the bucket policy
-                # in Terraform. Stated here too, because a caller reading this
-                # module should not have to open the IaC to learn whether the
-                # bytes are encrypted, and belt-and-braces on encryption is not
-                # a redundancy worth trimming.
-                ServerSideEncryption="AES256",
+                # REQUIRED, not belt-and-braces: the bucket policy denies any
+                # other encryption header (`sse_arguments`). Written as two
+                # keywords rather than a splat, because
+                # `test_proctoring_no_media` reads them off the call.
+                ServerSideEncryption=sse["ServerSideEncryption"],
+                SSEKMSKeyId=sse["SSEKMSKeyId"],
                 # The precondition. Without it two concurrent uploads of
                 # identical bytes both write, which is harmless for the DATA
                 # (same bytes, same key) and wasteful for the transfer.
@@ -232,7 +274,8 @@ def put_if_absent(
                 Body=data,
                 ContentType=content_type,
                 Metadata=metadata,
-                ServerSideEncryption="AES256",
+                ServerSideEncryption=sse["ServerSideEncryption"],
+                SSEKMSKeyId=sse["SSEKMSKeyId"],
             )
         existing = _head(key)
 

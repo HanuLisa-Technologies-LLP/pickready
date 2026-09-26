@@ -37,6 +37,11 @@ AUTH_OTP_VERIFIED = "otp_verified"
 AUTH_OTP_FAILED = "otp_failed"
 AUTH_OTP_RATE_LIMITED = "otp_rate_limited"
 AUTH_LOGIN_SUCCEEDED = "login_succeeded"
+#: A proven Firebase identity was refused a session it asked for. Today the
+#: only reason is an attempt to rebind an account that is already linked to a
+#: different Firebase uid, which is the shape of an account takeover, so it
+#: is worth a row of its own rather than silence.
+AUTH_LOGIN_REFUSED = "login_refused"
 AUTH_CONTEXT_SELECTED = "context_selected"
 AUTH_LOGOUT = "logout"
 AUTH_EMAIL_SEND_FAILED = "email_send_failed"
@@ -51,6 +56,7 @@ AUTH_ACTIONS: frozenset[str] = frozenset(
         AUTH_OTP_FAILED,
         AUTH_OTP_RATE_LIMITED,
         AUTH_LOGIN_SUCCEEDED,
+        AUTH_LOGIN_REFUSED,
         AUTH_CONTEXT_SELECTED,
         AUTH_LOGOUT,
         AUTH_EMAIL_SEND_FAILED,
@@ -206,7 +212,6 @@ AUDIT_ACTOR_ROLE_UNKNOWN = "unknown"
 #: strings.
 JOB_CREATED = "job_created"
 JOB_JD_EDITED = "job_jd_edited"
-JOB_SENT_TO_HIRING_MANAGER = "job_sent_to_hiring_manager"
 JOB_CRITERIA_EDITED = "job_criteria_edited"
 JOB_FINALIZED = "job_finalized"
 JOB_PUBLISHED = "job_published"
@@ -222,7 +227,6 @@ AUTHORIZATION_REFUSED = "authorization_refused"
 ACTIVITY_ACTIONS: tuple[str, ...] = (
     JOB_CREATED,
     JOB_JD_EDITED,
-    JOB_SENT_TO_HIRING_MANAGER,
     JOB_CRITERIA_EDITED,
     JOB_FINALIZED,
     JOB_PUBLISHED,
@@ -235,6 +239,15 @@ ACTIVITY_ACTIONS: tuple[str, ...] = (
     TEAM_REVIEW_REMARK_ADDED,
     AUTHORIZATION_REFUSED,
 )
+
+#: READS of a candidate's assessment record by a hiring team member (PLAN-p5
+#: WP5-F). The PRISM PDF is the copy that leaves the product, the transcript is
+#: the candidate's raw answers, and the citation view resolves report
+#: statements back to those answers; each read is a row, written in the ONE
+#: insert `record_action` makes, in the request's own transaction.
+PRISM_PDF_DOWNLOADED = "prism_report.pdf_downloaded"
+ASSESSMENT_TRANSCRIPT_VIEWED = "assessment_transcript.viewed"
+PRISM_CITATIONS_VIEWED = "prism_report.citations_viewed"
 
 #: Actions that record a candidate leaving the process. RBAC 39 and this
 #: project's own rule say no flag ever auto-rejects, so every one of these

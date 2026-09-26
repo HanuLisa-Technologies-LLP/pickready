@@ -42,7 +42,10 @@ import pytest
 
 from app.api import (
     admin,
-    assessments,
+    assessment_coding,
+    assessment_conversation,
+    assessment_recording,
+    assessment_reports,
     auth,
     bd,
     billing,
@@ -50,6 +53,7 @@ from app.api import (
     companies,
     dashboard,
     emails,
+    job_setup,
     jobs,
     matching,
     outreach,
@@ -63,7 +67,17 @@ from app.api import (
 
 ROUTERS = {
     "admin": admin,
-    "assessments": assessments,
+    # The PRISM Report, its PDF, its citations and the transcript (PLAN-p5
+    # WP5-F): what was left of `assessments` once everything else was carved
+    # out of it, moved whole with every URL unchanged.
+    "assessment_reports": assessment_reports,
+    # Carved out of `assessments` on 2026-09-24 (PLAN-p3 WP0). Listed so the
+    # moved routes stay under this sweep rather than leaving it with the move.
+    "assessment_conversation": assessment_conversation,
+    # Phase 4 WP-4C: the coding Run and final-answer state routes, candidate
+    # audience. The Run is a write, so it belongs under this sweep.
+    "assessment_coding": assessment_coding,
+    "assessment_recording": assessment_recording,
     "auth": auth,
     "bd": bd,
     "billing": billing,
@@ -71,6 +85,9 @@ ROUTERS = {
     "companies": companies,
     "dashboard": dashboard,
     "emails": emails,
+    # The setup checklist, the Skills step and the SWOT routes (Vivekium
+    # release), moved out of `assessments` and swept here for the same reason.
+    "job_setup": job_setup,
     "jobs": jobs,
     "matching": matching,
     "outreach": outreach,
@@ -122,6 +139,11 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # The authentication endpoint itself. It cannot require authorization: it
     # is what produces the session. Rate limited instead (services/rate_limit).
     "/firebase/session": "creates the session",
+    # Authorized by a FRESH Firebase ID token in the body, verified before
+    # anything is read, and it acts only on the uid that token names. A cookie
+    # dependency would defeat it: the session it revokes may already be
+    # expired, and it only ever removes access.
+    "/password-changed": "verified Firebase ID token, revokes only",
     # Authorized by a single-use, short-lived context_token in the body, minted
     # by /firebase/session moments earlier.
     "/select-context": "single-use context token",
@@ -138,6 +160,14 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # handler extracts from the recipient address or the quoted body; a message
     # carrying no valid token reaches nothing.
     "/inbound-email": "signed token inside the message",
+    # The renewal link in the six-month consent letter (feature 8). The token
+    # is single use (renewal clears the stored hash), short lived, stored only
+    # as a SHA-256 hash, bound to one candidate, and accepted by this route
+    # and NOTHING else: it mints no session, identifies the holder to nothing,
+    # and its only effect is that a profile which was going to be deleted is
+    # not. A session dependency would defeat it, because the reader is by
+    # definition somebody who has not signed in for six months.
+    "/consent/renew": "single-use renewal token, keeps a profile and nothing else",
 }
 
 #: Routes that mutate ONLY the caller's own record.

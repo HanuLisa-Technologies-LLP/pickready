@@ -93,6 +93,31 @@ export class DetectionRules {
     return this.lastIdentity;
   }
 
+  /**
+   * Forget every running measurement taken from frames: face absence,
+   * obstruction and the consecutive-frame object runs. Called when the camera
+   * is lost and again when it comes back (Phase 3, 2026-09-24).
+   *
+   * Absence is measured as the time between the first frame without a face
+   * and the current one, so a camera that went dark while the face was out of
+   * view and came back two minutes later would otherwise read as two minutes
+   * of absence on its first frame, which is FACE_ABSENT_EXTENDED and a Path A
+   * termination for an outage the device pause already accounts for. A run of
+   * phone detections straddling the outage would likewise count frames minutes
+   * apart as consecutive. The time without a camera is the pause's to report,
+   * not the detectors'. The identity baseline and the reported-once latches for
+   * low light are kept: they describe the candidate, not the stream.
+   */
+  resetPresence(): void {
+    this.runs.clear();
+    this.absentSince = null;
+    this.obstructedSince = null;
+    this.absenceNearUniform = false;
+    this.moderateReported = false;
+    this.extendedReported = false;
+    this.obstructionReported = false;
+  }
+
   observe(frame: FrameDetections): RuleOutcome {
     const events: EventDraft[] = [];
     let confirming = false;

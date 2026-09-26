@@ -12,13 +12,13 @@ Two properties are asserted here, and a third is asserted by NOT changing.
   1. the state is explicit, deterministic, and internal;
   2. two semantically equivalent questions are not both asked, decided without
      a model call, because the guard matters most when the provider is down;
-  3. `ppi.conversation_may_close` is still the only thing that ENDS a
-     conversation early, floor included. Everything added here can make it
-     stricter and can never make it looser.
+  3. NOTHING ends a conversation early (since 2026-09-24, Appendix B section 3:
+     every item is asked). The state reports conditions to an operator and
+     decides nothing; the engine completes only when the written questions
+     are exhausted.
 
-The four invariants around a follow-up -- same `question_key`, no index
-advance, completion held open, early stopping governed by
-`conversation_may_close` -- live in `tests/test_conversation_flow.py` and are
+The invariants around a follow-up -- same `question_key`, no index advance,
+completion held open -- live in `tests/test_conversation_flow.py` and are
 deliberately not re-asserted here.
 """
 from __future__ import annotations
@@ -313,29 +313,35 @@ def test_the_state_log_carries_counts_and_words_only() -> None:
 # ── The loop, and what governs stopping ──────────────────────────────────────
 
 
-def test_conversation_may_close_still_governs_early_stopping() -> None:
-    """The addition is an `and`, never a replacement, and the source is where
-    that has to be checked: a passing end state cannot tell the two apart."""
-    from app.api import assessments
+def test_nothing_closes_a_conversation_early() -> None:
+    """The early close on evidence coverage is gone, and the source is where
+    that has to be checked: a passing end state cannot tell "every item was
+    asked" from "the close happened to agree". The engine completes on ONE
+    condition, `is_finished`, which is the written questions being exhausted."""
+    from app.services.assessment_conversation import turns
 
-    source = inspect.getsource(assessments.respond)
-    assert "ppi.conversation_may_close(" in source
-    close_at = source.index("evidence_complete = ppi.conversation_may_close(")
-    tail = source[close_at : close_at + 1200]
-    assert ") and (" in tail, tail[:400]
-    assert "interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions" in tail
-    # Completion by exhausting the written questions is untouched, so nothing
-    # added here can strand a candidate in an endless interview.
-    assert "conversation.next_question_index >= len(prompts) or evidence_complete" in source
+    tree = ast.parse(inspect.getsource(turns))
+    called = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "conversation_may_close" not in called
+    finish = inspect.getsource(turns._finish_turn)
+    assert "if is_finished(conversation, ctx.prompts):" in finish
+    finished = inspect.getsource(turns.is_finished)
+    assert "conversation.next_question_index >= len(prompts)" in finished
 
 
 def test_the_conflicting_dimensions_are_read_from_the_ledger() -> None:
     """THE MITI SIDE OF THE LOOP. Whether two readings disagree is a question
     about the evidence ledger, not about the transcript, so it is read from the
-    ledger rather than guessed at from what the candidate typed."""
-    from app.api import assessments
+    ledger rather than guessed at from what the candidate typed. Since
+    2026-09-24 the ledger is written per answer while the conversation runs,
+    so this read has something to read."""
+    from app.services.assessment_conversation import turns
 
-    source = inspect.getsource(assessments._ledger_dimension_flags)
+    source = inspect.getsource(turns.ledger_dimension_flags)
     assert "load_claims" in source
     assert "CLAIM_CONTRADICTED" in source
     assert "CLAIM_INFERRED_ONLY" in source
@@ -343,16 +349,23 @@ def test_the_conflicting_dimensions_are_read_from_the_ledger() -> None:
     # cycle, and a module-level import here is an AttributeError the moment
     # another one forms.
     assert "    from app.services.evidence import ledger" in source
+    # And the flag reaches the question writer: a populated ledger that never
+    # shaped a question would close nothing.
+    writer = inspect.getsource(turns.write_next_question)
+    assert "conflicting=competency.name in conflicting" in writer
 
 
 def test_an_unavailable_ledger_never_stalls_a_conversation() -> None:
-    """The dangerous direction. A ledger outage that made every conversation
-    refuse to close would strand every candidate in the product
-    mid-assessment."""
-    from app.api import assessments
+    """The dangerous direction. A ledger outage must cost the next question
+    its contradiction probe and nothing else, so a DATABASE failure is read
+    as "no flags" inside a savepoint that keeps the turn's own writes. Only
+    that failure: a programming error propagates."""
+    from app.services.assessment_conversation import turns
 
-    source = inspect.getsource(assessments._ledger_dimension_flags)
-    assert "except Exception" in source
+    source = inspect.getsource(turns.ledger_dimension_flags)
+    assert "session.begin_nested()" in source
+    assert "except SQLAlchemyError" in source
+    assert "except Exception" not in source
     assert "return set(), set()" in source
 
 
@@ -360,24 +373,22 @@ def test_the_coverage_read_counts_matrix_items_and_not_questions() -> None:
     """Several questions can probe one matrix item, and a follow-up is filed
     under its parent's key, so counting questions would let a third of the
     matrix look like full coverage."""
-    from app.api import assessments
+    from app.services.assessment_conversation import turns
 
-    source = inspect.getsource(assessments._coverage_rows)
+    source = inspect.getsource(turns.coverage_rows)
     assert "JOIN job_competencies c ON c.id = q.competency_id" in source
     assert "GROUP BY c.id" in source
     assert "m.question_key = CAST(q.id AS text)" in source
-    # And only a substantive answer counts, or a candidate could shorten their
-    # own assessment by not answering.
     assert "COALESCE(m.answer_label, 'substantive') = 'substantive'" in source
 
 
 def test_the_state_never_reaches_a_response_schema() -> None:
     """Internal engineering metadata, exactly like the ledger's `relevance`. The
-    counts here order work and explain a decision to an operator; the standing
+    counts here explain the conversation to an operator; the standing
     no-numbers rule covers them as it covers a score."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
-    source = inspect.getsource(assessments.respond)
+    source = inspect.getsource(assessments._view)
     returned = source[source.index("return ConversationOut(") :]
     for leak in ("coverage", "confidence", "stop_conditions", "remaining"):
         assert leak not in returned, f"conversation state leaked to the client: {leak}"

@@ -29,9 +29,15 @@ the data is worse than no demo.
 Content is generated in Python rather than through the LLM router deliberately:
 this touches roughly 600 reports, which would be hours of provider calls, would
 drift on every run, and would burn quota that the live product needs. The
-generated prose goes through the SAME validators the LLM path uses
-(`enforce_word_range`, `rating_label`), so it satisfies every contract the app
-enforces on real content.
+generated prose is held to the report's word ranges by `_seed_words` below, a
+SEED-ONLY helper (Vivekium release, Phase 2 WP-F): the product's own
+word-range enforcer in `services/matching`, and the canned padding it appended
+to a model's short output, are deleted. Padding authored MOCK text is what a seeder is for;
+padding a model's output was the defect.
+
+AI Match on the candidate table is seeded through `yukti.scoring.apply_outcome`,
+the ONE writer of a link's Yukti columns, so a seeded row carries exactly the
+shape a real Yukti reading does.
 """
 from __future__ import annotations
 
@@ -49,13 +55,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.services.functional_assessment import word_count
+from app.services.skills import MAX_PER_BUCKET
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed_mock_data")
 
 #: Anchor for every generated timestamp. Fixed relative to "now" at run time but
-#: applied consistently, so a report is never stamped in the future and the
-#: six-month retake window behaves predictably during a demo.
+#: applied consistently, so a report is never stamped in the future.
 NOW = datetime.now(timezone.utc)
 
 #: Set by --refresh-rankings. When true, `fill_link_scores` also re-generates
@@ -552,12 +559,14 @@ async def fill_jobs(session: AsyncSession, dry_run: bool) -> dict[str, int]:
             stats["jobs_published"] += 1
             logger.info("  ~ publishing job %r", row["title"])
             if not dry_run:
-                # Match what api/jobs.create_job does on the flat model: publish
-                # directly, stamping both the status and the terminal marker.
+                # What `POST /jobs/{id}/publish` writes: the terminal marker,
+                # the status word AND the lifecycle state. A stamp without the
+                # lifecycle is the half-published row migration 0118 had to
+                # remap, and seeding one would recreate it.
                 await session.execute(
                     text(
-                        "UPDATE jobs SET ratified_at = :at, status = 'ratified' "
-                        "WHERE id = :jid"
+                        "UPDATE jobs SET ratified_at = :at, status = 'ratified', "
+                        "lifecycle_state = 'PUBLISHED' WHERE id = :jid"
                     ),
                     {"at": NOW - timedelta(days=14), "jid": row["id"]},
                 )
@@ -679,7 +688,7 @@ async def fill_staff(session: AsyncSession, dry_run: bool) -> dict[str, int]:
 
 
 # ── Candidate profile form ───────────────────────────────────────────────────
-# NOTE ON THE SPEC: the brief describes a "40-question" form with numbered
+# NOTE ON THE SPEC: the brief describes a numbered questionnaire of
 # aspects 1-40. That was the pre-2026-07-27 model. The form is now a structured
 # set of NAMED fields owned by `services/candidate_profile_form.py`, and the
 # report, matching pipeline and My Profile page all read those names. Populating
@@ -1150,6 +1159,37 @@ def link_stage(job_id: Any, candidate_id: Any) -> str:
     return STAGE_COMPLETED
 
 
+#: Sentences a SEEDED remark is extended with when its template runs short of
+#: the report's lower word bound. Seed-only: nothing in the product appends
+#: text to a model's output any more.
+_SEED_CONTINUATIONS: tuple[str, ...] = (
+    "Reviewers should confirm this evidence in a structured screening conversation.",
+    "The resume and the job description should be read side by side before deciding.",
+    "Recent outcomes and working context are worth confirming directly with the candidate.",
+)
+
+
+def _seed_words(text: str, low: int = 25, high: int = 30) -> str:
+    """Authored mock text, held to [low, high] words.
+
+    Extends with whole sentences from `_SEED_CONTINUATIONS` while short, then
+    trims to `high` words and closes the sentence. Deterministic, so a seeded
+    dataset is identical run to run.
+    """
+    words = str(text or "").split()
+    extra = 0
+    while len(words) < low:
+        words.extend(_SEED_CONTINUATIONS[extra % len(_SEED_CONTINUATIONS)].split())
+        extra += 1
+    if len(words) > high:
+        words = words[:high]
+    out = " ".join(words).rstrip(",;:")
+    if not out.endswith("."):
+        out = out.rstrip(".") + "."
+    assert low <= word_count(out) <= high, out
+    return out
+
+
 def _normalise(token: str) -> str:
     """Lowercase alphanumeric core of a skill token, for overlap comparison.
 
@@ -1221,8 +1261,6 @@ def matching_dimensions(
     the difference between a demo that survives a click-through and one that
     falls apart the moment someone reads a row.
     """
-    from app.services.matching import enforce_word_range
-
     matched, unmatched = skill_overlap(candidate_skills, jd_skills)
     total = max(1, len(jd_skills))
     fit = len(matched) / total
@@ -1273,7 +1311,7 @@ def matching_dimensions(
                 "category": "matching",
                 "name": name,
                 "score": score,
-                "remark": enforce_word_range(remark),
+                "remark": _seed_words(remark),
                 "ordinal": ordinal,
                 "description": None,
             }
@@ -1468,12 +1506,12 @@ SEED_REQUIRED_LEVEL: dict[str, int] = {
 
 
 def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
-    """A job's PPI framework, derived deterministically from its own JD.
+    """A job's skills, derived deterministically from its own JD.
 
-    Mirrors the shape `services/ppi.generate_framework` produces: at least five
-    Primary Skills, five Secondary Skills and five Behavioural Competencies. The
-    minimum is a product contract, so the skill pool is cycled rather than
-    allowed to fall short.
+    Every bucket is filled to the Skills step's limit, `skills.MAX_PER_BUCKET`,
+    and never past it: Save Skills refuses a bucket over the limit, so a seeded
+    set one past it would be a set the product itself calls unsaveable. A short
+    JD cycles its own skills rather than leave a bucket short.
     """
     pool = [str(skill) for skill in jd_skills if str(skill).strip()] or [title]
     rows: list[dict[str, Any]] = []
@@ -1490,7 +1528,7 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
         names: list[str] = []
         index = offset
         attempts = 0
-        while len(names) < 5 and attempts < 200:
+        while len(names) < MAX_PER_BUCKET and attempts < 200:
             attempts += 1
             base = pool[index % len(pool)]
             lap = index // len(pool)
@@ -1503,7 +1541,7 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
             if name not in names:
                 names.append(name)
             index += 1
-        while len(names) < 5:  # pathological; keeps the contract, never loops
+        while len(names) < MAX_PER_BUCKET:  # pathological; keeps the contract, never loops
             names.append(f"{pool[0]} ({suffix} {len(names) + 1})")
         return names
 
@@ -1512,12 +1550,12 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
             "category": "must_have", "name": name, "ordinal": ordinal,
             "description": f"Core capability the job description names as required: {name}.",
         })
-    for ordinal, name in enumerate(_take(5, "supporting"), 1):
+    for ordinal, name in enumerate(_take(MAX_PER_BUCKET, "supporting"), 1):
         rows.append({
             "category": "nice_to_have", "name": name, "ordinal": ordinal,
             "description": f"Supporting capability that strengthens delivery of the role: {name}.",
         })
-    for ordinal, (name, description) in enumerate(SEED_BEHAVIOURAL, 1):
+    for ordinal, (name, description) in enumerate(SEED_BEHAVIOURAL[:MAX_PER_BUCKET], 1):
         rows.append({
             "category": "behavioural", "name": name, "ordinal": ordinal,
             "description": description,
@@ -1536,8 +1574,6 @@ def ppi_dimensions(
     Remarks are 45-50 words (spec §10.5), doubled from the original 25-30, and
     each carries the job's required level so the radar can plot both shapes.
     """
-    from app.services.matching import enforce_word_range
-
     matched = {_normalise(skill) for skill in candidate_skills}
     out: list[dict[str, Any]] = []
     for entry in framework:
@@ -1568,7 +1604,7 @@ def ppi_dimensions(
             "name": name,
             "score": score,
             "required_level": SEED_REQUIRED_LEVEL[entry["category"]],
-            "remark": enforce_word_range(band_text, 45, 50),
+            "remark": _seed_words(band_text, 45, 50),
             "ordinal": entry["ordinal"],
             "description": entry["description"],
         })
@@ -1585,8 +1621,6 @@ def technical_dimensions(
     requires a technical dimension to be named after a skill rather than a JD
     sentence  -  so duplicates are dropped rather than allowed to collide.
     """
-    from app.services.matching import enforce_word_range
-
     matched, _ = skill_overlap(candidate_skills, jd_skills)
     matched_set = {_normalise(s) for s in matched}
 
@@ -1624,7 +1658,7 @@ def technical_dimensions(
                 "category": "technical",
                 "name": name,
                 "score": score,
-                "remark": enforce_word_range(remark),
+                "remark": _seed_words(remark),
                 "ordinal": len(out),
                 "description": None,
             }
@@ -1709,8 +1743,6 @@ def build_summary(
     it  -  the strongest and weakest named areas are the actual highest and lowest
     scoring dimensions in this report.
     """
-    from app.services.matching import enforce_word_range
-
     rated = [d for d in dimensions if d["category"] != "matching"]
     rated.sort(key=lambda d: d["score"], reverse=True)
     strongest = rated[0]["name"] if rated else "the assessed areas"
@@ -1724,7 +1756,7 @@ def build_summary(
     else:
         verdict = "would need meaningful development before succeeding in this role"
 
-    return enforce_word_range(
+    return _seed_words(
         f"{candidate_name} {verdict} as {job_title}. The assessment showed clear "
         f"strength in {strongest.lower()}, while {weakest.lower()} was the weakest "
         f"area and is where an interview should concentrate. Evidence throughout "
@@ -1936,10 +1968,18 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
     if not dry_run:
         await _flush_competencies(session, pending_competencies)
         await _flush_dimensions(session, pending_dimensions)
-        # A seeded job is finalised outright. The review gate exists so a HUMAN
-        # approves what real candidates are asked, and there is no human in a
-        # seed run; real jobs stay in `questions_pending_review` until a
-        # recruiter approves both halves.
+        # A seeded job's skills are saved outright. Save Skills exists so a
+        # HUMAN confirms what every candidate is assessed against, and there is
+        # no human in a seed run; real jobs stay unsaved until somebody saves.
+        #
+        # SAVED MEANS WHAT `assessment_contract.skills_saved` ASKS OF THE TABLE:
+        # the saved stamp AND the hidden context. The context is the HONEST
+        # EMPTY one migration 0118 stamped on a saved matrix, with this script
+        # named as its writer: no model ran, and a role summary claiming one
+        # had would be template output presented as generation (rule 6).
+        # Only a job that HAS active skills is saved; the version this replaced
+        # stamped every job, which made a job with no skills ready for
+        # candidates.
         await session.execute(
             text(
                 """
@@ -1947,21 +1987,36 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
                    SET assessment_status = 'ready_for_candidates',
                        framework_generated_at = COALESCE(framework_generated_at, now()),
                        framework_approved_at = COALESCE(framework_approved_at, now()),
-                       questions_generated_at = COALESCE(questions_generated_at, now()),
-                       questions_approved_at = COALESCE(questions_approved_at, now())
+                       assessment_context_json = COALESCE(
+                           assessment_context_json,
+                           CAST(:context AS jsonb)
+                       ),
+                       questions_generated_at = COALESCE(questions_generated_at, now())
                  WHERE archived_at IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM job_competencies c
+                        WHERE c.job_id = jobs.id AND c.is_active
+                   )
                 """
-            )
+            ),
+            {"context": json.dumps({"role_summary": "", "generated_by": "seed_mock_data"})},
         )
     return stats
 
 
 async def _flush_competencies(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
-    """Bulk-insert a job's PPI framework.
+    """Bulk-insert a job's skills, in the columns the Skills step reads.
 
     ON CONFLICT DO NOTHING covers (job_id, category, name): every completed link
-    on a job re-derives the same framework, so the second one through is a no-op
+    on a job re-derives the same set, so the second one through is a no-op
     rather than an aborted batch.
+
+    `authored_by` is `human`, said explicitly rather than left to the column
+    default: no model drafted these, and `sutra` would claim a draft that never
+    ran. `force_rank` is the per-bucket priority, which is the ordinal here.
+    `observable_evidence` stays NULL, because only Sutra's context call at Save
+    Skills writes an evidence line and none ran; `assessment_contract` reads a
+    missing line as an empty one, the same as for a migrated matrix.
     """
     if not rows:
         return
@@ -1970,10 +2025,12 @@ async def _flush_competencies(session: AsyncSession, rows: list[dict[str, Any]])
             """
             INSERT INTO job_competencies
                 (id, tenant_id, job_id, category, name, description,
-                 required_level, ordinal, is_active, created_at)
+                 required_level, ordinal, force_rank, authored_by, is_active,
+                 created_at)
             VALUES
                 (gen_random_uuid(), :tenant_id, :job_id, :category, :name,
-                 :description, :required_level, :ordinal, true, now())
+                 :description, :required_level, :ordinal, :ordinal, 'human', true,
+                 now())
             ON CONFLICT ON CONSTRAINT uq_job_competency_name DO NOTHING
             """
         ),
@@ -2006,52 +2063,40 @@ async def _flush_dimensions(session: AsyncSession, rows: list[dict[str, Any]]) -
 
 
 async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, int]:
-    """Make the candidate table's ranking comments real, per-candidate prose.
+    """Give every active link an AI Match reading, the way Yukti would.
 
-    Two populations are repaired here, and one is deliberately left alone:
+    A link with no Yukti reading renders "Not checked yet" on the candidate
+    table for ever in a seeded world, because no model runs here. So the
+    seeder writes a `scored` reading derived from the same real skill overlap
+    the reports use, so a candidate's table row and their report agree, and it
+    writes it through `yukti.scoring.apply_outcome`, the ONE writer of the
+    Yukti columns. The retired breakdown columns (`match_score`,
+    `match_breakdown_json`, `tier`) are history and are never written.
 
-    NULL breakdown  -  the row would read "Not scored yet" forever.
-
-    `scoring_mode = "prescreen_evidence"`  -  written by the matching pipeline
-    when the whole LLM chain was unavailable, and named `retrieval_fallback`
-    until the resume-stage grade stopped coming from a retrieval rank. It is
-    honest boilerplate ("rests on self-description carrying checkable
-    specifics...") but it is IDENTICAL on every link that shares an evidence
-    tier, and 868 links carried the older form, sharing just five distinct
-    scores. The job page's inline comments are the most
-    important thing on the screen, and rendering the same five sentences for
-    every candidate is worse for a demo than rendering nothing  -  it makes the
-    product look like it is not reading the resumes at all.
-
-    `scoring_mode = "llm"` is NEVER touched. Those 165 rows are genuine model
-    output and are strictly better than anything generated here.
-
-    Replacement breakdowns are built from the same real skill overlap the
-    reports use, so a candidate's table row and their report agree, then run
-    through the app's own `enforce_breakdown_comments` and `assign_tier`.
+    A link Yukti has already read (`scored`, `not_assessed`, `legacy`) is left
+    alone unless --refresh-rankings asks for the seeded ones to be rewritten:
+    a real reading is strictly better than anything generated here.
     """
-    from app.services.matching import (
-        PARAMETERS,
-        compute_overall_score,
-        enforce_breakdown_comments,
-    )
-    from app.services.tiers import assign_tier
+    from app.models import JobCandidateLink
+    from app.services.yukti import config as yukti_config
+    from app.services.yukti import grounding as yukti_grounding
+    from app.services.yukti import scoring as yukti_scoring
 
     rows = (
         await session.execute(
             text(
                 """
-                SELECT l.id AS link_id, l.job_id, l.candidate_id, j.title, j.jd_json,
-                       c.full_name, c.profile_form_json, p.parsed_fields_json
+                SELECT l.id AS link_id, l.job_id, l.candidate_id, l.profile_id,
+                       j.title, j.jd_json, c.full_name, c.profile_form_json,
+                       p.parsed_fields_json
                 FROM job_candidate_links l
                 JOIN jobs j ON j.id = l.job_id
                 JOIN candidates c ON c.id = l.candidate_id
                 LEFT JOIN profiles p ON p.id = l.profile_id
                 WHERE l.archived_at IS NULL
                   AND (
-                        l.match_breakdown_json IS NULL
-                     OR l.match_breakdown_json->>'scoring_mode' IN ('prescreen_evidence', 'retrieval_fallback')
-                     OR (:refresh AND l.match_breakdown_json->>'scoring_mode'
+                        l.yukti_status = 'pending'
+                     OR (:refresh AND l.yukti_provenance_json->>'task_type'
                                       = 'seeded_deterministic')
                   )
                 """
@@ -2060,6 +2105,7 @@ async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, in
         )
     ).mappings().all()
 
+    now = datetime.now(timezone.utc)
     for row in rows:
         if dry_run:
             continue
@@ -2068,9 +2114,6 @@ async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, in
         parsed = _as_dict(row["parsed_fields_json"])
         candidate_skills = _skills_of(parsed)
         years = _years_for(row["candidate_id"], parsed.get("total_experience_years"))
-        # Read the candidate's ACTUAL degree from their profile form rather than
-        # a placeholder, so the education comment differs per person instead of
-        # repeating one sentence down the whole column.
         form = _as_dict(row["profile_form_json"])
         education_rows = form.get("education") or {}
         education = (
@@ -2078,76 +2121,40 @@ async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, in
             or education_rows.get("graduation", {}).get("course")
             or "a relevant undergraduate degree"
         )
-
         dims = matching_dimensions(
             row["title"], jd_skills, row["full_name"] or "This candidate",
             candidate_skills, years, education, row["link_id"],
         )
-        # matching_dimensions works on the 0-100 report scale; the breakdown
-        # stores the 1-10 parameter scale, so convert rather than reuse.
-        by_name = {d["name"]: d for d in dims}
-        param_for = {
-            "skills_match": "Skills Match",
-            "experience_relevance": "Experience Relevance",
-            "role_alignment": "Role & Responsibility",
-            "education_fit": "Education & Qualification",
-        }
-        breakdown: dict[str, Any] = {}
-        for param in PARAMETERS:
-            dimension = by_name[param_for[param]]
-            breakdown[param] = {
-                "score": max(1, min(10, round(dimension["score"] / 10))),
-                "comment": dimension["remark"],
-            }
-        overall = compute_overall_score({p: breakdown[p]["score"] for p in PARAMETERS})
-        # The holistic fifth comment. Its wording follows the computed overall
-        # rather than being fixed, so it cannot contradict the four above it.
-        if overall >= 7.5:
-            verdict = (
-                f"a strong overall match for {row['title']}, with the core "
-                "requirements evidenced directly in the resume"
-            )
-        elif overall >= 6:
-            verdict = (
-                f"a credible match for {row['title']}, strong on several "
-                "requirements with a genuine gap on others"
-            )
-        else:
-            verdict = (
-                f"a partial match for {row['title']}, with limited evidence "
-                "against several of the core requirements"
-            )
-        breakdown["overall"] = {
-            "score": overall,
-            "comment": (
-                f"{row['full_name'] or 'This candidate'} reads as {verdict}. "
-                "A structured screening conversation should resolve the gaps "
-                "before any interview is scheduled."
-            ),
-        }
-        breakdown["scoring_mode"] = "seeded_deterministic"
-        enforce_breakdown_comments(breakdown)
-        match_score = round(overall * 10, 1)
-
-        await session.execute(
-            text(
-                """
-                UPDATE job_candidate_links
-                SET match_breakdown_json = CAST(:b AS jsonb),
-                    match_score = :score,
-                    match_rationale = :rationale,
-                    tier = :tier
-                WHERE id = :lid
-                """
-            ),
+        pre_score = round(sum(d["score"] for d in dims) / len(dims), 1)
+        matched, _unmatched = skill_overlap(candidate_skills, jd_skills)
+        # A seeded tag names a skill the resume and the JD share, through the
+        # same hygiene a model-written tag passes (`grounding.clean_tag`).
+        cleaned = [yukti_grounding.clean_tag(skill) for skill in matched]
+        tags = tuple(
             {
-                "b": json.dumps(breakdown),
-                "score": match_score,
-                "rationale": breakdown["overall"]["comment"],
-                "tier": assign_tier(match_score).value,
-                "lid": row["link_id"],
+                "kind": yukti_config.TAG_KIND_ROLE_FIT,
+                "polarity": yukti_config.POLARITY_POSITIVE,
+                "text": tag,
+            }
+            for tag in [t for t in cleaned if t][: yukti_config.MAX_TAGS_SHOWN_IN_ROW]
+        )
+        outcome = yukti_scoring.YuktiOutcome(
+            link_id=row["link_id"],
+            profile_id=row["profile_id"],
+            status=yukti_config.STATUS_SCORED,
+            pre_score=pre_score,
+            failure_reason=None,
+            tags=tags,
+            provenance={
+                "task_type": "seeded_deterministic",
+                "components_present": [],
+                "components_excluded": {},
+                "degraded": False,
             },
         )
+        link = await session.get(JobCandidateLink, row["link_id"])
+        yukti_scoring.apply_outcome(link, outcome, now=now)
+    await session.flush()
     return {"links_scored": len(rows)}
 
 
@@ -2271,10 +2278,6 @@ AUDIT_QUERIES: list[tuple[str, str]] = [
     ("jobs with a stub-length narrative section",
      "SELECT count(*) FROM jobs WHERE length(coalesce(about_company,'')) < 120 "
      "OR length(coalesce(work_life,'')) < 120 OR length(coalesce(benefits,'')) < 120"),
-    ("candidate table rows sharing boilerplate ranking comments",
-     "SELECT count(*) FROM job_candidate_links WHERE archived_at IS NULL "
-     "AND match_breakdown_json->>'scoring_mode' "
-     "IN ('prescreen_evidence', 'retrieval_fallback')"),
     ("jobs not published",
      "SELECT count(*) FROM jobs WHERE ratified_at IS NULL"),
     ("candidates without a complete profile form",
@@ -2296,8 +2299,8 @@ AUDIT_QUERIES: list[tuple[str, str]] = [
      "OR aspects_json = '{}'::jsonb"),
     ("profiles without resume text",
      "SELECT count(*) FROM profiles WHERE resume_text IS NULL OR resume_text = ''"),
-    ("active links without a ranking breakdown",
-     "SELECT count(*) FROM job_candidate_links WHERE match_breakdown_json IS NULL "
+    ("active links without an AI Match reading",
+     "SELECT count(*) FROM job_candidate_links WHERE yukti_status = 'pending' "
      "AND archived_at IS NULL"),
     ("reports with no dimensions",
      "SELECT count(*) FROM functional_skills_reports r WHERE NOT EXISTS "
@@ -2306,7 +2309,7 @@ AUDIT_QUERIES: list[tuple[str, str]] = [
      "SELECT count(*) FROM functional_skills_reports r WHERE NOT EXISTS "
      "(SELECT 1 FROM report_dimensions d WHERE d.report_id = r.id "
      "AND d.category = 'behavioural')"),
-    ("jobs with no PPI framework",
+    ("jobs with no skills",
      "SELECT count(*) FROM jobs j WHERE j.archived_at IS NULL AND NOT EXISTS "
      "(SELECT 1 FROM job_competencies c WHERE c.job_id = j.id AND c.is_active)"),
     ("tenants below the target staff shape",

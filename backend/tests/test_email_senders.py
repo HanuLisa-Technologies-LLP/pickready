@@ -37,6 +37,7 @@ from app.models.email_sender import (
     SENDER_DISABLED,
     SENDER_EMAIL_VERIFIED,
     SENDER_PENDING_VERIFICATION,
+    SENDER_REJECTED,
     SENDER_REVOKED,
     SENDER_STATUSES,
     SENDER_VERIFICATION_EXPIRED,
@@ -44,15 +45,12 @@ from app.models.email_sender import (
 from app.services import email_templates
 from app.services.email_senders import (
     IllegalSenderTransition,
-    ResendCooldownActive,
     SenderDomainBlocked,
     SenderEmailInvalid,
     assert_transition,
-    issue_otp,
     validate_business_email,
-    verify_otp,
 )
-from app.services.email_senders import lifecycle, verification
+from app.services.email_senders import lifecycle
 
 EM_DASH = chr(8212)
 
@@ -60,10 +58,13 @@ EM_DASH = chr(8212)
 # ── The lifecycle FSM ────────────────────────────────────────────────────────
 
 def test_the_happy_path_is_a_legal_chain() -> None:
-    """pending -> verified -> active -> disabled -> active -> revoked."""
+    """pending -> active -> disabled -> active -> revoked.
+
+    The mailbox-verified step is GONE from the happy path: the Super Admin's
+    approval is the only gate out of pending now.
+    """
     chain = [
         SENDER_PENDING_VERIFICATION,
-        SENDER_EMAIL_VERIFIED,
         SENDER_ACTIVE,
         SENDER_DISABLED,
         SENDER_ACTIVE,
@@ -71,6 +72,28 @@ def test_the_happy_path_is_a_legal_chain() -> None:
     ]
     for current, target in zip(chain, chain[1:]):
         assert_transition(current, target)  # must not raise
+
+
+def test_the_super_admin_can_refuse_a_pending_sender() -> None:
+    assert_transition(SENDER_PENDING_VERIFICATION, SENDER_REJECTED)
+
+
+def test_rejected_is_terminal_and_is_not_revoked() -> None:
+    """Two terminal states, kept apart on purpose: revoked withdraws an
+    authorization that once existed, rejected was never granted one."""
+    for target in SENDER_STATUSES:
+        with pytest.raises(IllegalSenderTransition):
+            assert_transition(SENDER_REJECTED, target)
+    assert SENDER_REJECTED != SENDER_REVOKED
+
+
+def test_legacy_otp_states_are_still_decidable() -> None:
+    """Rows written before the mailbox code was withdrawn sit in these two
+    states. A status with no edge out is a sender nobody can ever approve or
+    refuse, stranded for the life of the tenant."""
+    for legacy in (SENDER_EMAIL_VERIFIED, SENDER_VERIFICATION_EXPIRED):
+        assert_transition(legacy, SENDER_ACTIVE)
+        assert_transition(legacy, SENDER_REJECTED)
 
 
 def test_revoked_is_terminal() -> None:
@@ -82,17 +105,16 @@ def test_revoked_is_terminal() -> None:
 @pytest.mark.parametrize(
     ("current", "target"),
     [
-        # Activation without verification is the spec section 10 violation.
-        (SENDER_PENDING_VERIFICATION, SENDER_ACTIVE),
-        # An expired verification cannot jump straight to verified or active.
-        (SENDER_VERIFICATION_EXPIRED, SENDER_EMAIL_VERIFIED),
-        (SENDER_VERIFICATION_EXPIRED, SENDER_ACTIVE),
         # Disable is only meaningful for an active sender.
         (SENDER_PENDING_VERIFICATION, SENDER_DISABLED),
         (SENDER_EMAIL_VERIFIED, SENDER_DISABLED),
-        # Nothing un-verifies a mailbox.
+        # Nothing returns a decided sender to the queue.
         (SENDER_ACTIVE, SENDER_PENDING_VERIFICATION),
         (SENDER_DISABLED, SENDER_EMAIL_VERIFIED),
+        # Nothing re-enters the retired verification states.
+        (SENDER_PENDING_VERIFICATION, SENDER_EMAIL_VERIFIED),
+        (SENDER_PENDING_VERIFICATION, SENDER_VERIFICATION_EXPIRED),
+        (SENDER_ACTIVE, SENDER_REJECTED),
     ],
 )
 def test_illegal_moves_are_refused(current: str, target: str) -> None:
@@ -106,8 +128,11 @@ def test_the_fsm_covers_the_whole_status_vocabulary() -> None:
     assert set(lifecycle.TRANSITIONS) == set(SENDER_STATUSES)
 
 
-def test_verification_can_be_rearmed_after_expiry() -> None:
-    assert_transition(SENDER_VERIFICATION_EXPIRED, SENDER_PENDING_VERIFICATION)
+def test_nothing_re_arms_a_retired_verification_state() -> None:
+    """The re-arm edge went with the mailbox code. An expired row is decided
+    by the Super Admin like any other pending one, not sent a fresh code."""
+    with pytest.raises(IllegalSenderTransition):
+        assert_transition(SENDER_VERIFICATION_EXPIRED, SENDER_PENDING_VERIFICATION)
 
 
 # ── The business-email gate ──────────────────────────────────────────────────
@@ -157,231 +182,103 @@ def test_the_blocklist_is_configuration_not_code(monkeypatch) -> None:
     assert validate_business_email("hr@gmail.com") == "hr@gmail.com"
 
 
-# ── The OTP (Redis-backed; spec section 4) ───────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_only_the_hash_lives_in_redis_under_the_spec_key() -> None:
-    sender_id = uuid.uuid4()
-    code = await issue_otp(sender_id)
-    assert re.fullmatch(r"[0-9]{6}", code)
-
-    client = verification._redis()
-    state = await client.hgetall(f"email_verification:{sender_id}")
-    assert set(state) == {"otp_hash", "expires_at", "attempts"}
-    # The plaintext appears in NO stored field, and the hash is a full
-    # HMAC-SHA256 digest, not a truncated or reversible encoding.
-    assert code not in "".join(state.values())
-    assert re.fullmatch(r"[0-9a-f]{64}", state["otp_hash"])
-    assert state["attempts"] == "0"
-    # The state expires on its own even if nobody ever enters a code.
-    assert await client.ttl(f"email_verification:{sender_id}") > 0
+# ── SES sending eligibility (replaced the mailbox OTP, 2026-09-08) ──────────
+#
+# The OTP unit tests that lived here are gone with the module they covered.
+# What replaced them tests the property those tests were really protecting:
+# that this product does not claim an address can send when it cannot.
 
 
 @pytest.mark.asyncio
-async def test_a_resend_inside_the_cooldown_is_refused_with_the_wait() -> None:
-    sender_id = uuid.uuid4()
-    await issue_otp(sender_id)
-    with pytest.raises(ResendCooldownActive) as excinfo:
-        await issue_otp(sender_id)
-    assert 1 <= excinfo.value.retry_after <= get_settings().sender_otp_resend_cooldown_seconds
+async def test_a_verified_domain_makes_every_mailbox_on_it_eligible(monkeypatch) -> None:
+    """Domain identity is the intended shape: verifying company.com once
+    covers every recruiter on it, which is what keeps this from needing one
+    AWS resource per employee."""
+    from app.services.email_senders import eligibility
+
+    eligibility.reset_client()
+    monkeypatch.setattr(
+        eligibility, '_ses_client',
+        lambda: SimpleNamespace(
+            get_identity_verification_attributes=lambda Identities: {
+                'VerificationAttributes': {
+                    'company.com': {'VerificationStatus': 'Success'},
+                }
+            }
+        ),
+    )
+    result = await eligibility.check_sender_eligibility('recruiter@company.com')
+    assert result.eligible is True
+    assert result.known is True
+    assert result.matched_identity == 'company.com'
 
 
 @pytest.mark.asyncio
-async def test_three_wrong_attempts_kill_the_code_even_for_the_right_one() -> None:
-    sender_id = uuid.uuid4()
-    code = await issue_otp(sender_id)
-    wrong = "000000" if code != "000000" else "999999"
+async def test_an_unverified_address_is_a_definite_no(monkeypatch) -> None:
+    from app.services.email_senders import eligibility
 
-    first = await verify_otp(sender_id, wrong)
-    assert (first.verified, first.reason) == (False, verification.REASON_MISMATCH)
-    assert first.attempts_remaining == 2
-    second = await verify_otp(sender_id, wrong)
-    assert second.attempts_remaining == 1
-    third = await verify_otp(sender_id, wrong)
-    assert third.reason == verification.REASON_ATTEMPTS_EXHAUSTED
-    # Attempt four, with the CORRECT code: the budget is spent, the code is dead.
-    fourth = await verify_otp(sender_id, code)
-    assert fourth.verified is False
-    assert fourth.reason == verification.REASON_ATTEMPTS_EXHAUSTED
-
-
-@pytest.mark.asyncio
-async def test_success_invalidates_the_code_so_it_cannot_be_replayed() -> None:
-    sender_id = uuid.uuid4()
-    code = await issue_otp(sender_id)
-    outcome = await verify_otp(sender_id, code)
-    assert (outcome.verified, outcome.reason) == (True, verification.REASON_VERIFIED)
-    replay = await verify_otp(sender_id, code)
-    assert (replay.verified, replay.reason) == (False, verification.REASON_NOT_ISSUED)
+    eligibility.reset_client()
+    monkeypatch.setattr(
+        eligibility, '_ses_client',
+        lambda: SimpleNamespace(
+            get_identity_verification_attributes=lambda Identities: {
+                'VerificationAttributes': {
+                    'company.com': {'VerificationStatus': 'Pending'},
+                }
+            }
+        ),
+    )
+    result = await eligibility.check_sender_eligibility('hr@company.com')
+    assert (result.eligible, result.known) == (False, True)
+    assert result.blocks_approval is True
 
 
 @pytest.mark.asyncio
-async def test_an_expired_code_reads_as_expired_and_is_removed() -> None:
-    sender_id = uuid.uuid4()
-    code = await issue_otp(sender_id)
-    client = verification._redis()
-    # Force the stored deadline into the past; the TTL alone is not the check.
-    await client.hset(f"email_verification:{sender_id}", "expires_at", "1")
-    outcome = await verify_otp(sender_id, code)
-    assert (outcome.verified, outcome.reason) == (False, verification.REASON_EXPIRED)
-    # The expired state is gone, so it can never be retried into life.
-    assert await client.hgetall(f"email_verification:{sender_id}") == {}
+async def test_a_provider_failure_is_unknown_and_never_eligible(monkeypatch) -> None:
+    """The direction that matters. A lookup that failed must not read as a
+    pass, and must not read as a definite refusal either: the Super Admin's
+    own decision is not vetoed by an AWS blip."""
+    from app.services.email_senders import eligibility
+
+    def _boom():
+        raise RuntimeError('endpoint unreachable')
+
+    eligibility.reset_client()
+    monkeypatch.setattr(eligibility, '_ses_client', _boom)
+    result = await eligibility.check_sender_eligibility('hr@company.com')
+    assert result.eligible is False
+    assert result.known is False
+    assert result.blocks_approval is False
 
 
 @pytest.mark.asyncio
-async def test_verifying_with_nothing_issued_is_not_an_error_it_is_an_answer() -> None:
-    outcome = await verify_otp(uuid.uuid4(), "123456")
-    assert (outcome.verified, outcome.reason) == (False, verification.REASON_NOT_ISSUED)
+async def test_no_aws_vocabulary_reaches_the_client(monkeypatch) -> None:
+    """The refusal sentence is rendered in the client portal, where SES, IAM
+    and DKIM are deliberately not concepts the Super Admin has."""
+    from app.services.email_senders import eligibility
 
-
-@pytest.mark.asyncio
-async def test_a_code_issued_for_one_sender_never_verifies_another() -> None:
-    """The sender id is inside the HMAC message, so cross-sender replay is a
-    mismatch, not a verification."""
-    a, b = uuid.uuid4(), uuid.uuid4()
-    code_a = await issue_otp(a)
-    await issue_otp(b)
-    outcome = await verify_otp(b, code_a)
-    assert outcome.verified is False
-
-
-def test_the_ttl_sits_inside_the_specs_window_and_attempts_are_three() -> None:
-    settings = get_settings()
-    assert 300 <= settings.sender_otp_ttl_seconds <= 600
-    assert settings.sender_otp_max_attempts == 3
-    assert settings.sender_otp_resend_cooldown_seconds == 45
+    eligibility.reset_client()
+    monkeypatch.setattr(
+        eligibility, '_ses_client',
+        lambda: SimpleNamespace(
+            get_identity_verification_attributes=lambda Identities: {
+                'VerificationAttributes': {}
+            }
+        ),
+    )
+    result = await eligibility.check_sender_eligibility('hr@company.com')
+    lowered = result.detail.lower()
+    for banned in ('ses', 'sns', 'iam', 'dkim', 'arn', 'identity',
+                   'configuration set', 'aws'):
+        assert banned not in lowered, banned
 
 
 # ── The send-time chokepoint (spec sections 10 and 11) ───────────────────────
-
-class _FakeSession:
-    """Enough of AsyncSession for _send_lifecycle_email_async: get by model,
-    commit, and the raw-SQL audit insert."""
-
-    def __init__(self, rows: dict) -> None:
-        self._rows = rows
-        self.commits = 0
-        self.audit_actions: list[str] = []
-
-    async def get(self, model, key):
-        return self._rows.get((model.__name__, str(key)))
-
-    async def commit(self) -> None:
-        self.commits += 1
-
-    async def execute(self, statement, params=None):
-        if params and "action" in params:
-            self.audit_actions.append(params["action"])
-        return SimpleNamespace()
-
-
-def _queued_row(sender_id: uuid.UUID | None) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        tenant_id=uuid.uuid4(),
-        email_type="assessment_invitation",
-        recipient_email="candidate@example.test",
-        subject="Subject",
-        body="Body",
-        status="queued",
-        error=None,
-        sent_at=None,
-        sender_id=sender_id,
-        provider_message_id=None,
-        edited_by_human=False,
-        generated_by_ai=True,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "sender_status",
-    [
-        SENDER_PENDING_VERIFICATION,
-        SENDER_EMAIL_VERIFIED,
-        SENDER_VERIFICATION_EXPIRED,
-        SENDER_DISABLED,
-        SENDER_REVOKED,
-    ],
-)
-async def test_a_non_active_sender_fails_the_queued_email_honestly(
-    monkeypatch, sender_status: str
-) -> None:
-    """The worker re-loads the sender AT SEND TIME; anything not active fails
-    the message with the reason on the row, and nothing is delivered."""
-    from app.models.email_log import EmailLog
-    from app.models.email_sender import ClientEmailSender
-    from app.workers import tasks
-
-    row = _queued_row(uuid.uuid4())
-    sender = SimpleNamespace(
-        id=row.sender_id, status=sender_status, email="hr@corp.test", name="Rahul"
-    )
-    session = _FakeSession(
-        {
-            (EmailLog.__name__, str(row.id)): row,
-            (ClientEmailSender.__name__, str(row.sender_id)): sender,
-        }
-    )
-
-    async def _never_called(**kwargs):
-        raise AssertionError("a non-active sender must never reach the transport")
-
-    monkeypatch.setattr(tasks, "_deliver_email", _never_called)
-    result = await tasks._send_lifecycle_email_async(session, str(row.id))
-    assert result == {"status": "failed", "error": "sender_not_active"}
-    assert row.status == "failed"
-    assert sender_status.replace("_", " ") in (row.error or "")
-    assert "lifecycle_email_sender_refused" in session.audit_actions
-
-
-@pytest.mark.asyncio
-async def test_a_deleted_sender_fails_the_queued_email_too(monkeypatch) -> None:
-    from app.models.email_log import EmailLog
-    from app.workers import tasks
-
-    row = _queued_row(uuid.uuid4())
-    session = _FakeSession({(EmailLog.__name__, str(row.id)): row})
-
-    async def _never_called(**kwargs):
-        raise AssertionError("a missing sender must never reach the transport")
-
-    monkeypatch.setattr(tasks, "_deliver_email", _never_called)
-    result = await tasks._send_lifecycle_email_async(session, str(row.id))
-    assert result["status"] == "failed"
-    assert row.status == "failed"
-    assert "removed" in (row.error or "")
-
-
-@pytest.mark.asyncio
-async def test_an_active_sender_sends_and_records_the_provider_id(monkeypatch) -> None:
-    from app.models.email_log import EmailLog
-    from app.models.email_sender import ClientEmailSender
-    from app.workers import tasks
-
-    row = _queued_row(uuid.uuid4())
-    sender = SimpleNamespace(
-        id=row.sender_id, status=SENDER_ACTIVE, email="hr@corp.test", name="Rahul"
-    )
-    session = _FakeSession(
-        {
-            (EmailLog.__name__, str(row.id)): row,
-            (ClientEmailSender.__name__, str(row.sender_id)): sender,
-        }
-    )
-    seen: dict = {}
-
-    async def _fake_deliver(**kwargs):
-        seen.update(kwargs)
-        return "provider-message-id-1"
-
-    monkeypatch.setattr(tasks, "_deliver_email", _fake_deliver)
-    result = await tasks._send_lifecycle_email_async(session, str(row.id))
-    assert result["status"] == "sent"
-    assert row.status == "sent"
-    assert row.provider_message_id == "provider-message-id-1"
-    # The ACTIVE corporate sender reached the transport door.
-    assert seen["sender"] is sender
+#
+# MOVED to `tests/test_email_send_claim.py` (Phase 6 WP6-C) and onto a real
+# database. The worker now CLAIMS a row with a conditional UPDATE before it
+# sends, and a fake session that stubs that statement would assert nothing
+# about the one property the claim exists for.
 
 
 # ── Capabilities: the code matrix and migration 0080, row for row ────────────
@@ -450,12 +347,33 @@ def test_every_route_is_behind_the_right_capability() -> None:
         start = source.index(marker)
         return source[start:start + 800]
 
-    for handler in ("async def authorize_sender", "async def disable_sender",
-                    "async def enable_sender", "async def revoke_sender"):
+    for handler in ("async def approve_sender", "async def reject_sender",
+                    "async def disable_sender", "async def enable_sender",
+                    "async def revoke_sender"):
         assert "require_capability(caps.AUTHORIZE_EMAIL_SENDERS)" in _handler_block(handler), handler
-    for handler in ("async def list_senders", "async def create_sender",
-                    "async def resend_otp", "async def verify_sender_otp"):
+    for handler in ("async def list_senders", "async def create_sender"):
         assert "require_capability(caps.MANAGE_EMAIL_SENDERS)" in _handler_block(handler), handler
+
+
+def test_the_otp_routes_are_gone_not_merely_unlinked() -> None:
+    """A retained handler is one a future router re-registers. The mailbox
+    code path must not exist in source at all."""
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "app" / "api" / "email_senders.py"
+    ).read_text(encoding="utf-8")
+    for gone in ("resend-otp", "verify-otp", "async def resend_otp",
+                 "async def verify_sender_otp", "issue_otp("):
+        assert gone not in source, gone
+
+
+def test_the_verification_module_is_deleted() -> None:
+    """Deleted, not left unimported: an unwired verification module is what
+    the next person attaches a route back onto."""
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.services.email_senders.verification")
 
 
 # ── The template registry (spec section 7) ───────────────────────────────────
@@ -528,11 +446,142 @@ def test_no_em_dash_anywhere_in_the_catalogue() -> None:
             assert EM_DASH not in text, f"em dash in template {template.key}"
 
 
-def test_the_sender_verification_email_carries_no_em_dash_and_the_code_hole() -> None:
-    """The OTP email itself (services/email_render): the code travels only as
-    a template variable, and the copy is em-dash free like everything else."""
+def test_the_sender_verification_template_is_gone() -> None:
+    """It was the only carrier of a six-digit code into a client mailbox.
+    Left renderable it would be one dispatch call away from returning, which
+    is why the entry was deleted rather than merely unreferenced."""
     from app.services.email_render import DEFAULT_TEMPLATES
 
-    subject, body = DEFAULT_TEMPLATES["sender_verification"]
-    assert EM_DASH not in subject and EM_DASH not in body
-    assert "{{otp_code}}" in body
+    assert "sender_verification" not in DEFAULT_TEMPLATES
+
+
+
+# ── SES delivery events: ordering, idempotency, failure reasons ──────────────
+#
+# These exercise the pure decision layer of the webhook -- which outcome an
+# event maps to and whether it may overwrite what is already recorded. The
+# signature check, the topic pinning and the subscription handshake are
+# transport concerns covered by the route tests; what is easy to get silently
+# wrong, and expensive when it is, is letting a late event rewrite a bounce.
+
+def _outcome_rank(status: str) -> int:
+    from app.api.email_senders import _OUTCOME_RANK
+
+    return _OUTCOME_RANK.get(status, 0)
+
+
+def test_a_late_delivery_never_overwrites_a_bounce() -> None:
+    """SNS makes no ordering promise, so a DELIVERY published before a BOUNCE
+    can arrive after it. The row must remember the worst thing that happened."""
+    assert _outcome_rank("delivered") < _outcome_rank("bounced")
+    assert _outcome_rank("delivered") < _outcome_rank("complaint")
+
+
+def test_a_complaint_outranks_a_delivery_because_it_arrived() -> None:
+    """A complaint means the message DID arrive and the recipient reported it.
+    Ranking it under delivery would hide the report behind the delivery."""
+    assert _outcome_rank("complaint") > _outcome_rank("delivered")
+
+
+def test_sent_never_demotes_a_delivered_row() -> None:
+    """SES publishes SEND as well as DELIVERY, and the two can race."""
+    assert _outcome_rank("sent") < _outcome_rank("delivered")
+
+
+def test_an_unknown_status_ranks_lowest_rather_than_raising() -> None:
+    """A row carrying a status this map has not heard of must not 500 the
+    endpoint: SNS would redeliver the event for hours."""
+    assert _outcome_rank("something_new") == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "message", "expected"),
+    [
+        (
+            "bounce",
+            {"bounce": {"bounceType": "Permanent", "bounceSubType": "General"}},
+            "Bounce: Permanent / General",
+        ),
+        (
+            "complaint",
+            {"complaint": {"complaintFeedbackType": "abuse"}},
+            "Complaint: abuse",
+        ),
+        ("reject", {"reject": {"reason": "Bad content"}},
+         "Rejected by SES: Bad content"),
+        ("delivery", {}, None),
+    ],
+)
+def test_the_failure_reason_comes_from_the_events_own_fields(
+    kind: str, message: dict, expected: str | None
+) -> None:
+    from app.api.email_senders import _failure_reason
+
+    assert _failure_reason(kind, message) == expected
+
+
+def test_a_reason_survives_a_missing_detail_block() -> None:
+    """A malformed event must produce a usable reason, not a KeyError on an
+    endpoint that has to acknowledge whatever SNS sends."""
+    from app.api.email_senders import _failure_reason
+
+    assert _failure_reason("bounce", {}) == "Bounce"
+    assert _failure_reason("complaint", {}) == "Complaint"
+
+
+def test_the_reason_is_bounded_so_it_cannot_carry_an_event_document() -> None:
+    """This string is read by staff in the portal, and an SES event carries
+    the full recipient list and the message headers."""
+    from app.api.email_senders import _failure_reason
+
+    reason = _failure_reason("reject", {"reject": {"reason": "x" * 5000}})
+    assert reason is not None and len(reason) <= 500
+
+
+def test_delivery_delay_is_not_a_failure() -> None:
+    """SES is still retrying. Calling it failed would tell a recruiter a
+    candidate was never contacted while the message is still in flight."""
+    from app.api.email_senders import _OUTCOME_RANK
+
+    assert "deliverydelay" not in _OUTCOME_RANK
+
+
+# ── SES message tags (correlation) ───────────────────────────────────────────
+
+def test_message_tags_carry_every_correlation_id() -> None:
+    from app.services.ses_service import _message_tags
+
+    ids = {
+        "tenant_id": uuid.uuid4(),
+        "sender_id": uuid.uuid4(),
+        "candidate_id": uuid.uuid4(),
+        "job_id": uuid.uuid4(),
+        "notification_id": uuid.uuid4(),
+    }
+    tags = _message_tags(ids)
+    assert {t["Name"] for t in tags} == set(ids)
+
+
+def test_a_none_id_is_dropped_rather_than_sent_as_the_string_none() -> None:
+    from app.services.ses_service import _message_tags
+
+    tags = _message_tags({"tenant_id": uuid.uuid4(), "candidate_id": None})
+    assert {t["Name"] for t in tags} == {"tenant_id"}
+
+
+def test_an_unusable_tag_value_is_dropped_not_sanitised() -> None:
+    """SES rejects the WHOLE send on a malformed tag. An email that did not go
+    out is worse than an event matched on its message id alone, which is what
+    the webhook does anyway."""
+    from app.services.ses_service import _message_tags
+
+    tags = _message_tags({"tenant_id": "has spaces and @", "job_id": "ok-1"})
+    assert {t["Name"] for t in tags} == {"job_id"}
+
+
+def test_no_tags_at_all_is_an_empty_list_not_a_none() -> None:
+    """The send path only adds the Tags key when there is something in it."""
+    from app.services.ses_service import _message_tags
+
+    assert _message_tags(None) == []
+    assert _message_tags({}) == []

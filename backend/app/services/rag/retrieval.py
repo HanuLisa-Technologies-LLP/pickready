@@ -26,9 +26,14 @@ deployed for this product, and pretending otherwise would put a hard dependency
 on a model that does not exist behind an interface that silently returns the
 input order. What runs instead is a lexical affinity pass -- query term coverage
 plus a section-type prior -- which is a real improvement over fusion alone and
-is honest about what it is. `rerank` takes the scorer as a parameter, so
-introducing a cross-encoder later is a one-line change at the call site rather
-than a rewrite.
+is honest about what it is.
+
+SUPERSEDED IN PART 2026-09-09 (RPN-AI-UP-001 W6.1). A cross-encoder IS
+available now: `services/rag/reranker` calls Voyage `rerank-2.5` when the
+deployment selects it, and falls back to that same lexical pass with
+`degraded=True` RECORDED when it cannot. The paragraph above still describes
+what a `lexical` deployment runs, and the design it praises is what made the
+swap a one-line change at the call site rather than a rewrite.
 
 FRESHNESS AND VERSION ARE FILTERS, APPLIED BEFORE RANKING
 ----------------------------------------------------------
@@ -48,8 +53,9 @@ from typing import Callable, Sequence
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.embeddings import EmbeddingError, embed
-from app.services.rag import chunking
+from app.core.config import get_settings
+from app.services.embeddings import EmbeddingError, embed_query
+from app.services.rag import chunking, reranker
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +148,76 @@ def _filters(
     return (" AND " + " AND ".join(clauses) if clauses else ""), params
 
 
+#: The values pgvector accepts for `hnsw.iterative_scan`. An allowlist rather
+#: than interpolation of whatever the environment says, because `SET LOCAL`
+#: takes no bind parameters: the only safe input is a member of a closed set.
+_ITERATIVE_SCAN_MODES = frozenset({"off", "relaxed_order", "strict_order"})
+
+
+async def _apply_scan_settings(session: AsyncSession) -> None:
+    """Make the ANN scan keep looking until the tenant predicate is satisfied.
+
+    THE FAILURE THIS PREVENTS DOES NOT RAISE, WHICH IS WHY IT NEEDS A FIX
+    RATHER THAN A TEST.
+
+    Every query below runs under the RLS policy, so `tenant_id =
+    current_setting('app.tenant_id')` is an implicit predicate on top of the
+    explicit `where`. An HNSW scan collects its top `depth` rows by distance
+    FIRST and the predicate filters SECOND, so in a table holding many tenants
+    the scan can walk mostly other tenants' vectors and hand back three rows
+    where forty were asked for. Nothing errors. The caller sees a short list,
+    indistinguishable from a tenant that genuinely has little indexed, and the
+    effect worsens as the table grows -- worst for the smallest and newest
+    tenants, which is the opposite of the direction a defect should degrade in.
+
+    `iterative_scan` makes the index keep pulling candidates until enough rows
+    survive the predicate, bounded by `max_scan_tuples` so a tenant with no
+    matching rows cannot walk the whole index.
+
+    `strict_order` rather than `relaxed_order` is not a default chosen for
+    safety's sake: `fuse()` reads RANK ORDER and nothing else, deliberately,
+    because a cosine distance and a `ts_rank` are not on the same scale.
+    Relaxed ordering would corrupt the one signal fusion consumes, and it would
+    surface as a ranking-quality complaint rather than as a configuration bug.
+
+    This costs one round trip, on the semantic path only. Putting it in
+    `tenant_scope` would charge every request in the product for a guarantee
+    only vector queries need.
+    """
+    settings = get_settings()
+    mode = (settings.retrieval_hnsw_iterative_scan or "").strip().lower()
+    if mode not in _ITERATIVE_SCAN_MODES:
+        # Not a silent fallback. The value came from deployment configuration,
+        # a wrong one is an operator error, and continuing on pgvector's
+        # default would leave recall quietly degraded with nothing recording
+        # that a choice had been made for the operator.
+        raise ValueError(
+            "retrieval_hnsw_iterative_scan must be one of "
+            f"{sorted(_ITERATIVE_SCAN_MODES)}, not "
+            f"{settings.retrieval_hnsw_iterative_scan!r}"
+        )
+    max_scan = int(settings.retrieval_hnsw_max_scan_tuples)
+    ef_search = int(settings.retrieval_hnsw_ef_search)
+    # SET LOCAL, so it reverts at COMMIT and cannot leak onto the next
+    # transaction that borrows this pooled connection. The interpolated values
+    # are an allowlist member and two ints; no caller input reaches the string.
+    await session.execute(text(f"SET LOCAL hnsw.iterative_scan = {mode}"))
+    await session.execute(text(f"SET LOCAL hnsw.max_scan_tuples = {max_scan:d}"))
+    await session.execute(text(f"SET LOCAL hnsw.ef_search = {ef_search:d}"))
+
+
 async def _semantic(
     session: AsyncSession, query: str, where: str, params: dict[str, object], depth: int
 ) -> list[uuid.UUID]:
     try:
-        vectors = await embed([query])
+        # `embed_query`, NOT `embed`. The Voyage models are asymmetric: a query
+        # and a document are embedded with different input types, and `embed`
+        # defaults to DOCUMENT. That function was split out for exactly this
+        # call site, and its docstring says why -- "the document/query
+        # distinction is easy to forget and its failure mode is invisible:
+        # retrieval keeps working and simply gets worse". It was forgotten
+        # here, which is the one place it mattered.
+        query_vector = await embed_query(query)
     except EmbeddingError as exc:
         # Degraded, not failed. The keyword half still answers, and an agent
         # getting lexical-only context is enormously better than one getting
@@ -154,6 +225,7 @@ async def _semantic(
         logger.warning("rag.retrieval.embedding_unavailable err=%s", type(exc).__name__)
         return []
 
+    await _apply_scan_settings(session)
     rows = await session.execute(
         text(
             f"""
@@ -163,7 +235,7 @@ async def _semantic(
              LIMIT :depth
             """
         ),
-        {**params, "query_vector": _vector_literal(vectors[0]), "depth": depth},
+        {**params, "query_vector": _vector_literal(query_vector), "depth": depth},
     )
     return [row.id for row in rows]
 
@@ -240,25 +312,10 @@ def lexical_affinity(query: str, chunk: RetrievedChunk) -> float:
     return round(covered * _SECTION_PRIOR.get(chunk.section_type, 0.85), 6)
 
 
-def rerank(
-    query: str,
-    chunks: Sequence[RetrievedChunk],
-    *,
-    top_k: int = DEFAULT_TOP_K,
-    scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
-) -> list[RetrievedChunk]:
-    """Reorder by a second, content-aware pass and take the top k.
-
-    Ties fall back to the fused score, so reranking can only ever reorder within
-    what fusion already considered plausible. A scorer that returns 0 for
-    everything therefore degrades to fusion order rather than to arbitrary order.
-    """
-    scored = sorted(
-        chunks,
-        key=lambda chunk: (scorer(query, chunk), chunk.score),
-        reverse=True,
-    )
-    return list(scored[:top_k])
+# `rerank` USED TO LIVE HERE and is now `reranker.lexical_order`, moved rather
+# than copied: `services/rag/reranker` needs the same deterministic pass as its
+# recorded degradation path, and two implementations of one behaviour is the
+# fault `services/tiers.py` had for a whole release (RPN-AI-UP-001 W6.1).
 
 
 async def retrieve(
@@ -273,10 +330,50 @@ async def retrieve(
     depth: int = CANDIDATE_DEPTH,
     scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
 ) -> list[RetrievedChunk]:
-    """Hybrid retrieve, fuse, rerank. Returns at most `top_k` chunks."""
+    """Hybrid retrieve, fuse, rerank. Returns at most `top_k` chunks.
+
+    A thin wrapper over `retrieve_with_record`, so the existing callers are
+    untouched. A caller that must RECORD which reranker ran uses the other one;
+    there is still one implementation.
+    """
+    chunks, _ = await retrieve_with_record(
+        session,
+        query,
+        source_type=source_type,
+        source_ids=source_ids,
+        section_types=section_types,
+        source_version=source_version,
+        top_k=top_k,
+        depth=depth,
+        scorer=scorer,
+    )
+    return chunks
+
+
+async def retrieve_with_record(
+    session: AsyncSession,
+    query: str,
+    *,
+    source_type: str | None = None,
+    source_ids: Sequence[uuid.UUID] | None = None,
+    section_types: Sequence[str] | None = None,
+    source_version: str | None = None,
+    top_k: int = DEFAULT_TOP_K,
+    depth: int = CANDIDATE_DEPTH,
+    scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
+) -> tuple[list[RetrievedChunk], reranker.RerankOutcome]:
+    """Hybrid retrieve, fuse, rerank, AND say which reranker did it.
+
+    The outcome is the W6.1 record: when the cross-encoder is unavailable the
+    run reports `reranker="lexical", degraded=True` rather than silently
+    substituting. Pretending a cross-encoder ran when it did not is the same
+    failure as presenting template output as generation.
+    """
     query = " ".join(str(query or "").split())
     if not query:
-        return []
+        return [], reranker.RerankOutcome(
+            chunks=[], reranker=reranker.configured_backend()
+        )
 
     where, params = _filters(source_type, source_ids, section_types, source_version)
 
@@ -285,7 +382,9 @@ async def retrieve(
 
     fused = fuse({"semantic": semantic_ids, "keyword": keyword_ids})
     if not fused:
-        return []
+        return [], reranker.RerankOutcome(
+            chunks=[], reranker=reranker.configured_backend()
+        )
 
     rows = await session.execute(
         text(
@@ -310,4 +409,7 @@ async def retrieve(
         )
         for row in rows
     ]
-    return rerank(query, candidates, top_k=top_k, scorer=scorer)
+    outcome = await reranker.rerank_chunks(
+        query, candidates, top_k=top_k, lexical_scorer=scorer
+    )
+    return outcome.chunks, outcome

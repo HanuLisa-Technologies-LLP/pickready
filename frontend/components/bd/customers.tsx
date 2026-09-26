@@ -41,7 +41,7 @@ import { ExportXlsxButton } from "@/components/export-xlsx-button";
 
 const PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
-const FALLBACK_FILENAME = "readypick-customers.csv";
+const FALLBACK_FILENAME = "vivekium-customers.csv";
 
 /**
  * Pull the server's filename out of a Content-Disposition header. The export is
@@ -163,7 +163,7 @@ export function BDCustomersPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             <ExportXlsxButton
-              fileName="readypick-bd-customers"
+              fileName="vivekium-bd-customers"
               rows={customers.map((customer) => ({
                 company: customer.company_name,
                 industry: customer.industry ?? "",

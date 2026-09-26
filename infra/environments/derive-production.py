@@ -5,11 +5,32 @@ roots cannot silently diverge in SHAPE -- only in the values that are supposed
 to differ. Every substitution below is a resilience or scale decision; if one of
 them stops matching, the script fails loudly rather than producing a production
 root that is quietly missing a change staging got.
+
+EVERY SUBSTITUTION MUST MATCH EXACTLY ONCE (2026-09-24). This script had
+drifted from both roots: staging's backend key had moved to `backend.tf`, a
+Celery `--concurrency` flag it rewrote no longer existed, and production had
+been hand-edited to carry wording and sizes the derivation did not produce. The
+first edit that stopped matching aborted the run, so the script could not be
+run at all and every later change reached production by hand, which is the
+drift this file exists to prevent. The EDITS below reproduce the production
+root byte for byte from the staging root as it stands, and an edit that
+matches twice is refused as loudly as one that matches never, because
+`str.replace(..., 1)` rewriting the first of two occurrences is a silent choice
+of which block production gets.
+
+Run it from anywhere: `python infra/environments/derive-production.py`, then
+review `git diff infra/environments/production`.
 """
 import pathlib
 
-STAGING = pathlib.Path(r"C:\dev\pickready\infra\environments\staging")
-PROD = pathlib.Path(r"C:\dev\pickready\infra\environments\production")
+# Resolved from this file, never from an absolute path. The paths used to be
+# `C:\dev\pickready\...` literally, so running the script from any other
+# checkout (a worktree, a CI runner, another machine) read and rewrote the
+# production root of a DIFFERENT working copy, and the one being reviewed kept
+# a production file nobody had derived.
+HERE = pathlib.Path(__file__).resolve().parent
+STAGING = HERE / "staging"
+PROD = HERE / "production"
 
 s = (STAGING / "main.tf").read_text(encoding="utf-8")
 
@@ -50,9 +71,9 @@ HEADER_NEW = '''/**
  *   NAT per AZ            a single NAT is one AZ failure from every task
  *                         losing egress, which means losing the model provider
  *   RDS Multi-AZ          a failover instead of a restore
- *   Redis replica         Redis here is the Celery broker and the working
- *                         memory layer, not a cache: losing it is a queue
- *                         nobody is draining
+ *   Redis replica         Redis carries the proctoring warning counter and
+ *                         the run-status record, so losing it refuses every
+ *                         assessment turn rather than costing a cache miss
  *   deletion protection   on, in the rds module, keyed off `environment`
  *   ECS Exec OFF          a shell in a container holding real candidate data
  *                         is a different thing from one holding seed data
@@ -69,10 +90,11 @@ HEADER_NEW = '''/**
 EDITS = [
     (HEADER_OLD, HEADER_NEW),
     ('  environment = "staging"', '  environment = "production"'),
-    ('#   key          = "staging/terraform.tfstate"',
-     '#   key          = "production/terraform.tfstate"'),
+    # The replica count is a local so the alarm set and the module agree.
+    ('  redis_replica_count = 0', '  redis_replica_count = 1'),
     ('  cidr_block         = "10.20.0.0/16"',
      '  cidr_block         = "10.30.0.0/16"'),
+    ('  flow_log_retention_days = 30', '  flow_log_retention_days = 90'),
     ('''  # ONE NAT. Staging is disposable; a per-AZ pair is $64/month buying
   # resilience for an environment whose whole purpose is to be thrown away.
   single_nat_gateway = true''',
@@ -97,17 +119,20 @@ EDITS = [
   # A failover instead of a restore.
   multi_az              = true
   backup_retention_days = 30'''),
+    ('''  # Staging is disposable and this still stays on. A staging database is
+  # rebuilt on purpose, not by accident, and a deliberate teardown can
+  # afford one extra apply to turn the guard off. What it cannot afford is
+  # `terraform destroy` run in the wrong directory.''',
+     '''  # Production. There is nothing to weigh here.'''),
     ('''  node_type = "cache.t4g.micro"
   # No replica in staging. In production this is 1, because a Redis failure
-  # there is not a cache miss -- it is every Celery task and every
-  # working-memory read.
-  replica_count = 0''',
+  # there is not a cache miss: the proctoring gate answers 503 rather than
+  # silently not warning, so it is every assessment turn.''',
      '''  node_type = "cache.t4g.small"
-  # ONE REPLICA, WHICH IS ALSO WHAT ENABLES AUTOMATIC FAILOVER. Redis here is
-  # the Celery broker and specdoc4's working-memory layer, not a cache: losing
-  # it is a queue nobody is draining and a candidate mid-assessment whose next
-  # question never arrives.
-  replica_count = 1'''),
+  # ONE REPLICA, WHICH IS ALSO WHAT ENABLES AUTOMATIC FAILOVER. Redis carries
+  # the proctoring warning counter and the run-status record, not just a cache.
+  # The proctoring gate answers 503 rather than silently not warning, so losing
+  # Redis is a candidate mid-assessment whose next question never arrives.'''),
     ('  noncurrent_retain_days = 7', '  noncurrent_retain_days = 90'),
     # ── traffic layer ──
     #
@@ -123,14 +148,16 @@ EDITS = [
   # outage outlasts the mistake by however long a replacement takes to create
   # and a resolver takes to forget the old answer.
   enable_deletion_protection = true"""),
+    # ── the ECS cluster ──
+    ('''  log_retention_days = 14
 
-    ('  log_retention_days = 14', '  log_retention_days = 90'),
-    ('  flow_log_retention_days = 30', '  flow_log_retention_days = 90'),
-    ('''  # ECS Exec ON in staging, OFF in production. A shell in a container holding
+  # ECS Exec ON in staging, OFF in production. A shell in a container holding
   # real candidate data is a different thing from a shell in one holding seed
   # data, and the difference should be a decision rather than an inheritance.
   enable_execute_command = true''',
-     '''  # OFF. A shell in a container holding real candidate data is a real
+     '''  log_retention_days = 90
+
+  # OFF. A shell in a container holding real candidate data is a real
   # capability. Turning it on for an incident is a deliberate, reviewed change
   # rather than something inherited from staging.
   enable_execute_command = false'''),
@@ -145,43 +172,45 @@ EDITS = [
       desired_count = 2
       max_count     = 8
       port          = 8000'''),
-    ('''      cpu           = 1024
-      memory        = 2048
-      desired_count = 1
-      max_count     = 3
-      needs_s3      = true''',
-     '''      cpu           = 2048
-      memory        = 4096
-      desired_count = 2
-      max_count     = 10
-      needs_s3      = true'''),
-    ('"--loglevel=info", "--concurrency=2",', '"--loglevel=info", "--concurrency=4",'),
-    ('''      cpu           = 2048
-      memory        = 8192
-      desired_count = 1
-      max_count     = 2
-      port          = 8100''',
-     '''      cpu           = 2048
-      memory        = 8192
-      desired_count = 2
-      max_count     = 4
-      port          = 8100'''),
-    ('''      cpu              = 512
-      memory           = 1024
-      desired_count    = 1
+    ('''      command       = ["agent"]
+      cpu           = 1024
+      memory        = 2048''',
+     '''      command       = ["agent"]
+      cpu           = 2048
+      memory        = 4096'''),
+    ('''      desired_count    = 1
       max_count        = 2
       port             = 3000''',
-     '''      cpu              = 512
-      memory           = 1024
-      desired_count    = 2
+     '''      desired_count    = 2
       max_count        = 6
       port             = 3000'''),
+    ('''      desired_count = 1
+      max_count     = 2
+      port          = 8100''',
+     '''      desired_count = 2
+      max_count     = 4
+      port          = 8100'''),
+    # ── the Lambda half of background work ──
+    ('''  log_retention_days = 14
+  failure_topic_arn''',
+     '''  log_retention_days = 90
+  failure_topic_arn'''),
+    ('''      reserved_concurrency    = var.reserve_lambda_concurrency ? 10 : null
+      secret_policy_key       = "task-worker"''',
+     '''      reserved_concurrency    = var.reserve_lambda_concurrency ? 40 : null
+      secret_policy_key       = "task-worker"'''),
+    # ── alarms: the connection ceiling is a property of the instance class ──
+    ('  # this instance class: db.t4g.small (2 GiB, ~225 connections).',
+     '  # this instance class: db.m7g.large (8 GiB, ~901 connections).'),
+    ('  db_connection_alarm_threshold = 180', '  db_connection_alarm_threshold = 720'),
 ]
 
 for old, new in EDITS:
-    if old not in s:
+    count = s.count(old)
+    if count != 1:
         raise SystemExit(
-            "Staging no longer contains a block this derivation edits:\n\n"
+            f"Staging contains a block this derivation edits {count} times, "
+            "and it must contain it exactly once:\n\n"
             + old[:200]
             + "\n\nFix the derivation rather than hand-editing production, or the "
               "two roots will drift in shape instead of only in size."

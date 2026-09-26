@@ -9,20 +9,25 @@
 //     gone. The AI drafts a single formatted document, the recruitment team
 //     edits it behind an explicit Edit button, and the structured fields the
 //     API still stores are derived from that document.
-//   * The sequence is now draft, then edit, then publish. Publish is disabled
-//     until a description exists, because the client asked for the publish
-//     action to appear only once there is something to publish.
+//   * This screen SAVES A DRAFT and nothing else (Vivekium release, Phase 1).
+//     It used to publish inside the create call, which skipped the real
+//     publish gate: the `publish_job` capability plus a saved JD, a saved SWOT
+//     and saved skills. The recruiter now lands on the job page, where the
+//     SWOT, the skills and the Publish card walk them through the rest.
+//   * An AI draft and a TEMPLATE draft are told apart. When the model was
+//     unavailable the server returns a template with `generated_by_ai: false`,
+//     and this page says so in a persistent notice rather than toasting
+//     "Draft ready" over text no model wrote.
 //   * "Level" became an experience band, a minimum and a maximum in years.
 //   * "Reporting to" is a dropdown of roles from the server, with an Others
 //     option that reveals a free-text field.
 //   * "Reportees" and "Company context" were removed outright.
-//   * Publishing shows the public application link in a POPUP, ready to copy
-//     into a LinkedIn or Naukri posting. A candidate opening that link is taken
-//     to the candidate portal to sign in and apply for this job.
+//   * The public application link is shown by the Publish card on the job
+//     page, the one place a job can go live.
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, Copy, ExternalLink, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Sparkles, X } from "lucide-react";
 
 import Link from "next/link";
 
@@ -41,14 +46,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { FormField, FormSection } from "@/components/ui/form";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -80,12 +77,20 @@ interface GeneratedJd {
   jd_draft_id?: string | null;
   role_classification?: string | null;
   credit_cost_per_report?: number | null;
+  /** False when the model was unavailable and the server returned its
+   *  template. Absent on an older backend, which only ever sent AI drafts. */
+  generated_by_ai?: boolean;
 }
 
 interface CreatedJob {
   id?: string;
-  public_application_url?: string | null;
 }
+
+/**
+ * The notice a template draft carries until somebody edits or replaces it.
+ */
+const TEMPLATE_DRAFT_NOTICE =
+  "This is a template, not an AI draft. The AI writer was unavailable. Edit it before saving.";
 
 /** One earlier job still carrying applications awaiting a status update. */
 interface HygieneJob {
@@ -114,8 +119,10 @@ export default function CreateJobPage() {
 
   const [busy, setBusy] = React.useState(false);
   const [generating, setGenerating] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
-  const [publishedLink, setPublishedLink] = React.useState<string | null>(null);
+  // True while the document on screen is the server's TEMPLATE rather than a
+  // model's draft. Cleared by the recruiter's own edit, because from then on
+  // the words are theirs.
+  const [templateDraft, setTemplateDraft] = React.useState(false);
 
   const [form, setForm] = React.useState<JobFormValues>({
     title: "",
@@ -143,8 +150,8 @@ export default function CreateJobPage() {
   } | null>(null);
 
   // Gate 1 (workflow section 18): a client cannot create a job until its
-  // Company Hiring Requirements exist. The SERVER refuses the create call; this
-  // reads the same status so the recruiter is told before they write a JD
+  // Company Profile says what the company does. The SERVER refuses the create
+  // call; this reads the same field so the recruiter is told before they write a JD
   // rather than after. `null` means "not answered yet" and blocks nothing --
   // an unreadable status must not lock the form, because the server is the
   // gate and it will refuse honestly on submit.
@@ -194,11 +201,14 @@ export default function CreateJobPage() {
     const tenantId = user?.tenant_id;
     if (!tenantId) return;
     let cancelled = false;
-    apiGet<{ status: string }>(
-      `/clients/${tenantId}/company-dna/status`,
-    )
+    // The same question Gate 1 asks server-side: has this organisation said
+    // what it does. Read off the profile the page already serves rather than
+    // through a second endpoint, so the banner and the refusal cannot disagree.
+    apiGet<{ about_company: string | null }>("/companies/me/profile")
       .then((res) => {
-        if (!cancelled) setRequirementsComplete(res.status === "complete");
+        if (!cancelled) {
+          setRequirementsComplete(Boolean((res.about_company ?? "").trim()));
+        }
       })
       .catch(() => {
         if (!cancelled) setRequirementsComplete(null);
@@ -292,10 +302,19 @@ export default function CreateJobPage() {
           : null,
       );
       setJustDrafted(true);
-      toast({
-        title: "Draft ready",
-        description: "Edit it to fit the role, then publish.",
-      });
+      const fromTemplate = generated?.generated_by_ai === false;
+      setTemplateDraft(fromTemplate);
+      toast(
+        fromTemplate
+          ? {
+              title: "Template draft ready",
+              description: "The AI writer was unavailable. Edit the template before saving.",
+            }
+          : {
+              title: "Draft ready",
+              description: "Edit it to fit the role, then save the draft.",
+            }
+      );
     } catch (error) {
       // The LLM router can 503 when every key is unhealthy. Never block the
       // recruiter: they can still write the description themselves.
@@ -309,55 +328,57 @@ export default function CreateJobPage() {
     }
   };
 
-  const publish = async () => {
+  /**
+   * SCROLLING IS NOT THE SAME AS MOVING. Both of these refusals used to
+   * `scrollIntoView` and stop, which repairs the sighted mouse user's
+   * experience and nobody else's: the keyboard caret stayed on the Publish
+   * button at the bottom of a long form, and a screen reader was told
+   * nothing at all. Focus is what carries the error message, because the
+   * field now points at it through `aria-describedby`.
+   */
+  const focusInvalid = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ block: "center" });
+    el?.focus();
+  };
+
+  /**
+   * Save the job as a DRAFT and open its page. Publishing happens there, once
+   * the SWOT and the skills are saved; this call cannot publish.
+   */
+  const saveDraft = async () => {
     // Radix Select is not a native control, so `required` cannot gate it.
     if (!form.grade) {
       setGradeError("Select a grade. It decides which assessment the candidate receives.");
-      document.getElementById("grade")?.scrollIntoView({ block: "center" });
+      focusInvalid("grade");
       return;
     }
     setGradeError(null);
     if (!validateExperience()) {
-      document.getElementById("experience_min_years")?.scrollIntoView({ block: "center" });
+      focusInvalid("experience_min_years");
       return;
     }
     setBusy(true);
     try {
       const res = await apiPost<unknown>("/jobs", {
-        ...buildJobCreatePayload(form, true),
+        ...buildJobCreatePayload(form),
         jd_draft_id: classification?.jd_draft_id ?? null,
       });
       const job = pick<CreatedJob>(res, "job");
-      const link =
-        (res as CreatedJob)?.public_application_url ??
-        job.public_application_url ??
-        (job.id && typeof window !== "undefined"
-          ? `${window.location.origin}/apply/${job.id}`
-          : "");
-      setPublishedLink(link);
+      const id = (res as CreatedJob)?.id ?? job.id;
+      toast({
+        title: "Draft saved",
+        description: "Next, the SWOT and the skills. Publish from the job page once both are saved.",
+      });
+      router.push(id ? `/org/jobs/${id}` : "/org/jobs");
     } catch (err) {
       toast({
-        title: "Could not publish the job",
+        title: "Could not save the draft",
         description: apiErrorMessage(err),
         variant: "destructive",
       });
     } finally {
       setBusy(false);
-    }
-  };
-
-  const copyLink = async () => {
-    if (!publishedLink) return;
-    try {
-      await navigator.clipboard.writeText(publishedLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast({
-        title: "Copy failed",
-        description: "Select the link and copy it manually.",
-        variant: "destructive",
-      });
     }
   };
 
@@ -369,23 +390,23 @@ export default function CreateJobPage() {
       <PageHeader
         eyebrow="Customer Portal"
         title="Create a job"
-        description="Draft the description, edit it, then publish to get the public application link."
+        description="Draft the description, edit it and save the draft. The SWOT, the skills and publishing follow on the job page."
       />
 
       {requirementsComplete === false ? (
         <Card className="mb-6 border-navy-200 bg-navy-50">
           <CardContent className="space-y-3 pt-6">
             <h2 className="text-base font-semibold">
-              Complete your Company Hiring Requirements first
+              Fill in your Company Profile first
             </h2>
             <p className="text-sm">
-              Every job this organisation posts is evaluated against what your
-              company considers a strong hire. Until that is on record there is
-              nothing for this role to be assessed against, so job creation
-              waits for it.
+              Every job this organisation posts is built on what your company
+              does and what working there is like. Until that is on record
+              there is nothing for this role to be drafted from, so job
+              creation waits for it.
             </p>
             <Button asChild>
-              <Link href="/org/company-dna">Open Company Hiring Requirements</Link>
+              <Link href="/org/profile">Open Company Profile</Link>
             </Button>
           </CardContent>
         </Card>
@@ -430,8 +451,8 @@ export default function CreateJobPage() {
                 ))}
               </ul>
               <p className="text-sm">
-                This is a reminder, not a block: you can still create and
-                publish this job right now.
+                This is a reminder, not a block: you can still create this
+                job right now.
               </p>
             </div>
             <button
@@ -645,6 +666,21 @@ export default function CreateJobPage() {
             </div>
           ) : null}
 
+          {/* A template is not an AI draft, and the page says which it is
+              for as long as the template text is what is on screen. */}
+          {templateDraft ? (
+            <div
+              role="status"
+              className="flex items-start gap-3 rounded-xl border border-amber-600 bg-amber-50 p-4 text-sm text-amber-950 dark:bg-amber-950/50 dark:text-amber-50"
+            >
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
+                aria-hidden="true"
+              />
+              <p>{TEMPLATE_DRAFT_NOTICE}</p>
+            </div>
+          ) : null}
+
           {/* The one JD document. Explicit Edit button, per the client. */}
           <JdEditor
             key={justDrafted ? "drafted" : "empty"}
@@ -653,84 +689,30 @@ export default function CreateJobPage() {
             onSave={(next) => {
               setForm((prev) => ({ ...prev, jd_markdown: next }));
               setJustDrafted(false);
+              setTemplateDraft(false);
               toast({ title: "Job description saved" });
             }}
           />
 
-          {/* Publish appears only once there is a description to publish. */}
+          {/* Save is enabled only once there is a description to save. */}
           <div className="flex flex-wrap items-center gap-3">
             <Button
               type="button"
               disabled={busy || !hasJd}
-              onClick={() => void publish()}
+              onClick={() => void saveDraft()}
               className="w-full sm:w-auto"
             >
-              {busy ? "Publishing" : "Publish job"}
+              {busy ? "Saving" : "Save draft"}
             </Button>
             {hasJd ? null : (
               <p className="text-sm">
-                Add a job description first. Publishing needs one.
+                Add a job description first. The draft needs one.
               </p>
             )}
           </div>
         </CardContent>
       </Card>
 
-      {/* The shareable link, as a popup so it is impossible to miss. */}
-      <Dialog
-        open={publishedLink !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPublishedLink(null);
-            router.push("/org/jobs");
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Job published</DialogTitle>
-            <DialogDescription>
-              Share this link on LinkedIn, Naukri or anywhere else. Candidates
-              who open it are taken to the candidate portal to sign in and apply
-              for this role.
-            </DialogDescription>
-          </DialogHeader>
-
-          {publishedLink ? (
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input readOnly value={publishedLink} className="font-mono text-sm" />
-              <Button type="button" onClick={() => void copyLink()} className="gap-2">
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                {copied ? "Copied" : "Copy link"}
-              </Button>
-            </div>
-          ) : (
-            <p className="text-sm">
-              The job was published. Open it from the Jobs list to find its
-              application link.
-            </p>
-          )}
-
-          <DialogFooter>
-            {publishedLink ? (
-              <Button asChild variant="outline" className="gap-1.5">
-                <a href={publishedLink} target="_blank" rel="noreferrer">
-                  <ExternalLink className="h-4 w-4" />
-                  Preview
-                </a>
-              </Button>
-            ) : null}
-            <Button
-              onClick={() => {
-                setPublishedLink(null);
-                router.push("/org/jobs");
-              }}
-            >
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

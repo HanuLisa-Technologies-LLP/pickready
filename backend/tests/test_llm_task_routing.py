@@ -25,7 +25,7 @@ third model arriving by accident.
 
 The TIERING did not change and `SPEC_B3_ASSIGNMENT` below is what proves it:
 every task that ran on the reasoning tier still does, and every task that ran on
-the extraction tier still does. `claim_extraction` in particular MUST NOT
+the extraction tier still does. An extraction task in particular MUST NOT
 EVALUATE, and a vendor swap is exactly the kind of change during which a task
 quietly moves a tier because both ids were being retyped anyway.
 
@@ -104,21 +104,23 @@ def test_an_unknown_task_type_raises_rather_than_defaulting() -> None:
 # that was not intended has to be made twice to pass.
 
 SPEC_B3_ASSIGNMENT = {
-    # Bodha -- SWOT / Company DNA conversational intake -> the reasoning tier
-    "swot_intake": llm_providers.MODEL_TERRA,
-    "company_dna_intake": llm_providers.MODEL_TERRA,
-    # Sutra -- competency naming, observable-evidence authoring, weight
-    # derivation -> the reasoning tier
-    "competency_transformation": llm_providers.MODEL_TERRA,
-    # Yukti -- AI Score / category matching -> the extraction tier (must be fast)
-    "rerank": llm_providers.MODEL_LUNA,
+    # Sutra, simplified (Vivekium release) -- the skills draft JUDGES what the
+    # role needs and the hidden assessment context WRITES what every candidate
+    # is assessed against -> the reasoning tier, both
+    "skills_drafting": llm_providers.MODEL_TERRA,
+    "assessment_context": llm_providers.MODEL_TERRA,
+    # Bodha -- the Job SWOT document -> the reasoning tier (writing)
+    "swot_analysis": llm_providers.MODEL_TERRA,
+    # Yukti (Vivekium release) -- reads resumes against the saved skills and
+    # the named SWOT needs and returns a verdict and a quote per item. That is
+    # JUDGING, so the reasoning tier: stated here a second time, independently
+    # of the table, because moving off `rerank` is exactly the change during
+    # which a task could land on the wrong tier unnoticed. (`rerank`, and the
+    # five task types no call site used, were DELETED in Phase 2 WP-F;
+    # `test_the_deleted_task_types_are_unknown` keeps them gone.)
+    "yukti_matching": llm_providers.MODEL_TERRA,
     # Vaada -- conversation / question generation -> the reasoning tier
     "conversation_turn": llm_providers.MODEL_TERRA,
-    # Miti -- claim extraction -> the extraction tier (narrow, mechanical,
-    # must not evaluate)
-    "claim_extraction": llm_providers.MODEL_LUNA,
-    # Miti -- evidence tiering -> the extraction tier
-    "evidence_tiering": llm_providers.MODEL_LUNA,
     # Miti -- five dimension evaluators -> the reasoning tier
     "dimension_evaluation": llm_providers.MODEL_TERRA,
     # Miti -- triangulation agent -> the reasoning tier
@@ -135,14 +137,61 @@ SPEC_B3_ASSIGNMENT = {
     # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
     # yes-or-no equivalence classification over two short strings, on the
     # candidate's own request path. Narrow, mechanical, must be fast: the
-    # extraction tier, for the same reason `rerank` is.
+    # extraction tier.
     "fill_blank_equivalence": llm_providers.MODEL_LUNA,
+    # Phase 4 (Vivekium release): an executed coding question, its tests and a
+    # reference solution that must pass every one of them in the sandbox.
+    # WRITING, and the hardest writing task in the product: the reasoning tier.
+    "coding_question_generation": llm_providers.MODEL_TERRA,
+    "question_generation": llm_providers.MODEL_TERRA,
+    # Phase 4 WP-4B2: the code-quality review of a final coding answer. It
+    # JUDGES (four criteria and an overall score beside the hidden tests), so
+    # it sits on the reasoning tier with `answer_evaluation`.
+    "coding_quality_review": llm_providers.MODEL_TERRA,
+    # Web research, both halves. BOTH WERE ON THE EXTRACTION TIER under the
+    # `extraction` hint until 2026-09-08, which is the one place a task DID
+    # silently sit on the wrong tier, and it cost the product a BD page that
+    # returned two companies and a researched profile that read like filler.
+    # `bd_reach_evaluate` judges retrieved pages; `company_profile_research`
+    # writes prose a candidate reads. Judge and write are both Terra by the
+    # §B.3 split, and this entry is the second, independent statement of that.
+    "bd_reach_evaluate": llm_providers.MODEL_TERRA,
+    "company_profile_research": llm_providers.MODEL_TERRA,
 }
 
 
 @pytest.mark.parametrize("task_type,model", sorted(SPEC_B3_ASSIGNMENT.items()))
 def test_spec_b3_assignment_matches_the_code(task_type: str, model: str) -> None:
     assert llm_providers.model_for(task_type) == model
+
+
+#: Deleted in the Vivekium release (Phase 2 WP-F): `rerank` with its last
+#: caller, the retired matcher, and five types no call site ever used.
+DELETED_TASK_TYPES = (
+    "rerank",
+    "competency_transformation",
+    "situation_classification",
+    "claim_extraction",
+    "evidence_tiering",
+    "technical_questions",
+)
+
+
+@pytest.mark.parametrize("task_type", DELETED_TASK_TYPES)
+def test_the_deleted_task_types_are_unknown(task_type: str) -> None:
+    """A task type with no caller is a routing row nothing exercises. Every
+    table must have lost it, not only `MODEL_FOR_TASK`."""
+    assert not llm_providers.is_known_task(task_type)
+    for table in (
+        llm_providers.MODEL_FOR_TASK,
+        llm_providers.TASK_TIMEOUTS,
+        llm_providers.TASK_TOTAL_BUDGET,
+        llm_providers.TASK_MAX_TOKENS,
+        llm_providers.TASK_TEMPERATURE,
+        llm_providers.TASK_RETRY_BUDGET,
+        llm_providers.TASK_COST_CEILING_USD,
+    ):
+        assert task_type not in table
 
 
 def test_the_aggregator_has_no_task_type() -> None:
@@ -251,6 +300,47 @@ def _code_lines(path: pathlib.Path) -> list[tuple[int, str]]:
 #: the LAST place a stray id should be allowed to hide.
 _SCANNED_ROOTS = (APP_ROOT, APP_ROOT.parent / "scripts")
 
+#: THE ONE EXEMPTION, AND THE REASON IT IS A REVIEWED DECISION RATHER THAN A
+#: HOLE (RPN-AI-UP-001 W7.4).
+#:
+#: `app/evaluation/` is the eval layer, and the judge jury under
+#: `app/evaluation/judges/` runs on a DIFFERENT VENDOR on purpose. That is not
+#: a relaxation of the closed mapping, it is outside its scope, and the two
+#: reasons are worth stating rather than assuming:
+#:
+#:   1. A judge from the same family as the generator exhibits SELF PREFERENCE,
+#:      measured at roughly +10% to +25% win rate for a model's own output. An
+#:      OpenAI-family judge grading an OpenAI-family scorer is a structural
+#:      bias, and moving the judge to another vendor removes it by
+#:      construction rather than by correction.
+#:   2. The value of `MODEL_FOR_TASK` being closed is that A CANDIDATE'S GRADE
+#:      CANNOT BE PRODUCED BY AN UNREVIEWED MODEL. That property is preserved
+#:      not by the grep but by REACHABILITY: no route and no worker can reach
+#:      the jury at all.
+#:
+#: SO THE EXEMPTION IS ONLY SAFE BECAUSE `tests/test_judge_isolation.py`
+#: EXISTS. It asserts by AST that nothing under `app/services/` imports
+#: `app/evaluation/`, and that nothing under `app/evaluation/judges/` is
+#: reachable from `app/api/` or `app/workers/`. Deleting that file turns this
+#: exemption into exactly the hole it is written not to be, so the assertion
+#: below fails if it goes missing.
+_MODEL_GREP_EXEMPT_PREFIXES = (APP_ROOT / "evaluation",)
+
+
+def test_the_model_grep_exemption_is_backed_by_the_isolation_test() -> None:
+    """`app/evaluation/` is skipped by the sweep below, and the only thing that
+    makes that safe is the reachability assertion in another file. If that file
+    is ever removed, this exemption must be removed with it."""
+    isolation = APP_ROOT.parent / "tests" / "test_judge_isolation.py"
+    assert isolation.exists(), (
+        "app/evaluation/ is exempt from the model-id grep only because "
+        "test_judge_isolation.py proves no route or worker can reach the "
+        "jury. Without that proof the exemption is a hole."
+    )
+    body = isolation.read_text(encoding="utf-8")
+    assert "reachable_modules" in body
+    assert "app.evaluation.judges" in body
+
 
 def test_no_other_model_id_appears_in_executable_code() -> None:
     offenders: list[str] = []
@@ -259,6 +349,8 @@ def test_no_other_model_id_appears_in_executable_code() -> None:
             continue
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
+                continue
+            if any(path.is_relative_to(exempt) for exempt in _MODEL_GREP_EXEMPT_PREFIXES):
                 continue
             for number, line in _code_lines(path):
                 for pattern in _FORBIDDEN_MODEL_PATTERNS:
@@ -389,6 +481,7 @@ def test_every_judging_task_is_deterministic() -> None:
         "dimension_evaluation",
         "triangulation",
         "situation_classification",
+        "yukti_matching",
     ):
         assert llm_providers.temperature_for(task) == 0.0, task
 

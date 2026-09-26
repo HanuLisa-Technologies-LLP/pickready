@@ -55,7 +55,7 @@ async def _fixture() -> tuple[str, str, str, str]:
                 ).scalars().first()
                 if candidate is None:
                     candidate = Candidate(
-                        full_name="ReadyPick Delivery Validation",
+                        full_name="Vivekium Delivery Validation",
                         email=settings.smtp_user,
                         consent_databank=False,
                     )
@@ -137,7 +137,7 @@ async def run() -> dict:
         preview.raise_for_status()
         preview_data = preview.json()
         send = await client.post(
-            "/outreach/send-email",
+            "/outreach/send",
             json={
                 "job_id": job_id,
                 "link_ids": [link_id],

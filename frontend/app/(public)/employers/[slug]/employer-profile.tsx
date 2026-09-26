@@ -24,6 +24,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { EmptyState, ErrorState, LoadingCards } from "@/components/page-primitives";
+import { JsonLd, compact } from "@/components/json-ld";
+import { SITE_URL } from "@/lib/site";
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 
 /** Mirrors `schemas.employer_pages.EmployerOpenRoleOut`. */
@@ -31,7 +33,6 @@ interface OpenRole {
   id: string;
   title: string;
   department?: string | null;
-  level?: string | null;
   experience_min_years?: number | null;
   experience_max_years?: number | null;
   apply_path: string;
@@ -48,6 +49,41 @@ interface EmployerPageData {
   work_life?: string | null;
   benefits?: string | null;
   open_roles: OpenRole[];
+}
+
+/**
+ * The Organization payload for one employer page.
+ *
+ * EVERY FIELD COMES FROM THE FETCHED PAGE, AND NOTHING IS INVENTED. No
+ * address, no logo, no employee count, no founding date: the employer page
+ * endpoint returns a closed allowlist and none of those is on it.
+ *
+ * `industry` is carried as `knowsAbout`, because schema.org's Organization has
+ * no `industry` property and an undefined key is an unread key. `knowsAbout`
+ * is the defined field closest in meaning, and it is honest about being a
+ * subject rather than a classification code.
+ *
+ * IT CARRIES AN `@id`, AND THAT IS NOT DECORATION. This page sits inside the
+ * (public) group, so `app/(public)/layout.tsx` also emits Vivekium's own
+ * Organization node on it. Two Organization nodes on one page, one the
+ * platform and one the hiring company, is an ambiguity a consumer resolves by
+ * guessing unless each one is named. Vivekium's node is
+ * `<site>/#organization` and is what the WebSite node points at as its
+ * publisher; the employer's is its own page, so they cannot be merged.
+ */
+function organizationSchema(
+  data: EmployerPageData
+): Record<string, unknown> | null {
+  if (!data.name) return null;
+  return compact({
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": `${SITE_URL}/employers/${data.slug}#organization`,
+    name: data.name,
+    url: data.website_domain ? `https://${data.website_domain}` : undefined,
+    description: data.about_company ?? undefined,
+    knowsAbout: data.industry ?? undefined,
+  });
 }
 
 function experienceBand(role: OpenRole): string | null {
@@ -124,7 +160,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
         <EmptyState
           icon={Building2}
           title="Employer page not found"
-          description="This page does not exist or is not public. Browse the directory for companies hiring through ReadyPick."
+          description="This page does not exist or is not public. Browse the directory for companies hiring through Vivekium."
           action={
             <Button asChild variant="outline">
               <Link href="/employers">Browse employers</Link>
@@ -161,6 +197,11 @@ export function EmployerProfile({ slug }: { slug: string }) {
 
   return (
     <>
+      {/* Structured data for this employer. Built from the fetched page in
+          code and serialised with JSON.stringify, so it is not an XSS
+          vector. */}
+      <JsonLd data={organizationSchema(data)} />
+
       <section className="relative overflow-hidden border-b border-border py-16 lg:py-20">
         <div
           aria-hidden="true"
@@ -176,7 +217,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
                 {data.name}
               </h1>
               {data.industry ? (
-                <p className="mt-3 text-base leading-7">{data.industry}</p>
+                <p className="mt-3 text-base">{data.industry}</p>
               ) : null}
             </div>
             {data.website_domain ? (
@@ -229,7 +270,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
           </div>
           <p className="mt-2 leading-7">
             Every application goes straight to the hiring team through
-            ReadyPick.
+            Vivekium.
           </p>
         </FadeIn>
 
@@ -257,11 +298,11 @@ export function EmployerProfile({ slug }: { slug: string }) {
                           <Badge variant="outline">{role.department}</Badge>
                         ) : null}
                       </div>
-                      {band || role.level ? (
-                        <p className="text-sm leading-6">
-                          {[role.level, band].filter(Boolean).join(" · ")}
-                        </p>
-                      ) : null}
+                      {/* The experience band only. The free-text level it
+                          used to lead with was replaced by the grade and the
+                          band, and the grade sizes the assessment rather than
+                          describing the role to a candidate. */}
+                      {band ? <p className="text-sm">{band}</p> : null}
                       <div className="mt-auto pt-2">
                         <Button asChild className="w-full">
                           <Link href={role.apply_path}>Apply</Link>

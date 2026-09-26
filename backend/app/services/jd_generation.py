@@ -26,6 +26,25 @@ a deterministic template document built from the brief and clearly marked.
 NO EM DASHES. The prompt forbids them and `_strip_em_dashes` enforces it on the
 way out, because this text is displayed verbatim to candidates.
 
+SUFFICIENCY IS DECIDED PER SECTION, BEFORE THE PROMPT RUNS (2026-09-09)
+----------------------------------------------------------------------
+`ai-upgrade-spec-doc.md` "case 2". Rule 8 of the document prompt used to read
+"Keep every heading present even when the brief is thin. Write the most
+reasonable professional content you can rather than leaving a section empty."
+That is an instruction to invent, on the document a candidate applies against,
+and the two things a model produces from it are fabricated requirements and
+sentences about its own uncertainty ("The brief does not establish any
+educational requirement for this position").
+
+`generation_sufficiency.jd_document_states` now answers, per heading and in
+ordinary code, whether the brief carries a field behind that section. Only the
+backed sections are requested; the rest keep their heading and are filled with
+a fixed catalogue line by `_apply_empty_states`, so the seven-section contract
+`parse_jd_markdown` depends on is untouched and nothing is invented under it.
+
+The Education heading is the case worth naming: this brief has never carried an
+education field, so that section was written from nothing every single time.
+
 Pure service: takes a dict, returns a dict. No DB, no HTTP server.
 """
 from __future__ import annotations
@@ -36,7 +55,7 @@ import re
 from typing import Any
 
 from app import prompts
-from app.services import llm_router
+from app.services import generation_sufficiency, llm_router
 from app.prompts import registry
 
 logger = logging.getLogger(__name__)
@@ -277,6 +296,36 @@ def _brief_user_message(brief: dict) -> str:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
+#: Which `jd_json` key each gated section owns, and what an unbacked one becomes.
+#: A list key empties to `[]` and a scalar to `None`, which is what "the brief
+#: did not support this" already means everywhere downstream: the public apply
+#: page, the matching pipeline and the question generator all read a missing
+#: section as missing. Writing the catalogue sentence into `skills` instead
+#: would put a instruction to the hiring team into a list of skills.
+_GATED_JD_KEYS: dict[str, str] = {
+    "description": "description",
+    "role": "role",
+    "responsibilities": "responsibilities",
+    "accountabilities": "accountabilities",
+    "education": "education",
+    "skills": "skills",
+    "experience": "experience_years",
+}
+
+
+def _apply_key_states(jd: dict, states: dict) -> dict:
+    """Clear every `jd_json` key whose backing field the brief does not carry.
+
+    Applied to the generated JD and to the deterministic template alike, in one
+    place, so the two paths cannot disagree about what an unbacked key holds.
+    """
+    for section, key in _GATED_JD_KEYS.items():
+        if states[section].sufficient:
+            continue
+        jd[key] = [] if isinstance(jd.get(key), list) else None
+    return jd
+
+
 async def generate_job_description(brief: dict) -> dict:
     """Generate a structured job description from a staff brief.
 
@@ -293,6 +342,7 @@ async def generate_job_description(brief: dict) -> dict:
     propagate.
     """
     brief = brief or {}
+    key_states = generation_sufficiency.jd_json_states(brief)
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": _brief_user_message(brief)},
@@ -305,14 +355,14 @@ async def generate_job_description(brief: dict) -> dict:
         )
     except llm_router.LLMUnavailableError:
         logger.warning("jd_generation.llm_unavailable  -  deterministic template JD")
-        return _template_jd(brief)
+        return _apply_key_states(_template_jd(brief), key_states)
     except Exception as exc:  # noqa: BLE001  -  never crash the caller on the LLM
         logger.warning("jd_generation.llm_error error=%s", type(exc).__name__)
-        return _template_jd(brief)
+        return _apply_key_states(_template_jd(brief), key_states)
 
     jd = _try_parse(raw)
     if jd is not None:
-        return jd
+        return _apply_key_states(jd, key_states)
 
     # One corrective retry: the model returned prose or a wrong shape.
     corrective = (
@@ -332,17 +382,17 @@ async def generate_job_description(brief: dict) -> dict:
         )
     except llm_router.LLMUnavailableError:
         logger.warning("jd_generation.llm_unavailable_on_retry  -  deterministic template JD")
-        return _template_jd(brief)
+        return _apply_key_states(_template_jd(brief), key_states)
     except Exception as exc:  # noqa: BLE001
         logger.warning("jd_generation.llm_retry_error error=%s", type(exc).__name__)
-        return _template_jd(brief)
+        return _apply_key_states(_template_jd(brief), key_states)
 
     jd = _try_parse(raw_retry)
     if jd is not None:
-        return jd
+        return _apply_key_states(jd, key_states)
 
     logger.warning("jd_generation.unparseable_after_retry  -  deterministic template JD")
-    return _template_jd(brief)
+    return _apply_key_states(_template_jd(brief), key_states)
 
 
 def _try_parse(raw: str) -> dict | None:
@@ -497,6 +547,70 @@ def _document_user_message(brief: dict) -> str:
     return json.dumps(payload, default=str)
 
 
+def _section_states(brief: dict) -> dict[str, generation_sufficiency.Sufficiency]:
+    """One verdict per `##` heading, keyed by the lowercased heading."""
+    return generation_sufficiency.jd_document_states(brief)
+
+
+def _heading_list(states: dict, wanted: bool) -> str:
+    """The headings on one side of the gate, named for the prompt.
+
+    Written out as the document's own headings rather than as the internal keys,
+    because the prompt is about to be told to write "## Description" and a list
+    that said "description" would be a second vocabulary for the same thing.
+    """
+    names = [
+        heading
+        for heading in JD_SECTIONS
+        if bool(states[heading.lower()].sufficient) is wanted
+    ]
+    return ", ".join(names) or "none"
+
+
+def _apply_empty_states(document: str, states: dict) -> str:
+    """Replace every gated-out section's body with its fixed catalogue line.
+
+    Applied AFTER generation and to the deterministic template alike, so there
+    is one answer to "what is under an unbacked heading" rather than one per
+    path. The heading itself always survives: `parse_jd_markdown` and every
+    consumer of `jd_json` depend on the seven-section shape.
+
+    SURGICAL, NOT A RE-RENDER. The first version parsed the document and rebuilt
+    it through `render_jd_markdown`, which rewrites the Experience sentence from
+    a single `experience_years` and would silently have turned a recruiter's
+    "3 to 6 years" band into "around 3 years". Only the gated-out sections are
+    touched; every other byte the model wrote survives.
+    """
+    for heading in JD_SECTIONS:
+        state = states[heading.lower()]
+        if state.sufficient:
+            continue
+        document = _replace_section(
+            document,
+            heading,
+            generation_sufficiency.empty_state_copy(str(state.empty_state_key)),
+        )
+    return document
+
+
+def _replace_section(document: str, heading: str, body: str) -> str:
+    """Rewrite one `## Heading` block's body, leaving the rest byte for byte.
+
+    A heading the model dropped is APPENDED rather than treated as an error:
+    `_looks_like_jd_document` accepts a document carrying three of the seven, so
+    a missing heading is a state this function is reachable in, and raising here
+    would turn a usable draft into a template over one absent section.
+    """
+    pattern = re.compile(
+        rf"(^##[ \t]+{re.escape(heading)}[ \t]*\n)(.*?)(?=^##[ \t]+|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    replaced, count = pattern.subn(lambda m: f"{m.group(1)}\n{body}\n\n", document)
+    if count:
+        return replaced
+    return f"{document.rstrip()}\n\n## {heading}\n\n{body}\n"
+
+
 def _looks_like_jd_document(text: str | None) -> bool:
     """Is this plausibly the seven-section document rather than prose or JSON?
 
@@ -565,8 +679,16 @@ async def generate_jd_document(brief: dict) -> dict:
     to the marked deterministic template.
     """
     brief = brief or {}
+    states = _section_states(brief)
     messages = [
-        {"role": "system", "content": prompts.load("jd_document")},
+        {
+            "role": "system",
+            "content": prompts.render(
+                "jd_document",
+                requested_sections=_heading_list(states, True),
+                skipped_sections=_heading_list(states, False),
+            ),
+        },
         {"role": "user", "content": _document_user_message(brief)},
     ]
 
@@ -608,6 +730,10 @@ async def generate_jd_document(brief: dict) -> dict:
     if fence:
         document = fence.group(1)
     document = strip_em_dashes(document.strip()) + "\n"
+    # THE GATE'S OTHER HALF. The prompt was told which sections to leave alone;
+    # this is what makes that a guarantee rather than a request, and it also
+    # covers the template path, which never saw the prompt at all.
+    document = _apply_empty_states(document, states)
 
     sections = parse_jd_markdown(document)
     # The recruiter's own inputs are authoritative over anything the model

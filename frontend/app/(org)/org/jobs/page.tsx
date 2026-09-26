@@ -10,7 +10,7 @@ import Link from "next/link";
 import { Archive, Briefcase, Plus, RotateCcw } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
-import type { Job } from "@/lib/types";
+import { jobGradeLabel, type Job } from "@/lib/types";
 import { CAP } from "@/lib/permissions";
 import { usePermissions } from "@/lib/use-permissions";
 import { useToast } from "@/components/ui/toast";
@@ -146,7 +146,7 @@ export default function OrgJobsPage() {
                 <TableRow>
                   <TableHead>Title</TableHead>
                   <TableHead>Department</TableHead>
-                  <TableHead>Level</TableHead>
+                  <TableHead>Grade</TableHead>
                   <TableHead>Requirement period</TableHead>
                   {/* Directive Part 3 §7.2: role type + credits per report on
                       every job row. Typography, not a coloured pill (Part 1
@@ -169,7 +169,7 @@ export default function OrgJobsPage() {
                       </Link>
                     </TableCell>
                     <TableCell>{job.department}</TableCell>
-                    <TableCell>{job.level}</TableCell>
+                    <TableCell>{jobGradeLabel(job.grade)}</TableCell>
                     <TableCell>{job.requirement_period}</TableCell>
                     <TableCell className="whitespace-nowrap">
                       {job.role_classification === "STEM" ? "STEM" : "Non-STEM"}
@@ -210,7 +210,7 @@ export default function OrgJobsPage() {
                   }
                   meta={
                     <>
-                      {job.department}, {job.level}
+                      {job.department}, {jobGradeLabel(job.grade)}
                     </>
                   }
                   actions={archiveButton(job)}

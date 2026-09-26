@@ -2,17 +2,25 @@
 through `get_superadmin_db`, which enforces the super_admin audience, uses the
 RLS bypass scope, and writes an audit_log row for the cross-tenant access.
 
-The Owner onboards tenants, manages them (edit / delete), invites staff INTO a
-chosen tenant, edits permission templates, and reads the audit log. The
-company-side staff UI (`/companies/me/staff`) and the `/join` acceptance page
-remain the client organization's own flow — this module reuses the same
-`staff_invites` row and token helpers rather than inventing a parallel one.
+What is left here is the Owner's own surface, and nothing that duplicates the
+Provider Portal: onboarding a customer (`POST /tenants`), the BD team, the
+LLM and cost telemetry, and the three DECLARED OPERATOR ROUTES (the audit log,
+the Super Admin transfer and the retyped-name tenant delete), which have no
+screen by design and are listed with their reasons in
+`tests/test_route_callers.OPERATOR_SURFACE`.
+
+The tenant list, tenant edit, cross-tenant staff list, Owner-side staff
+invitation and the permission-template editor were DELETED in the Vivekium
+release (PLAN-p7 WP-B6). None had a screen, `/provider/*` serves the reads,
+and three of them were Provider WRITES over customer data, which the
+read-only-by-absence rule of 2026-07-27 forbids and which bypassed
+`test_provider_portal.PROVIDER_WRITES`.
 
 Auth is Firebase (claude.md rule 2): no OTP is ever generated here. Email is
 SMTP via the dispatched `pickready.send_email` task (rules 4 and 5).
-
 """
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, update
@@ -33,7 +41,6 @@ from app.models.invite import (
     generate_invite_token,
     hash_invite_token,
     invite_expiry,
-    invite_state,
 )
 from app.models.bd import BDLead
 from app.models.job import Job
@@ -43,40 +50,29 @@ from app.schemas.admin import (
     SuperAdminTransferIn,
     AdminUserOut,
     AuditLogOut,
-    PermissionOut,
-    PermissionsUpdateIn,
     BDUserCreateIn,
     BDUserDeleteOut,
     BDUserOut,
     BDUserUpdateIn,
-    OwnerStaffOut,
-    StaffInviteIn,
-    StaffInviteOut,
     TenantCreateIn,
     TenantCreateOut,
     TenantDeleteOut,
     TenantOut,
-    TenantUpdateIn,
     derive_tenant_domain,
 )
-from app.services import employer_pages, rbac
+from app.services import cost_telemetry, employer_pages, rbac
 from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 from app.services import llm_router
 from app.services import role_hierarchy
 
 router = APIRouter()
 
-# Roles the Owner may invite into a tenant. Mirrors companies.STAFF_ROLES; the
-# schema Literal is the first gate and the owner invariant the last.
+# The customer's staff roles, the set the Provider Portal's team view reads
+# (`api/provider.py` imports it from here).
 STAFF_ROLES: frozenset[Role] = role_hierarchy.MANAGEABLE_ROLES
-
-# FR-2.2 — at most 5 ACTIVE Hiring Managers per tenant. Enforced identically on
-# the client-side path (api/companies.py) and by a DB trigger; repeated here so
-# the Owner console cannot be used to route around the cap.
-MAX_HIRING_MANAGERS = 5
 
 
 def _seed_permissions(session: AsyncSession, tenant_id: uuid.UUID) -> None:
@@ -117,43 +113,6 @@ def confirmation_matches(typed: str | None, tenant_name: str) -> bool:
 
 # ── Serialization ────────────────────────────────────────────────────────────
 
-async def _client_users(
-    session: AsyncSession, tenant_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, User]:
-    """The `client` (Client Company Admin) user per tenant — the owner/POC
-    shown in the tenant list. Oldest wins if a tenant somehow has two."""
-    if not tenant_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(User)
-            .where(User.tenant_id.in_(tenant_ids), User.role == Role.client)
-            .order_by(User.created_at)
-        )
-    ).scalars().all()
-    out: dict[uuid.UUID, User] = {}
-    for row in rows:
-        if row.tenant_id is not None:
-            out.setdefault(row.tenant_id, row)
-    return out
-
-
-async def _staff_counts(
-    session: AsyncSession, tenant_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, int]:
-    if not tenant_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(User.tenant_id, func.count())
-            .where(User.tenant_id.in_(tenant_ids), User.role.in_(STAFF_ROLES),
-                   User.status != UserStatus.disabled)
-            .group_by(User.tenant_id)
-        )
-    ).all()
-    return {tid: n for tid, n in rows if tid is not None}
-
-
 def _tenant_out(tenant: Tenant, client: User | None, staff_count: int = 0) -> TenantOut:
     return TenantOut(
         id=tenant.id,
@@ -182,7 +141,7 @@ async def create_tenant(
 ) -> TenantCreateOut:
     """Onboard a client company and its Client Company Admin account.
 
-    The admin signs in with email/password or Google via Firebase — ReadyPick
+    The admin signs in with email/password or Google via Firebase — Vivekium
     stores no password and issues no OTP (claude.md rule 2). No sending domain
     is collected: outbound mail is SMTP (rule 5).
     """
@@ -234,9 +193,12 @@ async def create_tenant(
     session.add(client_user)
     _seed_permissions(session, tenant.id)
     await session.flush()
-    await rbac.invalidate_role_permissions(
-        body.tenant_id, list({Role(entry.role) for entry in body.entries})
-    )
+    # The new tenant's permission rows were just written; drop any cached
+    # resolution for it. This line used to read `body.tenant_id` and
+    # `body.entries`, fields `TenantCreateIn` does not have (a copy of the
+    # deleted permission editor's invalidation), so onboarding a customer
+    # raised AttributeError after the flush and rolled the whole thing back.
+    await rbac.invalidate_role_permissions(tenant.id)
 
     await audit(
         session, tenant_id=tenant.id, actor_user_id=user.user_id,
@@ -263,7 +225,13 @@ async def create_tenant(
         )
     )
     await session.flush()
-    dispatch(
+    # After the commit, never before it: an invitation about a tenant whose
+    # creation then rolled back would point its recipient at nothing. A lost
+    # invoke is logged by the dispatcher, and the Provider Portal's primary
+    # contact route (`PUT /provider/customers/{id}/primary-contact`) re-sends
+    # the invitation, which is the repair.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[str(tenant.id), str(body.client_email), "client_invite",
               {"tenant_name": name,
@@ -277,136 +245,11 @@ async def create_tenant(
     )
 
 
-@router.get("/tenants", response_model=list[TenantOut])
-async def list_tenants(
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=25, ge=1, le=100),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> list[TenantOut]:
-    """One page of tenants with their company profile and owner/POC.
-
-    Paginated in SQL. "The tenant count is small by design" was true of a demo
-    and stops being true the week the platform sells; more importantly, the two
-    helper lookups below fan out over whatever this returns, so an unbounded
-    page here is an unbounded amount of work behind it.
-    """
-    rows = (
-        await session.execute(
-            select(Tenant).order_by(Tenant.created_at, Tenant.id).offset(skip).limit(limit)
-        )
-    ).scalars().all()
-    ids = [t.id for t in rows]
-    clients = await _client_users(session, ids)
-    counts = await _staff_counts(session, ids)
-    return [_tenant_out(t, clients.get(t.id), counts.get(t.id, 0)) for t in rows]
-
-
 async def _load_tenant(session: AsyncSession, tenant_id: uuid.UUID) -> Tenant:
     tenant = await session.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return tenant
-
-
-@router.get("/tenants/{tenant_id}", response_model=TenantOut)
-async def get_tenant(
-    tenant_id: uuid.UUID,
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> TenantOut:
-    tenant = await _load_tenant(session, tenant_id)
-    clients = await _client_users(session, [tenant.id])
-    counts = await _staff_counts(session, [tenant.id])
-    return _tenant_out(tenant, clients.get(tenant.id), counts.get(tenant.id, 0))
-
-
-async def _apply_tenant_update(
-    session: AsyncSession,
-    tenant: Tenant,
-    changes: dict[str, str | None],
-    actor_user_id: uuid.UUID,
-) -> list[str]:
-    """Apply a partial company-profile update in place and audit it.
-
-    `changes` holds ONLY the keys the caller actually sent (pydantic
-    `exclude_unset`), so an absent key means "leave unchanged" while an explicit
-    "" clears the field. Returns the names of the fields that really changed.
-    """
-    changed: list[str] = []
-
-    name = changes.get("name")
-    if "name" in changes and name and name != tenant.name:
-        clash = (
-            await session.execute(
-                select(Tenant).where(
-                    func.lower(Tenant.name) == name.lower(), Tenant.id != tenant.id
-                )
-            )
-        ).scalars().first()
-        if clash is not None:
-            raise HTTPException(
-                status_code=409, detail=f"A company named “{name}” already exists"
-            )
-        tenant.name = name
-        changed.append("name")
-
-    if "industry" in changes and changes["industry"] != tenant.industry:
-        tenant.industry = changes["industry"]
-        changed.append("industry")
-
-    for field in ("culture", "details"):
-        if field not in changes:
-            continue
-        value = changes[field] or None
-        if value != getattr(tenant, field):
-            setattr(tenant, field, value)
-            changed.append(field)
-
-    await session.flush()
-    if changed:
-        await audit(
-            session, tenant_id=tenant.id, actor_user_id=actor_user_id,
-            action="tenant_updated", target_type="tenant", target_id=tenant.id,
-            metadata={"fields": sorted(changed)},
-        )
-    return changed
-
-
-@router.put("/tenants/{tenant_id}", response_model=TenantOut)
-async def update_tenant(
-    tenant_id: uuid.UUID,
-    body: TenantUpdateIn,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> TenantOut:
-    """Edit the company profile. `domain` and `created_at` are immutable; the
-    client account is managed from the client portal."""
-    return await _update_tenant_by_id(session, tenant_id, body, user.user_id)
-
-
-@router.patch("/tenants/{tenant_id}", response_model=TenantOut)
-async def patch_tenant(
-    tenant_id: uuid.UUID,
-    body: TenantUpdateIn,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> TenantOut:
-    """Alias of PUT — both are partial updates over the same schema."""
-    return await _update_tenant_by_id(session, tenant_id, body, user.user_id)
-
-
-async def _update_tenant_by_id(
-    session: AsyncSession,
-    tenant_id: uuid.UUID,
-    body: TenantUpdateIn,
-    actor_user_id: uuid.UUID,
-) -> TenantOut:
-    tenant = await _load_tenant(session, tenant_id)
-    await _apply_tenant_update(
-        session, tenant, body.model_dump(exclude_unset=True), actor_user_id
-    )
-    clients = await _client_users(session, [tenant.id])
-    counts = await _staff_counts(session, [tenant.id])
-    return _tenant_out(tenant, clients.get(tenant.id), counts.get(tenant.id, 0))
 
 
 @router.delete("/tenants/{tenant_id}", response_model=TenantDeleteOut)
@@ -477,195 +320,6 @@ async def delete_tenant(
 
 # ── Owner-side team management (invite staff INTO a tenant) ──────────────────
 
-@router.get("/staff", response_model=list[OwnerStaffOut])
-async def list_all_staff(
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> list[OwnerStaffOut]:
-    """One page of the operational team across every tenant.
-
-    This list grows as (customers x their staff), so it is the fastest-growing
-    response in the Owner console and the one least able to afford being
-    unbounded.
-    """
-    rows = (
-        await session.execute(
-            select(User, Tenant)
-            .join(Tenant, Tenant.id == User.tenant_id)
-            .where(User.role.in_(STAFF_ROLES))
-            .order_by(Tenant.name, User.created_at, User.email, User.id)
-            .offset(skip)
-            .limit(limit)
-        )
-    ).all()
-    user_ids = [staff.id for staff, _tenant in rows]
-    invite_by_user: dict[uuid.UUID, StaffInvite] = {}
-    if user_ids:
-        invites = (
-            await session.execute(
-                select(StaffInvite)
-                .where(StaffInvite.user_id.in_(user_ids))
-                .order_by(StaffInvite.created_at)
-            )
-        ).scalars().all()
-        for invite in invites:
-            invite_by_user[invite.user_id] = invite
-
-    out: list[OwnerStaffOut] = []
-    for staff, tenant in rows:
-        invite = invite_by_user.get(staff.id)
-        out.append(
-            OwnerStaffOut(
-                id=staff.id,
-                tenant_id=tenant.id,
-                tenant_name=tenant.name,
-                email=staff.email or "",
-                full_name=staff.full_name,
-                role=staff.role.value,
-                status=staff.status.value,
-                invite_status=(
-                    invite_state(
-                        accepted_at=invite.accepted_at,
-                        revoked_at=invite.revoked_at,
-                        expires_at=invite.expires_at,
-                    )
-                    if invite
-                    else None
-                ),
-                invite_sent_at=invite.created_at if invite else None,
-                invite_expires_at=invite.expires_at if invite else None,
-            )
-        )
-    return out
-
-
-@router.post(
-    "/staff-invites", response_model=StaffInviteOut, status_code=status.HTTP_201_CREATED
-)
-async def invite_staff(
-    body: StaffInviteIn,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> StaffInviteOut:
-    """Create a staff account in the chosen tenant and issue an invite.
-
-    Reuses the client-side invite primitives (`app.models.invite`) and the
-    `/join` acceptance page, so an Owner-issued invite and a Client-issued one
-    are the same object. The invite is NOT a credential — the invitee proves
-    ownership of the email through Firebase, then `/auth/firebase/session`
-    links the uid and flips `invited -> active`.
-    """
-    tenant = await _load_tenant(session, body.tenant_id)
-    role = Role(body.role)
-    if role not in STAFF_ROLES:  # unreachable via the schema Literal; belt and braces
-        raise HTTPException(status_code=400, detail="Not an invitable staff role")
-    try:
-        ensure_owner_invariant(role, str(body.email))
-    except OwnerRoleViolation as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    if role == Role.hiring_manager:
-        active_hms = (
-            await session.execute(
-                select(func.count()).select_from(User).where(
-                    User.tenant_id == tenant.id,
-                    User.role == Role.hiring_manager,
-                    User.status != UserStatus.disabled,
-                )
-            )
-        ).scalar_one()
-        if active_hms >= MAX_HIRING_MANAGERS:
-            raise HTTPException(
-                status_code=409,
-                detail=f"At most {MAX_HIRING_MANAGERS} Hiring Manager accounts "
-                       f"per company (FR-2.2)",
-            )
-
-    email = str(body.email)
-    existing = (
-        await session.execute(
-            select(User).where(
-                User.tenant_id == tenant.id, User.email == email, User.role == role
-            )
-        )
-    ).scalars().first()
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{email} already holds this role at {tenant.name}",
-        )
-
-    staff_user = User(
-        tenant_id=tenant.id, role=role, email=email, phone=body.phone,
-        full_name=body.full_name, status=UserStatus.invited,
-    )
-    session.add(staff_user)
-    await session.flush()
-
-    # At most ONE pending invite per staff user (see StaffInvite docstring).
-    token = generate_invite_token()
-    invite = StaffInvite(
-        tenant_id=tenant.id,
-        user_id=staff_user.id,
-        email=email,
-        role=role.value,
-        token_hash=hash_invite_token(token),
-        invited_by=user.user_id,
-        expires_at=invite_expiry(),
-    )
-    session.add(invite)
-    await session.flush()
-
-    link = build_invite_link(get_settings().frontend_url, token)
-    await audit(
-        session, tenant_id=tenant.id, actor_user_id=user.user_id,
-        action="staff_invited", target_type="user", target_id=staff_user.id,
-        # The raw token is never persisted or logged (ESD §16).
-        metadata={"role": role.value, "email": email, "via": "owner_console"},
-    )
-    # The worker renders named tenant templates. Ensure the editable staff
-    # invite template exists before the Owner enqueues the same flow used by
-    # the company portal.
-    from app.api.companies import ROLE_LABELS, _ensure_invite_template
-
-    await _ensure_invite_template(session, tenant.id)
-    # CurrentUser carries only the id, role and audience from the token, never
-    # a name, so the inviter has to be read from the row.
-    inviter = await session.get(User, user.user_id)
-    inviter_label = (
-        (inviter.full_name or inviter.email) if inviter is not None else None
-    ) or "The ReadyPick team"
-    # The context keys must match the PLACEHOLDERS in that template, which is
-    # the same one the company portal uses. This path was passing `tenant_name`
-    # and `role`, neither of which the template names, so every Owner-console
-    # invitation rendered its blanks as empty strings: "You have been invited
-    # to  on ReadyPick", " has invited you to join  as a ", "This link expires
-    # on ." An unknown placeholder resolves to '' rather than raising
-    # (email_render.substitute), so the email sent and looked delivered.
-    dispatch(
-        "pickready.send_email",
-        args=[str(tenant.id), email, "staff_invite",
-              {"full_name": body.full_name or email,
-               "role": role.value,
-               "role_label": ROLE_LABELS.get(role, role.value),
-               "company_name": tenant.name,
-               "tenant_name": tenant.name,
-               "invited_by": inviter_label,
-               "invite_link": link,
-               "expires_on": invite.expires_at.strftime("%d %b %Y")}],
-    )
-    return StaffInviteOut(
-        user=AdminUserOut.model_validate(staff_user),
-        tenant_id=tenant.id,
-        tenant_name=tenant.name,
-        role=body.role,
-        invite_link=link,
-        expires_at=invite.expires_at,
-        email_queued=True,
-    )
-
-
 # ── Business Development team (platform staff, tenant_id NULL) ───────────────
 #
 # WHY THIS IS NOT THE STAFF-INVITE FLOW ABOVE. Every invite path in the product
@@ -732,7 +386,7 @@ async def create_bd_user(
     """Reserve a Business Development account for an email address.
 
     The account is usable as soon as its owner signs in at the normal login
-    page with this email, through Google or email/password. ReadyPick never
+    page with this email, through Google or email/password. Vivekium never
     holds the credential.
     """
     email = str(body.email)
@@ -787,6 +441,44 @@ async def update_bd_user(
     """
     bd_user = await _load_bd_user(session, bd_user_id)
     changes = body.model_dump(exclude_unset=True)
+    rebound = False
+    if changes.get("email"):
+        email = str(changes["email"]).strip()
+        if email.lower() != (bd_user.email or "").strip().lower():
+            # The same two guards the create path runs, because an edit that
+            # can mint what a create refuses is a second door.
+            duplicate = (
+                await session.execute(
+                    select(User).where(
+                        User.tenant_id.is_(None),
+                        User.role == Role.bd,
+                        func.lower(User.email) == email.lower(),
+                        User.id != bd_user.id,
+                    )
+                )
+            ).scalars().first()
+            if duplicate is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{email} already holds a Business Development account",
+                )
+            try:
+                ensure_owner_invariant(Role.bd, email)
+            except OwnerRoleViolation as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            bd_user.email = email
+            # REBIND, never a quiet field write: the email is the identity
+            # Firebase binds to (auth matches by uid OR email), so a bound
+            # account keeping its old uid would leave the OLD person signed
+            # in under the NEW address. Clearing the binding returns the row
+            # to invited; the new address binds on its first sign-in and the
+            # old one matches nothing.
+            if bd_user.firebase_uid:
+                bd_user.firebase_uid = None
+                rebound = True
+            bd_user.email_verified_at = None
+            if bd_user.status != UserStatus.disabled:
+                bd_user.status = UserStatus.invited
     if "full_name" in changes:
         bd_user.full_name = changes["full_name"]
     if "phone" in changes:
@@ -804,7 +496,8 @@ async def update_bd_user(
     await audit(
         session, tenant_id=None, actor_user_id=user.user_id,
         action="bd_user_updated", target_type="user", target_id=bd_user.id,
-        metadata={"changed": sorted(changes), "status": bd_user.status.value},
+        metadata={"changed": sorted(changes), "status": bd_user.status.value,
+                  "rebound": rebound},
     )
     return _bd_user_out(bd_user)
 
@@ -875,67 +568,6 @@ async def delete_bd_user(
 
 # ── Permissions & audit log ──────────────────────────────────────────────────
 
-@router.get("/permissions", response_model=list[PermissionOut])
-async def list_permissions(
-    tenant_id: uuid.UUID | None = Query(default=None),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> list[PermissionOut]:
-    """Tenant rows when tenant_id given; the global template otherwise."""
-    stmt = select(RolePermission)
-    if tenant_id is not None:
-        stmt = stmt.where(RolePermission.tenant_id == tenant_id)
-    else:
-        stmt = stmt.where(RolePermission.tenant_id.is_(None))
-    rows = (await session.execute(stmt.order_by(RolePermission.role, RolePermission.capability))).scalars().all()
-    return [PermissionOut.model_validate(r) for r in rows]
-
-
-@router.put("/permissions", response_model=list[PermissionOut])
-async def update_permissions(
-    body: PermissionsUpdateIn,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> list[PermissionOut]:
-    """Upsert role_permissions rows — per tenant, or the global template when
-    tenant_id is omitted (FR-11.2). Every change is audit-logged."""
-    if body.tenant_id is not None and await session.get(Tenant, body.tenant_id) is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    out: list[RolePermission] = []
-    for entry in body.entries:
-        cond = (
-            RolePermission.tenant_id == body.tenant_id
-            if body.tenant_id is not None
-            else RolePermission.tenant_id.is_(None)
-        )
-        row = (
-            await session.execute(
-                select(RolePermission).where(
-                    cond,
-                    RolePermission.role == entry.role,
-                    RolePermission.capability == entry.capability,
-                )
-            )
-        ).scalars().first()
-        if row is None:
-            row = RolePermission(
-                tenant_id=body.tenant_id, role=entry.role,
-                capability=entry.capability, allowed=entry.allowed,
-            )
-            session.add(row)
-        else:
-            row.allowed = entry.allowed
-        out.append(row)
-    await session.flush()
-
-    await audit(
-        session, tenant_id=body.tenant_id, actor_user_id=user.user_id,
-        action="permissions_updated", target_type="role_permissions",
-        metadata={"entries": [e.model_dump(mode="json") for e in body.entries]},
-    )
-    return [PermissionOut.model_validate(r) for r in out]
-
-
 @router.get("/audit-log", response_model=list[AuditLogOut])
 async def list_audit_log(
     tenant_id: uuid.UUID | None = Query(default=None),
@@ -1003,6 +635,83 @@ async def llm_stats(
         "scope": "this process, since it started",
         "cost_basis": "list price estimate, not an invoice",
     }
+
+
+# ── Per-assessment cost telemetry (change 28D) ───────────────────────────────
+
+@router.get("/cost/assessments")
+async def assessment_cost_summary(
+    month: str | None = Query(
+        None,
+        description="Calendar month as YYYY-MM in UTC. Defaults to the current one.",
+        pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
+    ),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> dict:
+    """What assessments cost the platform this month: total, average, per client.
+
+    INTERNAL ONLY, AND THE BOUNDARY IS THE AUDIENCE RATHER THAN A COMMENT.
+    Behind `get_superadmin_db`, exactly like `/admin/llm/stats`: the super_admin
+    audience, the RLS bypass scope, and an audit row for the cross-tenant read.
+    `VIEW_INTELLIGENCE_DASHBOARDS` is deliberately not what gates this, and the
+    difference matters -- that capability is held by TENANT users, so gating on
+    it would hand one customer a per-client cost breakdown of every other
+    customer. `tests/test_assessment_cost_dashboard.py` asserts that an org
+    audience and a candidate audience are both refused.
+    That is also why the per-assessment record exists on its own table rather
+    than joining the intelligence dashboards: those are read by the tenant.
+
+    WHAT THE NUMBERS ARE. Estimates, and every one of them says so in place.
+    The per-token rates come from `config/llm_providers`, which is the one
+    source and which carries an honest caveat of its own: they are unverified
+    for the two model ids in use, so what they encode reliably is the RATIO
+    between tiers rather than an absolute. Prompt-cache hits are counted and
+    are NOT discounted, because no cached-input rate is on file to discount
+    them by. The rupee figures ride on a fixed FX rate from settings, so they
+    are approximate by construction; `fx.basis` on the payload says that rather
+    than leaving a reader to assume a live quote.
+
+    WHAT IS ABSENT IS ABSENT. An average over zero assessments reports
+    `status: "unavailable"` with a reason and carries no number at all, and the
+    Rs threshold flag then answers `exceeded: null` rather than `false`: a
+    month nobody measured has not been shown to be under the line. Media and
+    proctoring cost report unavailable permanently, because the analysis
+    service is billed per account and proctoring stores no media, so there is
+    no per-assessment figure to read.
+    """
+    settings = get_settings()
+    start, end = _month_window(month)
+    return {
+        "month": f"{start.year:04d}-{start.month:02d}",
+        **await cost_telemetry.owner_cost_summary(
+            session,
+            window_start=start,
+            window_end=end,
+            usd_to_inr=settings.usd_to_inr_rate,
+            alert_threshold_inr=settings.assessment_cost_alert_inr,
+        ),
+    }
+
+
+def _month_window(month: str | None) -> tuple[datetime, datetime]:
+    """The half-open UTC window `[first of the month, first of the next)`.
+
+    UTC rather than a local zone, because the rows are stamped in UTC and a
+    window in one zone over timestamps in another silently moves a few hours of
+    spend between two months every month. Half-open so twelve of these tile a
+    year without the instant at midnight being counted twice.
+    """
+    now = datetime.now(timezone.utc)
+    year, month_number = (now.year, now.month)
+    if month is not None:
+        year, month_number = (int(month[:4]), int(month[5:7]))
+    start = datetime(year, month_number, 1, tzinfo=timezone.utc)
+    end = (
+        datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        if month_number == 12
+        else datetime(year, month_number + 1, 1, tzinfo=timezone.utc)
+    )
+    return start, end
 
 
 # ── RBAC 7.1: transferring a customer's Super Admin seat ─────────────────────

@@ -242,28 +242,41 @@ async def _record(
     """One committed audit row, in a session of its own."""
     try:
         from app.core.db import get_session_factory, superadmin_scope  # noqa: PLC0415
-        from app.services.audit import audit  # noqa: PLC0415
+        from app.services.audit import _coerce_uuid, _new_audit_row  # noqa: PLC0415
 
+        # Every column is set BEFORE the row is added: the application role has
+        # no UPDATE grant on audit_log, so a post-flush attribute write aborts
+        # the whole transaction and the except below used to swallow that into
+        # a log line, meaning no halt was ever recorded. `record_action` is not
+        # usable here because a halt legitimately names the agent that hit it
+        # with no human principal (it records a refusal, not an RBAC 34
+        # mutation), which record_action refuses by design. The COLUMN carries
+        # the agent only beside a human principal, because
+        # `ck_audit_log_agent_has_principal` refuses the pair split apart; the
+        # metadata carries it always, so the record of WHICH agent was stopped
+        # survives either way.
+        row = _new_audit_row(
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            action="pipeline_halted",
+            target_type="job" if job_id else "pipeline",
+            target_id=job_id,
+            metadata={
+                "stage": halt.stage,
+                "configured": halt.configured,
+                "env_var": ENV_VAR,
+                "agent": agent,
+            },
+        )
+        row.job_id = _coerce_uuid(job_id)
+        row.correlation_id = correlation_id
+        if actor_user_id is not None:
+            row.agent_name = agent
         async with get_session_factory()() as session:
             async with session.begin():
                 async with superadmin_scope(session):
-                    row = await audit(
-                        session,
-                        tenant_id=tenant_id,
-                        actor_user_id=actor_user_id,
-                        action="pipeline_halted",
-                        target_type="job" if job_id else "pipeline",
-                        target_id=job_id,
-                        metadata={
-                            "stage": halt.stage,
-                            "configured": halt.configured,
-                            "env_var": ENV_VAR,
-                        },
-                    )
-                    if job_id is not None:
-                        row.job_id = job_id
-                    row.correlation_id = correlation_id
-                    row.agent_name = agent
+                    session.add(row)
+                    await session.flush()
     except Exception:  # noqa: BLE001 - reported, never swallowed into silence
         # The refusal has already happened and is already logged; this is the
         # RECORD of it failing, which an operator needs to know about and which

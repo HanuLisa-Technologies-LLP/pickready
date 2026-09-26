@@ -21,7 +21,6 @@ from app.services.verification import (
     generic_language,
     ppi_report,
     probes,
-    ranking,
 )
 
 
@@ -140,83 +139,6 @@ def test_the_rate_metric_counts_outputs_not_occurrences() -> None:
         "Rebuilt the ingestion path after the regional failover.",
     ]
     assert generic_language.rate(texts) == 0.5
-
-
-# ── ranking ──────────────────────────────────────────────────────────────────
-
-
-def _entry(comment: str | None = None) -> dict:
-    comment = comment or _comment()
-    return {
-        "skills_match": {"score": 8, "comment": comment},
-        "experience_relevance": {"score": 7, "comment": comment},
-        "role_alignment": {"score": 6, "comment": comment},
-        "education_fit": {"score": 5, "comment": comment},
-        "overall_comment": comment,
-    }
-
-
-def test_a_well_formed_entry_passes() -> None:
-    assert ranking.verify_entry(_entry()).passed
-
-
-def test_a_missing_parameter_is_disqualifying() -> None:
-    entry = _entry()
-    del entry["role_alignment"]
-    verdict = ranking.verify_entry(entry)
-    assert not verdict.passed
-    assert any(f.issue == "missing_parameter" for f in verdict.findings)
-
-
-def test_a_score_outside_one_to_ten_is_disqualifying() -> None:
-    entry = _entry()
-    entry["skills_match"]["score"] = 87
-    assert not ranking.verify_entry(entry).passed
-
-
-def test_a_comment_that_states_a_score_is_disqualifying() -> None:
-    """The oldest standing rule in the product: no number reaches a client."""
-    entry = _entry(_comment(26) + " scoring 87%")
-    verdict = ranking.verify_entry(entry)
-    assert not verdict.passed
-    assert any(f.issue == "number_leaked" for f in verdict.findings)
-
-
-def test_a_ranked_list_of_paraphrases_is_flagged() -> None:
-    """What the deleted weight-sum check was actually standing in for.
-
-    Five individually well-formed remarks that all say the same thing have told
-    the recruiter nothing about which of the five to interview first.
-    """
-    identical = [_entry() for _ in range(5)]
-    verdict = ranking.verify_ranked_list(identical)
-    assert any(f.issue == "ranking_lacks_diversity" for f in verdict.findings)
-
-
-def test_a_genuinely_discriminating_list_is_not_flagged() -> None:
-    seeds = [
-        "rebuilt the payments ledger",
-        "owned the Android release train",
-        "migrated the warehouse to Iceberg",
-        "ran the on call rotation redesign",
-        "led the fraud model rollout",
-    ]
-    entries = [_entry(_comment(27, seed=seed)) for seed in seeds]
-    verdict = ranking.verify_ranked_list(entries)
-    assert not any(f.issue == "ranking_lacks_diversity" for f in verdict.findings)
-
-
-def test_the_ranking_critic_has_no_weight_check() -> None:
-    """`WEIGHTS` was deleted on 2026-07-30 and `test_scoring` asserts its absence.
-
-    Adding the specification's "weights sum to 1.0" check back would require
-    adding the concept back, and the concept is what put "35% role-fit
-    weighting" in front of a client.
-    """
-    from app.services import matching
-
-    assert not hasattr(matching, "WEIGHTS")
-    assert "WEIGHTS" not in _code_without_prose(ranking)
 
 
 # ── PPI report ───────────────────────────────────────────────────────────────
@@ -554,7 +476,7 @@ def test_no_critic_resolves_a_contradiction_it_finds() -> None:
 
 @pytest.mark.parametrize(
     "module",
-    [ranking, ppi_report, email, probes, contradiction, generic_language],
+    [ppi_report, email, probes, contradiction, generic_language],
 )
 def test_no_critic_calls_a_model(module) -> None:
     """The guard matters most when the provider is down.
@@ -567,3 +489,33 @@ def test_no_critic_calls_a_model(module) -> None:
         source = handle.read()
     assert "invoke_llm" not in source
     assert "llm_router" not in source
+
+
+def test_an_email_type_with_no_link_contract_has_no_link_findings() -> None:
+    """The link critic was once wrapped in a catch-all on the belief that an
+    unknown type raises. It does not: it is answered by table lookup with no
+    defects."""
+    verdict = email.verify_draft(
+        email_type="email_no_such_type",
+        subject="Next step",
+        body=_body(),
+        context=_email_context(),
+    )
+    assert not any(f.issue == "link_defect" for f in verdict.findings)
+
+
+def test_a_bug_in_the_link_contract_is_not_read_as_links_are_fine(monkeypatch) -> None:
+    """`except Exception: return []` turned any error in the link check into
+    "no link defects", the one answer a link critic must never give by
+    accident. The error now propagates."""
+    def broken(*args, **kwargs):
+        raise RuntimeError("link contract is broken")
+
+    monkeypatch.setattr(email.lifecycle_email, "link_defects", broken)
+    with pytest.raises(RuntimeError, match="link contract is broken"):
+        email.verify_draft(
+            email_type="email_shortlist",
+            subject="Next step",
+            body=_body(),
+            context=_email_context(),
+        )

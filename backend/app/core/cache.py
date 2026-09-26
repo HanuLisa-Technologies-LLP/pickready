@@ -26,7 +26,7 @@ import json
 import logging
 from typing import Any, Awaitable, Callable
 
-from app.core.config import get_settings
+from app.core.redis_loop import LoopBoundRedis
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +37,13 @@ _PREFIX = f"pickready:{_VERSION}"
 # by how badly a stale read would read to a user.
 TTL_JOB_DESCRIPTION = 600      # 10 min — edited occasionally, read constantly
 TTL_COMPANY_PROFILE = 900      # 15 min
-TTL_PRICING_PLANS = 3600       # 1 hour — changes on a migration, not on a click
 TTL_CANDIDATE_PROFILE = 3600   # 1 hour — static between the candidate's edits
 TTL_SHORT = 60
 
-_client: Any = None
-_unavailable = False
+#: The one loop-bound client for the cache, the rate limiter and the session
+#: store (all three reach it through `_redis()`, which is also the seam the
+#: harness and the tests substitute).
+_CLIENT = LoopBoundRedis(name="cache", socket_timeout=1, connect_timeout=1)
 
 
 def key(*parts: Any) -> str:
@@ -54,30 +55,18 @@ def key(*parts: Any) -> str:
 
 
 def _redis():
-    """Lazily-built async Redis client, or None if Redis is unreachable.
+    """The async Redis client for the running loop, or None if none can be built.
 
-    `_unavailable` latches so a Redis outage costs one failed connection rather
-    than one per request — the whole point is to never make things slower.
+    REBUILT ON A NEW EVENT LOOP, the rule the realtime hub was taught on
+    2026-09-16: a redis-py pool's connections belong to the loop that opened
+    them. `core/redis_loop.LoopBoundRedis` is the one implementation of that
+    rule, shared with `workers/status` and the web-search breaker; a build
+    failure is logged at warning and latched for the current loop only.
+
+    Kept as a function rather than exposing the object, because it is the seam
+    the harness's `redis_down` fault and a dozen tests substitute.
     """
-    global _client, _unavailable
-    if _unavailable:
-        return None
-    if _client is None:
-        try:
-            import redis.asyncio as redis_asyncio
-
-            _client = redis_asyncio.from_url(
-                get_settings().redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=1,
-            )
-        except Exception as exc:  # noqa: BLE001 — cache must never break a request
-            log.warning("cache.unavailable %s", type(exc).__name__)
-            _unavailable = True
-            return None
-    return _client
+    return _CLIENT.client()
 
 
 async def get(cache_key: str) -> Any | None:
@@ -127,6 +116,54 @@ async def invalidate(*cache_keys: str) -> None:
         log.debug("cache.invalidate_failed err=%s", type(exc).__name__)
 
 
+#: Upper bound on the keys one `invalidate_pattern` sweep will visit.
+#:
+#: `SCAN` is cursor based and returns a partial batch per round trip, so a
+#: pattern matching a large keyspace costs an unbounded number of them. The
+#: only caller is the RBAC role-permission flush, whose keyspace is
+#: (tenants x roles) and is nowhere near this, so the bound is a ceiling on a
+#: pathological pattern rather than a limit the product ever reaches. Stopping
+#: is safe for this data: every entry carries a TTL, so an unswept key expires
+#: on its own rather than serving a stale row for ever.
+_PATTERN_SCAN_LIMIT = 10_000
+_PATTERN_SCAN_BATCH = 100
+
+
+async def invalidate_pattern(pattern: str) -> None:
+    """Drop every key matching a glob, e.g. `pickready:tenant:*:role_permissions:*`.
+
+    Provenance: `services/tenant_cache.delete_pattern` before the 2026-09-17
+    consolidation; it is the flush `rbac.invalidate_role_permissions` uses when
+    a global capability row changes and every tenant's copy has to go.
+
+    SCAN rather than KEYS, because KEYS blocks the Redis event loop for the
+    whole keyspace and this is called from a request handler.
+    """
+    client = _redis()
+    if client is None:
+        return
+    seen = 0
+    try:
+        async for cache_key in client.scan_iter(
+            match=pattern, count=_PATTERN_SCAN_BATCH
+        ):
+            await client.delete(cache_key)
+            seen += 1
+            if seen >= _PATTERN_SCAN_LIMIT:
+                log.warning(
+                    "cache.invalidate_pattern_truncated pattern=%s visited=%s",
+                    pattern,
+                    seen,
+                )
+                return
+    except Exception as exc:  # noqa: BLE001
+        log.debug(
+            "cache.invalidate_pattern_failed pattern=%s err=%s",
+            pattern,
+            type(exc).__name__,
+        )
+
+
 async def get_or_set(
     cache_key: str, loader: Callable[[], Awaitable[Any]], ttl: int = TTL_SHORT
 ) -> Any:
@@ -147,11 +184,5 @@ async def get_or_set(
 
 
 async def close() -> None:
-    """Release the connection pool at shutdown."""
-    global _client
-    if _client is not None:
-        try:
-            await _client.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        _client = None
+    """Release the connection pool at shutdown. Never raises; failures are logged."""
+    await _CLIENT.aclose()

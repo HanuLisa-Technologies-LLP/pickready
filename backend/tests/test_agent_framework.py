@@ -1,71 +1,29 @@
-"""Planning, memory, orchestration, safety, observability, reliability, evaluation.
+"""Budgets, safety, observability and evaluation in the agent framework.
 
 What is asserted here is the set of properties that make the framework
 trustworthy rather than merely present:
 
-  * planning is arithmetic, so the same task plans identically twice;
   * a budget refuses BEFORE the work, so a ceiling is a limit and not a report;
-  * one failed node in a graph costs that node, not the other four;
   * a trace carries identifiers and never content;
-  * degradation is recorded, because a degradation nobody counts is one nobody
-    notices.
+  * the cross-package invariants in `app/import_graph.py` hold.
+
+The planner, the task runner, the working memory, the coordinator, the router
+and the three-level degradation layer were tested here too. None of them was
+reachable from a route or a worker, and all of them were deleted in the
+Vivekium release, so their tests went with them rather than defending code
+nothing runs. `agent_loop` keeps its own tests in `test_agent_loop.py`.
 """
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 
 from app.evaluation import dataset, metrics, regression
-from app.orchestration_checks import structural_invariants
+from app.import_graph import structural_invariants
 from app.services import safety
-from app.services.memory import working
 from app.services.observability import sla
 from app.services.observability import trace as tracing
-from app.services.orchestration import coordinator, router
-from app.services.reasoning import planner, runner
 from app.services.reliability import budget as budgeting
-from app.services.reliability import degradation
-from app.services.verification import base as verification
-
-# ── planning ─────────────────────────────────────────────────────────────────
-
-
-def test_planning_is_deterministic() -> None:
-    """A plan that varies between runs makes a latency regression
-    indistinguishable from a model sampling differently."""
-    first = planner.plan("ppi_report", "ppi_report", jd_chars=4000, grade="leadership")
-    second = planner.plan("ppi_report", "ppi_report", jd_chars=4000, grade="leadership")
-    assert first == second
-
-
-def test_a_trivial_task_takes_the_fast_path_and_a_report_does_not() -> None:
-    email = planner.plan("email", "email", jd_chars=300)
-    report = planner.plan("ppi_report", "ppi_report", jd_chars=9000, grade="cxo")
-    assert email.fast_path and email.complexity == planner.COMPLEXITY_SIMPLE
-    assert not report.fast_path and report.complexity == planner.COMPLEXITY_COMPLEX
-
-
-def test_complexity_rises_with_fan_out_and_never_leaves_zero_to_one() -> None:
-    small = planner.complexity_score("ranking", candidate_count=3)
-    large = planner.complexity_score("ranking", candidate_count=200, jd_chars=20000, grade="cxo")
-    assert small < large
-    assert 0.0 <= small <= 1.0 and 0.0 <= large <= 1.0
-
-
-def test_subtasks_come_back_in_dependency_order() -> None:
-    order = planner.plan("ppi_report", "ppi_report").order
-    assert order.index("extract_framework") > order.index("extract_jd")
-    assert order.index("synthesise") > order.index("score_items")
-    assert order[-1] == "verify"
-
-
-def test_the_planner_calls_no_model() -> None:
-    """A planner that needs a provider cannot plan around a provider outage."""
-    with open(planner.__file__, encoding="utf-8") as handle:
-        source = handle.read()
-    assert "invoke_llm" not in source and "llm_router" not in source
-
 
 # ── budget and stop conditions ───────────────────────────────────────────────
 
@@ -105,307 +63,7 @@ def test_every_refusal_is_recorded() -> None:
     assert budget.refusals and "cost" in budget.refusals[0]
 
 
-# ── degradation ──────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_the_full_path_wins_when_it_works() -> None:
-    async def works():
-        return "real"
-
-    outcome = await degradation.with_fallbacks(full_path=works, fallback="stub")
-    assert outcome.level == degradation.LEVEL_FULL
-    assert not outcome.degraded and not outcome.needs_human_review
-
-
-@pytest.mark.asyncio
-async def test_a_failed_full_path_falls_to_degraded_not_to_stub() -> None:
-    async def broken():
-        raise RuntimeError("provider down")
-
-    async def shorter():
-        return "shorter"
-
-    outcome = await degradation.with_fallbacks(
-        full_path=broken, degraded_path=shorter, fallback="stub"
-    )
-    assert outcome.level == degradation.LEVEL_DEGRADED
-    assert outcome.value == "shorter"
-    assert outcome.stages_skipped == ("reflect", "replan")
-
-
-@pytest.mark.asyncio
-async def test_a_stub_is_always_flagged_for_a_human() -> None:
-    """A stub is never silently indistinguishable from a real result."""
-
-    async def broken():
-        raise RuntimeError("everything is down")
-
-    outcome = await degradation.with_fallbacks(full_path=broken, fallback="placeholder")
-    assert outcome.level == degradation.LEVEL_STUB
-    assert outcome.needs_human_review
-    assert outcome.value == "placeholder"
-
-
-@pytest.mark.asyncio
-async def test_degradation_never_raises() -> None:
-    async def broken():
-        raise RuntimeError("boom")
-
-    async def also_broken():
-        raise ValueError("boom again")
-
-    outcome = await degradation.with_fallbacks(
-        full_path=broken, degraded_path=also_broken, fallback=None
-    )
-    assert outcome.level == degradation.LEVEL_STUB
-    assert len(outcome.reasons) == 2
-
-
-# ── the task runner ──────────────────────────────────────────────────────────
-
-
-def _plan(fast: bool = False):
-    return planner.plan("email" if fast else "ppi_report", "email" if fast else "ppi_report")
-
-
-@pytest.mark.asyncio
-async def test_a_passing_task_runs_once_and_reports_full() -> None:
-    calls: list[str] = []
-
-    async def execute(instruction: str):
-        calls.append(instruction)
-        return {"ok": True}
-
-    result = await runner.run_task(plan=_plan(), execute=execute, fallback={})
-    assert result.outcome.level == degradation.LEVEL_FULL
-    assert len(calls) == 1 and calls[0] == ""
-
-
-@pytest.mark.asyncio
-async def test_a_rejected_task_is_retried_with_the_findings_verbatim() -> None:
-    """The whole integration: the verifier's recommendation is what the next
-    attempt is told, unaltered."""
-    instructions: list[str] = []
-    attempts = {"n": 0}
-
-    async def execute(instruction: str):
-        instructions.append(instruction)
-        attempts["n"] += 1
-        return {"attempt": attempts["n"]}
-
-    def verify(value):
-        if value["attempt"] < 2:
-            return verification.verdict(
-                "t", [verification.high("bad", "here", "detail", "return exactly 5 items")]
-            )
-        return verification.verdict("t", [])
-
-    result = await runner.run_task(plan=_plan(), execute=execute, fallback={}, verify=verify)
-    assert result.outcome.level == degradation.LEVEL_FULL
-    assert "return exactly 5 items" in instructions[1]
-
-
-@pytest.mark.asyncio
-async def test_the_fast_path_does_not_reflect() -> None:
-    """That is precisely what it trades away, so a rejection is reported."""
-    attempts = {"n": 0}
-
-    async def execute(instruction: str):
-        attempts["n"] += 1
-        return {"v": 1}
-
-    def verify(_value):
-        return verification.verdict(
-            "t", [verification.high("bad", "here", "d", "fix it")]
-        )
-
-    result = await runner.run_task(
-        plan=_plan(fast=True), execute=execute, fallback={}, verify=verify
-    )
-    assert attempts["n"] == 1
-    assert result.outcome.level == degradation.LEVEL_DEGRADED
-    assert "reflect" in result.outcome.stages_skipped
-
-
-@pytest.mark.asyncio
-async def test_a_raising_execute_becomes_a_stub_and_never_propagates() -> None:
-    async def execute(_instruction: str):
-        raise RuntimeError("provider outage")
-
-    result = await runner.run_task(plan=_plan(), execute=execute, fallback={"fallback": True})
-    assert result.outcome.level == degradation.LEVEL_STUB
-    assert result.value == {"fallback": True}
-    assert result.trace.status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_replanning_is_bounded_and_the_task_still_returns() -> None:
-    attempts = {"n": 0}
-
-    async def execute(_instruction: str):
-        attempts["n"] += 1
-        return {"v": attempts["n"]}
-
-    def verify(_value):
-        return verification.verdict("t", [verification.high("bad", "l", "d", "fix")])
-
-    budget = budgeting.Budget("ppi_report", max_replans=2)
-    result = await runner.run_task(
-        plan=_plan(), execute=execute, fallback={}, verify=verify, budget=budget
-    )
-    assert attempts["n"] <= budgeting.MAX_ITERATIONS
-    assert result.outcome.degraded
-
-
-@pytest.mark.asyncio
-async def test_retrieval_failure_degrades_the_run_but_does_not_fail_it() -> None:
-    """The generative step still has a JD and a resume; what it loses is the
-    sharpest evidence, not all evidence."""
-
-    async def retrieve():
-        raise RuntimeError("embedding service down")
-
-    async def execute(_instruction: str):
-        return {"ok": True}
-
-    result = await runner.run_task(
-        plan=_plan(), execute=execute, fallback={}, retrieve=retrieve
-    )
-    assert result.outcome.level == degradation.LEVEL_FULL
-    assert any(stage.get("status") == "degraded" for stage in result.trace.stages)
-
-
-# ── working memory ───────────────────────────────────────────────────────────
-
-
-def test_working_memory_records_which_stage_wrote_each_key() -> None:
-    memory = working.WorkingMemory()
-    memory.put("jd", {"title": "Staff Engineer"}, stage="extract_jd")
-    assert memory.provenance()["jd"] == "extract_jd"
-
-
-def test_a_missing_required_key_raises_rather_than_returning_none() -> None:
-    """A stage that silently continues without its input produces a plausible
-    output built from nothing."""
-    memory = working.WorkingMemory()
-    with pytest.raises(KeyError):
-        memory.require("resume")
-
-
-def test_a_memory_snapshot_carries_types_and_never_values() -> None:
-    memory = working.WorkingMemory()
-    memory.put("resume", "Priya worked at Northwind on Kafka", stage="extract_resume")
-    snapshot = str(memory.snapshot())
-    assert "Northwind" not in snapshot and "str" in snapshot
-
-
-# ── orchestration ────────────────────────────────────────────────────────────
-
-
-def test_every_task_type_routes_to_an_agent_that_holds_tools() -> None:
-    assert router.validate_routes() == []
-
-
-def test_an_unroutable_task_is_refused_rather_than_guessed() -> None:
-    with pytest.raises(router.UnroutableTask):
-        router.route("summon_a_new_agent")
-
-
-@pytest.mark.asyncio
-async def test_a_graph_runs_independent_nodes_concurrently() -> None:
-    order: list[str] = []
-
-    async def slow(_results):
-        await asyncio.sleep(0.05)
-        order.append("slow")
-        return "slow"
-
-    async def quick(_results):
-        order.append("quick")
-        return "quick"
-
-    result = await coordinator.run_graph(
-        [coordinator.Node("slow", slow), coordinator.Node("quick", quick)]
-    )
-    assert result.ok
-    # Both started together, so the quick one finished first despite being second.
-    assert order == ["quick", "slow"]
-
-
-@pytest.mark.asyncio
-async def test_a_dependent_node_sees_its_dependencys_result() -> None:
-    async def first(_results):
-        return 21
-
-    async def second(results):
-        return results["first"] * 2
-
-    result = await coordinator.run_graph(
-        [
-            coordinator.Node("first", first),
-            coordinator.Node("second", second, depends_on=("first",)),
-        ]
-    )
-    assert result.results["second"] == 42
-
-
-@pytest.mark.asyncio
-async def test_one_failed_node_costs_its_dependents_and_nothing_else() -> None:
-    """Partial success beats discarding four good reports because the fifth
-    candidate's parse failed."""
-
-    async def broken(_results):
-        raise RuntimeError("report failed")
-
-    async def dependent(_results):
-        return "should never run"
-
-    async def unrelated(_results):
-        return "fine"
-
-    result = await coordinator.run_graph(
-        [
-            coordinator.Node("broken", broken),
-            coordinator.Node("dependent", dependent, depends_on=("broken",)),
-            coordinator.Node("unrelated", unrelated),
-        ]
-    )
-    assert result.states["broken"] == coordinator.STATE_FAILED
-    assert result.states["dependent"] == coordinator.STATE_UNREACHABLE
-    assert result.states["unrelated"] == coordinator.STATE_DONE
-    assert result.results["unrelated"] == "fine"
-
-
-@pytest.mark.asyncio
-async def test_a_cyclic_graph_is_refused_before_any_work() -> None:
-    """A graph that never completes looks exactly like a slow one."""
-
-    async def noop(_results):
-        return None
-
-    with pytest.raises(coordinator.CyclicGraph):
-        await coordinator.run_graph(
-            [
-                coordinator.Node("a", noop, depends_on=("b",)),
-                coordinator.Node("b", noop, depends_on=("a",)),
-            ]
-        )
-
-
 # ── safety ───────────────────────────────────────────────────────────────────
-
-
-def test_pii_masking_keeps_what_debugging_needs_and_drops_the_rest() -> None:
-    masked = safety.mask_text("write to priya.raman@example.com about it")
-    assert "example.com" in masked
-    assert "priya.raman" not in masked
-
-
-def test_masking_recurses_through_structures() -> None:
-    masked = safety.mask({"to": ["a.person@example.com"], "n": 3})
-    assert "a.person" not in str(masked)
-    assert masked["n"] == 3
 
 
 def test_a_sensitive_action_needs_a_human_at_any_confidence() -> None:
@@ -440,19 +98,13 @@ def test_an_injection_shaped_chunk_is_quarantined_not_fatal() -> None:
 
 
 def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
-    """THE REQUEST ID IS PINNED, AND THAT IS A BUG FIX, NOT A CONVENIENCE.
+    """A trace line names the run and never carries what the run read.
 
-    `RequestTrace.request_id` defaults to `uuid4().hex[:16]`, and roughly one
-    generated id in sixteen contains a run of ten or more digits -- which is
-    exactly what `pii._PHONE`'s generic long-number rule is looking for. So this
-    assertion failed for about six percent of runs, on a random value, with a
-    message about PII in a line that contained none.
-
-    A test that fails one run in sixteen is worse than no test, because it
-    trains people to re-run rather than to read. The identifier is therefore
-    fixed here; the property being asserted -- that no CONTENT reaches the log
-    -- is unaffected by which identifier is used, and the digit-run behaviour it
-    was accidentally exercising is pinned deliberately in the test below.
+    The request id is pinned so the assertion is about content, not about a
+    random identifier. This used to ask the PII masker whether the line held
+    PII, and one generated id in sixteen tripped its long-number rule; the
+    masker went in the stage 3 final sweeps (nothing in the product ran it),
+    so the line is checked for the content itself instead.
     """
     trace = tracing.RequestTrace(
         agent_type="ranking", task_type="ranking", request_id="abcdefabcdefabcd"
@@ -463,22 +115,8 @@ def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
         trace.log()
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "ranking" in logged
-    assert not safety.contains_pii(logged)
-
-
-def test_a_hex_identifier_can_look_like_a_long_number_to_the_masker() -> None:
-    """The behaviour the test above used to discover by chance, stated once.
-
-    `_PHONE` bounds a 10-to-15 digit run so an ordinal or a year is not mistaken
-    for one, and a hex string is mostly digits. This is not a defect in the
-    masker: the rule is deliberately generic, and the reason it is harmless is
-    that NOTHING in the telemetry path masks a trace line. Traces carry
-    identifiers, counts and timings, so there is no content to mask -- and if
-    that ever stopped being true, masking would start corrupting the request id
-    an operator needs to find the run.
-    """
-    assert safety.contains_pii("request_id=b097811392924fbd")
-    assert not safety.contains_pii("request_id=abcdefabcdefabcd")
+    assert "abcdefabcdefabcd" in logged
+    assert "@" not in logged
 
 
 def test_an_unknown_stage_field_is_dropped_rather_than_stored() -> None:

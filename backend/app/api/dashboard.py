@@ -4,7 +4,7 @@
 # by a scheduled sweep; the views live in Track B's migrations. Until they exist,
 # this endpoint aggregates live over the base tables (data volumes are small
 # pre-launch); the query shape maps 1:1 onto the future views.
-# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments" — staff are
+# ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments": staff are
 # assigned per tenant (PRD §4) and no per-job assignment table exists, so the
 # scope is the caller's tenant (enforced by RLS).
 """
@@ -21,7 +21,6 @@ from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.schemas.dashboard import DashboardSummaryOut, JobMetricsOut
 from app.services import audit, capabilities as caps
-from app.services import metrics as metrics_service
 from app.services import telemetry_events
 
 router = APIRouter()
@@ -116,9 +115,11 @@ async def dashboard_summary(
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # The client's daily working surface: eight columns over every candidate the
-# caller may see, plus the three panels the row's action columns open (Ready
-# Pick Profile, Team Review, Stage), plus the two calibration surfaces D8 and
-# spec-doc6 §8.2 require.
+# caller may see, plus the three panels the row's action columns open (Vivekium
+# Profile, Team Review, Stage). The two calibration read surfaces (the raw
+# D1-D5 view and the divergence queue) were DELETED in the Vivekium release:
+# one returned numbers to a client, the other had no screen. A divergence is
+# still RECORDED (`calibration.raise_divergence`), as audit data.
 #
 # EVERY ROUTE HERE IS AUTHORIZED BY DATA, NEVER BY A ROLE NAME
 # -------------------------------------------------------------
@@ -155,35 +156,17 @@ async def dashboard_summary(
 # overriding an affirmative grant: the grant is affirmative about the
 # CAPABILITY and silent about the SCOPE, and the scope rule comes from the
 # rows that do speak to it.
-#
-# ONE CAPABILITY IS REUSED, AND IT IS FLAGGED RATHER THAN HIDDEN
-# ----------------------------------------------------------------
-# The audited calibration view (D8) is "restricted to Super Admin and HR
-# Manager", which is exactly the population `INTEGRITY_DISPOSITION` already
-# encodes -- ALLOW for the HR Manager, ALLOW_AUDITED_EXCEPTION for the Super
-# Admin, DENY for everybody else. It is reused rather than duplicated because a
-# second capability with an identical cell set is a second thing to keep in
-# step, and `capabilities.py` is owned by other work this phase. A dedicated
-# `VIEW_CALIBRATION_INTERNALS` capability is the right long-term shape and is
-# reported as such; `test_dashboard_rbac_matrix.py` pins the exact role set
-# that reaches the route, so the day the two populations diverge, a test fails
-# rather than a screen leaking.
 
-import datetime as dt
 
-from fastapi import Body, HTTPException, Query, Request
+from fastapi import Body, HTTPException, Query
 from sqlalchemy import text as sql_text
 
 from app.models.hiring import ReviewDisposition
 from app.schemas.dashboard import (
-    CalibrationInternalsOut,
     DashboardControlsOut,
     DashboardPageOut,
     DashboardRowOut,
-    DivergenceListOut,
-    DivergenceOut,
     IntegrityDispositionIn,
-    OverrideRateOut,
     ReadyPickProfileOut,
     ReadyPickProfileRefOut,
     StageMoveIn,
@@ -192,6 +175,7 @@ from app.schemas.dashboard import (
     TeamReviewIn,
     TeamReviewPanelOut,
 )
+from app.services import assessment_invitations
 from app.services import calibration as calibration_service
 from app.services import dashboard as dashboard_service
 from app.services import hiring_pipeline, rbac, reference_code, team_review
@@ -206,7 +190,6 @@ DASHBOARD_CONTROLS: dict[str, str] = {
     "team_review": caps.ADD_TEAM_REVIEW_REMARK,
     "stage_move": caps.UPDATE_PIPELINE_STATUS,
     "integrity_disposition": caps.INTEGRITY_DISPOSITION,
-    "calibration": caps.INTEGRITY_DISPOSITION,
 }
 
 #: What the tooltip says when column 8's control is disabled. The
@@ -262,7 +245,6 @@ async def _controls(session: AsyncSession, user: CurrentUser) -> DashboardContro
         can_team_review=can_review,
         team_review_disabled_reason=None if can_review else TEAM_REVIEW_DISABLED_REASON,
         can_disposition_integrity=can_disposition,
-        can_view_calibration=can_disposition,
         scoped_to_assignments=_is_scoped(user, caps.VIEW_CANDIDATE_RATINGS),
     )
 
@@ -285,17 +267,17 @@ def _row_out(row: dashboard_service.DashboardRow) -> DashboardRowOut:
         job_title=row.job_title,
         source_type=row.source_type,
         source_label=row.source_label,
-        pre_screen_grade=row.pre_screen_grade,
-        pre_screen_label=row.pre_screen_label,
-        ready_pick_score=row.ready_pick_score,
-        band=row.band,
-        band_label=row.band_label,
-        band_screen_reader_label=row.band_screen_reader_label,
+        ai_match_state=row.ai_match_state,
+        ai_match_label=row.ai_match_label,
+        ai_match_screen_reader_label=row.ai_match_screen_reader_label,
+        ai_match_note=row.ai_match_note,
+        ranking_state=row.ranking_state,
+        ranking_label=row.ranking_label,
+        ranking_screen_reader_label=row.ranking_screen_reader_label,
+        ranking_note=row.ranking_note,
         confidence=row.confidence,
         confidence_indicator=row.confidence_indicator,
         confidence_label=row.confidence_label,
-        score_range=row.score_range,
-        score_range_note=row.score_range_note,
         note=row.note,
         note_is_pending=row.note_is_pending,
         profile=(
@@ -327,7 +309,7 @@ async def dashboard_candidates(
     job_id: uuid.UUID | None = Query(default=None),
     source_type: list[str] | None = Query(default=None),
     stage: list[str] | None = Query(default=None),
-    pre_screen_grade: list[str] | None = Query(default=None),
+    ai_match: list[str] | None = Query(default=None),
     search: str | None = Query(default=None, max_length=120),
     include_archived: bool = Query(default=False),
     sort: str | None = Query(default=None),
@@ -345,7 +327,7 @@ async def dashboard_candidates(
     filtering a fetched page in the browser makes the match count depend on
     which page happened to be loaded. The order carries a trailing
     `created_at, id` so it is TOTAL: without that, two candidates sharing a
-    score can swap between two fetches and one of them appears twice or not at
+    grade can swap between two fetches and one of them appears twice or not at
     all.
 
     Scope comes from the §24 cell, not from a role name. A Recruiter, a Hiring
@@ -359,10 +341,10 @@ async def dashboard_candidates(
     for value in source_type or ():
         if value not in dashboard_service.SOURCE_TYPES:
             raise HTTPException(status_code=422, detail=f"Unknown source {value!r}")
-    for value in pre_screen_grade or ():
-        if value not in dashboard_service.PRE_SCREEN_GRADES:
+    for value in ai_match or ():
+        if value not in dashboard_service.AI_MATCH_GRADES:
             raise HTTPException(
-                status_code=422, detail=f"Unknown pre-screen grade {value!r}"
+                status_code=422, detail=f"Unknown AI Match grade {value!r}"
             )
     stage_values = {s.value for s in hiring_pipeline.CandidatePipelineStage}
     for value in stage or ():
@@ -379,7 +361,7 @@ async def dashboard_candidates(
         job_id=job_id,
         source_types=source_type,
         stages=stage,
-        pre_screen_grades=pre_screen_grade,
+        ai_match_grades=ai_match,
         search=search,
         include_archived=include_archived,
         sort=sort,
@@ -437,7 +419,7 @@ async def _latest_evaluation(session: AsyncSession, link_id: uuid.UUID) -> dict 
             sql_text(
                 "SELECT id, aggregate_json, dimension_scores, competency_scores, "
                 "       triangulation_json, gate_results_json, confidence, "
-                "       needs_human_review, scorecard_version, company_dna_version, "
+                "       needs_human_review, scorecard_version, "
                 "       situation_type, scoring_mode, completed_at "
                 "FROM evaluations WHERE link_id = :lid "
                 "ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -486,13 +468,12 @@ async def ready_pick_profile(
     ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> ReadyPickProfileOut:
-    """Column 6's slide-over panel: the evidence behind the score.
+    """Column 6's slide-over panel: the evidence behind the grade.
 
     NAMED per-dimension ratings, never raw D1-D5 numbers (spec-doc6 D8 / C2).
-    The raw numbers are `/calibration` below, which two roles reach and every
-    read of which is logged.
+    No route returns the raw numbers to a client.
 
-    404 when no Ready Pick Profile has been written. Not an empty panel: a
+    404 when no Vivekium Profile has been written. Not an empty panel: a
     panel with five blank dimensions is indistinguishable from a candidate the
     evaluators found nothing on, and the row's disabled button has already said
     the honest thing.
@@ -515,49 +496,6 @@ async def ready_pick_profile(
     return ReadyPickProfileOut(evaluation_id=evaluation["id"], **{
         key: value for key, value in payload.items() if key != "artifact"
     })
-
-
-@router.get(
-    "/jobs/{job_id}/candidates/{link_id}/calibration",
-    response_model=CalibrationInternalsOut,
-)
-async def calibration_internals(
-    request: Request,
-    job_id: uuid.UUID,
-    link_id: uuid.UUID,
-    user: CurrentUser = Depends(
-        rbac.require_authorized(caps.INTEGRITY_DISPOSITION, job_id_param="job_id")
-    ),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CalibrationInternalsOut:
-    """Raw D1-D5 numbers, evaluator outputs and aggregation internals.
-
-    spec-doc6 D8: internal engine state, not a product surface. Restricted to
-    Super Admin and HR Manager, and ALWAYS LOGGED WHEN VIEWED -- the audit row
-    is written before the payload is built, and `audit.record_action` raises on
-    failure so a read that could not be recorded does not commit.
-    """
-    link = await _link_or_404(session, job_id, link_id, user.tenant_id)
-    evaluation = await _latest_evaluation(session, link_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    await calibration_service.log_calibration_view(
-        session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
-        actor_role=getattr(user.role, "value", user.role),
-        evaluation_id=evaluation["id"],
-        job_id=job_id,
-        link_id=link_id,
-        candidate_id=link["candidate_id"],
-        # RBAC §7.5: the Super Admin's reach into another role's surface is an
-        # override, and an override is recorded AS one.
-        exceptional=caps.invariant_for(user.role, caps.INTEGRITY_DISPOSITION)
-        is Invariant.ALLOW_AUDITED_EXCEPTION,
-    )
-    payload = calibration_service.calibration_view(evaluation)
-    payload.pop("artifact", None)
-    return CalibrationInternalsOut(**payload)
 
 
 # ── Column 7: Team Review ────────────────────────────────────────────────────
@@ -667,7 +605,7 @@ async def upsert_team_review(
     somebody else's remark is not refused, it is unexpressible.
 
     THIS IS ALSO THE DIVERGENCE ROUTING POINT (spec-doc6 §8.2). When the
-    verdict disagrees with the Ready Pick Score a `CalibrationRecord` is
+    verdict disagrees with the Vivekium Score a `CalibrationRecord` is
     raised and audited, which is what puts it in the Super Admin activity view.
     Nothing about that reaches the reviewer: no warning, no confirmation step,
     no second-guessing prompt, no different response. Measure, never nudge.
@@ -850,15 +788,37 @@ async def move_stage(
         raise HTTPException(status_code=403, detail=STAGE_DISABLED_UNDER_REVIEW)
 
     previous = hiring_pipeline.normalize(link["status"])
+    target = hiring_pipeline.normalize(payload.status)
+    # The same two refusals `api/pipeline.change_status` makes, because this
+    # is the same lifecycle point reached from a second surface (CONTRACT v8).
+    # A system-owned stage cannot be set by hand, and a move to "invitation
+    # sent" IS an invitation: as a bare transition it wrote the stage with no
+    # `assessment_conversations` row, asked no credit question and sent no
+    # invitation.
+    if target in hiring_pipeline.SYSTEM_ONLY_TARGETS:
+        raise HTTPException(status_code=409, detail=hiring_pipeline.SYSTEM_ONLY_REFUSAL)
     try:
-        result = await hiring_pipeline.apply_transition(
-            session,
-            link_id=link_id,
-            tenant_id=user.tenant_id,
-            target=payload.status,
-            actor_user_id=user.user_id,
-            remarks=payload.remarks,
-        )
+        if target == hiring_pipeline.ASSESSMENT_INVITED:
+            result = await assessment_invitations.invite_by_stage_move(
+                session,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                job_id=job_id,
+                link_id=link_id,
+                actor_user_id=user.user_id,
+                actor_role=user.role,
+                remarks=payload.remarks,
+            )
+        else:
+            result = await hiring_pipeline.apply_transition(
+                session,
+                link_id=link_id,
+                tenant_id=user.tenant_id,
+                target=payload.status,
+                actor_user_id=user.user_id,
+                remarks=payload.remarks,
+            )
+    except assessment_invitations.InvitationRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except hiring_pipeline.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LookupError as exc:
@@ -981,80 +941,3 @@ async def integrity_disposition(
             hiring_pipeline.normalize(link["status"]), can_move=True, reason=None
         ).model_dump(),
     }
-
-
-# ── Divergence routing and the override rate (spec-doc6 §8.2) ────────────────
-
-
-@router.get("/calibration/divergences", response_model=DivergenceListOut)
-async def calibration_divergences(
-    job_id: uuid.UUID | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    user: CurrentUser = Depends(require_capability(caps.INTEGRITY_DISPOSITION)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> DivergenceListOut:
-    """The Standards Board's queue: Team Review verdicts that disagreed.
-
-    MEASURE, NEVER NUDGE. This is a list and a rate, for the people who
-    maintain the scorecard. It carries no target, no threshold and no verdict
-    about any reviewer, and it is reachable only by the two roles that can act
-    on a calibration problem. A recruiter never sees their own override rate,
-    because a recruiter shown a deviation figure stops deviating and the signal
-    dies.
-
-    The reviewer's REMARK is deliberately absent. It belongs to its author and
-    is read on the Team Review panel, with their name attached.
-    """
-    rows = await calibration_service.divergences(
-        session, tenant_id=user.tenant_id, job_id=job_id, limit=limit, offset=offset
-    )
-    rate = await calibration_service.override_rate(
-        session, tenant_id=user.tenant_id, job_id=job_id
-    )
-    return DivergenceListOut(
-        divergences=[DivergenceOut(**row) for row in rows],
-        override_rate=OverrideRateOut(**rate.as_dict()),
-    )
-
-
-# ── Metric engine overview (Master Directive Part 2 section 3) ───────────────
-
-
-@router.get("/metrics/overview")
-async def metrics_overview(
-    since: dt.date | None = Query(default=None),
-    until: dt.date | None = Query(default=None),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_DASHBOARD)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> dict:
-    """Every computable Part 2 section 3 metric for the caller's tenant.
-
-    Same authorization as /summary (VIEW_DASHBOARD); tenant comes from the
-    session, never from the request. The optional date range bounds the
-    event-window metrics (PRL, SLA, AISP, TTF); stagnation is always a "now"
-    reading. `until` is inclusive of its whole day.
-
-    The response also names the section 3 metrics that CANNOT be computed
-    yet and why (no offer/onboarding/calibration/scorecard surfaces), so the
-    UI renders a documented gap rather than a hole. Plain dict rather than a
-    response_model: the metric shapes live in services/metrics.py and this
-    route adds nothing to them.
-    """
-    since_at = (
-        None
-        if since is None
-        else dt.datetime.combine(since, dt.time.min, tzinfo=dt.timezone.utc)
-    )
-    until_at = (
-        None
-        if until is None
-        else dt.datetime.combine(
-            until + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc
-        )
-    )
-    if since_at is not None and until_at is not None and until_at <= since_at:
-        raise HTTPException(status_code=422, detail="until precedes since")
-    return await metrics_service.overview(
-        session, user.tenant_id, since=since_at, until=until_at
-    )

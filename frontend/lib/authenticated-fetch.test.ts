@@ -8,8 +8,9 @@
  * and each one silently opted out of the refresh.
  *
  * Three of them did, and they were the worst three to lose: the resume upload,
- * the databank bulk upload and the resume preview. The access cookie has a
- * 15-minute Max-Age; a recruiter reading a job description or working down a
+ * the databank bulk upload and the resume preview. The access JWT expires
+ * after fifteen minutes (the cookie itself has no Max-Age; it is a
+ * browser-session cookie); a recruiter reading a job description or working down a
  * candidate list is idle for longer than that as a matter of course. The next
  * thing they clicked answered 401 against a session that was perfectly
  * refreshable, and because all three of those actions kick off resume parsing

@@ -1,0 +1,35 @@
+id: adversarial.a_denial_is_not_support
+version: 1
+tier: adversarial
+description: >
+  "I have not used Kafka" is contradictory evidence about Kafka, not support
+  for it. The ledger's `contradicts` stance had a reader end to end and no
+  writer at all, so a first-person disclaimer was filed as SUPPORT and raised
+  the candidate's score on the competency they had just said they lacked. The
+  false positive is the harder half: a denial's reach ends at the first clause
+  boundary, so a sentence that denies one thing and affirms another must not be
+  read as denying both.
+tags: [evidence, contradiction, W6.6]
+
+given:
+  world: no_state
+
+workload:
+  - weigh_a_denial_as_evidence
+  - probe_health
+
+expect:
+  output:
+    - facts.negative_evidence_misread == []
+    - facts.negative_evidence.plain_denial == true
+    - facts.negative_evidence.affirmation == true
+    - facts.negative_evidence.denial_bounded_by_its_clause == true
+    - status.probe_health == [200, 200]
+  trajectory:
+    - negative_evidence_weighed
+  prohibited:
+    - a_number_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - safety_and_policy

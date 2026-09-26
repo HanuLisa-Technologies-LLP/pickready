@@ -36,7 +36,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.config import get_settings
+from app.core.redis_loop import LoopBoundRedis
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,15 @@ TTL_SECONDS = 6 * 3600
 
 _PREFIX = "pickready:taskrun:v1"
 
-_client: Any = None
-_unavailable = False
+#: LOOP-BOUND, since 2026-09-24. This module used to cache ONE client for the
+#: life of the process, and every task body runs under its own `asyncio.run`
+#: (`workers/runtime._run`), so on a warm Lambda the second invocation's reads
+#: and writes met a client built on the first invocation's dead loop, failed
+#: inside redis-py, and were swallowed at DEBUG. The job page's stage list and
+#: the outreach modal's delivery state then read PENDING for ever, with nothing
+#: in any log at the default level. `LoopBoundRedis` is the one implementation
+#: of the rule `core/cache` already followed.
+_CLIENT = LoopBoundRedis(name="taskrun_status", socket_timeout=5, connect_timeout=5)
 
 
 def _key(run_id: str) -> str:
@@ -66,30 +73,8 @@ def _key(run_id: str) -> str:
 
 
 def _redis():
-    """Lazily-built async client, or None when Redis is unreachable.
-
-    `_unavailable` latches, for the same reason `core.cache` latches: a Redis
-    outage should cost one failed connection, not one per publish, and a
-    matching run publishes a payload on every stage transition.
-    """
-    global _client, _unavailable
-    if _unavailable:
-        return None
-    if _client is None:
-        try:
-            import redis.asyncio as redis_asyncio
-
-            _client = redis_asyncio.from_url(
-                get_settings().redis_url,
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5,
-            )
-        except Exception:  # noqa: BLE001 -- see the docstring
-            logger.warning("taskrun.status_unavailable", exc_info=True)
-            _unavailable = True
-            return None
-    return _client
+    """The client for the running loop, or None when one cannot be built."""
+    return _CLIENT.client()
 
 
 @dataclass(frozen=True)
@@ -118,8 +103,13 @@ async def read(run_id: str) -> RunStatus:
         return unknown(run_id)
     try:
         raw = await client.get(_key(run_id))
-    except Exception:  # noqa: BLE001
-        logger.debug("taskrun.read_failed run_id=%s", run_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable status reads PENDING, loudly
+        # WARNING, never DEBUG: at DEBUG this was the invisible half of the
+        # warm-worker defect above. The run id and the exception CLASS only;
+        # never the payload, which a recruiter's browser reads.
+        logger.warning(
+            "taskrun.read_failed run_id=%s error=%s", run_id, type(exc).__name__
+        )
         return unknown(run_id)
     if not raw:
         return unknown(run_id)
@@ -157,14 +147,12 @@ async def write(
     )
     try:
         await client.set(_key(run_id), body, ex=TTL_SECONDS)
-    except Exception:  # noqa: BLE001
-        logger.debug("taskrun.write_failed run_id=%s", run_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 -- never fails the work it describes
+        logger.warning(
+            "taskrun.write_failed run_id=%s state=%s error=%s",
+            run_id, state, type(exc).__name__,
+        )
 
 
 async def close() -> None:
-    global _client
-    if _client is not None:
-        try:
-            await _client.aclose()
-        finally:
-            _client = None
+    await _CLIENT.aclose()

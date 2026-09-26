@@ -11,18 +11,20 @@ other test in the suite.
 from __future__ import annotations
 
 import json
-import uuid
-from types import SimpleNamespace
 
 import pytest
 
 from app.services import agent_loop
-from app.services import functional_assessment as fa
+from app.services.assessment_pipeline.types import ProvenanceRecorder
+from app.services.siddhi import remarks as fa
 from app.services import gap_analysis
-from app.services import interviewer, ppi
+from app.services import interviewer
 
 
 # ── bounded_remark: the string a client actually reads ───────────────────────
+#
+# The writer moved to `siddhi.remarks` with the grading split (WP5-D); these
+# pin the same loop there. `fa` is that module, kept as a short name.
 
 
 @pytest.mark.asyncio
@@ -36,7 +38,7 @@ async def test_a_remark_outside_the_word_contract_is_regenerated(monkeypatch) ->
         return "query " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "they tuned the query plan", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "they tuned the query plan", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert 25 <= fa.word_count(out) <= 30
     assert len(calls) == 2
@@ -57,7 +59,7 @@ async def test_corrections_do_not_accumulate_into_one_prompt(monkeypatch) -> Non
         return "short"
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     # Every correction is a self-contained turn naming exactly one word count.
     for text in corrections:
@@ -78,11 +80,11 @@ async def test_one_transient_failure_no_longer_abandons_the_remark(monkeypatch) 
         return "evidence " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert calls["n"] == 2
     assert out == "evidence " + " ".join(["word"] * 26)
-    assert out != fa._fallback_remark_25("PostgreSQL")
+    assert out != fa.template_remark("PostgreSQL")
 
 
 @pytest.mark.asyncio
@@ -108,7 +110,7 @@ async def test_a_remark_that_states_a_score_is_rejected(monkeypatch) -> None:
         return clean
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert len(attempts) == 2
     assert out == clean
@@ -121,7 +123,7 @@ async def test_a_total_outage_still_returns_the_canned_remark(monkeypatch) -> No
         raise RuntimeError("every provider down")
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 45, 50)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 45, 50, rating=None, provenance=ProvenanceRecorder())).text
     assert 45 <= fa.word_count(out) <= 50
     assert agent_loop.banned_phrase_gate(
         out, fa.REPORT_BANNED_PHRASES
@@ -142,13 +144,12 @@ async def test_report_remark_revises_a_banned_template_phrase(monkeypatch) -> No
         return rejected if len(attempts) == 1 else accepted
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(
+    out = (await fa.bounded_remark(
         None,
         "PostgreSQL",
         "The candidate explained PostgreSQL query planning.",
         25,
-        30,
-    )
+        30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert out == accepted
     assert len(attempts) == 2
@@ -245,307 +246,124 @@ async def test_a_probe_that_repeats_the_original_question_is_re_asked(
     assert "already asked" in attempts[1][-1]["content"]
 
 
-# ── The PPI matrix: filler a human has to fix by hand ────────────────────────
-# ── The PPI framework: filler a human has to fix by hand ─────────────────────
-
-
-def _job():
-    return SimpleNamespace(
-        id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Backend Engineer",
-        level=None, jd_json={"skills": ["Python", "PostgreSQL", "Kafka"]},
-        jd_markdown="Own the ingestion platform.",
-        experience_min_years=3, experience_max_years=7,
-        assessment_grade="non_managerial", assessment_status="questions_pending_review",
-        framework_generated_at=None, framework_approved_at=None,
-    )
-
-
-# ── Sutra's naming loop (stages 1 and 2) ─────────────────────────────────────
+# ── Sutra's loops ────────────────────────────────────────────────────────────
 #
-# These four tests used to exercise `ppi.generate_framework`, which is deleted
-# (spec-doc6 D1). The loop it ran inside did not go anywhere: Sutra still asks a
-# model for exactly the two stages that need judgment -- naming a competency
-# from a hiring manager's prose, and writing the observable-evidence statement
-# for it -- inside `agent_loop.run_loop`, with a deterministic evaluator.
-#
-# What CHANGED is the fallback, and it is the whole point of the rewrite. The
-# old loop fell back to a matrix assembled from the JD's own noun phrases, so an
-# outage produced criteria that looked reviewed and were not. This one falls
-# back to NOTHING, and every phrase it could not name comes back as a recorded
-# refusal naming the stage that refused it.
+# The naming loop that lived here went with the matrix compiler (Vivekium
+# release). Sutra's two remaining loops, the skills draft and the hidden
+# assessment context, are tested in `test_job_skills_draft.py` and
+# `test_job_skills_save.py`, including the two properties these tests pinned:
+# a rejection is fed back verbatim and re-asked, and an outage invents nothing.
 
 
-def _pending(*phrases: str):
-    from app.services.hiring.scorecard import _Candidate
-
-    return [
-        _Candidate(
-            phrase=phrase,
-            category=ppi.CATEGORY_MUST_HAVE,
-            quadrant="weaknesses",
-            swot_origin=phrase,
-        )
-        for phrase in phrases
-    ]
+# ── The question writer: a rejection is a defect the model is told about ─────
 
 
-def _generic_model():
-    from app.services.hiring.department_models import department_for
+def _question(prompt: str = "Describe a system you designed end to end."):
+    """One question row, its skill and the Vaada context, with no session."""
+    import uuid
 
-    return department_for("generic")
+    from app.models.assessment import CandidateQuestion, JobCompetency
+    from app.models.job import Job
+    from app.services import assessment_contract
+    from app.services.vaada_context import VaadaContext
+
+    job = Job(id=uuid.uuid4(), title="Senior Backend Engineer", jd_markdown="Kafka ingest.")
+    competency = JobCompetency(
+        id=uuid.uuid4(), name="Kafka", category="must_have", description="Kafka."
+    )
+    row = CandidateQuestion(
+        id=uuid.uuid4(), job_candidate_link_id=uuid.uuid4(), competency_id=competency.id,
+        ordinal=0, prompt=prompt, rubric_json=None, question_type="short_answer",
+    )
+    skill = assessment_contract.ContractSkill(
+        id=competency.id, name="Kafka", bucket="must_have", priority=1,
+        evidence_line="Has run Kafka consumers under real load.",
+    )
+    contract = assessment_contract.AssessmentContract(
+        job_id=job.id, version=1, locked=True, skills=(skill,), role_summary="Ingest.",
+        digest="0" * 64, grade="non_managerial", locked_at=None,
+    )
+    return job, row, competency, VaadaContext(
+        contract=contract, skill=skill, role_summary=contract.role_summary
+    )
+
+
+_RUBRIC = {
+    "0_39": "No partitioning decision.",
+    "40_59": "Names partitions only.",
+    "60_74": "One real sizing decision.",
+    "75_89": "Sized from measured lag.",
+    "90_100": "Trades ordering and rebalancing with outcomes.",
+}
 
 
 @pytest.mark.asyncio
-async def test_a_rejected_naming_is_fed_back_verbatim_and_re_asked(monkeypatch) -> None:
-    """The reason the loop exists at all.
+async def test_a_repeated_question_is_re_asked_then_nothing_is_persisted(monkeypatch) -> None:
+    """A repeat is a criterion of the writer's own loop: the model is told, and
+    a result that still repeats is DEGRADED and writes nothing. Before
+    2026-09-24 the repeat was persisted with a new rubric and then hidden, so
+    the candidate was graded against a question they never read."""
+    from app.services import ppi_interview
 
-    "you returned a whole sentence where a competency name goes" is a defect a
-    model fixes when it is told, and the one-shot code this replaced threw the
-    response away.
-    """
-    from app.services.hiring import scorecard
-
+    asked = "How did you size the Kafka partitions when consumer lag grew?"
     calls: list[list[dict]] = []
-
-    async def _chat(task_type, messages, **k):
-        calls.append(messages)
-        if len(calls) == 1:
-            return json.dumps(
-                {
-                    "named": [
-                        {
-                            "index": 0,
-                            "competency": (
-                                "the person needs to be able to own production "
-                                "incidents from start to finish without help"
-                            ),
-                            "observable": "Has carried production on-call and led an incident.",
-                        }
-                    ],
-                    "refused": [],
-                }
-            )
-        return json.dumps(
-            {
-                "named": [
-                    {
-                        "index": 0,
-                        "competency": "Production incident ownership",
-                        "observable": "Has carried production on-call and led an incident.",
-                    }
-                ],
-                "refused": [],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None,
-        _job(),
-        _pending("nobody here has ever been paged for the scheduler"),
-        _generic_model(),
-        "non_managerial",
-    )
-    assert len(calls) == 2
-    correction = calls[1][-1]["content"]
-    assert "competency name" in correction
-    assert named[0][0] == "Production incident ownership"
-    assert refusals == []
-    assert degraded is False
-
-
-@pytest.mark.asyncio
-async def test_an_adjective_observable_is_refused_by_the_same_detector(
-    monkeypatch,
-) -> None:
-    """The model is held to the bar §18.5 rule 4 holds the hiring manager to.
-
-    One detector, `company_dna.is_observable`, used by the DNA instrument, the
-    SWOT quality rules and this evaluator. Two copies would drift, and the drift
-    would be invisible: one surface accepting what another refuses.
-    """
-    from app.services.hiring import scorecard
-
-    calls: list[list[dict]] = []
-
-    async def _chat(task_type, messages, **k):
-        calls.append(messages)
-        return json.dumps(
-            {
-                "named": [
-                    {
-                        "index": 0,
-                        "competency": "Ownership",
-                        "observable": "Has a strong ownership mindset.",
-                    }
-                ],
-                "refused": [],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("people here do not follow through"),
-        _generic_model(), "non_managerial",
-    )
-    # Rejected every attempt, so nothing was named and the phrase is recorded as
-    # refused rather than admitted with an adjective standing in for evidence.
-    assert named == {}
-    assert len(refusals) == 1
-    assert refusals[0]["stage"] == "competency"
-    assert degraded is True
-    assert "watched happen" in calls[-1][-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_a_total_outage_invents_no_competency(monkeypatch) -> None:
-    """THE CHANGE THIS PHASE MADE, stated as a test.
-
-    The old loop's fallback was a matrix built from the JD's own noun phrases,
-    which was reviewed, approved and graded against for the life of the job with
-    nothing in the output saying it had degraded. There is no fallback now: an
-    outage costs the naming, and every phrase comes back refused with the reason
-    stated.
-    """
-    from app.services.hiring import scorecard
-
-    async def _boom(*a, **k):
-        raise RuntimeError("every provider down")
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _boom)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("alpha phrase", "bravo phrase"),
-        _generic_model(), "non_managerial",
-    )
-    assert named == {}
-    assert [row["phrase"] for row in refusals] == ["alpha phrase", "bravo phrase"]
-    assert degraded is True
-    assert all(row["reason"] for row in refusals)
-
-
-@pytest.mark.asyncio
-async def test_a_phrase_the_model_refuses_carries_the_models_own_reason(
-    monkeypatch,
-) -> None:
-    """Refusing is a correct answer, and the reason belongs to the reviewer.
-
-    A phrase about the market rather than the role names no capability, and
-    inventing one would put a criterion on the scorecard nobody stated. The
-    hiring manager is told which of their sentences produced nothing and why.
-    """
-    from app.services.hiring import scorecard
-
-    async def _chat(task_type, messages, **k):
-        return json.dumps(
-            {
-                "named": [],
-                "refused": [
-                    {"index": 0, "reason": "This is about the market, not the role."}
-                ],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("salaries here are not competitive"),
-        _generic_model(), "non_managerial",
-    )
-    assert named == {}
-    assert refusals[0]["reason"] == "This is about the market, not the role."
-    assert degraded is False
-
-
-# ── The interviewer: a rejection that used to be indistinguishable from an outage ──
-
-
-@pytest.mark.asyncio
-async def test_a_reword_that_dropped_a_named_technology_is_re_asked(monkeypatch) -> None:
-    """`_substance_preserved` has always rejected this, and the rejection fell
-    straight through to the stored text -- so "the model said 'a message queue'
-    instead of 'Kafka'" and "every provider is down" had the same outcome, and
-    the candidate read a scripted line either way."""
-    calls: list[list[dict]] = []
-    stored = "Walk me through how you tuned Kafka consumer lag."
 
     async def _invoke(task_type, messages, **k):
         calls.append(messages)
-        if len(calls) == 1:
-            return json.dumps({"question": "How did you tune the message queue?"})
-        return json.dumps(
-            {"question": "You mentioned ingestion earlier, so how did you tune Kafka consumer lag?"}
-        )
+        return json.dumps({"question": asked, "rubric": _RUBRIC})
 
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own the ingestion platform."}],
-        mode=interviewer.MODE_REWORD,
-    )
-
-    assert len(calls) == 2
-    assert "kafka" in calls[1][-1]["content"].lower()
-    assert "Kafka" in out
-    assert out != stored
-
-
-@pytest.mark.asyncio
-async def test_a_reword_that_stays_wrong_still_falls_back_to_the_stored_text(monkeypatch) -> None:
-    """The loop adds a second chance, not a lower bar. A question that would be
-    graded against a rubric it no longer matches must never be asked."""
-    stored = "Walk me through how you tuned Kafka consumer lag."
-
-    async def _invoke(*a, **k):
-        return json.dumps({"question": "How did you tune the message queue?"})
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own the ingestion platform."}],
-        mode=interviewer.MODE_REWORD,
-    )
-    assert out == stored
-
-
-@pytest.mark.asyncio
-async def test_a_generated_repeat_is_re_asked_then_falls_back(monkeypatch) -> None:
-    # Deliberately carries specific terms. `_is_repeat` compares on the tokens
-    # `interviewer._tokens` protects -- digits, internal punctuation and
-    # mid-sentence capitals -- so a question of entirely ordinary words has
-    # nothing to compare and is correctly never called a repeat.
-    asked = "Tell me about the PagerDuty rotation you ran for the Kafka ingest incident."
-    calls = {"n": 0}
-
-    async def _invoke(*a, **k):
-        calls["n"] += 1
-        return json.dumps({"question": asked})
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _invoke)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question="stored fallback question",
-        transcript=[{"speaker": "agent", "content": asked}],
-        mode=interviewer.MODE_GENERATE,
-        competency="Incident response",
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _invoke)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
         asked_before=[asked],
     )
-    assert calls["n"] == 2
-    assert out == "stored fallback question"
+    assert len(calls) == 2, "the repeat was not fed back for a second attempt"
+    assert "already been asked" in calls[1][-1]["content"]
+    assert result.degraded
+    assert row.prompt == "Describe a system you designed end to end."
+    assert row.rubric_json is None and row.generated_at is None
 
 
 @pytest.mark.asyncio
-async def test_an_outage_costs_the_delivery_and_nothing_else(monkeypatch) -> None:
-    stored = "Walk me through how you tuned Kafka consumer lag."
+async def test_a_second_attempt_that_fixes_the_repeat_is_persisted_with_its_rubric(
+    monkeypatch,
+) -> None:
+    from app.services import ppi_interview
+
+    asked = "How did you size the Kafka partitions when consumer lag grew?"
+    # Two specific terms, so it shares only half of them with the question
+    # already asked (`interviewer.is_semantic_repeat` reads a single shared
+    # term as the same question).
+    fixed = "Which Grafana panel first showed the Kafka backlog, and what did you change?"
+    answers = iter([asked, fixed])
+
+    async def _invoke(*a, **k):
+        return json.dumps({"question": next(answers), "rubric": _RUBRIC})
+
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _invoke)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
+        asked_before=[asked],
+    )
+    assert not result.degraded
+    assert row.prompt == fixed and row.rubric_json == _RUBRIC
+    assert row.generated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_an_outage_costs_the_question_and_nothing_else(monkeypatch) -> None:
+    from app.services import ppi_interview
 
     async def _boom(*a, **k):
         raise RuntimeError("every provider down")
 
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _boom)
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I own ingestion."}],
-        mode=interviewer.MODE_REWORD,
+    monkeypatch.setattr(ppi_interview.llm_router, "invoke_llm", _boom)
+    job, row, competency, context = _question()
+    result = await ppi_interview.write_question(
+        session=None, job=job, row=row, competency=competency, context=context,
     )
-    assert out == stored
+    assert result.degraded
+    assert row.prompt == "Describe a system you designed end to end."
+    assert row.generated_at is None

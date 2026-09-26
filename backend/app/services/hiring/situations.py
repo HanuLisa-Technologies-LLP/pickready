@@ -86,12 +86,14 @@ from typing import Any, Iterable, Mapping
 
 from app.services.hiring import layers
 from app.services.hiring import runbook_data
-from app.services.hiring.department_models import (
+from app.services.miti.dimensions import (
     DIM_AUTHENTICITY,
     DIM_ROLE_FIT,
     DIM_TRACK_RECORD,
     DIM_TRAJECTORY,
     DIM_VERIFIED_COMPETENCE,
+    DIMENSION_BY_RUNBOOK_ID,
+    RUNBOOK_ID_BY_DIMENSION,
 )
 
 #: The five dimensions, in the Runbook's D1..D5 order. A situation modifier map
@@ -168,6 +170,8 @@ __all__ = [
     "UP",
     "DOWN",
     "is_valid",
+    "DIMENSION_BY_RUNBOOK_ID",
+    "RUNBOOK_ID_BY_DIMENSION",
 ]
 
 GAP_FILL = "gap_fill"
@@ -227,18 +231,10 @@ DOWN = "decrease"
 ARROW_LEVELS: tuple[str, ...] = (STRONG_UP, UP, DOWN)
 
 #: §18.4 and §11.1-§11.3 address the dimensions as D1..D5; this codebase names
-#: them. The map is stated once, here, because two spellings of the same five
-#: things is how the product ended up with two parallel rating scales.
-DIMENSION_BY_RUNBOOK_ID: dict[str, str] = {
-    "D1": DIM_VERIFIED_COMPETENCE,
-    "D2": DIM_TRACK_RECORD,
-    "D3": DIM_ROLE_FIT,
-    "D4": DIM_AUTHENTICITY,
-    "D5": DIM_TRAJECTORY,
-}
-RUNBOOK_ID_BY_DIMENSION: dict[str, str] = {
-    name: rid for rid, name in DIMENSION_BY_RUNBOOK_ID.items()
-}
+#: them. `DIMENSION_BY_RUNBOOK_ID` and `RUNBOOK_ID_BY_DIMENSION` are stated ONCE,
+#: in `services/miti/dimensions.py` since WP5-B, and imported at the top of this
+#: module, because two spellings of the same five things is how the product
+#: ended up with two parallel rating scales.
 
 
 SITUATIONS: dict[str, Situation] = {

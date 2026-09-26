@@ -1,7 +1,7 @@
 """Proctoring touches no score, and nothing that scores touches it (P3).
 
     P3: "Proctoring never affects any score or ranking. It must not feed into
-     the AI Hiring Score, the Ready Pick Score, the Executive Profile
+     the AI Hiring Score, the Vivekium Score, the Executive Profile
      evaluation, candidate ranking, or any sorting. It is reported separately
      and only."
 
@@ -41,9 +41,33 @@ PROCTORING_MODULE = "app.services.proctoring"
 #: reason it is allowed. Anything else is a scoring or ranking surface.
 PERMITTED_IMPORTERS: dict[str, str] = {
     "api/proctoring.py": "the routes themselves",
-    "api/assessments.py": "the gate on the conversation, and the report join",
+    # The report join, which lived in the deleted api/assessments.py and moved
+    # with the report routes (PLAN-p5 WP5-F) into the one serializer: it
+    # attaches the finished Proctoring Report as the report's last, words-only
+    # section and reads nothing from it into a grade.
+    "services/prism_view.py": "attaches the finished Proctoring Report section",
+    # Carved out of api/assessments.py on 2026-09-24 (PLAN-p3 WP0), carrying
+    # the same narrow permission: the gate on the conversation and on the
+    # recording start, and nothing else.
+    "api/assessment_conversation.py": "the gate on the conversation",
+    "api/assessment_recording.py": "the gate on the recording start",
+    # The coding Run routes (Phase 4 WP-4C, merged at the stage 2 integration
+    # 2026-09-25). The same narrow permission as the conversation: a Run is
+    # refused while proctoring is not active or the turn clock is paused
+    # (`require_active`, `PAUSED_DETAIL`), and nothing from proctoring reaches
+    # the execution, its outcome or any score.
+    "api/assessment_coding.py": "the gate on a coding Run",
+    # The conversation engine that replaced the body of `respond` (PLAN-p3
+    # WP3, 2026-09-24). It HANDS the answer field's timings to proctoring's
+    # behaviour log, exactly as `respond` did, and reads nothing back.
+    "services/assessment_conversation/turns.py": (
+        "writes an answer field's timings to the behaviour log, reads nothing"
+    ),
     "services/report_pdf.py": "renders the report's final section",
-    "workers/tasks.py": "the three proctoring tasks",
+    "workers/tasks.py": "the proctoring event purge",
+    # The report and the reconciler, carved out of workers/tasks.py on
+    # 2026-09-24 (PLAN-p3 WP0).
+    "workers/tasks_proctoring.py": "the report task and the session reconciler",
     "schemas/proctoring.py": "reads the event vocabulary for its validator",
     "schemas/jobs.py": "reads the warning-policy vocabulary",
     "api/jobs.py": "reads the warning-policy default",
@@ -58,7 +82,7 @@ FORBIDDEN_TARGETS = (
     "app.services.siddhi",
     "app.services.matching",
     "app.services.rating",
-    "app.services.tiers",
+    "app.services.yukti",
     "app.services.hiring",
     "app.services.dashboard",
     "app.services.job_candidates",
@@ -131,7 +155,7 @@ def test_the_scorer_specifically_does_not_import_proctoring() -> None:
 @pytest.mark.parametrize(
     "module",
     ["services/miti", "services/siddhi", "services/hiring", "services/matching.py",
-     "services/rating.py", "services/tiers.py", "services/dashboard.py"],
+     "services/rating.py", "services/yukti", "services/dashboard.py"],
 )
 def test_no_grading_surface_reaches_proctoring(module: str) -> None:
     target = APP / module
@@ -171,11 +195,20 @@ def test_the_import_detector_sees_a_deferred_import(tmp_path: pathlib.Path) -> N
 
 
 def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> None:
-    """`api/assessments.py` is on the permitted list, and the permission is
+    """The report routes and the conversation are on the permitted list, and the permission is
     narrow: it may ask whether the conversation may proceed and attach the
     finished report. It may not read a warning count, an event or a session's
     behaviour profile into anything it computes."""
-    source = (APP / "api" / "assessments.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        (APP / name).read_text(encoding="utf-8")
+        for name in (
+            "api/assessment_reports.py",
+            "services/prism_view.py",
+            "api/assessment_conversation.py",
+            "api/assessment_recording.py",
+            "services/assessment_conversation/turns.py",
+        )
+    )
     for banned in (
         "warnings_used",
         "ProctoringEvent",
@@ -183,7 +216,7 @@ def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> Non
         "proctoring_session.outcome",
     ):
         assert banned not in source, (
-            f"api/assessments.py reads {banned!r}. Proctoring state must not "
+            f"the assessment API reads {banned!r}. Proctoring state must not "
             "reach the code that decides what a candidate is asked or scored."
         )
 

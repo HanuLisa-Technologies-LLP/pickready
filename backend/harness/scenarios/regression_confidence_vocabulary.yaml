@@ -1,0 +1,42 @@
+id: regression.the_confidence_column_accepts_what_its_writer_emits
+version: 1
+tier: regression
+description: >
+  Every confidence `miti.aggregation` can emit is storable in the two columns
+  that carry it. `evaluations.confidence` was created by migration 0059 as
+  varchar(10) with a CHECK admitting only high/medium/low, while its one writer
+  emits high/moderate/low/insufficient: `moderate` violated the constraint and
+  `insufficient` violated the constraint AND the width. Repaired by migration
+  0106. Nothing caught it because the only deployed environment holds zero
+  candidates, so no real evaluation had ever been written there, and the
+  failure would have raised inside `run_functional_assessment` AFTER Miti's
+  five evaluators and Siddhi's synthesis had already been paid for.
+tags: [schema, confidence, migration-0106, "2026-09-22"]
+
+given:
+  world: no_state
+
+workload:
+  # No request is needed: the subject is the schema, and the probe reads the
+  # catalog from the same second connection every other state assertion uses.
+  # `probe_health` is here so the run still exercises the application and the
+  # latency and recovery evidence is real rather than empty.
+  - probe_health
+
+expect:
+  state:
+    - confidence_vocabulary.refused_values:evaluations.confidence == []
+    # `calibration_records.predicted_confidence` copies the same value from the
+    # same source, and before 0106 it had no CHECK at all, so the width was the
+    # only thing between it and a value nothing could interpret.
+    - confidence_vocabulary.refused_values:calibration_records.predicted_confidence == []
+  output:
+    - status.probe_health == [200, 200]
+  trajectory:
+    - health_probed
+  prohibited:
+    - a_number_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - state_correctness
+    - safety_and_policy

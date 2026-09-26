@@ -11,6 +11,9 @@ matters is that the CODE reads the table, so each rule is also exercised by
 changing the config and watching the composer and the validator change with
 it. A threshold nothing reads is a threshold that was quietly hardcoded
 somewhere else.
+The shares and the per-grade durations this file pinned until 2026-09-25
+are gone with the rules that read them: the mix is a count now
+(`assessment_questions.budget`, swept for literals here too).
 
 The float sweep is the cheap structural half: every tuning knob in this
 package is a share or a weight, so a float literal anywhere but the unit
@@ -21,54 +24,83 @@ from __future__ import annotations
 import ast
 import dataclasses
 import pathlib
+import uuid
 
 import pytest
 
 from app.core.config import get_settings
-from app.services import ppi
+from app.services.assessment_contract import ContractSkill
 from app.services.assessment_formats import composition
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
+from app.services.assessment_questions import budget
 
 PACKAGE = pathlib.Path(format_config.__file__).resolve().parent
 
-GRADES = ("non_managerial", "managerial", "leadership", "cxo")
+#: The family clock (Appendix B section 3): which setting times each format.
+TIME_SETTING = {
+    types.EVIDENCE_BASED: "assessment_time_prose_seconds",
+    types.SHORT_ANSWER: "assessment_time_prose_seconds",
+    types.MCQ_SINGLE: "assessment_time_objective_seconds",
+    types.MCQ_MULTI: "assessment_time_objective_seconds",
+    types.FILL_BLANK: "assessment_time_objective_seconds",
+    types.CODING: "assessment_time_coding_seconds",
+}
+WEIGHT_SUFFIX = {
+    types.EVIDENCE_BASED: "evidence",
+    types.SHORT_ANSWER: "short_answer",
+    types.MCQ_SINGLE: "mcq_single",
+    types.MCQ_MULTI: "mcq_multi",
+    types.FILL_BLANK: "fill_blank",
+    types.CODING: "coding",
+}
 
 
 def test_every_scalar_field_reads_its_own_setting() -> None:
     settings = get_settings()
     config = format_config.get_config()
-    for field in ("evidence_min_share", "supporting_max_share", "supporting_max_share_senior",
-                  "composition_attempts", "evaluation_min_reasoning_words",
+    for field in ("composition_attempts", "evaluation_min_reasoning_words",
                   "anchor_min_chars", "misconception_min_words"):
         assert getattr(config, field) == getattr(settings, f"assessment_{field}"), field
 
 
-@pytest.mark.parametrize("grade", GRADES)
-def test_every_duration_reads_its_own_setting(grade) -> None:
-    settings = get_settings()
-    minutes = getattr(settings, f"assessment_duration_minutes_{grade}")
-    assert format_config.get_config().duration_for(grade) == minutes * 60
-
-
 @pytest.mark.parametrize("question_type", types.QUESTION_TYPES)
-def test_every_format_has_a_time_and_a_weight_from_settings(question_type) -> None:
+def test_every_format_has_a_family_time_and_a_weight_from_settings(question_type) -> None:
     settings = get_settings()
     config = format_config.get_config()
-    suffix = {
-        types.EVIDENCE_BASED: "evidence",
-        types.SHORT_ANSWER: "short_answer",
-        types.MCQ_SINGLE: "mcq_single",
-        types.MCQ_MULTI: "mcq_multi",
-        types.FILL_BLANK: "fill_blank",
-        types.CODING: "coding",
-    }[question_type]
-    assert config.time_seconds_by_type[question_type] == getattr(
-        settings, f"assessment_time_{suffix}_seconds"
-    )
+    assert config.time_seconds_by_type[question_type] == getattr(settings, TIME_SETTING[question_type])
     assert config.weight_by_type[question_type] == getattr(
-        settings, f"assessment_weight_{suffix}"
+        settings, f"assessment_weight_{WEIGHT_SUFFIX[question_type]}"
     )
+
+
+def test_the_family_clock_is_the_owners_table() -> None:
+    """Appendix B section 3: prose three minutes, objective one, coding twenty."""
+    settings = get_settings()
+    assert settings.assessment_time_prose_seconds == 180
+    assert settings.assessment_time_objective_seconds == 60
+    assert settings.assessment_time_coding_seconds == 1200
+
+
+def test_the_retired_bounds_are_gone() -> None:
+    """The evidence-majority share, the supporting-share bounds and the
+    per-grade durations went with the rules that read them."""
+    from app.core.config import Settings
+
+    fields = set(Settings.model_fields)
+    for retired in (
+        "assessment_evidence_min_share",
+        "assessment_supporting_max_share",
+        "assessment_supporting_max_share_senior",
+        "assessment_duration_minutes_non_managerial",
+        "assessment_time_evidence_seconds",
+        "assessment_time_short_answer_seconds",
+        "assessment_time_mcq_single_seconds",
+        "assessment_time_mcq_multi_seconds",
+        "assessment_time_fill_blank_seconds",
+    ):
+        assert retired not in fields, retired
+    assert not hasattr(composition, "fit_duration")
 
 
 def test_the_config_is_one_frozen_object_per_process() -> None:
@@ -76,35 +108,16 @@ def test_the_config_is_one_frozen_object_per_process() -> None:
     every module in one request reads the same numbers."""
     assert format_config.get_config() is format_config.get_config()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        format_config.get_config().evidence_min_share = 0.9
-
-
-def test_a_senior_role_is_held_to_the_tighter_share() -> None:
-    config = format_config.get_config()
-    for grade in GRADES:
-        expected = (
-            config.supporting_max_share_senior
-            if grade in format_config.SENIOR_GRADES
-            else config.supporting_max_share
-        )
-        assert config.supporting_share_for(grade) == expected
-    assert config.supporting_max_share_senior < config.supporting_max_share
-    assert format_config.SENIOR_GRADES == {"leadership", "cxo"}
-
-
-def test_the_evidence_share_is_a_majority_by_definition() -> None:
-    """"Majority" is not a preference. A share at or below one half would let a
-    valid assessment be half supporting formats, which is the thing section 1
-    forbids."""
-    assert format_config.get_config().evidence_min_share > 0.5
+        format_config.get_config().anchor_min_chars = 1
 
 
 def test_no_module_in_this_package_carries_a_tuning_constant() -> None:
     """Every knob here is a share or a weight, so a stray float is one of them
     written into a module. The unit bounds are exempt: they are the ends of
-    the 0..1 scale, not a value anyone would tune."""
+    the 0..1 scale, not a value anyone would tune. The budget module is swept
+    too, because the mix shares are the knobs most likely to be typed in."""
     offenders: list[str] = []
-    for path in sorted(PACKAGE.glob("*.py")):
+    for path in sorted([*PACKAGE.glob("*.py"), pathlib.Path(budget.__file__)]):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, float):
@@ -129,88 +142,39 @@ def _replaced(**changes) -> format_config.FormatConfig:
     return dataclasses.replace(_BASE, **changes)
 
 
-def _allocation(size: int = 20):
-    from types import SimpleNamespace
-    import uuid as _uuid
-
-    matrix = [
-        SimpleNamespace(
-            id=_uuid.uuid4(), category=category, name=f"{category}-{index}",
-            description="", ordinal=index + 1,
-        )
-        for category in ppi.CATEGORIES
-        for index in range(5)
+def _composed(grade: str = "non_managerial") -> list[composition.Slot]:
+    skills = [
+        ContractSkill(id=uuid.uuid4(), name=f"{bucket} {n}", bucket=bucket, priority=n, evidence_line="e")
+        for bucket in ("must_have", "nice_to_have", "behavioural")
+        for n in range(1, 4)
     ]
-    return ppi._allocate(matrix, size, "non_managerial")
+    total = budget.question_budget(grade, len(skills))
+    mix = budget.mix(total, coding=True)
+    return composition.compose(composition.allocate(skills, total, stem=True), mix=mix, grade=grade)
 
 
-def _anchored(slots):
-    """A DIFFERENT quotable item per evidence slot: two questions probing one
-    resume item is its own rule, and it would mask the one under test."""
-    for slot in slots:
-        if slot.question_type == types.EVIDENCE_BASED:
-            slot.resume_anchor = f"led the work stream numbered {slot.index} at Northwind Payments"
-    return slots
-
-
-def test_the_supporting_share_decides_how_many_slots_are_structured(monkeypatch) -> None:
-    allocation = _allocation()
-    monkeypatch.setattr(format_config, "get_config", lambda: _replaced(supporting_max_share=0.0))
-    none_at_all = composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    assert not [slot for slot in none_at_all if slot.question_type in types.SUPPORTING_TYPES]
-
-    monkeypatch.setattr(format_config, "get_config", lambda: _replaced(supporting_max_share=0.25))
-    some = composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    assert [slot for slot in some if slot.question_type in types.SUPPORTING_TYPES]
-
-
-def test_the_duration_decides_the_time_allocations(monkeypatch) -> None:
-    allocation = _allocation()
-    tight = dict(_BASE.duration_seconds_by_grade)
-    tight["non_managerial"] = 600
-    monkeypatch.setattr(
-        format_config, "get_config", lambda: _replaced(duration_seconds_by_grade=tight)
-    )
-    slots = composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    assert sum(slot.time_allocation_seconds for slot in slots) <= 600
-    assert composition.validate(slots, "non_managerial", "STEM") == [] or all(
-        "duration" not in reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-    )
+def test_the_family_clock_decides_the_time_allocations(monkeypatch) -> None:
+    times = dict(_BASE.time_seconds_by_type)
+    times[types.CODING] = 900
+    monkeypatch.setattr(format_config, "get_config", lambda: _replaced(time_seconds_by_type=times))
+    coding = [slot for slot in _composed() if slot.question_type == types.CODING]
+    assert coding and {slot.time_allocation_seconds for slot in coding} == {900}
 
 
 def test_the_anchor_floor_decides_what_counts_as_an_anchor(monkeypatch) -> None:
-    allocation = _allocation()
-    slots = _anchored(
-        composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    )
+    slots = _composed()
+    for slot in slots:
+        if slot.question_type == types.EVIDENCE_BASED:
+            slot.resume_anchor = f"led the work stream numbered {slot.index} at Northwind Payments"
+    mix = budget.mix(len(slots), coding=True)
+
+    def unanchored() -> list[str]:
+        return [reason for reason in composition.validate(slots, mix=mix, skills=[])
+                if "not anchored" in reason]
 
     monkeypatch.setattr(format_config, "get_config", lambda: _replaced(anchor_min_chars=12))
-    assert not [
-        reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-        if "not anchored" in reason
-    ]
+    assert not unanchored()
     # Raise the floor above the anchors that were accepted a moment ago, and
     # the same assessment stops validating.
     monkeypatch.setattr(format_config, "get_config", lambda: _replaced(anchor_min_chars=500))
-    assert [
-        reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-        if "not anchored" in reason
-    ]
-
-
-def test_the_evidence_share_decides_whether_a_mix_is_rejected(monkeypatch) -> None:
-    allocation = _allocation()
-    slots = _anchored(
-        composition.compose(allocation, grade="non_managerial", role_classification="STEM")
-    )
-    assert composition.validate(slots, "non_managerial", "STEM") == []
-    # A share nothing could satisfy rejects the very mix the composer built.
-    monkeypatch.setattr(format_config, "get_config", lambda: _replaced(evidence_min_share=0.999))
-    assert [
-        reason
-        for reason in composition.validate(slots, "non_managerial", "STEM")
-        if "majority" in reason
-    ]
+    assert unanchored()

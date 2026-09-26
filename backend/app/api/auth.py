@@ -1,12 +1,19 @@
-"""Firebase identity exchange and legacy context-selection endpoints.
+"""Firebase identity exchange, workspace selection and the session lifecycle.
 
-Firebase proves identity; ReadyPick remains authoritative for application
+Firebase proves identity; Vivekium remains authoritative for application
 roles, tenant isolation, capabilities, and its portal-scoped sessions.
+`services/login_context` decides which workspaces a proven identity may enter.
+
+The retired one-time-code login handlers (candidate self-registration, code
+request, code verification) sat here without a route for two months after
+Firebase took over identity, and were deleted on 2026-09-24 with the schemas
+only they used. `tests/test_login_otp_removed.py` keeps them gone.
 """
 import uuid
 from datetime import datetime, timezone
 
 import jwt as pyjwt
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
@@ -17,6 +24,7 @@ from app.api.deps import (
     CurrentUser,
     clear_auth_cookies,
     get_current_any,
+    is_user_activity,
     set_auth_cookies,
 )
 from app.core.config import get_settings
@@ -30,30 +38,25 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
 )
-from app.models.enums import OTPChannel, Role, UserStatus
+from app.models.enums import Role, UserStatus
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import (
-    CandidateRegisterIn,
-    CandidateRegisterOut,
     ContextOut,
     FirebaseSessionIn,
     MeOut,
-    OTPRequestIn,
-    OTPRequestOut,
-    OTPVerifyIn,
-    OTPVerifyOut,
     SelectContextIn,
+    SessionOut,
     UserOut,
 )
-from app.services import otp as otp_service
+from app.services import auth_sessions, candidate_identity, login_context
 from app.services import firebase_auth
 from app.services import rbac
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
+    AUTH_LOGIN_REFUSED,
     AUTH_LOGIN_SUCCEEDED,
-    AUTH_OTP_FAILED,
     record_auth_event,
 )
 
@@ -96,47 +99,85 @@ def _is_owner_email(email: str | None, owner_email: str) -> bool:
     return bool(email) and (email or "").strip().lower() == (owner_email or "").strip().lower()
 
 
-def _phone_aliases(phone: str | None) -> set[str]:
-    """Return safe equivalent forms for matching legacy local phone values.
-
-    Firebase supplies E.164 (``+919...``), while existing development rows
-    may contain a ten-digit Indian national number.  This is deliberately a
-    lookup aid only; a matched user is normalized to the Firebase E.164 value
-    after successful sign-in.
-    """
-    if not phone:
-        return set()
-    digits = "".join(char for char in phone if char.isdigit())
-    aliases = {phone.strip(), digits}
-    if len(digits) == 10:
-        aliases.update({f"91{digits}", f"+91{digits}"})
-    elif len(digits) == 12 and digits.startswith("91"):
-        aliases.update({digits[2:], f"+{digits}"})
-    return {value for value in aliases if value}
-
-
 async def _finalize_single(
     session: AsyncSession,
     response: Response,
     user: User,
     identity: firebase_auth.FirebaseIdentity,
-) -> OTPVerifyOut:
+) -> SessionOut:
     """Link a proven Firebase identity to ONE resolved user and issue that
     user's portal-scoped session cookies. Firebase proves the identity; the
     database role/permissions stay authoritative (claude.md rule 2)."""
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="Account unavailable")
+
+    # A BOUND ACCOUNT IS NEVER SILENTLY REBOUND TO A DIFFERENT IDENTITY.
+    #
+    # This line used to be an unconditional `user.firebase_uid = identity.uid`,
+    # and that was account takeover. The caller resolves a user by EMAIL as well
+    # as by uid (see the match filters in `firebase_session`), and Firebase
+    # email/password signup does not verify the address, so anyone who knew a
+    # staff member's email could register it with Firebase, sign in, present the
+    # token here, and have this line hand them that person's role and tenant.
+    # The victim's uid was overwritten in the same statement, so they lost the
+    # account at the moment the attacker gained it.
+    #
+    # Binding a NULL uid is the legitimate first-login path and still happens.
+    # Rebinding a uid that is already set to a different one is not a login, it
+    # is a change of who owns the account, and this product already has a
+    # deliberate, audited route for that: the Provider's primary-contact rebind,
+    # which CLEARS the uid, returns the row to `invited`, revokes the pending
+    # invite and sends a fresh one. A silent rebind here bypassed all four of
+    # those steps.
+    #
+    # So the refusal is not a dead end: an account whose Firebase identity
+    # genuinely changed is recovered through that route.
+    # THE CONDITION IS "UNVERIFIED", NOT "DIFFERENT", AND THE DISTINCTION IS
+    # THE WHOLE FIX. A first draft refused every rebind, which is wrong twice:
+    # a Google identity always carries a verified email, and control of the
+    # address is exactly the proof the email match rests on, so refusing it
+    # buys nothing; and the platform OWNER is resolved from a configured email
+    # with no administrator above them, so a blanket refusal would lock them
+    # out permanently the first time their Firebase uid changed, with no
+    # recovery path at all.
+    #
+    # An UNVERIFIED password identity proves nothing about the address, and
+    # that is the case this exists to refuse.
+    if (
+        user.firebase_uid
+        and user.firebase_uid != identity.uid
+        and not identity.email_verified
+    ):
+        await record_auth_event(
+            session, action=AUTH_LOGIN_REFUSED, actor_user_id=user.id,
+            tenant_id=user.tenant_id,
+            metadata={"reason": "firebase_uid_rebind_refused",
+                      "provider": identity.provider},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is already linked to a different sign-in. "
+                "Ask your administrator to re-issue your invitation."
+            ),
+        )
+
     user.firebase_uid = identity.uid
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
         user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
-    if identity.provider == "phone" and identity.phone:
-        user.phone = identity.phone
-        user.phone_verified_at = user.phone_verified_at or datetime.now(timezone.utc)
-    # Invited staff/candidates activate on first proven login, mirroring the OTP
-    # path (proving identifier ownership is what flips invited -> active).
+    # Invited staff/candidates activate on first proven login, mirroring
+    # `login_context.select_context` (proving identifier ownership is what
+    # flips invited -> active).
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    # EVERY candidate sign-in makes sure the person has exactly one candidate
+    # record, through the one resolver. Idempotent: a linked record is returned
+    # untouched. It also repairs an account whose record was erased, and it is
+    # the only place an email match can link a sourced record, and only on an
+    # address Firebase has verified (services/candidate_identity).
+    if user.role == Role.candidate:
+        await candidate_identity.link_on_sign_in(session, user, identity)
     await record_auth_event(
         session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
         tenant_id=user.tenant_id,
@@ -152,12 +193,8 @@ async def _finalize_single(
             status_code=409, detail="This sign-in could not be linked to an account"
         ) from exc
     audience = audience_for_role(user.role)
-    _set_auth_cookies(
-        response,
-        create_access_token(user.id, user.role.value, user.tenant_id, audience=audience),
-        create_refresh_token(user.id, audience=audience),
-    )
-    return OTPVerifyOut(
+    await _issue_session(response, user, audience)
+    return SessionOut(
         user=await _user_out(session, user),
         capabilities=await _capabilities(session, user),
     )
@@ -167,14 +204,14 @@ async def _finalize_single(
 # Firebase token and mints a session: anonymous, and the verification is a
 # network call to Google. Cheapest endpoint in the product to hit, one of the
 # most expensive to serve.
-@router.post("/firebase/session", response_model=OTPVerifyOut,
+@router.post("/firebase/session", response_model=SessionOut,
     dependencies=[Depends(rate_limit("auth_exchange", limit=20, window=60))],
 )
 async def firebase_session(
     body: FirebaseSessionIn,
     response: Response,
     session: AsyncSession = Depends(get_identity_session),
-) -> OTPVerifyOut:
+) -> SessionOut:
     """Exchange a verified Firebase ID token for a portal-scoped app session.
 
     Firebase is identity-only; DB roles/permissions remain authoritative
@@ -186,15 +223,25 @@ async def firebase_session(
     - **staff pre-seed match by email** -> linked in place, role preserved (no
       duplicate candidate row);
     - **multiple matches** -> workspace chooser: contexts + context_token, NO
-      cookies, finalized by /auth/select-context (same as the OTP path);
-    - **no match** -> create a candidate (email and/or phone), candidate cookies.
+      cookies, finalized by /auth/select-context;
+    - **no match** -> create a candidate user, then resolve its candidate
+      record through `candidate_identity.link_on_sign_in` (a verified address
+      may claim the oldest unlinked sourced record; an unverified one never
+      does), candidate cookies.
 
-    Google and email/password sign-in are available to every role; phone-only
-    signup remains accepted by the legacy API for existing accounts.
-    Every failure is a clean 401/403/409/422 — never a 500.
+    Google and email/password sign-in are available to every role. Phone
+    sign-in is removed: the provider is refused and nothing matches on a phone
+    number. Every failure is a clean 401/403/409/422, never a 500.
     """
     settings = get_settings()
-    identity = firebase_auth.verify_id_token(body.id_token)
+    # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
+    # forces a network round trip to the Firebase Admin API on every
+    # verification, so calling it directly blocked the event loop for the
+    # whole trip, on the busiest path in the product. Every other blocking
+    # vendor call in this tree is already offloaded (document_storage,
+    # ses_service, email_senders/eligibility); this was the one that was
+    # missed. `HTTPException` propagates out of the threadpool unchanged.
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
 
     # ── Owner invariant (claude.md rule 2 + services/owner.py) ──────────────
     # The platform-owner email resolves ONLY to the seeded super_admin. It is
@@ -225,14 +272,12 @@ async def firebase_session(
     match_filters = [User.firebase_uid == identity.uid]
     if identity.email:
         match_filters.append(func.lower(User.email) == identity.email.strip().lower())
-    if aliases := _phone_aliases(identity.phone):
-        match_filters.append(User.phone.in_(aliases))
     matched = (await session.execute(
         select(User).where(or_(*match_filters)).order_by(User.created_at, User.id)
     )).scalars().all()
 
     if matched:
-        eligible = otp_service.eligible_login_users(
+        eligible = login_context.eligible_login_users(
             matched, owner_email=settings.owner_email
         )
         eligible = _filter_requested_portal(eligible, body.requested_portal)
@@ -246,58 +291,48 @@ async def firebase_session(
             )
             raise HTTPException(status_code=403, detail=detail)
     else:
-        # First-ever sign-in for this identity -> a fresh candidate (rule 2:
-        # candidates may use Google / email / phone). Phone-only signup allowed.
+        # First-ever sign-in for this identity -> a fresh candidate user.
         if body.requested_portal not in (None, "candidate"):
             raise HTTPException(
                 status_code=403,
                 detail=f"No {body.requested_portal} workspace is linked to this account",
             )
         firebase_auth.assert_provider_allowed(identity, Role.candidate.value)
-        if not identity.email and not identity.phone:
+        if not identity.email:
             raise HTTPException(
                 status_code=422,
-                detail="An email address or phone number is required to create a candidate profile",
+                detail="An email address is required to create a candidate profile",
             )
         user = User(
-            role=Role.candidate, email=identity.email, phone=identity.phone,
+            role=Role.candidate, email=identity.email,
             full_name=identity.name, tenant_id=None, status=UserStatus.active,
             firebase_uid=identity.uid, auth_providers=[identity.provider],
         )
         session.add(user)
         await session.flush()
-        from app.models.candidate import Candidate
-        session.add(Candidate(
-            tenant_id=None, user_id=user.id, email=user.email, phone=user.phone,
-            full_name=user.full_name,
-        ))
+        # The candidate RECORD is resolved in `_finalize_single`, through the
+        # one resolver, like every other candidate sign-in. NO CONSENT IS
+        # WRITTEN on this path: the candidate has seen no consent wording, and
+        # Stage A is stamped where it is shown (PUT /portal/me/profile-form).
         eligible = [user]
 
     # ── Provider gate on every resolved context ─────────────────────────────
     for user in eligible:
         firebase_auth.assert_provider_allowed(identity, user.role.value)
 
-    # Phone numbers are a single-person credential.  A reused phone number in
-    # imported data must never become a cross-person workspace chooser.
-    if identity.provider == "phone" and len(eligible) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="This phone number is linked to multiple accounts. Sign in with email and password.",
-        )
-
     if len(eligible) == 1:
         return await _finalize_single(session, response, eligible[0], identity)
 
-    # ── Multiple workspaces -> chooser, NO cookies (same as the OTP path) ───
+    # ── Multiple workspaces -> chooser, NO cookies ──────────────────────────
     # firebase_uid is unique, so it can bind to only one user; it is NOT linked
     # here — the chosen workspace is finalized via /auth/select-context, which
     # (after this proven verification) mints cookies for the picked user_id.
-    contexts = await otp_service._build_contexts(session, eligible)
-    token = otp_service.make_context_token(
-        identity.email or identity.phone, [c.user_id for c in contexts]
+    contexts = await login_context.build_contexts(session, eligible)
+    token = login_context.make_context_token(
+        identity.email, [c.user_id for c in contexts]
     )
     await session.commit()
-    return OTPVerifyOut(
+    return SessionOut(
         contexts=[_context_out(c) for c in contexts],
         context_token=token,
     )
@@ -314,7 +349,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
     elif user.role == Role.candidate:
         workspace_name = "Candidate workspace"
     else:
-        workspace_name = "ReadyPick"
+        workspace_name = "Vivekium"
     return UserOut(
         id=user.id,
         role=user.role,
@@ -323,6 +358,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
         email=user.email,
         email_verified=user.email_verified_at is not None,
         phone_verified=user.phone_verified_at is not None,
+        password_enabled="password" in (user.auth_providers or []),
         workspace_name=workspace_name,
     )
 
@@ -353,140 +389,34 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
 _set_auth_cookies = set_auth_cookies
 
 
-async def register_candidate(
-    body: CandidateRegisterIn, session: AsyncSession = Depends(get_identity_session)
-) -> CandidateRegisterOut:
-    """Candidate self sign-up (FR-9.1, register first / log in later). Creates
-    the account only — the candidate then signs in from the unified login via
-    OTP. No password anywhere (claude.md rule 2)."""
-    try:
-        candidate = await otp_service.register_candidate(
-            session,
-            full_name=body.full_name,
-            email=body.email,
-            phone=body.phone,
-        )
-    except otp_service.AlreadyRegistered as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await session.commit()
-    return CandidateRegisterOut(candidate_id=candidate.id, email=candidate.email)
-
-
-async def request_otp(
-    body: OTPRequestIn, session: AsyncSession = Depends(get_identity_session)
-) -> OTPRequestOut:
-    audience = AUDIENCE_CANDIDATE if body.audience == "candidate" else AUDIENCE_ORG
-    try:
-        result = await otp_service.request_otp(
-            session,
-            identifier=body.identifier,
-            channel=OTPChannel(body.channel),
-            audience=audience,
-        )
-    except otp_service.UserNotFound as exc:
-        raise HTTPException(status_code=404, detail="No account found for this email or phone") from exc
-    except otp_service.OTPLocked as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts, please try again in 15 minutes",
-        ) from exc
-    except otp_service.OTPResendThrottled as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="Please wait 30 seconds before requesting another code",
-        ) from exc
-    except otp_service.OTPRateLimited as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many code requests, please try again later",
-        ) from exc
-    await session.commit()
-    settings = get_settings()
-    return OTPRequestOut(
-        challenge_id=result.challenge.id,
-        channels_sent=result.channels_sent,
-        # Dev-only: expose the code in the response so local flows are testable
-        # without a mail/SMS provider. NEVER in production, never logged.
-        debug_code=result.code if settings.environment == "development" else None,
+async def _issue_session(response: Response, user: User, audience: str) -> None:
+    """Create the server record before exposing its signed browser cookies."""
+    sid = auth_sessions.new_id()
+    access = create_access_token(
+        user.id, user.role.value, user.tenant_id, audience=audience,
+        session_id=sid,
     )
+    refresh_token = create_refresh_token(user.id, audience=audience, session_id=sid)
+    jti = pyjwt.decode(
+        refresh_token, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=audience,
+    )["jti"]
+    await auth_sessions.create(sid, user.id, jti, refresh_token)
+    _set_auth_cookies(response, access, refresh_token)
 
 
-def _context_out(ctx: otp_service.LoginContext) -> ContextOut:
+def _context_out(ctx: login_context.LoginContext) -> ContextOut:
     return ContextOut(
         user_id=ctx.user_id, role=ctx.role, tenant_id=ctx.tenant_id,
         tenant_name=ctx.tenant_name, portal=ctx.portal,
     )
 
 
-async def verify_otp(
-    body: OTPVerifyIn,
-    response: Response,
-    session: AsyncSession = Depends(get_identity_session),
-) -> OTPVerifyOut:
-    try:
-        result = await otp_service.verify_challenge(
-            session, challenge_id=body.challenge_id, code=body.code
-        )
-    except otp_service.ChallengeNotFound as exc:
-        raise HTTPException(status_code=404, detail="Unknown challenge") from exc
-    except otp_service.OTPLocked as exc:
-        await session.commit()  # persist any attempt counter written before lock
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts, please try again in 15 minutes",
-        ) from exc
-    except otp_service.OTPExpired as exc:
-        raise HTTPException(
-            status_code=410, detail="This code has expired, request a new one"
-        ) from exc
-    except otp_service.OTPConsumed as exc:
-        raise HTTPException(
-            status_code=410, detail="This code has already been used"
-        ) from exc
-    except otp_service.OTPInvalid as exc:
-        await record_auth_event(
-            session, action=AUTH_OTP_FAILED,
-            metadata={"challenge_id": str(body.challenge_id),
-                      "attempts_remaining": exc.attempts_remaining},
-        )
-        await session.commit()  # persist the incremented attempt count
-        raise HTTPException(status_code=401, detail="Invalid code") from exc
-    except otp_service.UserNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail="No account found for this email or phone"
-        ) from exc
-
-    if result.authenticated:
-        await record_auth_event(
-            session, action=AUTH_LOGIN_SUCCEEDED,
-            actor_user_id=result.user.id, tenant_id=result.user.tenant_id,
-            metadata={"role": result.user.role.value},
-        )
-    await session.commit()
-    if result.multi_context:
-        # NO cookies — the caller picks a workspace via /auth/select-context.
-        return OTPVerifyOut(
-            contexts=[_context_out(c) for c in result.contexts],
-            context_token=result.context_token,
-        )
-    if result.authenticated:
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
-        return OTPVerifyOut(
-            user=await _user_out(session, result.user),
-            capabilities=await _capabilities(session, result.user),
-        )
-    # Client first-login dual OTP still pending — no cookies yet (FR-1.2).
-    return OTPVerifyOut(
-        user=await _user_out(session, result.user),
-        pending_channels=result.pending_channels,
-    )
-
-
-@router.post("/workspaces", response_model=OTPVerifyOut)
+@router.post("/workspaces", response_model=SessionOut)
 async def available_workspaces(
     current: CurrentUser = Depends(get_current_any),
     session: AsyncSession = Depends(get_identity_session),
-) -> OTPVerifyOut:
+) -> SessionOut:
     """Return the workspaces belonging to the current proven identity.
 
     This is the in-session counterpart to the login chooser. The access token
@@ -497,76 +427,76 @@ async def available_workspaces(
     source = await session.get(User, current.user_id)
     if source is None or source.status == UserStatus.disabled:
         raise HTTPException(status_code=401, detail="Account unavailable")
-    identifier = source.email or source.phone
+    # Email only: a phone number is not an identity this product proves.
+    identifier = source.email
     if not identifier:
         raise HTTPException(
             status_code=409,
-            detail="This account has no verified identifier for workspace switching",
+            detail="This account has no email address for workspace switching",
         )
 
-    eligible = otp_service.eligible_login_users(
-        await otp_service._find_users(session, identifier),
+    eligible = login_context.eligible_login_users(
+        await login_context.find_users(session, identifier),
         owner_email=get_settings().owner_email,
     )
-    contexts = await otp_service._build_contexts(session, eligible)
-    token = otp_service.make_context_token(
+    contexts = await login_context.build_contexts(session, eligible)
+    token = login_context.make_context_token(
         identifier,
         [context.user_id for context in contexts],
         source_user_id=source.id,
     )
-    return OTPVerifyOut(
+    return SessionOut(
         contexts=[_context_out(context) for context in contexts],
         context_token=token,
     )
 
 
-@router.post("/select-context", response_model=OTPVerifyOut)
+@router.post("/select-context", response_model=SessionOut)
 async def select_context(
     body: SelectContextIn,
     response: Response,
     session: AsyncSession = Depends(get_identity_session),
-) -> OTPVerifyOut:
-    """Exchange a context_token (proof of OTP success) for cookies as one of
-    the identifier's users (contract rev 2). Single-use."""
+) -> SessionOut:
+    """Exchange a context_token (proof of a verified identity) for cookies as
+    one of the identifier's users (contract rev 2). Single-use."""
     try:
-        result = await otp_service.select_context(
+        result = await login_context.select_context(
             session, context_token=body.context_token, user_id=body.user_id
         )
-    except otp_service.ContextTokenConsumed as exc:
+    except login_context.ContextTokenConsumed as exc:
         raise HTTPException(status_code=410, detail="Context token already used") from exc
-    except otp_service.ContextTokenInvalid as exc:
+    except login_context.ContextTokenInvalid as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except otp_service.ContextUserMismatch as exc:
+    except login_context.ContextUserMismatch as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except otp_service.UserNotFound as exc:
+    except login_context.UserNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except login_context.ContextStoreUnavailable as exc:
+        # FAILS CLOSED, the `auth_sessions` posture: a token that cannot be
+        # marked used must not be exchanged, or it becomes replayable.
+        raise HTTPException(
+            status_code=503,
+            detail="Sign-in is briefly unavailable. Please try again in a moment.",
+        ) from exc
 
-    if result.authenticated:
-        token_payload = otp_service.decode_context_token(body.context_token)
-        selected_workspace = await _user_out(session, result.user)
-        await record_auth_event(
-            session, action=AUTH_CONTEXT_SELECTED,
-            actor_user_id=result.user.id, tenant_id=result.user.tenant_id,
-            metadata={
-                "role": result.user.role.value,
-                "workspace_name": selected_workspace.workspace_name,
-                "selected_tenant_id": (
-                    str(result.user.tenant_id) if result.user.tenant_id else None
-                ),
-                "source_user_id": token_payload.get("source_user_id"),
-            },
-        )
-        await session.commit()
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
-        return OTPVerifyOut(
-            user=selected_workspace,
-            capabilities=await _capabilities(session, result.user),
-        )
+    user = result.user
+    token_payload = login_context.decode_context_token(body.context_token)
+    selected_workspace = await _user_out(session, user)
+    await record_auth_event(
+        session, action=AUTH_CONTEXT_SELECTED,
+        actor_user_id=user.id, tenant_id=user.tenant_id,
+        metadata={
+            "role": user.role.value,
+            "workspace_name": selected_workspace.workspace_name,
+            "selected_tenant_id": str(user.tenant_id) if user.tenant_id else None,
+            "source_user_id": token_payload.get("source_user_id"),
+        },
+    )
     await session.commit()
-    # Client first-login dual OTP still pending for this workspace.
-    return OTPVerifyOut(
-        user=await _user_out(session, result.user),
-        pending_channels=result.pending_channels,
+    await _issue_session(response, user, audience_for_role(user.role))
+    return SessionOut(
+        user=selected_workspace,
+        capabilities=await _capabilities(session, user),
     )
 
 
@@ -588,7 +518,23 @@ def _dead_session(detail: str) -> JSONResponse:
     return dead
 
 
-@router.post("/refresh")
+# Abuse control, not authorization (services/rate_limit). A refresh token is a
+# long random JWT and is not brute forceable in practice, so this is not about
+# guessing one: it is that an unthrottled endpoint doing a database round trip
+# per call is a resource-exhaustion vector, and this was the one auth route the
+# sweep that added `auth_exchange` missed.
+#
+# The window is deliberately generous. A legitimate browser refreshes roughly
+# once per access-token lifetime (fifteen minutes), and several tabs of one
+# session can refresh at once after a laptop wakes, so a tight limit here would
+# sign real people out. Thirty per minute is far above that and far below a
+# useful flood. Now that `client_identifier` resolves a verified subject, an
+# authenticated caller gets their own bucket rather than sharing their office
+# address with every colleague.
+@router.post(
+    "/refresh",
+    dependencies=[Depends(rate_limit("auth_refresh", limit=30, window=60))],
+)
 async def refresh(
     request: Request,
     response: Response,
@@ -611,7 +557,7 @@ async def refresh(
             continue
         except pyjwt.PyJWTError:
             return _dead_session("Invalid refresh token")
-    if payload is None or payload.get("type") != "refresh":
+    if payload is None or payload.get("type") != "refresh" or not payload.get("sid") or not payload.get("jti"):
         return _dead_session("Invalid refresh token")
 
     user = await session.get(User, uuid.UUID(payload["sub"]))
@@ -621,17 +567,67 @@ async def refresh(
     # Rotate BOTH tokens on every refresh (refresh-token rotation), preserving
     # the token's audience.
     access = create_access_token(
-        user.id, user.role.value, user.tenant_id, audience=payload["aud"]
+        user.id, user.role.value, user.tenant_id, audience=payload["aud"],
+        session_id=payload["sid"],
     )
-    refresh_token = create_refresh_token(user.id, audience=payload["aud"])
+    refresh_candidate = create_refresh_token(
+        user.id, audience=payload["aud"], session_id=payload["sid"]
+    )
+    new_jti = pyjwt.decode(
+        refresh_candidate, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=payload["aud"],
+    )["jti"]
+    # A refresh renews the idle deadline only when a person caused it. The
+    # common refresh is a poll's 401 being repaired, and renewing on that is
+    # how a forgotten tab used to stay signed in for ever (services/auth_sessions).
+    refresh_token = await auth_sessions.rotate(
+        payload["sid"], user.id, payload["jti"], new_jti, refresh_candidate,
+        touch=is_user_activity(request),
+    )
+    if refresh_token is None:
+        return _dead_session("Session expired or revoked")
     set_auth_cookies(response, access, refresh_token)
     return {"refreshed": True}
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(request: Request, response: Response) -> dict:
+    for name in (REFRESH_COOKIE, "pr_access"):
+        token = request.cookies.get(name)
+        if not token:
+            continue
+        try:
+            payload = pyjwt.decode(
+                token, get_settings().jwt_secret, algorithms=[ALGORITHM],
+                audience=[AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE],
+                options={"verify_exp": False},
+            )
+        except pyjwt.PyJWTError:
+            continue
+        if payload.get("sid") and payload.get("sub"):
+            await auth_sessions.revoke(payload["sid"], payload["sub"])
+            break
     clear_auth_cookies(response)
     return {"logged_out": True}
+
+
+@router.post("/password-changed")
+async def password_changed(
+    body: FirebaseSessionIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
+) -> dict:
+    """Fresh Firebase proof revokes app sessions even if this cookie expired."""
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
+    users = (await session.execute(
+        select(User.id).where(User.firebase_uid == identity.uid)
+    )).scalars().all()
+    if not users:
+        raise HTTPException(status_code=401, detail="Unknown account")
+    for user_id in users:
+        await auth_sessions.revoke_all(user_id)
+    clear_auth_cookies(response)
+    return {"sessions_revoked": True}
 
 
 @router.get("/me", response_model=MeOut)

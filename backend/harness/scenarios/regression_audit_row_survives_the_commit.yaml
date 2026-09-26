@@ -1,0 +1,53 @@
+id: regression.an_audit_row_survives_its_own_commit
+version: 2
+tier: regression
+description: >
+  Saving the skills answers 200 AND leaves both of its audit rows behind when a
+  second connection looks, together with everything the save wrote. The
+  defect this pins shipped on 2026-09-20: `audit()` flushes its INSERT and
+  returns the row, so a field assigned to it afterwards emitted `UPDATE
+  audit_log`, a statement the application role has had REVOKED since migration
+  0001. The doomed update either 500'd inside the handler or flushed at
+  COMMIT, after FastAPI had already sent the response, rolling the whole
+  transaction back while the client held a 200. Version 2 drives Save Skills,
+  the human act that replaced the matrix finalize; it writes the job's audit
+  row and Sutra's agent row, each in ONE insert, after one context call.
+tags: [audit, skills, rollback, "2026-09-20"]
+
+given:
+  world: job_with_drafted_skills
+
+workload:
+  - save_the_skills
+
+expect:
+  # THE WHOLE SCENARIO IS THE GAP BETWEEN THESE TWO BLOCKS. The output block
+  # is what the client saw; the state block is what the database kept. On the
+  # defect they disagreed, and only the second connection could tell.
+  state:
+    - audit_log.count:job_skills_saved == 1
+    - audit_log.count:job_assessment_context_written == 1
+    - jobs.framework_approved == true
+    - jobs.lifecycle_state == FINALIZED
+    - jobs.assessment_context_writer == sutra
+    - job_competencies.with_evidence_count == 8
+  output:
+    - status.save_the_skills == 200
+    - body.save_the_skills.saved == true
+    # ONE context call for the whole save, never one per skill: the writer is
+    # asked once, before any row changes.
+    - facts.context_calls_answered == 1
+    - facts.skills_blocking_reason == ""
+  trajectory:
+    - skills_save_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    # The writer's credential exists only inside the save; it is gone again
+    # before this is judged.
+    - a_model_credential_was_configured
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

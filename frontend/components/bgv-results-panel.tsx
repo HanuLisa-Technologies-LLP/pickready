@@ -63,17 +63,31 @@ function fieldText(value: string | boolean | null | undefined): string {
   return String(value);
 }
 
+/** One catalogue item with the candidate's stamp (vivekium feature 6). */
+interface ConsentStampItem {
+  key: string;
+  stage: string;
+  text: string;
+  consented_at: string | null;
+}
+
 export function BgvResultsPanel({ candidateId }: { candidateId: string }) {
   const [items, setItems] = React.useState<BgvResultItem[] | null>(null);
+  const [consents, setConsents] = React.useState<ConsentStampItem[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setItems(null);
-    apiGet<{ inquiries: BgvResultItem[] }>(`/candidates/${candidateId}/bgv`)
+    apiGet<{ inquiries: BgvResultItem[]; consent_items?: ConsentStampItem[] }>(
+      `/candidates/${candidateId}/bgv`
+    )
       .then((res) => {
-        if (!cancelled) setItems(res.inquiries);
+        if (!cancelled) {
+          setItems(res.inquiries);
+          setConsents(res.consent_items ?? []);
+        }
       })
       .catch(() => {
         if (!cancelled) setItems(null);
@@ -100,11 +114,37 @@ export function BgvResultsPanel({ candidateId }: { candidateId: string }) {
       </p>
     );
   }
+  // The candidate's consent record (vivekium feature 6): the same
+  // candidate_consents rows the candidate's own portal reads, so this page,
+  // the BGV record and the candidate record cannot disagree. Always the
+  // FULL catalogue: an item never consented to renders as exactly that.
+  const consentBlock =
+    consents.length > 0 ? (
+      <div className="rounded-md border p-4">
+        <p className="text-sm font-semibold">Consent record</p>
+        <ul className="mt-2 space-y-2">
+          {consents.map((entry) => (
+            <li key={entry.key} className="text-sm">
+              <span className="mr-2 text-xs font-medium">
+                {entry.consented_at
+                  ? `Consented ${new Date(entry.consented_at).toLocaleDateString()}`
+                  : "Not consented"}
+              </span>
+              {entry.text}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
   if (items.length === 0) {
     return (
-      <p className="text-sm">
-        The candidate has not started any employer verification.
-      </p>
+      <div className="space-y-4">
+        <p className="text-sm">
+          The candidate has not started any employer verification.
+        </p>
+        {consentBlock}
+      </div>
     );
   }
 
@@ -153,6 +193,7 @@ export function BgvResultsPanel({ candidateId }: { candidateId: string }) {
           </div>
         )
       )}
+      {consentBlock}
     </div>
   );
 }

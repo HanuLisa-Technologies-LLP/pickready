@@ -13,11 +13,11 @@ import { PageHeader } from "@/components/app-shell";
  * to ask. Both are kept.
  */
 export const metadata: Metadata = {
-  // No site name here. `app/layout.tsx` sets a `%s | ReadyPick` template, so
+  // No site name here. `app/layout.tsx` sets a `%s | Vivekium` template, so
   // repeating it would render it twice.
   title: "Candidates",
   description:
-    "Every candidate you can act on, with their pre-screen signal, Ready Pick Score, evidence and stage.",
+    "Every candidate you can act on, with their pre-screen signal, Vivekium Score, evidence and stage.",
 };
 
 export default function CandidatesPage() {
@@ -25,7 +25,7 @@ export default function CandidatesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Candidates"
-        description="Sort by Ready Pick Score, open the evidence, record your own read, and move people forward."
+        description="Sort by Vivekium Score, open the evidence, record your own read, and move people forward."
       />
       <CandidateDashboard />
     </div>

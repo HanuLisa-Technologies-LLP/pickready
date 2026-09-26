@@ -58,3 +58,13 @@ def video_download_allowed(candidate: Any) -> bool:
     Stable import surface for the video delivery path.
     """
     return _explicitly_true(getattr(candidate, "retain_video_consent", None))
+
+
+# `reuse_across_jobs_allowed` USED TO LIVE HERE and was deleted on
+# 2026-09-22 rather than deprecated: this module's flag speaks about
+# RETENTION and is wired to the DOWNLOAD verb, and reading it for reuse would
+# have stretched one consent over two purposes. The reuse it would have
+# gated was itself retired on 2026-09-25 (every item of every assessment is
+# asked), together with its own catalogue item (`consent_catalog.RETIRED_KEYS`).
+
+

@@ -4,7 +4,7 @@ The SECOND real transport, never a fallback: `settings.email_transport`
 selects "smtp" or "ses" per deployment, and the two are never chained. This
 module owns only the SES transport plus SES-specific failure classification;
 the resilience taxonomy (PermanentDeliveryError / TransientDeliveryError) is
-imported from `app.services.sms_service` exactly as `smtp_service` imports
+imported from `app.services.delivery_errors` exactly as `smtp_service` imports
 it, so the task layer's retry policy is identical whichever transport a
 deployment runs.
 
@@ -34,10 +34,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.sms_service import (
+from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
 )
@@ -63,6 +64,45 @@ _PERMANENT_CODES: frozenset[str] = frozenset(
 )
 
 _client: Any = None
+
+#: SES message tags are STRICTLY [A-Za-z0-9_-], at most 256 characters, and a
+#: message carries at most 50. A tag whose value breaks that makes SES reject
+#: the WHOLE send, so a value that does not fit is dropped rather than
+#: sanitised into something that no longer identifies anything. Every id this
+#: product correlates on is a UUID, which already qualifies.
+_TAG_SAFE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+#: The correlation keys carried onto SES, in the order they are emitted. Names
+#: match the columns they came from so an operator reading an SES event and an
+#: operator reading `email_log` are looking at the same words.
+_TAG_KEYS: tuple[str, ...] = (
+    "tenant_id",
+    "sender_id",
+    "candidate_id",
+    "job_id",
+    "notification_id",
+)
+
+
+def _message_tags(correlation: dict[str, Any] | None) -> list[dict[str, str]]:
+    """SES message tags for the ids this product correlates a send on.
+
+    Silently dropping an unusable value is deliberate and is the safe
+    direction: a malformed tag fails the entire send, and an email that did
+    not go out is a worse outcome than an event that has to be matched on its
+    message id alone -- which is what the webhook does anyway.
+    """
+    if not correlation:
+        return []
+    tags: list[dict[str, str]] = []
+    for key in _TAG_KEYS:
+        value = correlation.get(key)
+        if value is None:
+            continue
+        text = str(value)
+        if _TAG_SAFE.match(text):
+            tags.append({"Name": key, "Value": text})
+    return tags
 
 
 def _ses_client():
@@ -101,6 +141,7 @@ async def send_email_async(
     text: str | None = None,
     attachments: list[dict] | None = None,
     reply_to: str | None = None,
+    correlation: dict[str, Any] | None = None,
 ) -> str | None:
     """Send one email through SES. Returns the SES MessageId on success.
 
@@ -122,14 +163,30 @@ async def send_email_async(
         ConnectionError as BotoConnectionError,
     )
 
+    # THE CONFIGURATION SET IS WHAT TURNS A SEND INTO A TRACKED SEND. SES
+    # publishes SEND/DELIVERY/BOUNCE/COMPLAINT only for messages sent under a
+    # set that carries an event destination; without it the message still
+    # arrives and no event ever comes back, so every row would sit at `sent`
+    # for ever. OMITTED rather than defaulted when unset: naming a set that
+    # does not exist makes SES reject the message outright.
+    send_kwargs: dict[str, Any] = {
+        "Source": from_email,
+        "Destinations": [to],
+        "RawMessage": {"Data": raw},
+    }
+    configuration_set = (get_settings().ses_configuration_set or "").strip()
+    if configuration_set:
+        send_kwargs["ConfigurationSetName"] = configuration_set
+    # CORRELATION TRAVELS WITH THE MESSAGE, so an event arriving minutes later
+    # can be attributed without a second lookup. SES echoes these tags on every
+    # event for this message.
+    tags = _message_tags(correlation)
+    if tags:
+        send_kwargs["Tags"] = tags
+
     try:
         # boto3 is synchronous; a thread keeps the worker's event loop free.
-        response = await asyncio.to_thread(
-            client.send_raw_email,
-            Source=from_email,
-            Destinations=[to],
-            RawMessage={"Data": raw},
-        )
+        response = await asyncio.to_thread(client.send_raw_email, **send_kwargs)
     except ClientError as exc:
         code = str(exc.response.get("Error", {}).get("Code", ""))
         provider_message = str(exc.response.get("Error", {}).get("Message", ""))[:500]

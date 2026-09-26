@@ -1,16 +1,34 @@
 "use client";
 
-// The job detail page (2026-07-27 spec §2/§3/§7). This IS the review screen, 
+// The job detail page (2026-07-27 spec §2/§3/§7). This IS the review screen,
 // there is no separate one any more.
 //
-//   [ JD, with About Company / Work Life / Benefits, Edit button top-right ]
-//   [ RUN AI MATCHING ]
-//   [ Assessment setup review: PPI framework + technical questions ]
-//   [ Inline candidate table: Name | Level | PRISM Report | Resume | 4 comments ]
+// Two tabs. The JOB DESCRIPTION tab is the job's setup, in the order the work
+// happens (Vivekium release, Phase 1, owner ruling D1):
+//
+//   [ JD: the one markdown document + the job's details (grade, band, ...) ]
+//   [ SWOT analysis (Bodha)                                                ]
+//   [ Skills: Must-have / Nice-to-have / Behavioural, at most five each    ]
+//   [ Assessment monitoring                                                ]
+//   [ Publish: the checklist and the one publish action                    ]
+//
+// The CANDIDATES tab carries the databank upload, AI matching, invitations
+// and the ranked table.
+//
+// What is gone, and why:
+//   * The per-section JD editor. The markdown document is canonical and is
+//     edited as one document through PATCH /jobs/{id}/jd; a second editor that
+//     re-rendered the document from sections discarded the recruiter's own
+//     formatting. The job's details (title, grade, band, narrative sections)
+//     are a separate, smaller form through PATCH /jobs/{id}.
+//   * `level`. The grade and the experience band replaced it; the badge reads
+//     "Grade", never "Level".
+//   * The criteria editor and the resume-ranking category card that used to
+//     sit in the Candidates tab. The Skills panel replaces both.
 //
 // Deliberately absent, per the spec: the "Added by HR after ratification"
 // metadata, the notes textbox, the approval-status display, and the separate
-// JD-edits card. Editing happens in place, in one form.
+// JD-edits card.
 
 import * as React from "react";
 import { Loader2, Pencil, Send, Sparkles } from "lucide-react";
@@ -34,21 +52,34 @@ import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { RoleTypeBadge } from "@/components/role-type-badge";
 import { ErrorState, LoadingRows } from "@/components/page-primitives";
-import { asJdLines } from "@/components/job-description";
+import { JdDocument } from "@/components/jd-document";
 import { CandidateRankingTable } from "@/components/candidate-ranking-table";
 import { DatabankUpload } from "@/components/databank-upload";
 import { PipelineFunnel } from "@/components/pipeline-status";
 import { PostingWindowBanner } from "@/components/posting-window";
+import { AssessmentRetentionPanel } from "@/components/assessment-retention-panel";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
-import { JobSetupReview } from "@/components/job-setup-review";
 import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
+import { JobSkillsPanel } from "@/components/job-skills";
+import {
+  JobPublishCard,
+  type JobSetupStatus,
+} from "@/components/job-publish-card";
+import { MonitoringPolicyCard } from "@/components/proctoring/monitoring-policy-card";
 import { PPIReportModal } from "@/components/ppi-report-modal";
 import {
   MatchingReasoning,
   type MatchingProgress,
 } from "@/components/matching-reasoning";
+import {
+  AiActivityIndicator,
+  useAiActivity,
+} from "@/components/ai-activity";
+import type {
+  AiTransportState,
+  CarriesAiActivity,
+} from "@/lib/ai-activity";
 import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
-import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -77,25 +108,19 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-/** One labelled JD paragraph; hidden entirely when the field is empty. */
-function JdField({ label, value }: { label: string; value: unknown }) {
-  const lines = asJdLines(value);
-  if (lines.length === 0) return null;
-  return (
-    <div>
-      <h4 className="mb-1 font-semibold">{label}</h4>
-      {lines.length === 1 ? (
-        <p className="whitespace-pre-line">{lines[0]}</p>
-      ) : (
-        <ul className="list-disc space-y-1 pl-5">
-          {lines.map((line, index) => (
-            <li key={`${label}-${index}`}>{line}</li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
+/**
+ * Why the grade field is disabled. The grade locks with the skills the moment
+ * a candidate starts the assessment (D5), because it decides the question
+ * budget every candidate on the job receives. Same words the server refuses a
+ * grade change with.
+ */
+const GRADE_LOCKED_SENTENCE =
+  "The grade is locked because a candidate has started the assessment. It decides the question budget every candidate on this job receives.";
+
+/** What the Close Job toast says. Closing withholds the assessment records
+ *  from the team at once (2026-09-22); the pipeline is NOT unchanged. */
+const JOB_CLOSED_SENTENCE =
+  "New applications have stopped. This job's assessment records are now withheld from the hiring team and are deleted when the retention window ends.";
 
 /** A narrative section, with a note when it is inherited from the company. */
 function NarrativeSection({
@@ -123,45 +148,33 @@ function NarrativeSection({
   );
 }
 
-function experienceLabel(value: unknown): string | null {
-  const text = asJdLines(value)[0];
-  if (!text) return null;
-  if (typeof value === "number") return `${text}+ years`;
-  return /years?/i.test(text) ? text : `${text} years`;
-}
-
-type Draft = {
+/** The job's details: everything a recruiter edits that is not the document. */
+type DetailsDraft = {
   title: string;
   department: string;
-  level: string;
   grade: JobGrade | "";
-  role: string;
-  responsibilities: string;
-  accountabilities: string;
-  education: string;
-  skills: string;
-  experience_years: string;
+  requirement_period: string;
+  experience_min_years: string;
+  experience_max_years: string;
   about_company: string;
   work_life: string;
   benefits: string;
 };
 
-function draftFromJob(job: Job): Draft {
-  const jd = jobJd(job);
+function detailsFromJob(job: Job): DetailsDraft {
   return {
     title: job.title ?? "",
     department: job.department ?? "",
-    level: job.level ?? "",
     grade: job.grade ?? "",
-    role: asJdLines(jd.role).join("\n"),
-    responsibilities: asJdLines(jd.responsibilities).join("\n"),
-    accountabilities: asJdLines(jd.accountabilities).join("\n"),
-    education: asJdLines(jd.education).join("\n"),
-    skills: (jd.skills ?? []).join(", "),
-    experience_years:
-      jd.experience_years !== undefined && jd.experience_years !== null
-        ? String(jd.experience_years)
-        : "",
+    requirement_period: job.requirement_period ?? "",
+    experience_min_years:
+      job.experience_min_years === null || job.experience_min_years === undefined
+        ? ""
+        : String(job.experience_min_years),
+    experience_max_years:
+      job.experience_max_years === null || job.experience_max_years === undefined
+        ? ""
+        : String(job.experience_max_years),
     // Pre-filled with the RESOLVED value (spec §3.1): opening the editor shows
     // the company's text rather than an empty box, so a recruiter who only
     // wanted to tweak a sentence does not have to retype the paragraph.
@@ -169,6 +182,22 @@ function draftFromJob(job: Job): Draft {
     work_life: job.work_life ?? "",
     benefits: job.benefits ?? "",
   };
+}
+
+function yearsOrNull(value: string): number | null {
+  const text = value.trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function experienceBand(job: Job): string | null {
+  const low = job.experience_min_years;
+  const high = job.experience_max_years;
+  if (low === null || low === undefined || high === null || high === undefined) {
+    return null;
+  }
+  return `${low} to ${high} years`;
 }
 
 export default function OrgJobDetailPage() {
@@ -183,6 +212,12 @@ export default function OrgJobDetailPage() {
   const canDecide = hasCapability(CAP.decideProfile);
   const canUploadDatabank = hasCapability(CAP.uploadResumes);
   const canRenew = hasCapability(CAP.publishJob);
+  // The capability half of "may re-draft the skills": all three buckets. The
+  // Skills panel re-checks with the server's per-job answer.
+  const canRedraftSkills =
+    hasCapability(CAP.editMustHaveSkills) &&
+    hasCapability(CAP.editNiceToHaveSkills) &&
+    hasCapability(CAP.editBehaviouralCompetencies);
 
   // Which of the two top-level screens is showing. The JD opens first: a
   // recruiter arriving at a job usually wants to check the posting before the
@@ -191,15 +226,35 @@ export default function OrgJobDetailPage() {
 
   const [job, setJob] = React.useState<Job | null>(null);
   const [company, setCompany] = React.useState<CompanyProfile | null>(null);
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState<Draft | null>(null);
-  const [saving, setSaving] = React.useState(false);
   // Distinguishes "the job has not arrived yet" from "the job could not be
   // read". Without it a failed load left `job` null forever and the card below
   // showed its loading skeleton for the rest of the session: the job
   // description simply never appeared, and the toast that said why was long
   // gone by the time anyone looked.
   const [jobError, setJobError] = React.useState<string | null>(null);
+
+  // The one JD document, edited as one document.
+  const [editingDoc, setEditingDoc] = React.useState(false);
+  const [docDraft, setDocDraft] = React.useState("");
+  const [savingDoc, setSavingDoc] = React.useState(false);
+  // The job's details, a separate and smaller form.
+  const [editingDetails, setEditingDetails] = React.useState(false);
+  const [details, setDetails] = React.useState<DetailsDraft | null>(null);
+  const [savingDetails, setSavingDetails] = React.useState(false);
+
+  // The setup answer the Publish card reads, shared so the grade field locks
+  // from the same server answer the checklist shows.
+  const [setup, setSetup] = React.useState<JobSetupStatus | null>(null);
+  // Bumped when a SWOT save may have started a skills draft.
+  const [skillsReloadKey, setSkillsReloadKey] = React.useState(0);
+  // Bumped whenever anything the publish checklist reads may have changed.
+  const [checklistReloadKey, setChecklistReloadKey] = React.useState(0);
+  // Bumped by the SWOT panel's "Re-draft skills from the updated SWOT".
+  const [redraftSignal, setRedraftSignal] = React.useState(0);
+  const refreshChecklist = React.useCallback(
+    () => setChecklistReloadKey((key) => key + 1),
+    []
+  );
 
   const [matchingState, setMatchingState] = React.useState<
     "idle" | "running" | "done" | "error"
@@ -211,11 +266,30 @@ export default function OrgJobDetailPage() {
    *  until the first poll answers, so the panel is absent rather than empty. */
   const [matchingProgress, setMatchingProgress] =
     React.useState<MatchingProgress | null>(null);
+  /**
+   * The dispatched run id, which is also this AI operation's activity id.
+   *
+   * One identifier for both, rather than a second one invented for the status:
+   * the browser is holding the run id before the task has been picked up, so
+   * every activity payload is attributable from the first poll, and a second
+   * run started from another tab cannot repaint this one (Case 3 section 24).
+   */
+  const [matchingRunId, setMatchingRunId] = React.useState("");
+  const matchingActivity = useAiActivity(matchingRunId);
+  /**
+   * The latest activity view, for the poll loop below.
+   *
+   * `runMatching` is an async function, so it closes over the view from the
+   * render it was called in, and that view still carries the PREVIOUS run id.
+   * Reporting through it would file the new run's payloads under the old
+   * operation and every one of them would be discarded as foreign.
+   */
+  const matchingActivityRef = React.useRef(matchingActivity);
+  matchingActivityRef.current = matchingActivity;
   const [reloadKey, setReloadKey] = React.useState(0);
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
   const [transcriptRow, setTranscriptRow] = React.useState<RankedCandidate | null>(null);
-  const [resumeRow, setResumeRow] = React.useState<RankedCandidate | null>(null);
   const [emailRows, setEmailRows] = React.useState<RankedCandidate[]>([]);
   const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
   const [inviting, setInviting] = React.useState(false);
@@ -224,6 +298,12 @@ export default function OrgJobDetailPage() {
   const [closeOpen, setCloseOpen] = React.useState(false);
   const [closeReason, setCloseReason] = React.useState("");
 
+  /** Take a fresh job read as the page's truth, and reset both editors to it. */
+  const acceptJob = React.useCallback((next: Job) => {
+    setJob(next);
+    setDocDraft(next.jd_markdown ?? "");
+    setDetails(detailsFromJob(next));
+  }, []);
 
   /**
    * Re-open an expired posting for another fixed 30-day window.
@@ -237,8 +317,7 @@ export default function OrgJobDetailPage() {
     setRenewing(true);
     try {
       const updated = await apiPost<Job>(`/jobs/${jobId}/renew`);
-      setJob(updated);
-      setDraft(draftFromJob(updated));
+      acceptJob(updated);
       setReloadKey((key) => key + 1);
       toast({
         title: "Posting renewed",
@@ -253,7 +332,7 @@ export default function OrgJobDetailPage() {
     } finally {
       setRenewing(false);
     }
-  }, [jobId, toast]);
+  }, [jobId, toast, acceptJob]);
 
   /**
    * Close the posting because the requirement is met (workflow Gate 8).
@@ -270,15 +349,11 @@ export default function OrgJobDetailPage() {
       const updated = await apiPost<Job>(`/jobs/${jobId}/close`, {
         reason: closeReason.trim() || null,
       });
-      setJob(updated);
-      setDraft(draftFromJob(updated));
+      acceptJob(updated);
       setCloseOpen(false);
       setCloseReason("");
-      toast({
-        title: "Job closed",
-        description:
-          "New applications have stopped. Your candidate pipeline is unchanged.",
-      });
+      refreshChecklist();
+      toast({ title: "Job closed", description: JOB_CLOSED_SENTENCE });
     } catch (e) {
       toast({
         title: "Could not close this job",
@@ -288,14 +363,13 @@ export default function OrgJobDetailPage() {
     } finally {
       setClosing(false);
     }
-  }, [jobId, closeReason, toast]);
+  }, [jobId, closeReason, toast, acceptJob, refreshChecklist]);
 
   const loadJob = React.useCallback(async () => {
     setJobError(null);
     try {
       const res = await apiGet<Job>(`/jobs/${jobId}`);
-      setJob(res);
-      setDraft(draftFromJob(res));
+      acceptJob(res);
     } catch (e) {
       setJobError(
         e instanceof Error ? e.message : "This job could not be loaded."
@@ -306,7 +380,7 @@ export default function OrgJobDetailPage() {
         variant: "destructive",
       });
     }
-  }, [jobId, toast]);
+  }, [jobId, toast, acceptJob]);
 
   React.useEffect(() => {
     void loadJob();
@@ -317,41 +391,17 @@ export default function OrgJobDetailPage() {
       .catch(() => setCompany(null));
   }, [loadJob]);
 
-  const saveJd = async () => {
-    if (!draft || !job) return;
-    setSaving(true);
+  /** Save the one JD document. The server re-derives every section from it. */
+  const saveDocument = async () => {
+    if (!job) return;
+    setSavingDoc(true);
     try {
-      const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
-        title: draft.title.trim(),
-        department: draft.department.trim() || null,
-        level: draft.level.trim() || null,
-        ...(draft.grade ? { grade: draft.grade } : {}),
-        jd: {
-          ...jobJd(job),
-          role: draft.role,
-          responsibilities: draft.responsibilities,
-          accountabilities: draft.accountabilities,
-          education: draft.education,
-          skills: draft.skills
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-          experience_years: (() => {
-            const value = draft.experience_years.trim();
-            if (!value) return null;
-            const numeric = Number(value);
-            return Number.isFinite(numeric) ? numeric : value;
-          })(),
-        },
-        // Sending null (not "") clears the per-job override so the section
-        // falls back to the company profile, the two mean different things.
-        about_company: draft.about_company.trim() || null,
-        work_life: draft.work_life.trim() || null,
-        benefits: draft.benefits.trim() || null,
+      const updated = await apiPatch<Job>(`/jobs/${jobId}/jd`, {
+        jd_markdown: docDraft,
       });
-      setJob(updated);
-      setDraft(draftFromJob(updated));
-      setEditing(false);
+      acceptJob(updated);
+      setEditingDoc(false);
+      refreshChecklist();
       toast({ title: "Job description updated" });
     } catch (e) {
       toast({
@@ -360,7 +410,43 @@ export default function OrgJobDetailPage() {
         variant: "destructive",
       });
     } finally {
-      setSaving(false);
+      setSavingDoc(false);
+    }
+  };
+
+  /** Save the job's details. The grade is sent only when it changed, so a
+   *  locked job can still have its title or narrative sections edited. */
+  const saveDetails = async () => {
+    if (!details || !job) return;
+    setSavingDetails(true);
+    try {
+      const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
+        title: details.title.trim(),
+        department: details.department.trim() || null,
+        requirement_period: details.requirement_period.trim() || null,
+        experience_min_years: yearsOrNull(details.experience_min_years),
+        experience_max_years: yearsOrNull(details.experience_max_years),
+        ...(details.grade && details.grade !== job.grade
+          ? { grade: details.grade }
+          : {}),
+        // Sending null (not "") clears the per-job override so the section
+        // falls back to the company profile, the two mean different things.
+        about_company: details.about_company.trim() || null,
+        work_life: details.work_life.trim() || null,
+        benefits: details.benefits.trim() || null,
+      });
+      acceptJob(updated);
+      setEditingDetails(false);
+      refreshChecklist();
+      toast({ title: "Job details updated" });
+    } catch (e) {
+      toast({
+        title: "Couldn't save the job details",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setSavingDetails(false);
     }
   };
 
@@ -437,28 +523,70 @@ export default function OrgJobDetailPage() {
   const runMatching = async () => {
     setMatchingState("running");
     setMatchingProgress(null);
+    // Clears the previous run's activity before this one has an id of its own,
+    // so the last line of a finished run is never sitting under a button that
+    // has just been pressed again.
+    setMatchingRunId("");
     setMatchingMessage("Starting the run.");
     try {
+      // The canonical run route, and a status route scoped to THIS job: the
+      // server answers 404 for a run id it did not record starting on this
+      // job in this tenant, so a run id cannot be read across jobs.
       const res = await apiPost<{ candidate_count: number; task_id: string }>(
-        `/jobs/${jobId}/run-matching`
+        `/matching/jobs/${jobId}/run`
       );
+      setMatchingRunId(res.task_id);
       let finished = false;
       let finalState = "PENDING";
+      // What this run could not do, accumulated across polls. A degradation
+      // never un-happens within a run, and the terminal poll does not carry
+      // the stage payload (the run-status record holds the task's return
+      // value once it has finished), so a reason seen on any poll is kept.
+      let degraded = false;
+      let degradedReasons: string[] = [];
+      // Declared through `as` so the loop's reassignments are not narrowed
+      // away to the initial null.
+      let progress = null as MatchingProgress | null;
       for (let attempt = 0; attempt < 240; attempt += 1) {
-        const status = await apiGet<MatchingTaskStatus>(
-          `/matching/tasks/${res.task_id}`
+        const status = await apiGet<MatchingTaskStatus & CarriesAiActivity>(
+          `/matching/jobs/${jobId}/tasks/${res.task_id}`
         );
         finalState = status.state;
+        degraded = degraded || Boolean(status.degraded);
+        for (const reason of status.degraded_reasons ?? []) {
+          if (!degradedReasons.includes(reason)) {
+            degradedReasons = [...degradedReasons, reason];
+          }
+        }
+        // The AI activity line, from the same response the stage list comes
+        // from, so the two cannot be read a poll apart from each other. The
+        // field is optional: a response without it leaves the indicator silent
+        // rather than the page inventing a status it was not given.
+        matchingActivityRef.current.report(
+          status.activity,
+          status.state as AiTransportState
+        );
         // The stage list is always returned, including for a task still sitting
         // in the queue, so the panel draws the whole plan at once and fills it
-        // in rather than appearing to invent steps as it goes.
-        if (status.stages?.length) {
-          setMatchingProgress({
+        // in rather than appearing to invent steps as it goes. A FINISHED run
+        // whose list is all pending is the server saying it holds no stage
+        // record any more (see above), not a description of the run, so the
+        // last list that did describe it stays on screen.
+        const describesRun =
+          !status.done ||
+          (status.stages ?? []).some((stage) => stage.status !== "pending");
+        if (status.stages?.length && describesRun) {
+          progress = {
             stages: status.stages,
             candidate_count: status.candidate_count ?? 0,
             scored_count: status.scored_count ?? 0,
-          });
+            degraded,
+            degraded_reasons: degradedReasons,
+          };
+        } else if (progress) {
+          progress = { ...progress, degraded, degraded_reasons: degradedReasons };
         }
+        if (progress) setMatchingProgress(progress);
         setMatchingMessage(
           status.state === "PENDING"
             ? "Waiting for a worker to pick the run up."
@@ -477,16 +605,29 @@ export default function OrgJobDetailPage() {
         throw new Error(`AI matching ended in ${finalState.toLowerCase()} state. No partial result is being presented as complete.`);
       }
       setMatchingState("done");
+      const plural = res.candidate_count === 1 ? "" : "s";
+      // A degraded run is never announced as complete: the panel above lists
+      // what it could not do, and the message and the toast point at it.
       setMatchingMessage(
-        `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored. Matching is complete.`
+        degraded
+          ? `${res.candidate_count} candidate${plural} in this run. Not everything could be checked; the notes above say what.`
+          : `${res.candidate_count} candidate${plural} checked. Matching is complete.`
       );
       setReloadKey((key) => key + 1);
       toast({
-        title: "AI matching complete",
-        description: `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored and ready to review.`,
+        title: degraded
+          ? "AI matching finished, but not everything was checked"
+          : "AI matching complete",
+        description: degraded
+          ? "The table is updated. The matching panel lists what this run could not do."
+          : `${res.candidate_count} candidate${plural} checked and ready to review.`,
       });
     } catch (e) {
       setMatchingState("error");
+      // Ends the activity immediately. Without this the last line the run
+      // reported stays on screen describing a step that is no longer running,
+      // which is the failure Case 3 section 25 names.
+      matchingActivityRef.current.fail();
       setMatchingMessage(
         e instanceof Error ? e.message : "AI matching could not be started."
       );
@@ -500,6 +641,7 @@ export default function OrgJobDetailPage() {
 
   const overridden = new Set(job?.overridden_sections ?? []);
   const jd = job ? jobJd(job) : {};
+  const gradeLocked = Boolean(setup?.grade_locked);
 
   return (
     <div>
@@ -513,17 +655,7 @@ export default function OrgJobDetailPage() {
         title={job?.title ?? "Job"}
         description={
           job
-            ? [
-                job.department,
-                // The experience band replaced the old free-text level.
-                job.experience_min_years !== null &&
-                job.experience_min_years !== undefined &&
-                job.experience_max_years !== null &&
-                job.experience_max_years !== undefined
-                  ? `${job.experience_min_years} to ${job.experience_max_years} years`
-                  : job.level,
-                job.requirement_period,
-              ]
+            ? [job.department, experienceBand(job), job.requirement_period]
                 .filter(Boolean)
                 .join(" · ")
             : undefined
@@ -537,7 +669,7 @@ export default function OrgJobDetailPage() {
                 classification={job.role_classification}
                 creditCost={job.credit_cost_per_report}
               />
-              <Badge variant="secondary">Level: {jobGradeLabel(job.grade)}</Badge>
+              <Badge variant="secondary">Grade: {jobGradeLabel(job.grade)}</Badge>
             </div>
           ) : undefined
         }
@@ -554,14 +686,31 @@ export default function OrgJobDetailPage() {
         />
       ) : null}
 
+      {/* The thirty day retention state and the assessment dispute path,
+          for a CLOSED job only (Phase 6). */}
+      {job?.closed_at ? (
+        <div className="mb-6">
+          <AssessmentRetentionPanel jobId={jobId} />
+        </div>
+      ) : null}
+
       <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Close this job?</DialogTitle>
             <DialogDescription>
               New applications stop immediately and the public link stops
-              working. Every candidate already in your pipeline stays, including
-              anyone part-way through an assessment. This cannot be undone.
+              working. Every candidate already in your pipeline stays, but the
+              assessment data for this job, the PRISM Reports, the assessment
+              scores, the interview transcripts and any recordings, becomes
+              unavailable to your team the moment you close it: candidates
+              consented to their assessment data on the basis that it lives
+              only as long as this position. It is kept for 30 more days and
+              can be retrieved in that time only through the assessment
+              dispute process. After 30 days it is permanently deleted and
+              cannot be recovered. Your ranked list, pipeline stages and
+              billing records remain. There is no reopen, so those 30 days
+              are the only way back from closing the wrong job.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -617,23 +766,25 @@ export default function OrgJobDetailPage() {
         ))}
       </div>
 
-      {/* ── Job description ─────────────────────────────────────────────── */}
+      {/* ── Job description: the one document ───────────────────────────── */}
       <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
           <div>
             <CardTitle>Job description</CardTitle>
             <CardDescription>
               Reporting to {String(jd.reporting_to || "-")}
-              {jd.reportees ? ` · Reportees: ${jd.reportees}` : ""}
             </CardDescription>
           </div>
-          {canEditJd && !editing ? (
+          {job && canEditJd && !editingDoc ? (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setEditing(true)}
+              onClick={() => {
+                setDocDraft(job.jd_markdown ?? "");
+                setEditingDoc(true);
+              }}
             >
-              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit description
             </Button>
           ) : null}
         </CardHeader>
@@ -651,36 +802,103 @@ export default function OrgJobDetailPage() {
             />
           ) : !job ? (
             <LoadingRows rows={4} label="Loading the job description" />
-          ) : editing && draft ? (
+          ) : editingDoc ? (
+            <div className="space-y-3">
+              <Textarea
+                aria-label="Job description document"
+                className="min-h-[420px] font-mono text-[13px] leading-6"
+                value={docDraft}
+                onChange={(e) => setDocDraft(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <Button
+                  disabled={savingDoc || !docDraft.trim()}
+                  onClick={() => void saveDocument()}
+                >
+                  {savingDoc ? "Saving" : "Save description"}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={savingDoc}
+                  onClick={() => {
+                    setDocDraft(job.jd_markdown ?? "");
+                    setEditingDoc(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (job.jd_markdown ?? "").trim() ? (
+            <JdDocument markdown={job.jd_markdown ?? ""} />
+          ) : (
+            <p>No job description has been written for this job yet.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── The job's details: everything that is not the document ───────── */}
+      <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle>Job details</CardTitle>
+            <CardDescription>
+              The grade decides which assessment candidates receive.
+            </CardDescription>
+          </div>
+          {job && canEditJd && !editingDetails ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetails(detailsFromJob(job));
+                setEditingDetails(true);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit details
+            </Button>
+          ) : null}
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          {!job ? (
+            jobError ? null : <LoadingRows rows={3} label="Loading the job details" />
+          ) : editingDetails && details ? (
             <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Title" htmlFor="jd-title" required>
+                <FormField label="Title" htmlFor="job-title" required>
                   <Input
-                    id="jd-title"
-                    value={draft.title}
-                    onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                    id="job-title"
+                    value={details.title}
+                    onChange={(e) => setDetails({ ...details, title: e.target.value })}
                   />
                 </FormField>
-                <FormField label="Department" htmlFor="jd-dept">
+                <FormField label="Department" htmlFor="job-dept">
                   <Input
-                    id="jd-dept"
-                    value={draft.department}
+                    id="job-dept"
+                    value={details.department}
                     onChange={(e) =>
-                      setDraft({ ...draft, department: e.target.value })
+                      setDetails({ ...details, department: e.target.value })
                     }
                   />
                 </FormField>
                 <FormField
-                  label="Level"
-                  htmlFor="jd-grade"
-                  hint="Decides which assessment applicants receive."
+                  label="Grade"
+                  htmlFor="job-grade"
+                  hint={
+                    gradeLocked
+                      ? GRADE_LOCKED_SENTENCE
+                      : "Decides which assessment applicants receive."
+                  }
                 >
                   <Select
-                    value={draft.grade}
-                    onValueChange={(v) => setDraft({ ...draft, grade: v as JobGrade })}
+                    value={details.grade}
+                    disabled={gradeLocked}
+                    onValueChange={(v) =>
+                      setDetails({ ...details, grade: v as JobGrade })
+                    }
                   >
-                    <SelectTrigger id="jd-grade">
-                      <SelectValue placeholder="Select a level" />
+                    <SelectTrigger id="job-grade">
+                      <SelectValue placeholder="Select a grade" />
                     </SelectTrigger>
                     <SelectContent>
                       {JOB_GRADES.map((g) => (
@@ -693,58 +911,37 @@ export default function OrgJobDetailPage() {
                 </FormField>
               </div>
 
-              <FormField label="Role" htmlFor="jd-role">
-                <Textarea
-                  id="jd-role"
-                  rows={2}
-                  value={draft.role}
-                  onChange={(e) => setDraft({ ...draft, role: e.target.value })}
-                />
-              </FormField>
-              <FormField label="Responsibilities" htmlFor="jd-resp">
-                <Textarea
-                  id="jd-resp"
-                  rows={4}
-                  value={draft.responsibilities}
-                  onChange={(e) =>
-                    setDraft({ ...draft, responsibilities: e.target.value })
-                  }
-                />
-              </FormField>
-              <FormField label="Accountabilities" htmlFor="jd-acc">
-                <Textarea
-                  id="jd-acc"
-                  rows={3}
-                  value={draft.accountabilities}
-                  onChange={(e) =>
-                    setDraft({ ...draft, accountabilities: e.target.value })
-                  }
-                />
-              </FormField>
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Education" htmlFor="jd-edu">
+                <FormField label="Experience from (years)" htmlFor="job-exp-min">
                   <Input
-                    id="jd-edu"
-                    value={draft.education}
+                    id="job-exp-min"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={details.experience_min_years}
                     onChange={(e) =>
-                      setDraft({ ...draft, education: e.target.value })
+                      setDetails({ ...details, experience_min_years: e.target.value })
                     }
                   />
                 </FormField>
-                <FormField label="Skills (comma-separated)" htmlFor="jd-skills">
+                <FormField label="Experience to (years)" htmlFor="job-exp-max">
                   <Input
-                    id="jd-skills"
-                    value={draft.skills}
-                    onChange={(e) => setDraft({ ...draft, skills: e.target.value })}
+                    id="job-exp-max"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={details.experience_max_years}
+                    onChange={(e) =>
+                      setDetails({ ...details, experience_max_years: e.target.value })
+                    }
                   />
                 </FormField>
-                <FormField label="Experience (years)" htmlFor="jd-exp">
+                <FormField label="Requirement period" htmlFor="job-period">
                   <Input
-                    id="jd-exp"
-                    placeholder="e.g. 3 or 3-5"
-                    value={draft.experience_years}
+                    id="job-period"
+                    value={details.requirement_period}
                     onChange={(e) =>
-                      setDraft({ ...draft, experience_years: e.target.value })
+                      setDetails({ ...details, requirement_period: e.target.value })
                     }
                   />
                 </FormField>
@@ -752,56 +949,56 @@ export default function OrgJobDetailPage() {
 
               <FormField
                 label="About company"
-                htmlFor="jd-about"
+                htmlFor="job-about"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-about"
+                  id="job-about"
                   rows={4}
-                  value={draft.about_company}
+                  value={details.about_company}
                   onChange={(e) =>
-                    setDraft({ ...draft, about_company: e.target.value })
+                    setDetails({ ...details, about_company: e.target.value })
                   }
                 />
               </FormField>
               <FormField
                 label="Work life"
-                htmlFor="jd-worklife"
+                htmlFor="job-worklife"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-worklife"
+                  id="job-worklife"
                   rows={4}
-                  value={draft.work_life}
-                  onChange={(e) => setDraft({ ...draft, work_life: e.target.value })}
+                  value={details.work_life}
+                  onChange={(e) => setDetails({ ...details, work_life: e.target.value })}
                 />
               </FormField>
               <FormField
                 label="Benefits"
-                htmlFor="jd-benefits"
+                htmlFor="job-benefits"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-benefits"
+                  id="job-benefits"
                   rows={4}
-                  value={draft.benefits}
-                  onChange={(e) => setDraft({ ...draft, benefits: e.target.value })}
+                  value={details.benefits}
+                  onChange={(e) => setDetails({ ...details, benefits: e.target.value })}
                 />
               </FormField>
 
               <div className="flex gap-2">
                 <Button
-                  disabled={saving || !draft.title.trim()}
-                  onClick={() => void saveJd()}
+                  disabled={savingDetails || !details.title.trim()}
+                  onClick={() => void saveDetails()}
                 >
-                  {saving ? "Saving" : "Save changes"}
+                  {savingDetails ? "Saving" : "Save details"}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={saving}
+                  disabled={savingDetails}
                   onClick={() => {
-                    setDraft(draftFromJob(job));
-                    setEditing(false);
+                    setDetails(detailsFromJob(job));
+                    setEditingDetails(false);
                   }}
                 >
                   Cancel
@@ -810,26 +1007,21 @@ export default function OrgJobDetailPage() {
             </div>
           ) : (
             <>
-              <JdField label="Description" value={jd.description} />
-              <JdField label="Role" value={jd.role} />
-              <JdField label="Responsibilities" value={jd.responsibilities} />
-              <JdField label="Accountabilities" value={jd.accountabilities} />
-              <JdField label="Education" value={jd.education} />
-              <JdField label="Experience" value={experienceLabel(jd.experience_years)} />
-              <div>
-                <h4 className="mb-1 font-semibold">Skills</h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {(jd.skills ?? []).length > 0 ? (
-                    (jd.skills ?? []).map((s) => (
-                      <Badge key={s} variant="secondary">
-                        {s}
-                      </Badge>
-                    ))
-                  ) : (
-                    <span>-</span>
-                  )}
+              <dl className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <dt className="font-semibold">Grade</dt>
+                  <dd>{jobGradeLabel(job.grade)}</dd>
                 </div>
-              </div>
+                <div>
+                  <dt className="font-semibold">Experience</dt>
+                  <dd>{experienceBand(job) ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold">Requirement period</dt>
+                  <dd>{job.requirement_period || "-"}</dd>
+                </div>
+              </dl>
+              {gradeLocked ? <p className="text-xs">{GRADE_LOCKED_SENTENCE}</p> : null}
               <NarrativeSection
                 label="About company"
                 value={job.about_company}
@@ -852,10 +1044,52 @@ export default function OrgJobDetailPage() {
 
       {/* The SWOT analysis sits under the JD because that is what it is about:
           this role's hiring position, drafted from this JD. It renders its own
-          permission-aware states, so there is no capability check here. */}
+          permission-aware states, so there is no capability check here. Its
+          first save starts the skills draft on the server; a later one can
+          only OFFER a re-draft, which opens the Skills panel's confirmation. */}
       {job ? (
         <JobSwotAnalysisPanel
           jobId={job.id}
+          className={cn(tab !== "jd" && "hidden")}
+          onSaved={() => {
+            setSkillsReloadKey((key) => key + 1);
+            refreshChecklist();
+          }}
+          canRedraftSkills={canRedraftSkills}
+          onRequestSkillsRedraft={() => setRedraftSignal((n) => n + 1)}
+        />
+      ) : null}
+
+      {/* The Skills step (D1): what every candidate is assessed against. It
+          replaced the old criteria editor and the ranking category card. */}
+      {job ? (
+        <JobSkillsPanel
+          jobId={job.id}
+          reloadKey={skillsReloadKey}
+          redraftSignal={redraftSignal}
+          onChanged={refreshChecklist}
+          className={cn(tab !== "jd" && "hidden")}
+        />
+      ) : null}
+
+      {/* The one monitoring setting, moved here from the deleted setup review:
+          it is part of setting the job up, not of reviewing candidates. */}
+      {job ? (
+        <div className={cn("mb-6", tab !== "jd" && "hidden")}>
+          <MonitoringPolicyCard jobId={job.id} />
+        </div>
+      ) : null}
+
+      {/* The one place a job goes live. */}
+      {job ? (
+        <JobPublishCard
+          jobId={job.id}
+          job={job}
+          reloadKey={checklistReloadKey}
+          onSetup={setSetup}
+          onPublished={() => {
+            void loadJob();
+          }}
           className={cn(tab !== "jd" && "hidden")}
         />
       ) : null}
@@ -875,13 +1109,6 @@ export default function OrgJobDetailPage() {
       ) : null}
 
       {/* ── Run AI matching ─────────────────────────────────────────────── */}
-      {/* ── Assessment selection (spec §3.1) ─────────────────────────────── */}
-      {/* The one manual step (spec §11): the PPI framework is reviewed and
-          saved here before any candidate can be invited. Technical questions
-          are no longer shown -- they are written per candidate during the
-          assessment, and what each person was actually asked is on their own
-          row in the table below. */}
-      {job ? <JobSetupReview jobId={jobId} /> : null}
 
       <div className="my-6 space-y-3 rounded-xl border border-border p-4">
         {canRunMatching ? (
@@ -901,11 +1128,23 @@ export default function OrgJobDetailPage() {
           </div>
         ) : null}
         {canRunMatching ? (
-          <MatchingReasoning
-            state={matchingState}
-            progress={matchingProgress}
-            message={matchingMessage}
-          />
+          <>
+            {/* One line saying what the run is doing right now, derived from
+                the milestones the pipeline actually reached. It sits above the
+                stage list rather than replacing it: the list is the plan and
+                what is left, this is the current work and what it turned up. */}
+            <AiActivityIndicator
+              activity={matchingActivity}
+              errorMessage={
+                matchingState === "error" ? matchingMessage : undefined
+              }
+            />
+            <MatchingReasoning
+              state={matchingState}
+              progress={matchingProgress}
+              message={matchingMessage}
+            />
+          </>
         ) : null}
         {canEmail ? (
           <div className="flex flex-wrap items-center gap-3">
@@ -921,7 +1160,7 @@ export default function OrgJobDetailPage() {
               Send assessment invitations
               {invitable.length > 0 ? ` (${invitable.length})` : ""}
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               {selectedRows.length === 0
                 ? "Tick candidates below, then return here to send their assessment invitations."
                 : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
@@ -942,7 +1181,7 @@ export default function OrgJobDetailPage() {
               )}
               Invite to apply ({sourcedSelected.length})
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               These candidates came from your databank and have not applied.
               This asks them to sign in and apply; nothing enters your pipeline
               until they do.
@@ -959,7 +1198,6 @@ export default function OrgJobDetailPage() {
         reloadKey={reloadKey}
         onOpenReport={setReportRow}
         onOpenTranscript={setTranscriptRow}
-        onOpenResume={setResumeRow}
         onEmail={canEmail ? setEmailRows : undefined}
         onSelectionChange={setSelectedRows}
         canDecide={canDecide}
@@ -981,16 +1219,6 @@ export default function OrgJobDetailPage() {
         linkId={transcriptRow?.link_id ?? null}
         candidateName={transcriptRow?.full_name ?? ""}
         jobTitle={job?.title}
-      />
-
-      <ResumeViewer
-        open={resumeRow !== null}
-        onOpenChange={(open) => !open && setResumeRow(null)}
-        resumeUrl={resumeRow?.resume_url}
-        profileId={resumeRow?.profile_id}
-        resumeFileName={resumeRow?.resume_filename}
-        resumeMimeType={resumeRow?.resume_mime_type}
-        candidateName={resumeRow?.full_name ?? ""}
       />
 
       <EmailCompositionModal

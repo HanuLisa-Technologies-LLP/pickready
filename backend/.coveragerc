@@ -1,9 +1,9 @@
 # Coverage measurement for the per-package floors (spec-doc6 §11.1).
 #
 #   "Unit tests for every new module, at >=90% line and branch coverage for
-#    app/hiring/, app/miti/, app/siddhi/, the Company DNA package and the RBAC
-#    authorization layer. Coverage floors enforced in CI, per-package, not
-#    global."
+#    app/hiring/, app/miti/, app/siddhi/, [one package since removed, on
+#    2026-09-09] and the RBAC authorization layer. Coverage floors enforced
+#    in CI, per-package, not global."
 #
 # PER-PACKAGE IS THE WHOLE POINT. A global floor is satisfiable by a large,
 # thoroughly covered surface carrying a small, untested one, and the small
@@ -25,7 +25,6 @@ omit =
     */tests/*
     app/scripts/seed_*.py
     app/scripts/backfill_*.py
-    app/scripts/migrate_resumes_to_gcs.py
 
 [report]
 # `exclude_lines` is not a way to make a number look better. Each entry below is

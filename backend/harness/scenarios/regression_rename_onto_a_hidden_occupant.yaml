@@ -1,0 +1,48 @@
+id: regression.a_rename_onto_a_hidden_occupant_is_a_409
+version: 2
+tier: regression
+description: >
+  Renaming a skill onto a name that is only SOFT deleted answers 409 and names
+  the name, rather than the 500 an unguarded UPDATE against
+  `uq_job_competency_name` produces. The occupant is invisible to the reviewer,
+  so from their seat this is a free name; the constraint has no predicate, so
+  it is an occupied one. The paired half of the 2026-09-20 finding, and the one
+  a reviewer hits by correcting a typo rather than by pasting a list. Version 2
+  drives the Skills step's PATCH, which replaced the matrix editor's PUT.
+tags: [skills, soft-delete, unique-constraint, "2026-09-20"]
+
+given:
+  world: job_with_drafted_skills
+
+workload:
+  - remove_one_skill
+  - rename_onto_a_removed_name
+
+expect:
+  state:
+    # NOTHING MOVED. A refusal that had already written is a refusal in name
+    # only, so the surviving skill still carries its own name and the SWOT
+    # sentence a rename would have cleared, and the removed one is still
+    # removed.
+    - job_competencies.total_count == 8
+    - job_competencies.active_count == 7
+    - job_competencies.active_names contains Incident response
+    - job_competencies.active_names not contains Python
+    - job_competencies.swot_origin:Incident response is not null
+  output:
+    - status.remove_one_skill == 200
+    - status.rename_onto_a_removed_name == 409
+    # The name is IN the message. A 409 that said only "already exists" would
+    # leave a reviewer looking at a list that visibly does not contain it.
+    - body.rename_onto_a_removed_name.detail contains Python
+  trajectory:
+    - one_skill_removed
+    - rename_onto_occupied_name_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

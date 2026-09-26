@@ -1,0 +1,16 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a submission failing validation (for example a limit above the host MAX cap) answers 422 with attribute errors.",
+    "observed": false,
+    "notes": "Our request's fault, never retried."
+  },
+  "status": 422,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "cpu_time_limit": [
+      "must be less than or equal to 5"
+    ]
+  }
+}

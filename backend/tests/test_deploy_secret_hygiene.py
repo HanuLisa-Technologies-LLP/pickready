@@ -108,13 +108,30 @@ CREDENTIAL_NAMES = (
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_WEBHOOK_SECRET",
     "LLM_KEY_ENCRYPTION_SECRET",
-    "MSG91_API_KEY",
     "TAVILY_API_KEY",
     # The proctoring analysis service's Hugging Face read token. It is a
     # credential like any other and it is swept for the same reason: the image
     # build needs it to fetch gated weights, which is exactly the situation
     # where a token ends up in a build ARG and then in a layer.
     "HUGGINGFACE_TOKEN",
+    # The inbound-mail relay's shared secret. It proves to the PUBLIC route
+    # `POST /verification/inbound-email` that the call came from
+    # `readypick-inbound-email`, so it is a credential in the only sense that
+    # matters here: anyone who reads it can write into verification requests,
+    # BGV threads and conversations. Swept like the rest, because the ECS task
+    # definition is readable by anyone holding `ecs:DescribeTaskDefinition`.
+    #
+    # The RELAY's own copy is a plain Lambda environment variable and cannot be
+    # anything else -- `lambda/inbound_email/handler.py` is standard library and
+    # boto3 with no secret grant at all, deliberately, because it is the one
+    # function anything on the open internet can reach. That copy is not in
+    # scope here: this sweep reads `common_environment` in the ECS composition.
+    "INBOUND_WEBHOOK_SECRET",
+    # The code sandbox's API token. Anyone holding it can run arbitrary code
+    # on the sandbox host, so it is mounted (pilot stage B: the API, the task
+    # worker and the agent, from `module.code_sandbox`) and never a plain
+    # environment value on any task definition.
+    "JUDGE0_AUTH_TOKEN",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]
@@ -220,7 +237,13 @@ def _service_secrets() -> dict[str, list[str]]:
     """
     source = _source(SECRETS_VARS)
     start = source.index("variable \"service_secrets\"")
-    block = source[start:]
+    # BOUNDED AT THE NEXT VARIABLE (2026-09-24). This read to the end of the
+    # file, so `service_secret_writers`, declared later with the same
+    # `"migrate" = [...]` shape, silently REPLACED the migrate entry: every
+    # assertion about what the migration job may READ was asserting what it
+    # may WRITE. A grant added to the read map's migrate entry passed.
+    end = source.find("\nvariable \"", start + 1)
+    block = source[start:] if end == -1 else source[start:end]
     parsed: dict[str, list[str]] = {}
     # The keys are QUOTED, because HCL parses a bare `task-worker` as
     # subtraction. Matching both spellings would let a future unquoted key that
@@ -313,7 +336,6 @@ def test_the_synchronous_agents_hold_no_delivery_or_payment_credential() -> None
     services = _service_secrets()
     forbidden = {
         "SMTP_PASSWORD",
-        "MSG91_API_KEY",
         "RAZORPAY_KEY_SECRET",
         "RAZORPAY_WEBHOOK_SECRET",
         "FIREBASE_SERVICE_ACCOUNT_JSON",
@@ -332,11 +354,55 @@ def test_the_migration_job_holds_exactly_one_secret() -> None:
     assert set(services.get("migrate", [])) == {"DATABASE_URL"}
 
 
+def _secret_names() -> list[str]:
+    """Parse the `secret_names` default list out of the secrets module."""
+    source = _source(SECRETS_VARS)
+    start = source.index('variable "secret_names"')
+    body = source[source.index("default = [", start):]
+    body = body[: body.index("\n  ]")]
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    names = re.findall(r'"(\w+)"', code)
+    assert names, "secret_names parsed empty; the parser no longer matches the module"
+    return names
+
+
+#: Held and injected into nothing. See `test_a_held_secret_is_granted_to_no_service`.
+HELD_UNGRANTED = "LLM_KEY_ENCRYPTION_SECRET"
+ALL_ENVIRONMENT_ROOTS = [ROOT / "infra" / "environments" / "pilot" / "main.tf", STAGING, PRODUCTION]
+
+
+def test_a_held_secret_is_granted_to_no_service() -> None:
+    """The retired key roster's encryption key is KEPT and reaches nothing.
+
+    Two halves, and each one is the failure the other prevents. Removed from
+    `secret_names`, Terraform destroys the key, which is irreversible once the
+    recovery window passes and is the owner's decision (CONTRACT v2), not a
+    side effect of a cleanup. Migration 0128 drops the roster's table only
+    when it is empty, so the key opens no row on a migrated database; what it
+    may still open is a backup taken before the roster was retired. Granted or mounted, it is a credential in every container for a
+    setting nothing reads (2026-09-24: the setting is deleted), which is reach
+    no service's work needs.
+    """
+    assert HELD_UNGRANTED in _secret_names()
+    holders = sorted(s for s, names in _service_secrets().items() if HELD_UNGRANTED in names)
+    assert not holders, f"{HELD_UNGRANTED} is granted to {holders}"
+    for root in ALL_ENVIRONMENT_ROOTS:
+        assert HELD_UNGRANTED not in _code(root), (
+            f"{root.relative_to(ROOT)} mounts {HELD_UNGRANTED} into a container"
+        )
+
+
 def test_the_webhook_path_is_the_only_holder_of_the_webhook_secret() -> None:
     """It verifies `X-Razorpay-Signature` and nothing else does."""
     services = _service_secrets()
     holders = [s for s, names in services.items() if "RAZORPAY_WEBHOOK_SECRET" in names]
-    assert holders == ["webhook"], f"the webhook secret is held by {holders}"
+    # `api`, NOT `webhook`. This asserted `["webhook"]` and was green while the
+    # secret was mounted on NOTHING: no environment has ever defined a service
+    # called `webhook`, and `POST /api/v1/billing/webhook/razorpay` is served by
+    # the api service from `api/billing.py`. The handler then treated the absent
+    # secret as "development" and processed unsigned events, so credit issuance
+    # was an anonymous POST on the live site. The phantom grant is deleted.
+    assert holders == ["api"], f"the webhook secret is held by {holders}"
 
 
 def test_the_secret_policy_enumerates_arns_rather_than_a_prefix() -> None:
@@ -457,6 +523,14 @@ _AUTH_DEPENDENCIES = frozenset({
 #: is a signed single-use token in the URL rather than a session. Adding to this
 #: list is adding to the product's unauthenticated surface.
 _PUBLIC_BY_DESIGN: dict[str, str] = {
+    "/health/live": (
+        "the ALB target group's liveness probe. Unauthenticated by necessity: a "
+        "load balancer cannot hold a credential, and the check runs before any "
+        "session exists. It returns a static status word, touches no dependency "
+        "and so discloses nothing. The DEEP probe is /health, which the listener "
+        "rules deliberately do NOT route to the API, because whether the "
+        "database and cache are up is not a fact this product owes the internet."
+    ),
     "/health": (
         "the load balancer's health check. It returns a status word and no data."
     ),
@@ -464,6 +538,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v1/auth/firebase/session": (
         "exchanges a verified Firebase ID token for this product's cookies. "
         "The Firebase token IS the authentication."
+    ),
+    "/api/v1/auth/password-changed": (
+        "revokes every app session for an account after a Firebase password "
+        "change. It verifies a FRESH Firebase ID token in the body and acts "
+        "only on the uid that token names, so the token IS the authentication, "
+        "exactly as it is for /auth/firebase/session. A cookie dependency "
+        "would defeat the purpose: the cookie it revokes may already be "
+        "expired, and the session most worth killing is the one whose holder "
+        "cannot sign in any more. It only ever REMOVES access."
     ),
     "/api/v1/auth/refresh": (
         "reads the refresh cookie itself and re-mints for the SAME audience. "
@@ -478,8 +561,27 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     # every handler filters by the exact token row: see `get_public_db`.
     "/api/v1/companies/invites/{token}": "an invite token names one pending invitation.",
     "/api/v2/companies/invites/{token}": "the same handler under the v2 prefix.",
-    "/api/v1/portal/outreach/{token}": "an outreach token names one candidate link.",
-    "/api/v1/verification/form/{token}": "an employer verification token names one request.",
+    "/api/v1/portal/consent/renew": (
+        "the one-click link in the six-month consent renewal letter (feature "
+        "8). The token is the authorization: single use, because renewal "
+        "clears the stored hash; short lived, because the expiry is checked "
+        "inside the lookup statement; bound to one candidate, because the "
+        "lookup is by hash on that row; and stored only as a SHA-256 digest, "
+        "so a reader of the table cannot replay it. It authorises exactly one "
+        "act and is accepted nowhere else, it mints no session, and it reads "
+        "nothing back. Requiring a cookie would defeat the purpose: the "
+        "reader is somebody who has not signed in for six months and whose "
+        "profile is about to be deleted."
+    ),
+    "/api/v1/bgv/form/{token}": (
+        "the employer HR checkbox form (vivekium feature 4). The token is "
+        "minted per verification, single-use, and expires in "
+        "verification_link_ttl_days; the handler resolves only the row the "
+        "token names, serves the seven fixed items and accepts only booleans "
+        "over them. An HR contact at another company cannot hold a session "
+        "here, which is the same reason the retiring "
+        "/verification/form/{token} was public."
+    ),
     "/api/v2/assessments/invitations/{token}": (
         "an assessment invitation token names one job_candidate_link."
     ),
@@ -507,10 +609,6 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v1/employers": "the public employer directory search.",
     "/api/v1/employers/{slug}": "one public employer page with its careers list.",
     # Genuinely public, and each returns something already public.
-    "/api/v1/billing/config": (
-        "the Razorpay KEY ID, which is public by design. The Key Secret is "
-        "server-side only and never reaches the frontend."
-    ),
     "/api/v1/telemetry/landing-view": (
         "a rate-limited anonymous counter for the marketing page. It retains no "
         "visitor PII and returns 204."
@@ -989,7 +1087,20 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
                 "rule only because a backend block cannot take a variable. It "
                 "no longer contains one, so the exemption no longer applies."
             )
-            assert "resource " not in body and "module " not in body, (
+            # STRIP THE COMMENTS FIRST. This test's own docstring says
+            # "comments are exempt and code is not", and the loop below honours
+            # that; this branch did not, so it was asking whether the PROSE
+            # contained the word "resource". A backend.tf explaining what an
+            # empty-state apply costs ("Terraform would try to create every
+            # resource from scratch") failed a check about executable blocks.
+            # The same class of defect as the reachability grep that matched
+            # comments and manufactured a phantom workstream.
+            code = "\n".join(
+                line
+                for line in body.splitlines()
+                if not line.strip().startswith(("#", "*", "/*", "*/"))
+            )
+            assert "resource " not in code and "module " not in code, (
                 f"{path.relative_to(ROOT)} holds more than a backend block. The "
                 "exemption covers the one construct Terraform will not let take "
                 "a variable, not a file that happens to be called backend.tf."

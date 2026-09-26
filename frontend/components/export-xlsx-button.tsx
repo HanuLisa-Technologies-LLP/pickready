@@ -21,7 +21,7 @@ function safeFileName(value: string): string {
     .trim()
     .replace(/[^a-zA-Z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${base || "readypick-export"}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  return `${base || "vivekium-export"}-${new Date().toISOString().slice(0, 10)}.xlsx`;
 }
 
 export function ExportXlsxButton({

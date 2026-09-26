@@ -11,20 +11,21 @@
  * ---------------------------------------------
  *   * It does not SORT. Order comes from the API, which sorts in SQL with a
  *     total order. Re-sorting one page here would let a candidate appear on
- *     two pages, or on none, as scores change.
+ *     two pages, or on none, as grades change.
  *   * It does not FILTER. Same reason: filtering a fetched page makes the match
  *     count depend on which page happened to be loaded.
- *   * It does not compute a band, a grade or a label from a number. Every word
- *     on screen was chosen by the server, so a provider outage cannot produce a
- *     rendering layer's own opinion of a candidate.
+ *   * It does not compute a grade, a state or a label, and it renders no
+ *     number and no letter grade (D3). Every word on screen was chosen by the
+ *     server, so a provider outage cannot produce a rendering layer's own
+ *     opinion of a candidate.
  *   * It does not decide who may do what. `controls` is resolved server-side
  *     and every control is refused again at its own route (RBAC 3).
  *
  * MOBILE
  * ------
- * Columns 6 to 8 stack into a vertical group at the end of the row, the
- * Pre-Screen Grade and Note collapse into the candidate cell, and column 4
- * never collapses. Horizontal scroll is acceptable and lives on the table's own
+ * Columns 6 to 8 stack into a vertical group at the end of the row, AI Match
+ * and the Note collapse into the candidate cell, and column 4 never
+ * collapses. Horizontal scroll is acceptable and lives on the table's own
  * container, so the PAGE never scrolls sideways.
  */
 
@@ -47,10 +48,10 @@ import {
 
 import {
   CandidateCell,
+  AiMatchCell,
   NoteCell,
-  PreScreenGradeCell,
   ProfileButton,
-  ReadyPickScoreCell,
+  ReadyPickGradeCell,
   SourceCell,
   StageCell,
   TeamReviewButton,
@@ -65,9 +66,9 @@ const BASE = "/dashboard";
 const HEADERS: Array<[key: string, label: string, className: string]> = [
   ["candidate", "Candidate", "min-w-[220px]"],
   ["source", "Source", "hidden md:table-cell"],
-  ["pre_screen_grade", "Pre-Screen", "hidden md:table-cell"],
-  ["ready_pick_score", "Ready Pick Score", "min-w-[210px]"],
-  ["ready_pick_note", "Ready Pick Note", "hidden lg:table-cell"],
+  ["ai_match", "AI Match", "hidden md:table-cell"],
+  ["ready_pick_grade", "Vivekium Grade", "min-w-[210px]"],
+  ["ready_pick_note", "Vivekium Note", "hidden lg:table-cell"],
   ["ready_pick_profile", "Profile", ""],
   ["team_review", "Team Review", ""],
   ["stage", "Stage", ""],
@@ -80,7 +81,7 @@ export interface CandidateDashboardProps {
 
 export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
   const [page, setPage] = React.useState(1);
-  const [sort, setSort] = React.useState("score");
+  const [sort, setSort] = React.useState("grade");
   const [direction, setDirection] = React.useState("desc");
   const [sourceType, setSourceType] = React.useState<string | null>(null);
   const [grade, setGrade] = React.useState<string | null>(null);
@@ -100,7 +101,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
     });
     if (jobId) params.set("job_id", jobId);
     if (sourceType) params.set("source_type", sourceType);
-    if (grade) params.set("pre_screen_grade", grade);
+    if (grade) params.set("ai_match", grade);
     setLoading(true);
     setError(null);
     apiGet<DashboardPage>(`${BASE}/candidates?${params.toString()}`)
@@ -188,12 +189,12 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                 setPage(1);
               }}
             >
-              <option value="score:desc">Ready Pick Score, highest first</option>
-              <option value="score:asc">Ready Pick Score, lowest first</option>
+              <option value="grade:desc">Vivekium Grade, strongest first</option>
+              <option value="grade:asc">Vivekium Grade, weakest first</option>
               <option value="name:asc">Name</option>
               <option value="added:desc">Date added, newest first</option>
               <option value="source:asc">Source</option>
-              <option value="pre_screen:asc">Pre-Screen Grade</option>
+              <option value="ai_match:desc">AI Match, strongest first</option>
               <option value="stage:asc">Stage</option>
             </select>
           </label>
@@ -220,7 +221,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
           </label>
 
           <label className="text-xs font-semibold uppercase tracking-wide">
-            Pre-Screen
+            AI Match
             <select
               className="ml-2 h-9 rounded-md border border-input bg-background px-2 text-sm"
               value={grade ?? ""}
@@ -230,7 +231,8 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
               }}
             >
               <option value="">All grades</option>
-              {(data?.pre_screen_grades ?? []).map((value) => (
+              {/* The four grade words, served by the API. */}
+              {(data?.ai_match_grades ?? []).map((value) => (
                 <option key={value} value={value}>
                   {value}
                 </option>
@@ -279,7 +281,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
         {/* The horizontal scroll lives HERE, on the table's own container, so a
             wide table never makes the page scroll sideways. */}
         <div className="overflow-x-auto rounded-xl border">
-          <Table>
+          <Table label="Candidates">
             <TableHeader>
               <TableRow>
                 {HEADERS.map(([key, label, className]) => (
@@ -328,7 +330,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                     {/* On a narrow viewport the two supporting columns collapse
                         into this cell rather than being hidden. */}
                     <div className="mt-1 flex items-center gap-2 md:hidden">
-                      <PreScreenGradeCell row={row} />
+                      <AiMatchCell row={row} />
                       <SourceCell row={row} />
                     </div>
                   </TableCell>
@@ -336,10 +338,10 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                     <SourceCell row={row} />
                   </TableCell>
                   <TableCell className="hidden px-3.5 md:table-cell">
-                    <PreScreenGradeCell row={row} />
+                    <AiMatchCell row={row} />
                   </TableCell>
                   <TableCell className="px-3.5">
-                    <ReadyPickScoreCell row={row} />
+                    <ReadyPickGradeCell row={row} />
                   </TableCell>
                   <TableCell className="hidden px-3.5 lg:table-cell">
                     <NoteCell row={row} />

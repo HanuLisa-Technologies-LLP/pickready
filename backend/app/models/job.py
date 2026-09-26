@@ -38,6 +38,18 @@ REPORTING_TO_OPTIONS: tuple[str, ...] = (
 #: value. It is never itself stored as the reporting line.
 REPORTING_TO_OTHER = "Others"
 
+#: `jobs.skills_draft_status` (0118). Mirrored by `ck_jobs_skills_draft_status`.
+SKILLS_DRAFT_NOT_STARTED = "not_started"
+SKILLS_DRAFT_DRAFTING = "drafting"
+SKILLS_DRAFT_DRAFTED = "drafted"
+SKILLS_DRAFT_FAILED = "failed"
+SKILLS_DRAFT_STATUSES: tuple[str, ...] = (
+    SKILLS_DRAFT_NOT_STARTED,
+    SKILLS_DRAFT_DRAFTING,
+    SKILLS_DRAFT_DRAFTED,
+    SKILLS_DRAFT_FAILED,
+)
+
 
 class Job(Base, UUIDPKMixin, CreatedAtMixin):
     """`jd_markdown` is the CANONICAL candidate-facing job description as of
@@ -159,6 +171,54 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     #: Never interpreted, never scored, never sent to a model.
     closed_reason: Mapped[str | None] = mapped_column(Text)
 
+    # ── Thirty day soft deletion (migration 0112, owner ruling 2026-09-22) ────
+    # SUPERSEDES the 2026-09-18 vivekium C5 ruling that closure hard deleted
+    # the assessment data inline. Closure now WITHHOLDS it and schedules the
+    # deletion; `services/job_assessment_retention` owns the whole lifecycle
+    # and its docstring carries the reversal and its reason.
+    #
+    # `assessment_purge_due_at` is STORED rather than derived from `closed_at`
+    # plus the window, and that is the one place this feature departs from the
+    # house rule that a derivable value is derived. The window is a promise
+    # printed in the confirmation dialog before an irreversible click, so
+    # editing a module constant must not be able to move a deadline for a job
+    # that is already closed.
+    assessment_purge_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    #: Stamped only when a pass confirmed EVERY stored object gone and then
+    #: deleted the rows. It is the sweep's convergence condition, so a job it
+    #: could not finish is enumerated again on the next run rather than being
+    #: recorded as done.
+    assessment_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: Counts passes, never a give-up threshold: there is no terminal failure
+    #: state here, for the reason `services/deletion_requests` states in place.
+    #: What a persistent failure moves is this number and the class name below,
+    #: which is what makes a stuck job loud rather than silent.
+    assessment_purge_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    #: An exception CLASS NAME, never a message: a message can quote a row.
+    assessment_purge_last_failure: Mapped[str | None] = mapped_column(String(200))
+    #: The dispute path. Opening one is an audited act by somebody holding
+    #: `retrieve_disputed_assessment`; while it is open, and only inside the
+    #: retention window, that person may read this job's assessment records
+    #: again. Written rather than inferred from the audit log, for the reason
+    #: `lifecycle_state` is written: a state read from a log is a state nothing
+    #: can index, refuse against, or show on a screen.
+    assessment_dispute_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    assessment_dispute_opened_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: Why the dispute was opened, in the opener's own words. Required by the
+    #: route: an unlock of withheld candidate data with no stated reason is an
+    #: unlock nobody can review afterwards.
+    assessment_dispute_reason: Mapped[str | None] = mapped_column(Text)
+
     # ── Per-job JD sections (migration 0016) ─────────────────────────────────
     # Seeded from the company profile when the job is created. Editing them on
     # the job is a PER-JOB OVERRIDE that never writes back to the company, and
@@ -170,14 +230,43 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     benefits: Mapped[str | None] = mapped_column(Text)
 
     questions_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    questions_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The retired technical-bank approval stamp sat here, written by nothing
+    # and read by nothing since 2026-08-04; migration 0128 drops the column.
     question_reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # ── PPI framework review (migration 0030) ────────────────────────────────
     # Tracked separately from the technical bank because the two are generated
     # in PARALLEL and approved independently; the job reaches
     # `ready_for_candidates` only when both `*_approved_at` are stamped.
     framework_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: REUSED FROM 0118 AS "SKILLS SAVED AT". The persisted name is kept (like
+    #: `ppi`) so every reader of the ready state needs no change; the Skills
+    #: step's Save stamps it and any later skills edit before the lock clears
+    #: it. `assessment_contract.skills_saved` is the one reader that decides.
     framework_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── The skills contract (migration 0118_skills_contract) ─────────────────
+    #: The HIDDEN assessment context Sutra writes when the skills are saved:
+    #: `{role_summary, generated_by, model_id, prompt_version, generated_at}`.
+    #: INTERNAL: it reaches Vaada and Miti through
+    #: `assessment_contract.load_contract` and never a response schema. The
+    #: migration stamped `{"role_summary": "", "generated_by": "migration"}` on
+    #: every job whose matrix was already saved, so none of them stopped being
+    #: invitable; the empty summary is the honest record that nothing wrote one.
+    assessment_context_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Where the Sutra skills DRAFT stands: one of `SKILLS_DRAFT_STATUSES`,
+    #: mirrored by `ck_jobs_skills_draft_status`. A state of the draft job,
+    #: never of the skills themselves (those are the rows).
+    skills_draft_status: Mapped[str] = mapped_column(
+        String(20), nullable=False,
+        default=SKILLS_DRAFT_NOT_STARTED, server_default=SKILLS_DRAFT_NOT_STARTED,
+    )
+    #: The fixed reason the last draft failed; cleared on the next request.
+    skills_draft_error: Mapped[str | None] = mapped_column(Text)
+    skills_draft_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    skills_drafted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The `job_swot_analyses.version` the current draft was written from, so a
+    #: later SWOT save can OFFER a redraft without ever performing one silently.
+    skills_drafted_swot_version: Mapped[int | None] = mapped_column(Integer)
 
     # ── Draft v4 job setup (migration 0048, 0049) ────────────────────────────
     # The total number of questions this job's candidates are asked, resolved
@@ -356,8 +445,17 @@ class JobApproval(Base, UUIDPKMixin):
 # stale vector, and `matching.run_matching` writes a fresh vector on its next
 # run.
 
-#: Every column `matching._jd_text` reads. Change one and the vector is stale.
-_EMBEDDING_SOURCE_FIELDS = ("title", "department", "level", "jd_json")
+#: Every column `yukti.inputs.jd_text` reads (the run's JD embedding text since
+#: Phase 2 WP-B). Change one and the vector is stale. `level` is no longer
+#: read: the grade and the experience band are what a job states now.
+_EMBEDDING_SOURCE_FIELDS = (
+    "title",
+    "department",
+    "assessment_grade",
+    "experience_min_years",
+    "experience_max_years",
+    "jd_json",
+)
 
 
 @event.listens_for(Job, "after_update")

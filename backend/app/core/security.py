@@ -1,12 +1,12 @@
-"""OTP hashing, JWT issuance/verification, and secret encryption helpers.
+"""JWT issuance and verification for the three portal audiences.
 
-- OTPs are stored hashed (HMAC-SHA256 keyed by JWT_SECRET) — never plaintext,
-  never logged (ESD §16).
 - Access JWT: 15 min, embeds user_id / tenant_id / role / audience.
   Candidate-portal sessions use a distinct audience claim (ESD §13).
+
+The login one-time-code helpers (generate, hash, verify) and the deprecated
+single "internal" audience alias were deleted on 2026-09-24: their only caller
+was the retired code-login service.
 """
-import hashlib
-import hmac
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,12 +23,6 @@ from app.core.config import get_settings
 AUDIENCE_OWNER = "pickready:owner"          # super_admin (platform owner) console
 AUDIENCE_ORG = "pickready:org"              # client / hr_manager / recruiter / hiring_manager
 AUDIENCE_CANDIDATE = "pickready:candidate"  # candidate portal — separate session scope
-
-# Deprecated alias. The single "internal" audience was split into OWNER + ORG.
-# Kept only so existing imports (auth.py, otp.py) don't raise ImportError during
-# the transition — it now points at the ORG audience. New code must select the
-# audience via `audience_for_role`, never this constant.
-AUDIENCE_INTERNAL = AUDIENCE_ORG
 
 # Roles that live in the org (tenant) portal. super_admin is deliberately NOT
 # here, it is the owner portal; candidate is its own portal; bd is a platform
@@ -84,24 +78,6 @@ def audience_for_role(role: "str | Any") -> str:
     raise ValueError(f"no audience defined for role {value!r}")
 
 
-# ── OTP ──────────────────────────────────────────────────────────────────────
-
-def generate_otp() -> str:
-    """6-digit numeric OTP, cryptographically random."""
-    return f"{secrets.randbelow(1_000_000):06d}"
-
-
-def hash_otp(code: str, identifier: str) -> str:
-    """HMAC the OTP together with the identifier (email/phone) it was sent to,
-    so a hash can't be replayed across identifiers."""
-    key = get_settings().jwt_secret.encode()
-    return hmac.new(key, f"{identifier}:{code}".encode(), hashlib.sha256).hexdigest()
-
-
-def verify_otp(code: str, identifier: str, code_hash: str) -> bool:
-    return hmac.compare_digest(hash_otp(code, identifier), code_hash)
-
-
 # ── JWT ──────────────────────────────────────────────────────────────────────
 
 def create_access_token(
@@ -109,6 +85,7 @@ def create_access_token(
     role: str,
     tenant_id: uuid.UUID | str | None,
     audience: str = AUDIENCE_ORG,
+    session_id: str | None = None,
 ) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
@@ -121,10 +98,15 @@ def create_access_token(
         "exp": now + timedelta(minutes=settings.jwt_access_ttl_minutes),
         "type": "access",
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG) -> str:
+def create_refresh_token(
+    user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG,
+    session_id: str | None = None,
+) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
@@ -135,10 +117,12 @@ def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG)
         "type": "refresh",
         "jti": secrets.token_urlsafe(16),
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def decode_token(token: str, audience: str = AUDIENCE_INTERNAL) -> dict[str, Any]:
+def decode_token(token: str, audience: str = AUDIENCE_ORG) -> dict[str, Any]:
     """Raises jwt.PyJWTError on invalid/expired token or audience mismatch."""
     return jwt.decode(
         token, get_settings().jwt_secret, algorithms=[ALGORITHM], audience=audience

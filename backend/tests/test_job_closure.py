@@ -256,6 +256,7 @@ async def _close(monkeypatch, job, reason=None):
 
     async def _fake_audit(session, **kwargs):
         calls["audit"] = kwargs
+        calls.setdefault("audits", []).append(kwargs)
 
     async def _fake_visible(session, user, job_id):
         return job
@@ -303,6 +304,62 @@ async def test_closing_stamps_the_moment_and_records_the_reason(monkeypatch) -> 
     assert calls["audit"]["metadata"]["reason"] == "Requirement met."
     # The cached public payload is dropped, or the 404 would take minutes.
     assert calls["invalidated"] == job.id
+
+
+@pytest.mark.asyncio
+async def test_closing_schedules_the_deletion_and_deletes_nothing_now(
+    monkeypatch,
+) -> None:
+    """Change request 22 (owner ruling 2026-09-22), reversing vivekium C5.
+
+    Closure used to be the deletion trigger and this test used to assert that
+    it was. It no longer is: the close transaction stamps a due date thirty
+    days out and deletes nothing, because closure is terminal with no reopen
+    and an irreversible inline delete left a misclick or a later dispute with
+    nothing to examine.
+
+    Two halves, and the second is the one worth keeping. The due date is
+    stamped from `closed_at` rather than from a second clock read, so the
+    promise and the act it was made about cannot land on different days at
+    midnight. And `job_closure_erasure` is not called AT ALL: the assertion is
+    on the real function through a spy, not on a stub that would have passed
+    whatever the route did.
+    """
+    from app.services import erasure, job_assessment_retention
+
+    erased: list = []
+
+    async def _spy(session, *, job_id):
+        erased.append(job_id)
+        raise AssertionError("closing a job must not erase anything")
+
+    monkeypatch.setattr(erasure, "job_closure_erasure", _spy)
+
+    job = _closable_job()
+    out, calls = await _close(monkeypatch, job, reason="Filled.")
+
+    assert erased == []
+    assert job.assessment_purged_at is None
+    assert job.assessment_purge_due_at == job_assessment_retention.purge_due_at(
+        job.closed_at
+    )
+    # Thirty days is the owner's number, asserted against the stamp rather
+    # than against the constant that produced it.
+    assert (job.assessment_purge_due_at - job.closed_at) == timedelta(days=30)
+
+    actions = [entry["action"] for entry in calls["audits"]]
+    assert job_assessment_retention.ACTION_PENDING_DELETION in actions
+    assert actions.index(
+        job_assessment_retention.ACTION_PENDING_DELETION
+    ) < actions.index("job_closed")
+    pending = next(
+        entry for entry in calls["audits"]
+        if entry["action"] == job_assessment_retention.ACTION_PENDING_DELETION
+    )
+    assert pending["metadata"]["state"] == (
+        job_assessment_retention.STATE_PENDING_DELETION
+    )
+    assert pending["metadata"]["days_remaining"] == 30
 
 
 @pytest.mark.asyncio

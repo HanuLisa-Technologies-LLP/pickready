@@ -7,8 +7,12 @@ WHY A SECOND EVAL
 `eval_interview` measures the agent that TALKS to a candidate. This measures
 the two paths whose bad output is most expensive and least visible:
 
-  * **AI matching**, which decides the order a recruiter reads applicants in.
-    Nobody sees a wrong ordering; they see a shortlist and assume it is right.
+  * **The ranked order**, which decides the order a recruiter reads applicants
+    in. Nobody sees a wrong ordering; they see a shortlist and assume it is
+    right. Since the Vivekium release that order is ONE key,
+    `yukti.ranking.rank_score` (its SQL twin orders every page), so this eval
+    measures the blend and the Must-have cap rather than the retired matcher's
+    four parameters and their 25-30 word comments.
   * **The PPI Assessment Report**, which is the product's deliverable. A remark
     that is 38 words instead of 45-50, a stray number, or a borrowed
     third-party instrument name is a defect a client reads before we do.
@@ -36,7 +40,11 @@ import re
 from dataclasses import dataclass, field
 
 from app.services import functional_assessment as fa
+from app.services import prism_view
+from app.services.siddhi import remarks as siddhi_remarks
+from app.services.assessment_questions import budget as question_budget
 from app.services import matching, ppi
+from app.services.yukti import ranking
 from app.services.rating import (
     GRADE_HIGHLY,
     GRADE_MATCHING,
@@ -84,31 +92,22 @@ MATCHING_LABELS: tuple[tuple[float, str], ...] = (
     (0, GRADE_NOT),
 )
 
-#: Ranking cases. Each is (label, parameter scores, expected position order).
-#: These are the "labelled examples" the matching agent is measured against:
-#: the property that matters is not the absolute number, which never leaves the
-#: server, but that a stronger candidate outranks a weaker one on the same job.
-def _params(skills: int, experience: int, role: int, education: int) -> dict[str, int]:
-    """Build a breakdown using the REAL parameter keys.
-
-    Written as a helper rather than four literal dicts so a rename of
-    `matching.PARAMETERS` fails in one place instead of five.
-    """
-    return dict(
-        zip(
-            matching.PARAMETERS,
-            (skills, experience, role, education),
-        )
-    )
-
-
-RANKING_CASES: tuple[tuple[str, tuple[int, int, int, int]], ...] = (
-    ("strong all round", (94, 91, 90, 88)),
-    ("strong skills, thin experience", (92, 61, 78, 80)),
-    ("even mid", (72, 70, 74, 71)),
-    ("weak skills", (44, 70, 55, 82)),
-    ("weak all round", (31, 28, 35, 40)),
+#: Ranking cases, ordered strongest first. Each is (label, Yukti pre score,
+#: the report's overall or None when unassessed, whether a Must-have failed).
+#: The property that matters is not the absolute key, which never leaves the
+#: server, but that a stronger candidate outranks a weaker one on the same job,
+#: and that a failed Must-have holds an assessed candidate below the cap
+#: whatever their resume said.
+RANKING_CASES: tuple[tuple[str, float, float | None, bool], ...] = (
+    ("strong resume, strong assessment", 94.0, 92.0, False),
+    ("mid resume, strong assessment", 70.0, 88.0, False),
+    ("strong resume, not yet assessed", 80.0, None, False),
+    ("strong everything, failed a Must-have", 99.0, 98.0, True),
+    ("weak resume, weak assessment", 35.0, 40.0, False),
 )
+
+#: The tenant ratio every case is blended at: the migration's server default.
+RANKING_WEIGHT_PCT = 70
 
 #: Competency names a generator might return that are culture-fit by another
 #: name. All must be refused: cultural fit cannot be assessed accurately from a
@@ -186,31 +185,23 @@ def _measure_grade_boundaries() -> Result:
     return result
 
 
-def _measure_matching_label_is_the_one_scale() -> Result:
-    """`matching.matching_label` and `functional_assessment.rating_label` are
-    thin aliases over `services/rating` and must stay that way. The product
-    used to carry two parallel five-label scales kept in step by hand.
-
-    Note the input SCALES differ and that is not an inconsistency to fix here:
-    a matching PARAMETER is stored 1-10 and everything else is 0-100. Writing
-    this measurement the first time got that wrong and reported the code as
-    broken, which is the same mistake a caller makes -- so both are asserted
-    explicitly, and the agreement between them is asserted as well.
-    """
+def _measure_the_ai_match_word_is_the_one_scale() -> Result:
+    """`functional_assessment.rating_label` and the ranked table's AI Match
+    word (`yukti.ranking.grade_word`) are thin aliases over `services/rating`
+    and must stay that way. The product used to carry two parallel five-label
+    scales kept in step by hand."""
     result = Result("one_rating_scale")
     for score, expected in MATCHING_LABELS:
         result.record(
             fa.rating_label(score) == expected,
             f"rating_label({score}) = {fa.rating_label(score)!r}, expected {expected!r}",
         )
-        # The same grade, reached from the 1-10 side.
-        ten = score / 10.0
         result.record(
-            matching.matching_label(ten) == expected,
-            f"matching_label({ten}) = {matching.matching_label(ten)!r}, expected {expected!r}",
+            ranking.grade_word(score) == expected,
+            f"grade_word({score}) = {ranking.grade_word(score)!r}, expected {expected!r}",
         )
     # None in, None out, on both. A missing score must not become a grade.
-    result.record(matching.matching_label(None) is None, "matching_label(None) is not None")
+    result.record(ranking.grade_word(None) is None, "grade_word(None) is not None")
     result.record(fa.rating_label(None) is None, "rating_label(None) is not None")
     # A boolean is not a score. `isinstance(True, int)` is True in Python, so
     # without the explicit guard `True` would grade Not Matching.
@@ -221,20 +212,34 @@ def _measure_matching_label_is_the_one_scale() -> Result:
 def _measure_ranking_order() -> Result:
     """A stronger profile outranks a weaker one, on the same job.
 
-    This is the matching agent's only externally observable promise: the
-    absolute score never leaves the server, so ORDER is the whole product. The
-    cases are ordered strongest-first in RANKING_CASES, and every adjacent
-    pair must come out that way.
+    This is the ranked table's only externally observable promise: the key
+    never leaves the server, so ORDER is the whole product. The cases are
+    ordered strongest-first in RANKING_CASES, and every adjacent pair must come
+    out that way through the pure twin of the SQL rank expression.
     """
     result = Result("ranking_order")
     scored = [
-        (label, matching.compute_overall_score(_params(*scores)))
-        for label, scores in RANKING_CASES
+        (
+            label,
+            ranking.rank_score(pre, "scored", overall, failed, RANKING_WEIGHT_PCT),
+        )
+        for label, pre, overall, failed in RANKING_CASES
     ]
     for (left_label, left), (right_label, right) in zip(scored, scored[1:]):
         result.record(
             left > right,
             f"{left_label} ({left:.1f}) did not outrank {right_label} ({right:.1f})",
+        )
+    # The Must-have cap binds whatever the blend says (Runbook 14.1 and the
+    # one cap number, `miti.caps`): a failed Must-have never grades above
+    # Moderately Matching.
+    for label, pre, overall, failed in RANKING_CASES:
+        if not failed:
+            continue
+        key = ranking.rank_score(pre, "scored", overall, failed, RANKING_WEIGHT_PCT)
+        result.record(
+            ranking.grade_word(key) in (GRADE_MODERATELY, GRADE_NOT),
+            f"{label} graded {ranking.grade_word(key)!r} past the Must-have cap",
         )
     return result
 
@@ -245,83 +250,42 @@ def _measure_no_weightage_table() -> Result:
     Two things were wrong with it: it was SHOWN to clients as "35% role-fit
     weighting", which is a number reaching a client, and it asserted that
     skills matter 2.3x more than education for every role in the product.
+    Yukti's component weights live in `yukti/config.py`, never cross an API
+    boundary, and are not the four-parameter table.
     """
     result = Result("no_weightage_table")
     result.record(not hasattr(matching, "WEIGHTS"), "matching.WEIGHTS exists again")
-    # The plain mean, verified rather than assumed: an equal-weight mean of
-    # four equal scores is that score.
-    even = matching.compute_overall_score(_params(80, 80, 80, 80))
-    result.record(abs(even - 80) < 0.01, f"even scores averaged to {even}")
-    # And moving any ONE parameter by the same amount must move the overall by
-    # the same amount, whichever parameter it was. That is what "no weighting"
-    # means, stated as a measurement.
-    base = matching.compute_overall_score(_params(70, 70, 70, 70))
-    deltas = []
-    for key in matching.PARAMETERS:
-        scores = {name: 70 for name in matching.PARAMETERS}
-        scores[key] = 90
-        deltas.append(matching.compute_overall_score(scores) - base)
-    result.record(
-        max(deltas) - min(deltas) < 0.01,
-        f"parameters are not equally weighted: deltas {deltas}",
-    )
-    return result
-
-
-def _measure_comment_word_range() -> Result:
-    """Matching remarks are 25-30 words, enforced rather than hoped for.
-
-    Checked from BOTH directions, because the enforcement rewrites text: a
-    too-short remark must be padded to a real sentence, and a too-long one
-    trimmed without being cut mid-sentence.
-    """
-    result = Result("matching_remark_words")
-    cases = [
-        "Short.",
-        "Strong match.",
-        " ".join(["evidence"] * 12),
-        " ".join(["evidence"] * 27),
-        " ".join(["evidence"] * 60),
-        "",
-    ]
-    for text in cases:
-        out = matching.enforce_word_range(text, *fa.MATCHING_REMARK_WORDS)
-        count = matching.word_count(out)
-        low, high = fa.MATCHING_REMARK_WORDS
-        result.record(
-            low <= count <= high,
-            f"{count} words from input of {matching.word_count(text)}: {out[:60]!r}",
-        )
     return result
 
 
 # ── Measurements: the report ─────────────────────────────────────────────────
 
 def _measure_ppi_remark_word_range() -> Result:
-    """PPI items and the overall remark are 45-50 words, in every branch.
+    """Skill and Overall remarks are 45-50 words, in every branch.
 
-    Including the fallbacks, which is the point: the fallback is what a client
-    reads when a provider is down, and a 12-word apology in the Behavioural
-    Competencies section is the most visible possible failure.
+    Including the fixed sentences, which is the point: a template or a
+    catalogue sentence is what a client reads when a provider is down, and a
+    12-word apology in the Behavioural section is the most visible possible
+    failure. The writer is `siddhi.remarks` since the grading split (WP5-D);
+    the 25-30 word AI Score remarks are gone with the matching rows.
     """
     result = Result("ppi_remark_words")
     low, high = fa.PPI_REMARK_WORDS
     names = ["Distributed systems", "Stakeholder influence", "this area", "Data modelling"]
     for name in names:
-        text = fa._fallback_remark_45(name)
+        text = siddhi_remarks.template_remark(name)
         count = fa.word_count(text)
-        result.record(low <= count <= high, f"fallback_45({name!r}) = {count} words")
+        result.record(low <= count <= high, f"template({name!r}) = {count} words")
     for name in names:
-        text = fa._unanswered_remark(name, 45)
+        text = siddhi_remarks.unanswered_remark(name).text
         count = fa.word_count(text)
-        result.record(low <= count <= high, f"unanswered({name!r}, 45) = {count} words")
-    for name in names:
-        text = fa._fallback_remark_25(name)
+        result.record(low <= count <= high, f"unanswered({name!r}) = {count} words")
+    for text in (
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
+    ):
         count = fa.word_count(text)
-        result.record(
-            fa.MATCHING_REMARK_WORDS[0] <= count <= fa.MATCHING_REMARK_WORDS[1],
-            f"fallback_25({name!r}) = {count} words",
-        )
+        result.record(low <= count <= high, f"not assessed = {count} words")
     return result
 
 
@@ -330,10 +294,10 @@ def _measure_no_banned_instrument() -> Result:
     instrument, and the detector must not fire on ordinary English."""
     result = Result("no_third_party_instrument")
     generated = [
-        fa._fallback_remark_45("Stakeholder influence"),
-        fa._fallback_remark_25("Distributed systems"),
-        fa._unanswered_remark("Coaching", 45),
-        fa._unanswered_remark("Coaching", 25),
+        siddhi_remarks.template_remark("Stakeholder influence"),
+        siddhi_remarks.unanswered_remark("Coaching").text,
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ]
     for text in generated:
         leak = _banned_in(text)
@@ -359,10 +323,9 @@ def _measure_no_numbers_reach_a_client() -> Result:
     0-100 score never appears in anything a client reads."""
     result = Result("no_numbers_to_a_client")
     texts = [
-        fa._fallback_remark_45("Distributed systems"),
-        fa._fallback_remark_25("Data modelling"),
-        fa._unanswered_remark("Stakeholder influence", 45),
-        matching.enforce_word_range("Strong match.", *fa.MATCHING_REMARK_WORDS),
+        siddhi_remarks.template_remark("Distributed systems"),
+        siddhi_remarks.unanswered_remark("Stakeholder influence").text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ]
     for text in texts:
         hit = SCORE_SHAPED.search(text)
@@ -386,12 +349,12 @@ def _measure_radar_carries_no_numbers() -> Result:
     rows the sections render, so a chart cannot disagree with the text."""
     result = Result("radar_has_no_visible_numbers")
     rows = [
-        (fa.CATEGORY_MATCHING, "Skills", 88, 82),
+        (prism_view.CATEGORY_MATCHING, "Skills", 88, 82),
         ("primary", "Distributed systems", 91, 82),
         ("primary", "Data modelling", 72, 82),
         ("secondary", "Documentation", 64, 70),
         ("behavioural", "Coaching", 80, 75),
-        (fa.CATEGORY_TECHNICAL, "Kafka", 77, None),
+        (prism_view.CATEGORY_TECHNICAL, "Kafka", 77, None),
     ]
     dimensions = [
         {
@@ -406,7 +369,7 @@ def _measure_radar_carries_no_numbers() -> Result:
         }
         for index, (category, name, score, required) in enumerate(rows)
     ]
-    charts = fa.build_radar_charts(dimensions)
+    charts = prism_view.build_radar_charts(dimensions)
     result.record(len(charts) == 4, f"{len(charts)} charts, expected 4")
     for chart in charts:
         for axis in chart.get("axes", []):
@@ -441,39 +404,44 @@ def _measure_culture_is_refused() -> Result:
 
 
 def _measure_question_counts_by_grade() -> Result:
-    """Volume is a RANGE per grade, resolved once per job (spec 5.4).
+    """How many questions: ONE PER SKILL IN THE CONTRACT, never fewer than the
+    grade's floor (Appendix B, PLAN-p3 WP2).
 
-    The direction is the surprising part and has not changed: MORE questions for
-    a junior candidate, fewer for a CXO. What changed in Draft v4 is that the
-    number inside the range follows the size of that job's own matrix, so two
-    jobs at one grade may legitimately differ while two candidates on one job
-    never can.
+    SUPERSEDES the per-grade RANGE this measured until the stage 2 integration
+    (Master Directive Part 3 section 6: 12 to 18 non-managerial up to 18 to 25
+    CXO, resolved from the matrix size). Phase 3 WP2 replaced it with the
+    count-based budget in `assessment_questions.budget`: with at most five
+    skills per bucket a job asks 8 to 15 questions, and every skill is asked.
+    The measurement moved with the rule rather than being deleted, because a
+    budget that silently drops below the floor, or below one question per
+    skill, changes what a real candidate is asked.
     """
     result = Result("question_counts_by_grade")
-    # Master Directive Part 3 §6, non-STEM column.
-    expected = {
-        "non_managerial": (12, 18),
-        "managerial": (15, 22),
-        "leadership": (18, 25),
-        "cxo": (18, 25),
+    #: The floors `core/config.py` ships (`assessment_question_floor_*`).
+    expected_floor = {
+        "non_managerial": 10,
+        "managerial": 10,
+        "leadership": 10,
+        "cxo": 8,
     }
-    for grade, bounds in expected.items():
-        actual = (ppi.min_questions(grade), ppi.max_questions(grade))
-        result.record(actual == bounds, f"{grade}: {actual}, expected {bounds}")
-    # A resolved target never leaves its grade's range, whatever the matrix
-    # holds. Both ends, because a silent clamp in either direction would change
-    # how long a real candidate sits in an interview.
-    for grade, (low, high) in expected.items():
-        for size in (0, 1, low, high, high + 40):
-            target = ppi.resolve_question_target(grade, size)
+    for grade, floor in expected_floor.items():
+        actual = question_budget.question_floor(grade)
+        result.record(actual == floor, f"{grade}: floor {actual}, expected {floor}")
+    # One per skill above the floor, the floor below it: both ends, because a
+    # silent clamp in either direction changes how long somebody sits in an
+    # interview. Fifteen is the most a saved contract can hold (three buckets
+    # of at most five).
+    for grade, floor in expected_floor.items():
+        for skills in (0, 1, floor, 15):
+            budget = question_budget.question_budget(grade, skills)
             result.record(
-                low <= target <= high,
-                f"{grade} resolved {target} for a {size}-item matrix, "
-                f"outside {low}..{high}",
+                budget == max(skills, floor),
+                f"{grade} gave {budget} questions for {skills} skills, "
+                f"expected {max(skills, floor)}",
             )
     # A grade nobody recognises must not silently produce zero questions.
     result.record(
-        ppi.resolve_question_target(None, 12) > 0,
+        question_budget.question_budget(None, 0) > 0,
         "an unknown grade produced no questions",
     )
     return result
@@ -515,15 +483,15 @@ def _measure_probe_selection() -> Result:
 
 
 def _measure_report_reuse_is_retired() -> Result:
-    """Nothing travels between applications. Under PPI both halves come from
-    each job's own JD, so carrying a section across would state a grade against
-    criteria the candidate was never assessed on."""
-    result = Result("no_report_reuse")
-    from app.services import retake
+    """Nothing travels between applications, and the module that once decided
+    whether it could is gone: every application is assessed against its own
+    job's contract, so there is no reuse or waiting period to decide."""
+    import importlib.util  # noqa: PLC0415
 
+    result = Result("no_report_reuse")
     result.record(
-        len(retake.PORTABLE_CATEGORIES) == 0,
-        f"PORTABLE_CATEGORIES has {len(retake.PORTABLE_CATEGORIES)} entries",
+        importlib.util.find_spec("app.services.retake") is None,
+        "app.services.retake still exists",
     )
     return result
 
@@ -533,10 +501,9 @@ def _measure_report_reuse_is_retired() -> Result:
 async def run() -> list[Result]:
     return [
         _measure_grade_boundaries(),
-        _measure_matching_label_is_the_one_scale(),
+        _measure_the_ai_match_word_is_the_one_scale(),
         _measure_ranking_order(),
         _measure_no_weightage_table(),
-        _measure_comment_word_range(),
         _measure_ppi_remark_word_range(),
         _measure_no_banned_instrument(),
         _measure_no_numbers_reach_a_client(),
@@ -550,7 +517,7 @@ async def run() -> list[Result]:
 
 
 def report(results: list[Result]) -> str:
-    lines = ["", "ReadyPick report and matching agents, offline evaluation", ""]
+    lines = ["", "Vivekium report and matching agents, offline evaluation", ""]
     for item in results:
         mark = "PASS" if item.rate == 1.0 else "FAIL"
         lines.append(f"  [{mark}] {item.name}: {item.passed}/{item.total}")

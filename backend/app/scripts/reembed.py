@@ -79,6 +79,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config.llm_providers import (
     BACKOFF_MAX_SECONDS,
+    EMBEDDING_CONTRACT_VERSION,
     EMBEDDING_MODEL,
     backoff_seconds,
     classify_status,
@@ -90,12 +91,12 @@ from app.services.embeddings import EMBEDDING_DIM, MAX_BATCH, EmbeddingError, em
 
 logger = logging.getLogger("pickready.reembed")
 
-#: OUR version of how the embedded text is built: the width, the input type and
-#: the template. The vendor does not version a model id, so without this a
-#: change to WHAT is embedded would be invisible while the model string stayed
-#: identical. Bump it whenever a text builder below changes, and every row
-#: built by the previous builder becomes stale by query rather than by memory.
-CONTRACT_VERSION = "v1-1024-doc"
+#: The embedding contract version, imported rather than restated. It lives in
+#: `config/llm_providers` beside `EMBEDDING_MODEL` since 2026-09-24, because the
+#: indexer (`rag/index`) and the repair sweep (`rag/repair`) stamp and compare
+#: the same value, and two copies of one version string drift silently. The
+#: local name is kept so every reader below is unchanged.
+CONTRACT_VERSION = EMBEDDING_CONTRACT_VERSION
 
 #: How many rows are read, embedded and shadow-written per round. Bounded by the
 #: vendor's own per-request ceiling, which `embeddings.embed` already splits on;
@@ -160,26 +161,52 @@ class Target:
         return f"{self.table}.{self.column}"
 
 
-#: The JD text `matching._jd_text` builds, expressed in SQL so it can be rebuilt
-#: from the row. Compensation is excluded, and that is not incidental: ESD 16
-#: and `matching._strip_compensation` keep salary out of every model prompt, and
-#: an embedding is a model prompt.
-_JD_TEXT_SQL = """
+def _jd_text_sql() -> str:
+    """The JD text `yukti.inputs.jd_text` builds, expressed in SQL so it can be
+    rebuilt from the row.
+
+    The SAME FIELDS, in the same order: title, department, the grade label,
+    the experience band, then the JD keys `inputs._JD_JSON_KEYS` names. Never
+    `level` (a pre-2026-07-28 field no form collects) and never `reportees`,
+    which is what the retired `matching._jd_text` read (Phase 2 WP-F).
+    Compensation is excluded, and that is not incidental: ESD 16 and
+    `compensation_guard` keep salary out of every model prompt, and an
+    embedding is a model prompt. The grade labels and the key list are READ
+    from the Python builder's own constants, so the two cannot name different
+    fields; the text itself is still rebuilt from the row.
+    """
+    from app.services.job_candidates import GRADE_LABELS
+    from app.services.yukti.inputs import _JD_JSON_KEYS
+
+    grade_cases = " ".join(
+        f"WHEN '{code}' THEN '{label}'" for code, label in GRADE_LABELS.items()
+    )
+    key_lines = ",\n        ".join(
+        f"CASE WHEN j.jd_json ? '{key}' THEN "
+        f"'{key.replace('_', ' ').title()}: ' || (j.jd_json ->> '{key}') END"
+        for key in _JD_JSON_KEYS
+    )
+    return f"""
     concat_ws(E'\\n',
         'Job title: ' || j.title,
         CASE WHEN j.department IS NOT NULL THEN 'Department: ' || j.department END,
-        CASE WHEN j.level IS NOT NULL THEN 'Level: ' || j.level END,
-        CASE WHEN j.jd_json ? 'role' THEN 'Role: ' || (j.jd_json ->> 'role') END,
-        CASE WHEN j.jd_json ? 'responsibilities'
-             THEN 'Responsibilities: ' || (j.jd_json ->> 'responsibilities') END,
-        CASE WHEN j.jd_json ? 'education'
-             THEN 'Education: ' || (j.jd_json ->> 'education') END,
-        CASE WHEN j.jd_json ? 'skills' THEN 'Skills: ' || (j.jd_json ->> 'skills') END,
-        CASE WHEN j.jd_json ? 'experience_years'
-             THEN 'Experience Years: ' || (j.jd_json ->> 'experience_years') END,
-        j.jd_markdown
+        'Grade: ' || CASE COALESCE(j.assessment_grade, 'non_managerial')
+            {grade_cases} ELSE '{GRADE_LABELS["non_managerial"]}' END,
+        CASE
+            WHEN j.experience_min_years IS NOT NULL AND j.experience_max_years IS NOT NULL
+                THEN 'Experience: ' || j.experience_min_years || ' to '
+                     || j.experience_max_years || ' years'
+            WHEN j.experience_min_years IS NOT NULL
+                THEN 'Experience: ' || j.experience_min_years || ' or more years'
+            WHEN j.experience_max_years IS NOT NULL
+                THEN 'Experience: up to ' || j.experience_max_years || ' years'
+        END,
+        {key_lines}
     )
 """
+
+
+_JD_TEXT_SQL = _jd_text_sql()
 
 #: `bd_leads.role_embedding_text`, in SQL. Title plus the parsed skill list, and
 #: nothing else: AI Reach ranks ROLES against each other, so a full JD would

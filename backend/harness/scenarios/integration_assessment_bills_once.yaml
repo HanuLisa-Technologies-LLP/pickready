@@ -1,0 +1,57 @@
+id: integration.an_assessment_bills_once_and_scores_once
+version: 1
+tier: integration
+description: >
+  A candidate answers every question, the conversation completes, exactly one
+  credit is charged and scoring is dispatched exactly once, INCLUDING when the
+  completion request is retried. The retry is the whole scenario: a double
+  click, a reconnect that replays the send and a client retry after a lost
+  response all arrive as separate requests, so "charged once" is a property
+  nothing gives for free.
+tags: [assessment, billing, idempotency, dispatch]
+
+given:
+  world: assessment_in_progress
+  overrides:
+    questions.count: 2
+
+workload:
+  - answer_every_question
+  - answer_the_last_question_again
+
+expect:
+  state:
+    - assessment_conversations.status == completed
+    - assessment_conversations.credit_event == completed_assessment
+    # ONE LEDGER ENTRY FOR THIS APPLICATION, and the balance to match it. The
+    # entry count alone would miss a second charge written under a different
+    # link, and the balance alone would miss two entries that happened to
+    # cancel. Ten credits were granted, six hundred sub-units; one full credit
+    # is sixty, and this job is not STEM-rated, so the balance lands at 540.
+    - credit_ledger.entries_for_link == 1
+    - credit_ledger.subunits_total == 540
+    - credit_ledger.event_types == [completed_assessment, grant]
+  dispatched:
+    # EXACT COUNTS. Scoring twice would pay for Miti's five evaluators and
+    # Siddhi's synthesis a second time and rewrite a report that may already
+    # have been delivered, which is the immutability rule failing without a
+    # sound.
+    pickready.run_functional_assessment: 1
+    pickready.index_document: 1
+  output:
+    - facts.assessment_turns >= 2
+  trajectory:
+    # The start opens the first turn and every answer names it (2026-09-24).
+    - assessment_opened
+    - assessment_completed
+    - assessment_completion_retried
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client
+    - cost

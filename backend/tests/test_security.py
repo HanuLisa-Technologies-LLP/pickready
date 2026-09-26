@@ -51,11 +51,16 @@ def test_the_three_audiences_are_distinct() -> None:
     assert len({AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE}) == 3
 
 
-def test_internal_alias_points_at_org_not_owner() -> None:
-    # The deprecated single "internal" audience now means ORG; an owner token
-    # must NOT be mintable through the alias.
-    assert security.AUDIENCE_INTERNAL == AUDIENCE_ORG
-    assert security.AUDIENCE_INTERNAL != AUDIENCE_OWNER
+def test_the_deprecated_internal_alias_is_gone_and_the_default_is_org() -> None:
+    # The single "internal" audience alias was deleted on 2026-09-24 with the
+    # retired code-login service, its last importer. `decode_token`'s default
+    # is the ORG audience it always resolved to, never the owner's.
+    import inspect
+
+    assert not hasattr(security, "AUDIENCE_" + "INTERNAL")
+    default = inspect.signature(security.decode_token).parameters["audience"].default
+    assert default == AUDIENCE_ORG
+    assert default != AUDIENCE_OWNER
 
 
 # ── Token round-trips and cross-audience rejection ──────────────────────────

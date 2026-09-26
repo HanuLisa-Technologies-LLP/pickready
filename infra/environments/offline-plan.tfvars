@@ -47,3 +47,44 @@ hosted_zone_id = "ZOFFLINEPLANNOTAREALZONE"
 
 storage_bucket_name     = "readypick-never-created-storage"
 access_logs_bucket_name = "readypick-never-created-alb-logs"
+
+# PILOT-ONLY, and their absence is why pilot was the one environment that could
+# not be planned offline at all: both are required and neither has a default,
+# so the plan stopped before it reached anything. Same shape as every value
+# above -- a region that is not one, and a bucket name that would collide with
+# nothing.
+transcribe_region      = "xx-plan-1"
+transcribe_bucket_name = "readypick-never-created-transcribe"
+
+# The offline region is deliberately not one of these, so `has_inbound` is
+# false in the plan and the SES module is not instantiated. That is the same
+# answer the real pilot gets today and for the same reason.
+ses_receiving_regions = [
+  "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+  "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+  "ca-central-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-north-1",
+  "sa-east-1",
+]
+
+# PILOT-ONLY. The code sandbox is DISABLED by default in the real environment;
+# the offline plan switches EVERY stage on (A1, A2 and the stage B caller
+# wiring) so CI plans every resource of infra/modules/code_sandbox and every
+# caller attachment rather than skipping them. The AMI id is all
+# zeros and the digests are sha256 of nothing in particular, the same
+# never-real shape as every value above.
+judge0_enabled          = true
+judge0_instance_enabled = true
+judge0_clients_enabled  = true
+judge0_ami_id           = "ami-00000000000000000"
+judge0_image_digests = {
+  "judge0"          = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  "judge0-postgres" = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  "judge0-redis"    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+}
+
+# PILOT-ONLY. The image builder is on by default in the real environment too;
+# it is set explicitly here so CI plans every resource of
+# infra/modules/image_builder whatever the default becomes. The bucket name is
+# the same never-created shape as every other bucket in this file.
+image_builder_enabled     = true
+image_builder_bucket_name = "readypick-never-created-image-builds"

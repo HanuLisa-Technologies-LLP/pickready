@@ -41,41 +41,54 @@ THE GAP STATEMENT IS THE ENTRY WORTH DEFENDING
 "There is no evidence of X" feels uncitable. It is not: the citation is the
 evidence that was SEARCHED (`evidence.KIND_SEARCHED`). Without it, a gap in the
 assessment is reported as a gap in the candidate. See `siddhi/evidence.py`.
+
+ASSEMBLY HERE, RENDERING IN `siddhi.report` (Vivekium release)
+----------------------------------------------------------------
+`assemble` builds the unrendered `citations.Report` and the evidence index it is
+checked against. It no longer renders: `siddhi.report.compose_prism` is the one
+composer, and it renders in the collecting mode, checks each rendered
+statement's support, and returns what was withheld for human review. The old
+`compose` rendered in the raising mode, so one uncited statement failed the
+whole scoring task and the candidate got no report at all.
+
+`require_frozen_matrix` and its `ScorecardUnavailable` were DELETED with it:
+nothing on the live path called them, and gate G1 now runs against the locked
+skills contract in Miti, where the refusal belongs.
 """
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from app.services.siddhi import citations, numbers
+from app.services import evidence_confidence
+from app.services.siddhi import citations, claim_evidence, numbers
+from app.services.siddhi import validation_points
 from app.services.siddhi.evidence import KIND_SEARCHED, EvidenceIndex, EvidenceNode
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ScorecardUnavailable",
     "GENERIC_ADVICE_PHRASES",
     "SECTION_TITLES",
+    "RATED_SECTIONS",
+    "NOT_ASSESSED_WORD",
     "ReadyPickNote",
-    "ComposedReport",
-    "compose",
+    "Assembled",
+    "assemble",
     "evidence_refs_for",
     "ready_pick_note",
     "READY_PICK_NOTE_KEY",
-    "require_frozen_matrix",
 ]
 
-
-class ScorecardUnavailable(RuntimeError):
-    """The frozen matrix a report must be written against cannot be reached.
-
-    Raised, never worked around. A PRISM Report states grades against the
-    criteria a Hiring Manager finalised; written without them it would state
-    grades against criteria nobody approved, which is the failure gate G1 exists
-    to prevent and is not something a fallback can make safe.
-    """
+#: What a rated row whose evaluation could not be completed states in place of
+#: a grade (PLAN-p5 P5-D3). A WORD, like every grade, so the number ban and the
+#: quality gate read it the way they read the four grades.
+NOT_ASSESSED_WORD = "Not assessed"
+#: The stored row status that means it (the `report_dimensions.assessment_status`
+#: vocabulary the grading phase adds).
+_STATUS_NOT_ASSESSED = "not_assessed"
 
 
 #: The report's section keys and the heading each one prints. Restated here
@@ -91,7 +104,9 @@ SECTION_TITLES: dict[str, str] = {
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",
     "behavioural": "Behavioural Competencies",
+    "claim_evidence": "Evidence vs Claim Summary",
     "gap_analysis": "Gap Analysis & Action Plan",
+    "validation_points": "Recommended Human Validation Points",
     "validation": "Validation",
     #: LEGACY. A report written against the standalone technical bank that no
     #: longer exists still carries these rows, and a report is immutable.
@@ -110,6 +125,19 @@ CATEGORY_SECTIONS: dict[str, str] = {
     "behavioural": "behavioural",
     "technical": "technical",
 }
+
+#: The sections that carry one GRADE statement per rated skill. The quality
+#: gate reads Siddhi's stated grades out of exactly these, and the support
+#: check reads their remarks.
+RATED_SECTIONS: tuple[str, ...] = (
+    "must_have",
+    "nice_to_have",
+    "behavioural",
+    "technical",
+)
+
+#: The subject of the Overall grade statement ("Overall: Matching").
+OVERALL_LABEL = "Overall"
 
 #: GENERIC ADVICE, WHICH IS WHAT THE GAP SECTION EXISTS TO STOP PRODUCING.
 #:
@@ -182,40 +210,17 @@ class ReadyPickNote:
 
 
 @dataclass
-class ComposedReport:
-    """What the generator produced, once it survived the chokepoint."""
+class Assembled:
+    """An UNRENDERED report and everything needed to render and check it.
 
-    #: `citations.Report.render()` output. Every statement in it is cited.
-    sections: list[dict[str, Any]] = field(default_factory=list)
-    note: ReadyPickNote = ReadyPickNote("")
-    index: EvidenceIndex = field(default_factory=EvidenceIndex)
+    `report` holds every statement the generator produced, cited or not; what
+    reaches a reader is decided when `siddhi.report.compose_prism` renders it.
+    """
 
-    @property
-    def evidence_refs(self) -> tuple[str, ...]:
-        return tuple(sorted(self.index.refs))
-
-    def trail(self) -> dict[str, Any]:
-        """The audit shape persisted alongside the immutable report.
-
-        Statement text is included and evidence EXCERPTS are not. The trail
-        exists so a reader can ask "what did this sentence rest on"; answering
-        that needs the sentence and the locator, and never the transcript the
-        locator points at.
-        """
-        return {
-            "evidence_nodes": [node.as_dict() for node in self.index.nodes],
-            "statements": [
-                {
-                    "section": section["key"],
-                    "kind": statement["kind"],
-                    "text": statement["text"],
-                    "evidence_refs": statement["evidence_refs"],
-                }
-                for section in self.sections
-                for statement in section["statements"]
-                if statement["kind"] in citations.REQUIRES_CITATION
-            ],
-        }
+    report: citations.Report
+    index: EvidenceIndex
+    rated: list[Mapping[str, Any]]
+    note: ReadyPickNote
 
 
 def _grade_of(row: Mapping[str, Any]) -> str:
@@ -224,7 +229,12 @@ def _grade_of(row: Mapping[str, Any]) -> str:
     A report states the evaluation's grade. Recomputing it in the generator
     would create a second arithmetic that has to agree with the first, and the
     day they disagreed there would be no way to tell which one the client saw.
+
+    A row whose evaluation could not be completed states `Not assessed`, never
+    a grade derived from a score it does not have.
     """
+    if row.get("assessment_status") == _STATUS_NOT_ASSESSED:
+        return NOT_ASSESSED_WORD
     grade = row.get("grade")
     if grade:
         return str(grade)
@@ -237,7 +247,7 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
-def compose(
+def assemble(
     *,
     dimensions: Sequence[Mapping[str, Any]],
     evidence_by_item: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
@@ -246,19 +256,18 @@ def compose(
     overall_summary: str | None = None,
     overall_grade: str | None = None,
     validation: Mapping[str, Any] | None = None,
-) -> ComposedReport:
-    """Assemble the report and RENDER IT. Raises on anything uncited.
+    validation_points: Mapping[str, Any] | None = None,
+    claim_evidence: Mapping[str, Any] | None = None,
+    extra_nodes: Sequence[EvidenceNode] = (),
+    passages: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+) -> Assembled:
+    """Assemble every statement the report would make, WITHOUT rendering it.
 
-    This is the chokepoint on the live path. It is called from
-    `gap_analysis.build_gap_analysis`, which is called from the assessment
-    graph's synthesis node, so a statement that cannot cite an evidence node
-    stops the report from being written rather than being logged and shipped.
-
-    It does not catch `UncitedStatement` or `UnknownEvidence`. There is no
-    degraded report to fall back to: a PRISM Report whose claims are not traced
-    is not a worse report, it is a different product, and spec-doc6 §4.1 is
-    explicit that a stage may not silently degrade. The caller audits and
-    surfaces; nothing here writes a generic paragraph.
+    Deterministic and model-free: which statement exists, what kind it is and
+    which evidence node it cites is arithmetic over the rated rows and the
+    exchange record. Rendering (and therefore the decision about what reaches a
+    reader) is `siddhi.report.compose_prism`'s, so there is one place where a
+    statement becomes delivered text.
     """
     rated = [row for row in dimensions if row.get("name")]
     index = EvidenceIndex.build(
@@ -266,6 +275,10 @@ def compose(
         exchanges={
             str(key): list(value or [])
             for key, value in (evidence_by_item or {}).items()
+        },
+        passages={
+            str(key): list(value or [])
+            for key, value in (passages or {}).items()
         },
     )
     # The aspect nodes join the SAME index rather than being added to the
@@ -280,20 +293,26 @@ def compose(
             EvidenceNode(ref=ref, kind=KIND_SEARCHED, item=f"aspect:{category}")
             for category, ref in aspect_nodes.items()
         )
+        # The employer confirmations join the SAME index, for the reason the
+        # aspect nodes do: a ref that is citable but absent from the index is a
+        # ref the persisted trail cannot explain.
+        + tuple(extra_nodes)
     )
     report = citations.Report(known_refs=index.refs)
 
     _compose_rated_sections(report, rated, index)
     _compose_overall(report, rated, index, overall_summary, overall_grade)
+    _compose_claim_evidence(report, index, claim_evidence)
     _compose_gap_section(report, index, aspect_nodes, gap_groups, focus_summary)
+    _compose_validation_points(report, index, rated, validation_points)
     _compose_validation(report, validation)
 
-    composed = ComposedReport(
-        sections=report.render(),
-        note=ready_pick_note(rated, index),
+    return Assembled(
+        report=report,
         index=index,
+        rated=rated,
+        note=ready_pick_note(rated, index),
     )
-    return composed
 
 
 def evidence_refs_for(
@@ -362,13 +381,37 @@ def _compose_rated_sections(
             if grade:
                 section.add(
                     citations.Statement(
-                        citations.KIND_GRADE, f"{name}: {grade}", refs
+                        citations.KIND_GRADE, f"{name}: {grade}", refs, item=name
                     )
                 )
             remark = _clean(row.get("remark"))
             if remark:
                 section.add(
-                    citations.Statement(citations.KIND_FINDING, remark, refs)
+                    citations.Statement(
+                        citations.KIND_FINDING, remark, refs, item=name
+                    )
+                )
+            # EVIDENCE CONFIDENCE, beside the grade and under the same rule.
+            # It is a verdict about the record, so it is a KIND_GRADE
+            # statement carrying the same refs the grade carries: the whole
+            # point of the word is that a reader can ask what it rests on, and
+            # a word outside the chokepoint could not be asked.
+            #
+            # ABSENT ON EVERY ROW WRITTEN BEFORE 0107, and nothing is
+            # substituted for it. A report is immutable and the evidence set an
+            # older one was written from is not reconstructable; an invented
+            # word here would be the only uncheckable statement in the section.
+            confidence = evidence_confidence.display_word(
+                row.get("evidence_confidence")
+            )
+            if confidence:
+                section.add(
+                    citations.Statement(
+                        citations.KIND_GRADE,
+                        f"{name}: evidence confidence {confidence}",
+                        refs,
+                        item=name,
+                    )
                 )
 
 
@@ -404,12 +447,19 @@ def _compose_overall(
     if overall_grade:
         section.add(
             citations.Statement(
-                citations.KIND_GRADE, f"Overall: {overall_grade}", refs
+                citations.KIND_GRADE,
+                f"{OVERALL_LABEL}: {overall_grade}",
+                refs,
+                item="overall",
             )
         )
     summary = _clean(overall_summary)
     if summary:
-        section.add(citations.Statement(citations.KIND_FINDING, summary, refs))
+        section.add(
+            citations.Statement(
+                citations.KIND_FINDING, summary, refs, item="overall"
+            )
+        )
 
 
 def _compose_gap_section(
@@ -433,7 +483,10 @@ def _compose_gap_section(
         # person and both are cited to what was actually searched.
         section.add(
             citations.Statement(
-                citations.KIND_GAP, summary, tuple(sorted(set(aspect_nodes.values())))
+                citations.KIND_GAP,
+                summary,
+                tuple(sorted(set(aspect_nodes.values()))),
+                item="gap_analysis",
             )
         )
 
@@ -462,12 +515,17 @@ def _compose_gap_section(
                         )
                     )
                     or aspect_refs,
+                    item=category,
                 )
             )
 
         no_gaps = _clean(group.get("no_gaps_statement"))
         if no_gaps:
-            section.add(citations.Statement(citations.KIND_GAP, no_gaps, aspect_refs))
+            section.add(
+                citations.Statement(
+                    citations.KIND_GAP, no_gaps, aspect_refs, item=category
+                )
+            )
 
         for item in group.get("items") or []:
             name = str(item.get("name") or "")
@@ -478,7 +536,7 @@ def _compose_gap_section(
             if grade:
                 section.add(
                     citations.Statement(
-                        citations.KIND_GRADE, f"{name}: {grade}", item_refs
+                        citations.KIND_GRADE, f"{name}: {grade}", item_refs, item=name
                     )
                 )
             remark = _clean(item.get("remark"))
@@ -487,14 +545,183 @@ def _compose_gap_section(
                 # report and quoted here, so the gap section can never carry a
                 # second, differently worded assessment of the same item.
                 section.add(
-                    citations.Statement(citations.KIND_GAP, remark, item_refs)
+                    citations.Statement(
+                        citations.KIND_GAP, remark, item_refs, item=name
+                    )
                 )
             for probe in item.get("probes") or []:
                 text = _clean(probe)
                 if text:
                     section.add(
-                        citations.Statement(citations.KIND_PROBE, text, item_refs)
+                        citations.Statement(
+                            citations.KIND_PROBE, text, item_refs, item=name
+                        )
                     )
+
+
+def _compose_claim_evidence(
+    report: citations.Report,
+    index: EvidenceIndex,
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Evidence vs Claim Summary: the claim, what was found, how sure we are.
+
+    THREE STATEMENTS PER ENTRY, not one, because they are three different kinds
+    of assertion and merging them would make two of them untraceable. The claim
+    is a finding about what this person asserted; the evidence sentence is a
+    finding about what the record holds, or a GAP when the record holds
+    nothing; the confidence is a verdict over the sources.
+
+    THE GAP KIND ON AN UNEVIDENCED CLAIM IS THE ENTRY WORTH DEFENDING, and it
+    is the same argument the Gap Analysis already makes: "nothing addressed
+    this" is citable, and its citation is the `searched` node. Without that the
+    generator's only options would be to emit it uncited, which the chokepoint
+    refuses, or to drop it, which would quietly delete the most material claim
+    on the report.
+
+    An entry with no refs is NOT rescued with a fallback here. It raises at
+    render, loudly, naming the section, because a claim summary whose entries
+    cannot be traced is the one section in this report that would be worse than
+    absent.
+    """
+    if not payload:
+        return
+    entries = list(payload.get("entries") or [])
+    statement = _clean(payload.get("no_claims_statement"))
+    if not entries and not statement:
+        return
+    section = report.section(
+        claim_evidence.SECTION_KEY, SECTION_TITLES[claim_evidence.SECTION_KEY]
+    )
+    section.add(
+        citations.Statement(
+            citations.KIND_HEADING, SECTION_TITLES[claim_evidence.SECTION_KEY]
+        )
+    )
+    note = _clean(payload.get("note"))
+    if note:
+        # CONNECTIVE. It describes what the section is, and asserts nothing
+        # about the candidate.
+        section.add(citations.Statement(citations.KIND_CONNECTIVE, note))
+    if not entries:
+        # "No material claims were recorded" is a claim about the RECORD of
+        # this assessment, so it cites what was searched across the whole of
+        # it rather than nothing.
+        section.add(
+            citations.Statement(
+                citations.KIND_GAP,
+                statement,
+                _all_searched(index),
+                item=claim_evidence.SECTION_KEY,
+            )
+        )
+        return
+    for entry in entries:
+        refs = tuple(entry.get("evidence_refs") or ())
+        area = _clean(entry.get("area")) or claim_evidence.SECTION_KEY
+        claim = _clean(entry.get("claim"))
+        if claim:
+            section.add(
+                citations.Statement(citations.KIND_FINDING, claim, refs, item=area)
+            )
+        found = _clean(entry.get("evidence"))
+        if found:
+            kind = (
+                citations.KIND_GAP
+                if found.startswith(claim_evidence.ABSENT_EVIDENCE[:40])
+                else citations.KIND_FINDING
+            )
+            section.add(citations.Statement(kind, found, refs, item=area))
+        confidence = _clean(entry.get("confidence"))
+        if confidence:
+            section.add(
+                citations.Statement(
+                    citations.KIND_GRADE,
+                    f"Evidence confidence: {confidence}",
+                    refs,
+                    item=area,
+                )
+            )
+
+
+def _compose_validation_points(
+    report: citations.Report,
+    index: EvidenceIndex,
+    rated: Sequence[Mapping[str, Any]],
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Recommended Human Validation Points, every line of it cited.
+
+    A point's REASON is a claim about the evidence base behind a rated line, and
+    its PROBE is advice for an interviewer, so they are KIND_GAP and KIND_PROBE
+    respectively: the same two kinds the Gap Analysis uses, because they are the
+    same two kinds of assertion. The refs are the area's own, so a reader can
+    follow "the evidence here is thin" back to the evidence it is thin about.
+
+    An area with no rated line of its own falls back to the whole searched set
+    rather than being dropped. That case is a contradiction the ledger recorded
+    against a subject the matrix does not grade, and an inconsistency in an
+    ungraded claim is still an inconsistency worth a person's attention.
+    """
+    if not payload:
+        return
+    points = list(payload.get("points") or [])
+    statement = _clean(payload.get("no_points_statement"))
+    if not points and not statement:
+        return
+    section = report.section(
+        validation_points.SECTION_KEY,
+        SECTION_TITLES[validation_points.SECTION_KEY],
+    )
+    section.add(
+        citations.Statement(
+            citations.KIND_HEADING, SECTION_TITLES[validation_points.SECTION_KEY]
+        )
+    )
+    note = _clean(payload.get("note"))
+    if note:
+        section.add(citations.Statement(citations.KIND_CONNECTIVE, note))
+    everything = _all_searched(index)
+    if not points:
+        # "Nothing further needs checking" asserts something about every area
+        # assessed, so it cites every area that was searched.
+        section.add(
+            citations.Statement(
+                citations.KIND_GAP,
+                statement,
+                everything,
+                item=validation_points.SECTION_KEY,
+            )
+        )
+        return
+    for point in points:
+        area = str(point.get("area") or "")
+        refs = index.grounding(area) or everything
+        heading = _clean(area)
+        if heading:
+            section.add(citations.Statement(citations.KIND_HEADING, heading))
+        reason = _clean(point.get("reason"))
+        if reason:
+            section.add(
+                citations.Statement(citations.KIND_GAP, reason, refs, item=area)
+            )
+        probe = _clean(point.get("probe"))
+        if probe:
+            section.add(
+                citations.Statement(citations.KIND_PROBE, probe, refs, item=area)
+            )
+
+
+def _all_searched(index: EvidenceIndex) -> tuple[str, ...]:
+    """Every `searched` ref in the evaluation, in index order.
+
+    The citation for a statement about the assessment AS A WHOLE. It is the
+    honest one: a sentence saying every area is corroborated is answerable only
+    by pointing at every area that was looked at.
+    """
+    return tuple(
+        node.ref for node in index.nodes if node.kind == KIND_SEARCHED
+    )
 
 
 def _compose_validation(
@@ -519,7 +746,7 @@ def _compose_validation(
             )
 
 
-# ── The dashboard's Ready Pick Note ──────────────────────────────────────────
+# ── The dashboard's Vivekium Note ──────────────────────────────────────────
 
 #: THE KEY THE DASHBOARD READS THE NOTE FROM.
 #:
@@ -610,38 +837,6 @@ def _no_dash(value: str) -> str:
     """No em dash in any string the product writes, including this one."""
     dash = chr(8212)
     return value.replace(f" {dash} ", ", ").replace(dash, ", ")
-
-
-# ── The frozen matrix a report is written against ────────────────────────────
-
-
-async def require_frozen_matrix(session: Any, job_id: Any) -> Any:
-    """The job's approved, frozen scorecard, or a refusal naming what is absent.
-
-    LAZY IMPORT, DELIBERATELY. `app.services.hiring.scorecard` is being built by
-    the job-setup phase and may not exist in a given checkout; importing it at
-    module scope would make Siddhi unimportable rather than make the dependency
-    visible. There is no fallback: a report written without the frozen matrix
-    would state grades against criteria nobody finalised, which is exactly what
-    gate G1 exists to refuse, and "restrict more when unsure" points one way
-    here.
-    """
-    try:
-        from app.services.hiring import scorecard
-    except ImportError as exc:
-        raise ScorecardUnavailable(
-            "app.services.hiring.scorecard is not present in this build, so the "
-            "frozen matrix a PRISM Report must be written against cannot be "
-            "reached. A report is not generated without it."
-        ) from exc
-    require = getattr(scorecard, "require_frozen_matrix", None)
-    if require is None:
-        raise ScorecardUnavailable(
-            "app.services.hiring.scorecard exists but exposes no "
-            "require_frozen_matrix(session, job_id); the frozen matrix cannot "
-            "be reached and no report is generated without it."
-        )
-    return await require(session, job_id)
 
 
 def assert_deliverable(payload: Any, *, where: str) -> None:

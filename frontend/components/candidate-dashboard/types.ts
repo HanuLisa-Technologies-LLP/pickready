@@ -8,15 +8,14 @@
  * thousand-line one. The one that does not: `lib/types.ts` is edited by every
  * surface at once.
  *
- * THE ONE NUMBER
- * --------------
- * `ready_pick_score` is the only numeric assessment value in this product's
- * client-facing types, and it is deliberate. spec-doc6 D8 rules that the Ready
- * Pick Score renders on the dashboard and can never enter a delivered PRISM
- * Report; everything else here is a WORD the server chose. Nothing in this
- * folder computes a grade, a band or a label from a number: the server sends
- * `band`, `band_label`, `confidence_indicator` and every spoken label, so a
- * rendering layer cannot invent a verdict during an outage.
+ * NO NUMBER, AND NO LETTER
+ * ------------------------
+ * Nothing in these types is a score (D3, CONTRACT C8). Columns 3 and 4 carry a
+ * WORD the server chose and a STATE to style by; the numeric Vivekium Score
+ * that spec-doc6 D8 once licensed here is gone, and so is the A / B / C / Hold
+ * letter. Nothing in this folder computes a grade, a state or a label from a
+ * number: the server sends every word and every spoken label, so a rendering
+ * layer cannot invent a verdict during an outage.
  */
 
 /** Column 6's target. A DIFFERENT artefact from the PRISM Report. */
@@ -38,19 +37,22 @@ export interface DashboardRow {
   source_type: string;
   source_label: string;
 
-  /** A / B / C / Hold, or null when the resume has not been pre-screened. */
-  pre_screen_grade: string | null;
-  pre_screen_label: string;
+  /** Column 3, AI Match: Yukti's reading of the RESUME alone. One of the four
+   *  grade words, or "Not checked yet" / "Not assessed". Rendered muted. */
+  ai_match_state: string;
+  ai_match_label: string;
+  ai_match_screen_reader_label: string;
+  ai_match_note: string;
 
-  ready_pick_score: number | null;
-  band: string;
-  band_label: string;
-  band_screen_reader_label: string;
+  /** Column 4, Vivekium Grade: the word for the rank the ranked table sorts
+   *  by. "Under Review" while an integrity finding is open. */
+  ranking_state: string;
+  ranking_label: string;
+  ranking_screen_reader_label: string;
+  ranking_note: string;
   confidence: string | null;
   confidence_indicator: "filled" | "outline" | "grayed";
   confidence_label: string;
-  score_range: string | null;
-  score_range_note: string;
 
   note: string;
   note_is_pending: boolean;
@@ -84,7 +86,6 @@ export interface DashboardControls {
   can_team_review: boolean;
   team_review_disabled_reason: string | null;
   can_disposition_integrity: boolean;
-  can_view_calibration: boolean;
   scoped_to_assignments: boolean;
 }
 
@@ -100,7 +101,8 @@ export interface DashboardPage {
    *  while the database holds three (spec-doc6 C40). */
   source_types: string[];
   source_labels: Record<string, string>;
-  pre_screen_grades: string[];
+  /** The AI Match filter's domain: the four grade words. */
+  ai_match_grades: string[];
   stages: string[];
   sort_keys: string[];
 }
@@ -133,7 +135,6 @@ export interface ReadyPickProfile {
   under_integrity_review: boolean;
   needs_human_review: boolean;
   scorecard_version: number | null;
-  company_dna_version: number | null;
   evaluated_at: string | null;
   scoring_mode: string | null;
 }

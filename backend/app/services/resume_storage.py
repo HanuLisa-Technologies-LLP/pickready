@@ -35,11 +35,11 @@ ALLOWED_RESUME_CONTENT_TYPES = {
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 OBJECT_PREFIX = "resumes"
 
-#: What `profiles.resume_storage_provider` records for a row written today.
-#: Rows written before the AWS migration say "gcs" and are recognised on read so
-#: an un-migrated object reports as un-migrated rather than as missing.
+#: What `profiles.resume_storage_provider` records for a row written today,
+#: and the only store a resume is read from. The pre-AWS provider constant and
+#: its named read error went in the 2026-09 final sweeps (pilot holds no such
+#: row); any other provider is refused below as un-migrated.
 STORAGE_PROVIDER = "s3"
-LEGACY_STORAGE_PROVIDER = "gcs"
 
 
 @dataclass(frozen=True)
@@ -256,20 +256,27 @@ def _fetch_object_bytes(object_name: str) -> bytes:
         ) from exc
 
 
+def is_in_current_store(provider: str | None, url: str | None) -> bool:
+    """Whether a resume row names an object in the store this product uses.
+
+    The ONE answer, read by `fetch_resume_bytes` and by the candidate erasure
+    (`erasure.candidate_object_keys`), so reading and deleting cannot disagree
+    about which rows they may touch. Either half is enough: the provider
+    label, or an `s3://` URL. The URL half matters because the column's server
+    default was 'cloudinary' until migration 0128, so a writer that forgot the
+    column labelled an S3 object with a store it never touched; that row's
+    bytes are in S3 and must be both readable and erasable.
+    """
+    return provider == STORAGE_PROVIDER or str(url or "").startswith(
+        object_storage.S3_SCHEME
+    )
+
+
 async def fetch_resume_bytes(profile: Any) -> bytes:
     if not profile_has_resume(profile):
         raise ResumeStorageError("The resume file is missing its storage metadata.")
     provider = getattr(profile, "resume_storage_provider", None)
-    url = str(profile.resume_url or "")
-    if provider == LEGACY_STORAGE_PROVIDER or object_storage.is_legacy_uri(url):
-        # A NAMED failure, not a 404. This row is not corrupt, it is
-        # un-migrated, and those are different problems with different fixes.
-        # Saying "missing" would send somebody looking for a lost file.
-        raise ResumeStorageError(
-            "This resume was stored before the storage migration and has not "
-            "been copied across yet. Run scripts/migrate_resumes_to_s3.py."
-        )
-    if provider != STORAGE_PROVIDER and not url.startswith(object_storage.S3_SCHEME):
+    if not is_in_current_store(provider, profile.resume_url):
         raise ResumeStorageError("The resume has not been migrated to private storage.")
     return await run_in_threadpool(_fetch_object_bytes, profile.resume_public_id)
 

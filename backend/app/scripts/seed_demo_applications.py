@@ -30,43 +30,62 @@ The same measurement found that 30 of the 33 demo jobs had ZERO competencies:
     Sarkar / Python Backend Developer    5 / 5 / 5   framework approved
     every other demo job                 0 / 0 / 0   NOT approved
 
-`pickready.generate_ppi_framework`
+the retired matrix generator task
 had evidently never run for them. So even with applications seeded, those jobs
 answer 409 to `select-candidates` and nobody can be invited. Seeding the
 applications alone would have produced a demo that still did not work, and a
 second round of "it says it is done but it is not".
 
-So this script closes all three gaps in one pass, in dependency order:
+So this script closes the gaps in dependency order:
 
-    1. Generate a PPI framework for any demo job that has none.
-    2. Approve it -- DEMO TENANTS ONLY, see below.
-    3. Create the applications.
+    1. SAVE each demo job's drafted skills through `skills.save`, the one
+       implementation of Save Skills -- DEMO TENANTS ONLY, see below.
+    2. Create the applications.
 
-WHY APPROVING IS SAFE HERE, AND ONLY HERE
------------------------------------------
-The framework review gate is the product's only comparability guarantee: it is
-the fixed criteria every candidate on a job is graded against, and a report
-states a grade against those exact criteria. Auto-approving it is a real
-concession, so it is scoped exactly like the billing exemption it mirrors: to
-`tenants.is_demo`, read from the COLUMN, never a UUID list and never a name
-match. Workify Corp is a REAL tenant and keeps its manual gate, which is why
-every loop below filters on `is_demo` rather than on the three seed UUIDs.
+A demo job with NO skills is reported and left alone. Skills are drafted by
+Sutra from a SWOT the team SAVED (`skills.request_draft` refuses otherwise),
+and a seed script has no team to save a SWOT for it. Drafting skills here
+without one would be exactly the criteria-nobody-derived shape the product
+exists to refuse.
 
-The framework being approved is still an honest statement. `generate_framework`
-pads deterministically to MINIMUM_PER_CATEGORY on an LLM outage, and this script
-re-checks `framework_is_complete` before stamping anything -- so a framework is
-never approved unless it would have passed the same check a human's Save press
-goes through.
+WHY SAVING IS SAFE HERE, AND ONLY HERE
+--------------------------------------
+Save Skills is the product's comparability guarantee: the saved set is the
+contract every candidate on a job is assessed against. Pressing it on the
+team's behalf is a real concession, so it is scoped exactly like the billing
+exemption it mirrors: to `tenants.is_demo`, read from the COLUMN, never a UUID
+list and never a name match. Workify Corp is a REAL tenant and keeps its manual
+step, which is why every loop below filters on `is_demo` rather than on the
+three seed UUIDs.
+
+It goes through `skills.save` itself, never a stamp written beside it (the
+version this replaced wrote `framework_approved_at` and an empty context with
+no model call and no audit row). So the save is held to every rule a person's
+press is held to: every problem is named and nothing is written when the set
+cannot be saved, Sutra writes the hidden context in ONE call BEFORE any row
+changes, a writer outage saves NOTHING and is reported, and the two audit rows
+are written. The principal on them is the demo tenant's active Super Admin,
+because `ck_audit_log_agent_has_principal` requires a person behind Sutra's
+row and that is the account the demo is run as; the output names them.
+
+ONE TRANSACTION PER SAVE, AND THE SCOPE IS RE-ENTERED EACH TIME
+---------------------------------------------------------------
+A save holds the job's skills lock until its commit and may wait on the writer
+for the interactive budget, so saves are never batched into one long
+transaction. `superadmin_scope` sets transaction-local settings, so every
+transaction enters it afresh: a query after a commit without it runs under RLS
+and reads zero rows, which is indistinguishable from an empty database (the
+2026-09-16 probing mistake).
 
 IDEMPOTENT, AND THAT IS LOAD-BEARING
 ------------------------------------
-Thirty LLM framework generations over a network is exactly the kind of thing
-that fails halfway. Every step below is skip-if-present:
+Thirty-three model calls over a network is exactly the kind of thing that
+fails halfway. Every step below is skip-if-present:
 
-  * a job with competencies keeps them (`generate_framework` is idempotent by
-    default; `replace=False` is never overridden here)
-  * a job already stamped `framework_approved_at` is left alone, so a framework
-    a human edited and saved is never re-approved underneath them
+  * a job whose skills are already saved is left alone, so a set a human
+    edited and saved is never re-saved underneath them
+  * a locked job (a candidate has started) is left alone; its contract is the
+    snapshot and cannot change
   * an application is keyed on (job_id, candidate_id), which is UNIQUE in the
     schema, so a re-run adds nothing
 
@@ -95,11 +114,13 @@ from sqlalchemy import func, select
 
 from app.core.db import superadmin_scope
 from app.models.candidate import Candidate, JobCandidateLink, Profile
-from app.models.enums import LinkSource
+from app.models.enums import LinkSource, Role, UserStatus
 from app.models.job import Job
 from app.models.tenant import Tenant
-from app.services import ppi
+from app.models.user import User
+from app.services import assessment_contract, ppi, skills
 from app.services.application_validation import MANDATORY_KEYS
+from app.services.hiring import pipeline_halt
 from app.workers.dispatch import dispatch
 
 #: The three procurement types, cycled so the demo exercises the filter on the
@@ -113,7 +134,7 @@ SOURCE_TYPES = ("applied", "sourced", "databank")
 #: the Validation section of a report look real in a demonstration.
 #:
 #: These are the CURRENT six fields (services/application_validation). The
-#: 40-aspect profile form they replaced on 2026-07-30 is not collected here and
+#: numbered profile questionnaire they replaced on 2026-07-30 is not collected here and
 #: is not what the report's Validation section reads any more.
 _VALIDATION_SAMPLES: tuple[dict[str, str], ...] = (
     {
@@ -241,46 +262,103 @@ async def _open_jobs(session, tenant_id: uuid.UUID) -> list[Job]:
     )
 
 
-async def _ensure_framework(session, job: Job, dry_run: bool) -> str:
-    """Approve this job's Tatva matrix, if Sutra has already built one.
+async def _demo_principal(session, tenant_id: uuid.UUID) -> User | None:
+    """The account a demo tenant's saves are made as: its active Super Admin.
 
-    CHANGED 2026-08-29. This used to CALL the matrix generator and then approve
-    what came back. It no longer generates anything, and the reason is spec-doc6
-    §4.3's own: a matrix is built from Bodha's SWOT session with the Hiring
-    Manager and the client's compiled Company DNA, neither of which a seed
-    script has. The old single-pass generator would produce one from the JD
-    alone, which is what made this call look reasonable.
-
-    So a demo job with no matrix is REPORTED and left alone. The approval half
-    stays, because a demo tenant genuinely does need its matrices approved
-    without a human present, and `matrix_is_complete` is the same check the
-    Hiring Manager's Save press goes through.
+    `Role.client` is RBAC's tenant-scoped Super Admin, never the platform
+    `Role.super_admin` (whose `tenant_id` is NULL). Oldest first, so a re-run
+    names the same person.
     """
-    if job.framework_approved_at is not None:
-        return "already approved"
+    return (
+        await session.execute(
+            select(User)
+            .where(
+                User.tenant_id == tenant_id,
+                User.role == Role.client,
+                User.status == UserStatus.active,
+            )
+            .order_by(User.created_at, User.id)
+            .limit(1)
+        )
+    ).scalars().first()
+
+
+#: What a save refuses with, each carrying the sentence the reviewer would have
+#: read. The same set the Save Skills route maps (`api/job_setup`), so the
+#: output here says what the screen would have said.
+_SAVE_REFUSALS = (
+    skills.SkillsError,
+    assessment_contract.SkillsLocked,
+    pipeline_halt.PipelineHalted,
+)
+
+
+async def _save_demo_skills(session, job: Job, dry_run: bool) -> str:
+    """Save one demo job's skills through `skills.save`, or say why not.
+
+    The caller commits on success and rolls back otherwise. Every refusal
+    happens before a row changes, so a rollback here loses nothing.
+    """
+    if await assessment_contract.skills_saved(session, job.id):
+        return "already saved"
+    if await assessment_contract.is_locked(session, job.id):
+        return "locked: a candidate has started, so the contract is the snapshot"
 
     rows = await ppi.load_framework(session, job.id)
     if not rows:
         return (
-            "NO MATRIX: run the SWOT session for this job and let Sutra build "
-            "one. A seed script has neither the hiring manager nor the "
-            "company's philosophy to build it from."
+            "NO SKILLS: save the SWOT for this job and let Sutra draft the "
+            "skills. A seed script has no hiring team to save a SWOT for it."
         )
-    ok, reason = ppi.matrix_is_complete(
-        list(rows), job.assessment_grade, job.role_classification
-    )
-    if not ok:
-        return f"INCOMPLETE, left pending: {reason}"
-    if dry_run:
-        return f"would approve ({len(rows)} competencies)"
+    problems = skills.validate_for_save(list(rows))
+    if problems:
+        return "NOT SAVED, left pending: " + " ".join(problems)
 
-    job.framework_approved_at = datetime.now(timezone.utc)
-    # Mirrors api/assessments._refresh_setup_status, which is the one place that
-    # normally moves this column. Kept in step by hand here because importing an
-    # API-layer helper into a script would drag its request dependencies along.
-    job.assessment_status = "ready_for_candidates"
-    await session.flush()
-    return f"approved ({len(rows)} competencies)"
+    principal = await _demo_principal(session, job.tenant_id)
+    if principal is None:
+        return (
+            "NOT SAVED: the tenant has no active Super Admin, and a save needs a "
+            "person behind Sutra's audit row"
+        )
+    if dry_run:
+        return f"would save ({len(rows)} skills) as {principal.email}"
+
+    try:
+        await skills.save(
+            session, job, actor_user_id=principal.id, actor_role=Role.client.value
+        )
+    except _SAVE_REFUSALS as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        return f"NOT SAVED ({type(exc).__name__}): {detail}"
+    return f"saved ({len(rows)} skills) as {principal.email}"
+
+
+async def _save_every_demo_job(
+    factory, tenants: list[tuple[uuid.UUID, str]], dry_run: bool
+) -> list[str]:
+    """One transaction per job, each entering the bypass scope afresh.
+
+    Tenants and jobs arrive as plain (id, name) pairs: a rollback expires every
+    ORM instance, and an expired row read after its session closed would
+    reload from nowhere.
+    """
+    lines: list[str] = []
+    for tenant_id, tenant_name in tenants:
+        async with factory() as session:
+            async with superadmin_scope(session):
+                jobs = [(job.id, job.title) for job in await _open_jobs(session, tenant_id)]
+            await session.rollback()
+        for job_id, title in jobs:
+            async with factory() as session:
+                async with superadmin_scope(session):
+                    job = await session.get(Job, job_id)
+                    outcome = await _save_demo_skills(session, job, dry_run)
+                    if outcome.startswith("saved"):
+                        await session.commit()
+                    else:
+                        await session.rollback()
+            lines.append(f"  {tenant_name} / {title}: {outcome}")
+    return lines
 
 
 async def _run(dry_run: bool, rank: bool) -> int:
@@ -294,8 +372,13 @@ async def _run(dry_run: bool, rank: bool) -> int:
 
     created = 0
     skipped = 0
-    frameworks: list[str] = []
     ranked_jobs: list[uuid.UUID] = []
+
+    async with factory() as session:
+        async with superadmin_scope(session):
+            demo = [(tenant.id, tenant.name) for tenant in await _demo_tenants(session)]
+        await session.rollback()
+    saves = await _save_every_demo_job(factory, demo, dry_run)
 
     async with factory() as session:
         async with superadmin_scope(session):
@@ -332,9 +415,6 @@ async def _run(dry_run: bool, rank: bool) -> int:
                     continue
 
                 print(f"{tenant.name}: {len(jobs)} job(s)")
-                for job in jobs:
-                    outcome = await _ensure_framework(session, job, dry_run)
-                    frameworks.append(f"  {tenant.name} / {job.title}: {outcome}")
 
                 # Every candidate applies to this tenant, spread round-robin
                 # across its jobs. Round-robin rather than random so a re-run
@@ -395,8 +475,8 @@ async def _run(dry_run: bool, rank: bool) -> int:
                 await session.commit()
 
     print()
-    print("Frameworks:")
-    for line in frameworks:
+    print("Skills:")
+    for line in saves:
         print(line)
     print()
     print(
@@ -423,8 +503,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Seed applications from the demonstration candidate corpus onto "
-            "every demo tenant's jobs, generating and approving each job's PPI "
-            "framework first."
+            "every demo tenant's jobs, saving each job's drafted skills first."
         )
     )
     parser.add_argument(

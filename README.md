@@ -1,7 +1,7 @@
-# ReadyPick
+# Vivekium
 
-Multi-tenant recruitment and hiring-intelligence platform for Hanulisa
-Technologies LLP. Candidates apply, are ranked against the role, sit one
+Multi-tenant recruitment and hiring-intelligence platform for Varpitech LLP.
+Candidates apply, are ranked against the role, sit one
 adaptive AI assessment, and come out the other side as a **PRISM Report** a
 recruiter can act on, graded in words and never in numbers.
 
@@ -24,29 +24,34 @@ Fargate.
 ## What it does
 
 **Four portals, one platform.** The *Provider Portal* (`/admin`) is the
-ReadyPick owner console. The *Customer Portal* (`/org`) is a client company
+Vivekium owner console. The *Customer Portal* (`/org`) is a client company
 workspace. The *Candidate Portal* (`/portal`) is where applicants live. The
-*Business Development Portal* (`/bd`) is where the ReadyPick sales team works
+*Business Development Portal* (`/bd`) is where the Vivekium sales team works
 leads.
 
-**The hiring flow.** A customer creates a job as one markdown JD; the platform
-derives a per-job **Tatva Assessment** matrix (Must-have, Nice-to-have,
-Behavioural) from that job's own description, informed by a SWOT intake and the
-client's compiled Company DNA. A human reviews and freezes the matrix, and that
-freeze is the only comparability guarantee the product has. Candidates apply,
-every applicant is ranked, and the recruiter selects who is assessed.
+**The hiring flow.** A customer completes its Company Profile, saves a job as a
+draft with one markdown JD, and saves the Job SWOT. Sutra drafts the job's
+**Skills** (Must-have, Nice-to-have, Behavioural, at most five each) from the
+JD, the saved SWOT and the Company Profile; the team adds, renames, moves and
+removes them and presses **Save Skills**, and only then can the job be
+published. The skills and the job's grade LOCK when the first candidate starts,
+and that snapshot is the contract every candidate is assessed against.
+Candidates apply; Yukti reads each resume against the saved skills and ranks
+every applicant; the recruiter selects who is invited to the assessment.
 
-**The assessment.** One adaptive conversation per candidate, with questions
-written fresh from the JD, the frozen matrix, that candidate's resume and their
-project evidence. The coverage plan is deterministic, so two candidates are
-probed on the same criteria in the same order; only the wording varies. Five
-isolated dimension evaluators score it, and a model-free aggregator turns those
-bands into a grade.
+**The assessment.** One proctored conversation per candidate: one question per
+skill (never fewer than the grade's floor), mostly prose, with multiple choice,
+fill-in-the-blank and, for software roles, coding executed in a sandbox. The
+server keeps the time, every item is asked in a fixed order, and a spoken
+answer is transcribed and kept as text only. Miti grades every skill from the
+answers and is the sole grading authority.
 
-**The output.** A PRISM Report (*Predictive Role Intelligence & Suitability
+**The output.** A PRISM Report (*Evidence-Based Role Intelligence & Suitability
 Mapping*) with a fixed section order, three number-free radar charts, and a
-citation chokepoint that refuses an uncited statement. Client-visible grades are
-four words only: Highly Matching, Matching, Moderately Matching, Not Matching.
+citation chokepoint that withholds an uncited statement and sends the report to
+a person. It is insert-only in the database. Client-visible grades are four
+words only: Highly Matching, Matching, Moderately Matching, Not Matching. No
+number reaches a client, with no exception.
 
 **Project Evidence Intelligence.** Candidates may optionally submit projects,
 either files or a public repository. The platform parses them deterministically,
@@ -64,14 +69,16 @@ intelligence is retained.
 | Database | PostgreSQL 16 + pgvector, row-level security per tenant |
 | Shared state / cache | Redis 7: rate limiting, the proctoring warning counter, background run status, and the cache |
 | AI | One vendor, three endpoints: `gpt-5.6-terra` (judge and write), `gpt-5.6-luna` (extract and classify), `voyage-4` (embeddings). Routed through `services/llm_router` with per-task timeouts, budgets and a circuit breaker |
-| Auth | Firebase Authentication (Google, email/password, phone) plus app-issued portal JWTs |
+| Auth | Firebase Authentication (Google or email and password) plus app-issued, browser-session portal cookies backed by a Redis session record |
 | Payments | Razorpay Subscriptions and credit-pack Orders |
-| Email / SMS | Gmail SMTP; MSG91 for SMS |
+| Email | Gmail SMTP or Amazon SES, one transport per deployment; corporate senders per tenant. There is no SMS path |
 | Object storage | Private S3 bucket, content-addressed, served through authenticated routes |
 | Deployment | AWS ECS Fargate, RDS PostgreSQL, ElastiCache Redis, S3, ECR |
 
-One backend image runs four roles chosen at container start: `api`, `worker`,
-`beat`, `migrate`. The frontend proxies `/api/*` to the backend through a
+One backend image runs the API service, the on-demand `agent` and `migrate`
+tasks, and (as a `-fn` sibling of the same bytes) the task-worker and drafting
+Lambdas; background work is dispatched, never Celery. Candidate code runs only
+in the Judge0 sandbox, which ships disabled on pilot. The frontend proxies `/api/*` to the backend through a
 same-origin route handler, which keeps auth cookies `SameSite=Strict` and takes
 CORS out of the trust boundary.
 

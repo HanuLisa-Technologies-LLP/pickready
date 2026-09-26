@@ -8,7 +8,8 @@ import pytest
 
 from app.services import ppi, rating
 from app.services import application_validation as av
-from app.services.hiring import layers, scorecard, swot_quality, transformation
+from app.services import skills
+from app.services.hiring import scorecard
 
 
 # ── The one rating scale (spec §10.2) ────────────────────────────────────────
@@ -86,16 +87,13 @@ def test_the_retired_aspect_names_are_gone() -> None:
     assert not hasattr(ppi, "CATEGORY_SECONDARY")
 
 
-# ── Matrix generation: Sutra's seven stages ──────────────────────────────────
+# ── The retired matrix generators ───────────────────────────────────────────
 #
-# The single-pass generator these tests used to exercise is DELETED (spec-doc6
-# D1, "delete on activation"), along with the deterministic JD-derived fallback
-# that stood in for it during an outage. `hiring/scorecard.py` replaced both.
-#
-# The end-to-end path -- a real SWOT session, a real Company DNA artifact and a
-# real matrix, through the HTTP API -- is `tests/test_job_setup_live.py`, which
-# needs a database because the layers it composes are stored ones. What is
-# tested HERE is the arithmetic and the refusals, which need neither.
+# Two generations of matrix builder are DELETED: the single-pass generator
+# (spec-doc6 D1) and the seven-stage compiler that replaced it (Vivekium
+# release, D1). Skills are drafted by `hiring/sutra` and saved by
+# `services/skills`; their tests are `test_job_skills_*.py`. What stays tested
+# HERE is the read half the scoring path still uses and the vocabulary.
 
 
 def test_the_single_pass_generator_and_its_fallback_are_gone() -> None:
@@ -114,143 +112,21 @@ def test_the_single_pass_generator_and_its_fallback_are_gone() -> None:
         "_maximum_total",
         "_framework_system_prompt",
         "load_swot",
+        # The Vivekium release: the matrix save check and the A2A matrix
+        # artifact went with the Tatva matrix editor.
+        "matrix_is_complete",
+        "framework_is_complete",
+        "publish_tatva_matrix",
+        "published_matrix",
+        "verify_matrix_for_consumer",
     ):
         assert not hasattr(ppi, symbol), f"ppi.{symbol} came back"
+    for symbol in ("compile_matrix", "freeze", "_enrich_reviewed_rows", "_name_unanchored"):
+        assert not hasattr(scorecard, symbol), f"scorecard.{symbol} came back"
     from app.prompts import registry
 
     assert "ppi_framework_system" not in registry.names()
-
-
-def test_the_quadrant_mapping_is_section_18_1s() -> None:
-    """§18.1's "What it produces" column, and there is only one copy of it.
-
-    Bodha reads it to run §18.5's everything-is-must-have rule and Sutra reads
-    it to categorise what it builds. Two copies would drift, and the drift would
-    be silent: one module refusing an intake for a share the other module's own
-    mapping does not produce.
-    """
-    assert swot_quality.QUADRANT_CATEGORY == {
-        "weaknesses": ppi.CATEGORY_MUST_HAVE,
-        "strengths": ppi.CATEGORY_NICE_TO_HAVE,
-        "opportunities": ppi.CATEGORY_NICE_TO_HAVE,
-        "threats": ppi.CATEGORY_BEHAVIOURAL,
-    }
-    assert scorecard.QUADRANT_CATEGORY is swot_quality.QUADRANT_CATEGORY
-
-
-def test_a_team_strength_deprioritises_and_a_weakness_promotes() -> None:
-    """§19.2's counterintuitive move, and §18.1's "highest-weighted items".
-
-    A team strength REDUCES the weight of that competency because the hire does
-    not need to supply it. A system that weighted everything the JD mentions
-    "gets this exactly backwards and consistently selects candidates who
-    duplicate existing strengths while leaving the real gap unfilled".
-
-    The magnitudes are read off `layers.BOUNDS` rather than written down, so
-    this asserts the DIRECTION and the fact that neither endpoint escapes the
-    declared bound.
-    """
-    emphasis = scorecard._quadrant_emphasis()
-    bound = layers.BOUNDS["competency_weight"]
-    assert emphasis["weaknesses"] > 1.0 > emphasis["strengths"]
-    assert emphasis["weaknesses"] == bound.high
-    assert emphasis["strengths"] == bound.low
-    for value in emphasis.values():
-        assert bound.contains(value)
-
-
-def _job(grade: str = "non_managerial") -> SimpleNamespace:
-    """Just enough of a job for the pure helpers: a grade and an id."""
-    return SimpleNamespace(
-        id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Backend Engineer",
-        department=None, assessment_grade=grade, jd_markdown="",
-        role_classification=None,
-        jd_json={"skills": ["Python", "PostgreSQL", "Kafka"]},
-        framework_generated_at=None, framework_approved_at=None,
-        question_target=None, swot_completed_at=None, correlation_id="job-test",
-    )
-
-
-def _item(name: str, category: str, weight: float) -> transformation.Item:
-    return transformation.build_item(
-        phrase=name,
-        category=category,
-        department="generic",
-        seniority="non_managerial",
-        observable_evidence=(
-            "Has shipped a change to a live system and can reconstruct what "
-            "they decided and why."
-        ),
-        role_emphasis={name: weight},
-    )
-
-
-def test_the_force_ranking_is_total_and_has_no_ties() -> None:
-    """§20.3: "Rank the required competencies 1..n (max 6). No ties."
-
-    Two competencies whose derived weights are identical must still get
-    different ranks, because a rank two items share is not a ranking. The tie is
-    broken deterministically by name, so the same matrix ranks the same way
-    twice.
-    """
-    built = [
-        _item("Alpha", ppi.CATEGORY_MUST_HAVE, 1.0),
-        _item("Bravo", ppi.CATEGORY_MUST_HAVE, 1.0),
-        _item("Charlie", ppi.CATEGORY_NICE_TO_HAVE, 1.0),
-    ]
-    ranking = scorecard._rank_and_normalise(built)
-    ranks = [ranking[index][0] for index in range(len(built))]
-    assert sorted(ranks) == [1, 2, 3]
-    assert scorecard._rank_and_normalise(built) == ranking
-
-
-def test_the_scored_weights_are_shares_that_sum_to_one() -> None:
-    """§20.1's own scorecard sums to 1.00 (0.35+0.25+0.20+0.12+0.08).
-
-    Normalising is what keeps the stored weight a SHARE rather than a raw
-    product, and it is also what makes a Layer 2 or Layer 3 change observable:
-    raising one competency's multiplier raises its share and lowers everyone
-    else's.
-    """
-    built = [
-        _item("Alpha", ppi.CATEGORY_MUST_HAVE, 2.0),
-        _item("Bravo", ppi.CATEGORY_MUST_HAVE, 1.0),
-        _item("Charlie", ppi.CATEGORY_BEHAVIOURAL, 1.0),
-    ]
-    ranking = scorecard._rank_and_normalise(built)
-    scored = [
-        ranking[index][1]
-        for index, item in enumerate(built)
-        if item.category in scorecard.SCORED_CATEGORIES
-    ]
-    assert abs(sum(scored) - 1.0) < 1e-9
-    # Alpha carries twice Bravo's emphasis, so it must carry the larger share.
-    assert ranking[0][1] > ranking[1][1]
-    # Behavioural is normalised among itself: §20.1's scorecard has no
-    # behavioural row, so it is not part of the scored ranking.
-    assert ranking[2][0] is None
-    assert abs(ranking[2][1] - 1.0) < 1e-9
-
-
-def test_the_six_competency_ceiling_drops_the_lowest_and_says_so() -> None:
-    """§20.2: "Maximum six. No exceptions."
-
-    And the removal is LOUD. A matrix quietly shorter than the session it came
-    from is how a criterion somebody cared about disappears with nobody
-    noticing, so each drop is a rejection carrying the competency's name.
-    """
-    built = [
-        (_item(f"Skill {index}", ppi.CATEGORY_MUST_HAVE, 2.0 - index * 0.1), "weaknesses")
-        for index in range(9)
-    ]
-    rejections: list = []
-    kept = scorecard._apply_ceilings(built, _job(), rejections)
-    scored = [item for item, _q in kept if item.category in scorecard.SCORED_CATEGORIES]
-    assert len(scored) == swot_quality.MAX_SCORECARD_COMPETENCIES
-    assert len(rejections) == 3
-    assert all("20.2" in row["reason"] for row in rejections)
-    # The ones kept are the highest-weighted, not the first six seen.
-    assert {item.name for item in scored} == {f"Skill {index}" for index in range(6)}
+    assert "sutra_competency_naming" not in registry.names()
 
 
 def test_a_row_that_never_ran_the_stages_is_not_a_matrix_item() -> None:
@@ -294,7 +170,6 @@ def test_the_provenance_a_hiring_manager_reads_carries_no_number() -> None:
         provenance={
             "terms": {
                 "baseline_layer1": 1.2,
-                "company_layer2": 1.1,
                 "situation_layer3": 1.25,
                 "role_layer3": 1.35,
             },
@@ -312,7 +187,6 @@ def test_the_provenance_a_hiring_manager_reads_carries_no_number() -> None:
     blob = " ".join(lines)
     assert not any(character.isdigit() for character in blob), blob
     # Every layer that moved the weight is accounted for by a sentence.
-    assert "philosophy" in blob
     assert "Turnaround" in blob
     assert "never owned anything in production" in blob
 
@@ -324,7 +198,7 @@ def test_required_levels_never_offer_not_matching() -> None:
     assert ppi.required_level_score("nonsense") == ppi.DEFAULT_REQUIRED_LEVEL
 
 
-# ── The save gate (spec §5.3) ────────────────────────────────────────────────
+# ── The save gate: the Skills step's rule (D1) ──────────────────────────────
 
 def _competency(category: str, name: str) -> SimpleNamespace:
     return SimpleNamespace(category=category, name=name, is_active=True)
@@ -334,86 +208,35 @@ def _small_matrix() -> list[SimpleNamespace]:
     return [_competency(category, f"{category}-1") for category in ppi.CATEGORIES]
 
 
-def test_a_three_item_matrix_can_be_saved() -> None:
-    """One item per aspect is enough. Draft v4 removed the floor of five, and
-    this is the assertion that the removal is real rather than aspirational."""
-    ok, reason = ppi.matrix_is_complete(_small_matrix(), "non_managerial")
-    assert ok and reason is None
+def test_one_skill_per_bucket_can_be_saved() -> None:
+    """One per bucket is enough; there is no floor of five."""
+    assert skills.validate_for_save(_small_matrix()) == []
 
 
-def test_an_empty_aspect_blocks_the_save_and_says_which() -> None:
-    rows = [row for row in _small_matrix() if row.category != ppi.CATEGORY_NICE_TO_HAVE]
-    ok, reason = ppi.matrix_is_complete(rows, "non_managerial")
-    assert not ok
-    assert "Nice-to-have" in reason
+def test_nice_to_have_may_be_empty_but_must_have_and_behavioural_may_not() -> None:
+    no_nice = [row for row in _small_matrix() if row.category != ppi.CATEGORY_NICE_TO_HAVE]
+    assert skills.validate_for_save(no_nice) == []
+    problems = skills.validate_for_save([_competency(ppi.CATEGORY_NICE_TO_HAVE, "x")])
+    assert any("Must-have" in problem for problem in problems)
+    assert any("Behavioural" in problem for problem in problems)
 
 
-def test_a_matrix_above_the_grade_ceiling_blocks_the_save_and_says_how_many() -> None:
-    """Every item is probed at least once, so a matrix bigger than the grade
-    allows questions would grade a candidate on criteria nobody asked them
-    about. The refusal names the number to remove rather than truncating."""
-    ceiling = ppi.max_questions("cxo")
+def test_a_sixth_skill_in_a_bucket_blocks_the_save_and_says_how_many() -> None:
     rows = _small_matrix() + [
-        _competency(ppi.CATEGORY_MUST_HAVE, f"Extra {index}")
-        for index in range(ceiling)
+        _competency(ppi.CATEGORY_MUST_HAVE, f"Extra {index}") for index in range(5)
     ]
-    ok, reason = ppi.matrix_is_complete(rows, "cxo")
-    assert not ok
-    assert str(len(rows) - ceiling) in reason
-    # The same matrix is perfectly saveable at a grade that asks more questions.
-    assert ppi.matrix_is_complete(rows, "non_managerial")[0] is (
-        len(rows) <= ppi.max_questions("non_managerial")
-    )
+    problems = skills.validate_for_save(rows)
+    assert len(problems) == 1
+    assert "Must-have holds six skills" in problems[0]
+    assert "Remove one" in problems[0]
+    assert not any(character.isdigit() for character in problems[0]), problems[0]
 
 
 def test_a_hand_typed_culture_competency_blocks_the_save() -> None:
-    """The Hiring Manager's Edit control can type anything, so the refusal is
-    enforced at save as well as at generation."""
+    """The team can type anything, so the refusal is enforced at save."""
     rows = _small_matrix() + [_competency(ppi.CATEGORY_BEHAVIOURAL, "Culture fit")]
-    ok, reason = ppi.matrix_is_complete(rows, "non_managerial")
-    assert not ok
-    assert "Culture" in reason
-
-
-# ── Per-candidate questions (spec §5.6) ──────────────────────────────────────
-
-def _matrix(per_aspect: int = 5) -> list[SimpleNamespace]:
-    return [
-        SimpleNamespace(id=uuid.uuid4(), category=category,
-                        name=f"{category}-{index}", ordinal=index + 1)
-        for category in ppi.CATEGORIES
-        for index in range(per_aspect)
-    ]
-
-
-def test_allocation_probes_every_item_at_least_once() -> None:
-    competencies = _matrix()
-    plan = ppi._allocate(competencies, 20, "non_managerial")
-    assert len(plan) == 20
-    assert {row.name for row in plan} == {row.name for row in competencies}
-
-
-def test_allocation_spends_the_remainder_on_the_most_weighted_aspect() -> None:
-    """The typical split is illustrative and nothing enforces it, but it is
-    what decides where a SPARE question goes: whichever aspect the client's
-    table asks the most of."""
-    competencies = _matrix()
-    plan = ppi._allocate(competencies, 20, "non_managerial")  # 15 items, 5 spare
-    extras = plan[15:]
-    split = ppi.typical_split("non_managerial")
-    heaviest = max(ppi.CATEGORIES, key=lambda category: split[category][1])
-    assert all(row.category == heaviest for row in extras)
-
-
-def test_seniority_and_stem_both_raise_the_question_count() -> None:
-    # Master Directive Part 3 section 6 inverted the old direction: seniority
-    # now ADDS questions, and a STEM job probes deeper than a non-STEM one at
-    # every grade.
-    assert ppi.max_questions("cxo") >= ppi.max_questions("non_managerial")
-    assert ppi.min_questions("cxo") >= ppi.min_questions("non_managerial")
-    for grade in ("non_managerial", "managerial", "leadership", "cxo"):
-        assert ppi.min_questions(grade, "STEM") > ppi.min_questions(grade)
-        assert ppi.max_questions(grade, "STEM") > ppi.max_questions(grade)
+    problems = skills.validate_for_save(rows)
+    assert problems and "Culture" in problems[0]
 
 
 # ── Mandatory application fields (spec §7) ───────────────────────────────────

@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.auth import (
-    _phone_aliases,
     available_workspaces,
     firebase_session,
     select_context,
@@ -31,7 +30,7 @@ from app.models.tenant import AuditLog, Tenant
 from app.models.user import User
 from app.schemas.auth import FirebaseSessionIn, SelectContextIn
 from app.services import firebase_auth
-from app.services.otp import decode_context_token
+from app.services.login_context import decode_context_token
 from app.services.firebase_auth import FirebaseIdentity, assert_provider_allowed
 from fastapi import HTTPException, Response
 
@@ -39,10 +38,10 @@ from fastapi import HTTPException, Response
 # ── DB-free: provider gate (Google = candidates only) ────────────────────────
 
 def _identity(provider: str = "password", email: str | None = "x@y.test",
-              phone: str | None = None, uid: str | None = None,
+              uid: str | None = None,
               name: str | None = "Test User", email_verified: bool = True) -> FirebaseIdentity:
     return FirebaseIdentity(
-        uid=uid or f"fbuid-{uuid.uuid4().hex}", email=email, phone=phone,
+        uid=uid or f"fbuid-{uuid.uuid4().hex}", email=email,
         name=name, provider=provider, email_verified=email_verified,
     )
 
@@ -73,9 +72,11 @@ def test_unknown_provider_rejected() -> None:
     assert exc.value.status_code == 403
 
 
-def test_phone_aliases_cover_firebase_e164_and_legacy_indian_numbers() -> None:
-    assert "9652802233" in _phone_aliases("+919652802233")
-    assert "+919652802233" in _phone_aliases("9652802233")
+def test_the_identity_carries_no_phone_claim() -> None:
+    """Phone sign-in was removed, so nothing downstream may match on a number.
+    A field that is not there cannot be read by the next person to add a
+    lookup."""
+    assert "phone" not in {f.name for f in FirebaseIdentity.__dataclass_fields__.values()}
 
 
 # ── Live integration (skips if the database is unreachable) ──────────────────
@@ -298,16 +299,19 @@ async def test_multi_context_returns_chooser_then_select_issues_cookies() -> Non
 
 # ── 4. PROVIDER GATE + EDGE CASES ────────────────────────────────────────────
 
-async def test_no_email_and_no_phone_is_422() -> None:
+async def test_no_email_is_422() -> None:
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch = pytest.MonkeyPatch()
     try:
-        ident = _identity(provider="password", email=None, phone=None, name=None)
+        ident = _identity(provider="password", email=None, name=None)
         async with factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await _call(session, ident, monkeypatch)
         assert exc.value.status_code == 422
+        assert exc.value.detail == (
+            "An email address is required to create a candidate profile"
+        )
     finally:
         monkeypatch.undo()
         await engine.dispose()

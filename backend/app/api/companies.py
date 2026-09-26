@@ -58,12 +58,8 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.companies import (
     CompanyProfileResearchOut,
-    ApprovalLevelsIn,
-    ApprovalLevelsOut,
     CompanyProfileIn,
     CompanyProfileOut,
-    EmailTemplateIn,
-    EmailTemplateOut,
     InviteAcceptOut,
     PublicInviteOut,
     StaffCreateIn,
@@ -88,7 +84,7 @@ from app.services import tenant_cache
 from app.services.audit import audit
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers import agent_client
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
 
@@ -163,7 +159,7 @@ async def _company_profile_out(
     tenant = await session.get(Tenant, tenant_id)
     return CompanyProfileOut(
         tenant_id=tenant_id,
-        company_name=tenant.name if tenant else "ReadyPick",
+        company_name=tenant.name if tenant else "Vivekium",
         industry=tenant.industry if tenant else None,
         about_company=company.about_company if company else None,
         work_life=company.work_life if company else None,
@@ -254,6 +250,7 @@ async def research_company_profile(
         sources=draft.sources,
         degraded=draft.degraded,
         message=draft.message,
+        empty_state_keys=draft.empty_state_keys,
     )
 
 
@@ -370,8 +367,9 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
     # ASSUMPTION: services/email_render.DEFAULT_TEMPLATES has no built-in
     # `staff_invite` entry, so rendering would raise inside the worker and the
     # invite email would never send. PRD §5 forbids *shipping fixed copy*, not
-    # having a starting point — this writes a bare v1 row the tenant can edit
-    # via PUT /companies/me/email-templates, and does nothing if one exists.
+    # having a starting point. This writes a bare v1 row and does nothing if
+    # one exists. (The company template editor that could change it was
+    # deleted in the Vivekium release, PLAN-p7 WP-B6: no screen called it.)
     """
     existing = (
         await session.execute(
@@ -387,14 +385,14 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
         EmailTemplate(
             tenant_id=tenant_id,
             name="staff_invite",
-            subject="You've been invited to {{company_name}} on ReadyPick",
+            subject="You've been invited to {{company_name}} on Vivekium",
             body=(
                 "Hi {{full_name}},\n\n"
                 "{{invited_by}} has invited you to join {{company_name}} on "
-                "ReadyPick as a {{role_label}}.\n\n"
+                "Vivekium as a {{role_label}}.\n\n"
                 "Accept your invitation here:\n\n{{invite_link}}\n\n"
                 "You'll sign in with Google or with an email and password, "
-                "ReadyPick never asks you to set a separate password.\n\n"
+                "Vivekium never asks you to set a separate password.\n\n"
                 "This link expires on {{expires_on}}.\n\n"
                 ", The {{company_name}} team"
             ),
@@ -443,9 +441,20 @@ async def _issue_invite(
 
     link = build_invite_link(get_settings().frontend_url, token)
     await _ensure_invite_template(session, actor.tenant_id)
-    dispatch = _email_dispatch_state()
+    # `dispatch_state`, NOT `dispatch`. This local was called `dispatch` and it
+    # SHADOWED THE IMPORTED FUNCTION on the next line: `_email_dispatch_state()`
+    # returns a str, so the `dispatch(...)` call that stood below raised
+    # `TypeError: 'str' object is not callable` and POST /companies/me/staff
+    # answered 500 unconditionally. Staff invitation has been completely broken
+    # since 2026-09-05, and no test ever issued the request, so nothing caught
+    # it. The third return value is the STATE, which is what the caller wants.
+    dispatch_state = _email_dispatch_state()
     # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
-    dispatch(
+    # After the COMMIT: the link carries a token whose hash is written above,
+    # and an invitation mailed for a rolled-back invite would open onto
+    # nothing. A lost invoke is logged at ERROR; Resend invite issues a new one.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(actor.tenant_id),
@@ -462,14 +471,14 @@ async def _issue_invite(
             },
         ],
     )
-    return invite, link, dispatch
+    return invite, link, dispatch_state
 
 
 async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> str:
     if tenant_id is None:
-        return "ReadyPick"
+        return "Vivekium"
     tenant = await session.get(Tenant, tenant_id)
-    return tenant.name if tenant is not None else "ReadyPick"
+    return tenant.name if tenant is not None else "Vivekium"
 
 
 async def _load_staff(
@@ -601,7 +610,7 @@ async def create_staff(
                 action="staff_created", target_type="user", target_id=staff_user.id,
                 metadata={"role": role.value, "email": str(body.email)})
 
-    # New staff activate on their first verified Firebase sign-in — ReadyPick
+    # New staff activate on their first verified Firebase sign-in — Vivekium
     # never generates a password or an app OTP for them (rule 2).
     actor = await session.get(User, user.user_id)
     invite, link, dispatch = await _issue_invite(
@@ -1015,104 +1024,11 @@ async def update_staff_permissions(
     return await get_staff_permissions(staff_user.id, user=user, session=session)
 
 
-@router.put("/me/approval-levels", response_model=ApprovalLevelsOut)
-async def configure_approval_levels(
-    body: ApprovalLevelsIn,
-    user: CurrentUser = Depends(require_capability(caps.CONFIGURE_APPROVAL_LEVELS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> ApprovalLevelsOut:
-    """FR-2.3: choose which of the 4 levels are mandatory and who approves
-    each active one. Approvers must be users of this tenant."""
-    for level, entry in body.config.items():
-        if entry.active:
-            approver = await session.get(User, entry.approver_user_id)
-            if approver is None or approver.tenant_id != user.tenant_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"approver for level '{level}' is not a user of this tenant",
-                )
-
-    company = await _get_company(session, user)
-    if company is None:
-        raise HTTPException(status_code=409, detail="Complete the company profile first")
-    company.approval_levels_config = {
-        level: entry.model_dump(mode="json") for level, entry in body.config.items()
-    }
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="approval_levels_configured", target_type="company",
-                target_id=company.id, metadata=company.approval_levels_config)
-    return ApprovalLevelsOut(config=body.config)
-
-
-@router.get("/me/email-templates", response_model=list[EmailTemplateOut])
-async def list_email_templates(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> list[EmailTemplateOut]:
-    rows = (
-        await session.execute(
-            select(EmailTemplate)
-            .where(EmailTemplate.tenant_id == user.tenant_id, EmailTemplate.is_active.is_(True))
-            .order_by(EmailTemplate.name)
-        )
-    ).scalars().all()
-    return [EmailTemplateOut.model_validate(r) for r in rows]
-
-
-async def _upsert_template(
-    session: AsyncSession, user: CurrentUser, body: EmailTemplateIn
-) -> EmailTemplate:
-    """Templates are versioned (ESD §12): each save creates a new active
-    version and deactivates the previous one."""
-    latest = (
-        await session.execute(
-            select(EmailTemplate)
-            .where(EmailTemplate.tenant_id == user.tenant_id, EmailTemplate.name == body.name)
-            .order_by(EmailTemplate.version.desc())
-        )
-    ).scalars().first()
-    version = 1
-    if latest is not None:
-        version = latest.version + 1
-        latest.is_active = False
-    row = EmailTemplate(
-        tenant_id=user.tenant_id, name=body.name, subject=body.subject,
-        body=body.body, version=version, is_active=True,
-    )
-    session.add(row)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="email_template_saved", target_type="email_template",
-                target_id=row.id, metadata={"name": body.name, "version": version})
-    return row
-
-
-@router.post(
-    "/me/email-templates", response_model=EmailTemplateOut, status_code=status.HTTP_201_CREATED
-)
-async def create_email_template(
-    body: EmailTemplateIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> EmailTemplateOut:
-    return EmailTemplateOut.model_validate(await _upsert_template(session, user, body))
-
-
-@router.put("/me/email-templates", response_model=EmailTemplateOut)
-async def update_email_template(
-    body: EmailTemplateIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> EmailTemplateOut:
-    return EmailTemplateOut.model_validate(await _upsert_template(session, user, body))
-
-
 # â”€â”€ Compliance & legal documents (Customer Portal side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # The WRITE half of the Provider Portal's compliance section (spec Â§3.3): the
 # customer's HR Head files their own tax and commercial records here, and the
-# ReadyPick owner reads them through api/provider.py. The split is deliberate
+# Vivekium owner reads them through api/provider.py. The split is deliberate
 # and complete â€” the Provider router has no upload route, this router has no
 # cross-tenant read, and RLS confines every statement below to the caller's own
 # tenant regardless.

@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 
+import { publicPageMetadata } from "@/lib/site";
+
 import { EmployerProfile } from "./employer-profile";
 
 // One employer's public page (2026-09-05 add-features spec, "Employer Page &
 // Content"). The tab title is derived from the slug, which IS the company
 // name in URL form, so a fetch is not needed to name the tab; the layout
-// template appends "| ReadyPick".
+// template appends "| Vivekium".
 export async function generateMetadata({
   params,
 }: {
@@ -17,10 +19,13 @@ export async function generateMetadata({
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
-  return {
+  return publicPageMetadata({
+    // The slug IS the canonical path segment, so the canonical URL needs no
+    // fetch either. Relative, resolved against `metadataBase`.
+    path: `/employers/${slug}`,
     title: name || "Employer",
     description: `Company profile and open roles at ${name || "this employer"}.`,
-  };
+  });
 }
 
 export default async function EmployerSlugPage({

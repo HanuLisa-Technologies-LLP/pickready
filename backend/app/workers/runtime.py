@@ -51,9 +51,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -82,7 +83,7 @@ class PermanentTaskFailure(Exception):
     """This will fail the same way every time. Do not spend a retry on it.
 
     Raised by a task that has determined the input is wrong rather than the
-    world being briefly unavailable: a missing Company DNA artifact, a row that
+    world being briefly unavailable: a missing SWOT artifact, a row that
     no longer exists, an argument that does not parse. The distinction matters
     because the alternative is five backoff attempts against a condition no
     amount of waiting changes, producing five log lines that read like a bug in
@@ -115,11 +116,37 @@ class TaskContext:
         Never raises into the work. A progress display that can fail the task
         it is describing is a strictly worse trade than one that goes blank,
         which is the rule `matching_progress.Progress` already states.
+
+        CALLED FROM BOTH SIDES OF A LOOP. A sync task body calls it with no
+        loop running, and `asyncio.run` is right. `run_matching` calls it from
+        INSIDE its own `asyncio.run`, where a second `asyncio.run` raises; that
+        raise was swallowed here, the coroutine was never awaited, and no
+        progress payload ever reached the job page while a run was in flight.
+        Inside a running loop the write is scheduled on THAT loop (the status
+        client is loop-bound), and a strong reference is held until it is done,
+        because the loop keeps only a weak one.
         """
+        write = status.write(self.run_id, status.STATE_PROGRESS, payload)
         try:
-            _run(status.write(self.run_id, status.STATE_PROGRESS, payload))
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is None:
+                _run(write)
+            else:
+                pending = loop.create_task(write)
+                _PUBLISHES_IN_FLIGHT.add(pending)
+                pending.add_done_callback(_PUBLISHES_IN_FLIGHT.discard)
         except Exception:  # noqa: BLE001 -- see above
-            logger.debug("taskrun.publish_failed run_id=%s", self.run_id, exc_info=True)
+            write.close()
+            logger.warning("taskrun.publish_failed run_id=%s", self.run_id, exc_info=True)
+
+
+#: Progress writes scheduled on a running loop, held until they finish: the
+#: event loop keeps only a weak reference to a task, so an unreferenced write
+#: can be collected before it runs.
+_PUBLISHES_IN_FLIGHT: set[asyncio.Task] = set()
 
 
 # -- Session helper ----------------------------------------------------------
@@ -135,12 +162,13 @@ async def worker_session():
     first use, which is the worst version of a broken connection because it
     fails inside the task rather than at connect time.
 
-    ASSUMPTION (unchanged from the Celery worker this replaces): background
-    tasks are trusted backend processes that legitimately operate across
-    tenants (databank matching spans `tenant_id IS NULL` rows), so the session
-    runs with `app.bypass_rls = 'on'`, the same escape hatch the RLS policies
-    define for the audit-logged super-admin path. Tenant scoping inside a task
-    is done explicitly per query where a tenant is known.
+    THE BYPASS PATH. The session runs with `app.bypass_rls = 'on'`, the same
+    escape hatch the RLS policies define for the audit-logged super-admin path.
+    Only a task registered `rls="bypass"` opens it, and its registration says
+    why in words (`registry.task`): a sweep over every tenant, a read of a
+    tenant-free table such as `candidates` or `profiles`, or a body not yet
+    proven under `tenant_worker_session`. A task that belongs to one tenant
+    and has been proven opens `tenant_worker_session` instead.
     """
     engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
     try:
@@ -153,6 +181,97 @@ async def worker_session():
             yield session
     finally:
         await engine.dispose()
+
+
+@asynccontextmanager
+async def tenant_worker_session(tenant_id: uuid.UUID):
+    """Fresh engine + session for one task run, confined to ONE tenant by RLS.
+
+    The tenant twin of `worker_session`, for tasks registered `rls="tenant"`.
+    The Postgres policy, not the task's WHERE clauses, is what keeps the run
+    inside the customer it was dispatched for (claude.md rule 3).
+
+    - A fresh engine per run, for the Lambda-freeze reason `worker_session`
+      gives, and disposed on exit.
+    - The scope is a CONNECTION STARTUP PARAMETER (asyncpg `server_settings`),
+      not a statement run after connecting and not the transaction-local
+      `SET LOCAL` that `core.db.tenant_scope` uses. Every connection this
+      engine ever opens carries it from its first byte, INCLUDING the one
+      `pool_pre_ping` opens to replace a connection that died between two of
+      the task's commits. A `SET ROLE` / `set_config` issued once on the first
+      connection would be missing on that replacement, and under a login role
+      that owns the tables (dev, the test database) the replacement would run
+      with no policy at all. A startup parameter is also the session DEFAULT,
+      so a rollback in the body, a commit, or even `RESET ALL` returns to it
+      rather than shedding it. Correct HERE and nowhere else: the engine is
+      private to this run and disposed on exit, so nothing set on its
+      connections can reach another tenant's work through a shared pool.
+    - `role` drops to `postgres_rls_app_role` when one is configured, so the
+      policy binds even when the login role owns the tables or bypasses RLS.
+      The name is validated as a plain SQL identifier by the same rule the API
+      path uses (`core.db._app_role`).
+    - `app.bypass_rls` is set to 'off' EXPLICITLY. "off" is the value the
+      policies compare against, and saying it costs nothing.
+    """
+    from app.core.db import _app_role
+
+    tid = uuid.UUID(str(tenant_id))
+    scope = {"app.tenant_id": str(tid), "app.bypass_rls": "off"}
+    role = _app_role()
+    if role is not None:
+        scope["role"] = role
+    engine = create_async_engine(
+        get_settings().database_url,
+        pool_pre_ping=True,
+        connect_args={"server_settings": scope},
+    )
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
+
+#: The ONLY tables `resolve_tenant_id` may read, each by its primary key, each
+#: with a NOT NULL `tenant_id` (asserted against `information_schema` by
+#: `tests/test_worker_tenant_session.py`). An allowlist rather than a table-name
+#: argument, because the name is interpolated into SQL and a map keyed by a
+#: Literal cannot be steered by a payload.
+TENANT_OWNER_TABLES: dict[str, str] = {
+    "link": "job_candidate_links",
+    "job": "jobs",
+    "email_log": "email_log",
+    "purchase": "credit_purchases",
+    "support_thread": "support_threads",
+}
+
+TenantOwnerKind = Literal["link", "job", "email_log", "purchase", "support_thread"]
+
+
+async def resolve_tenant_id(kind: TenantOwnerKind, entity_id: Any) -> uuid.UUID | None:
+    """The tenant that owns one row, read BEFORE the tenant session opens.
+
+    A task dispatched with an entity id rather than a tenant id has to learn
+    the tenant before it can open `tenant_worker_session`, and under RLS it
+    cannot read the row to find out. So this is a one-query BYPASS read of
+    exactly one column, `tenant_id`, from one allowlisted table by primary key,
+    and nothing else of the row ever crosses into the task through it.
+
+    None means the row does not exist, which the caller answers exactly as its
+    body already answered a missing row (a skip, logged). It is not a
+    fallback: there is no tenant to confine a run over nothing to.
+    """
+    table = TENANT_OWNER_TABLES[kind]
+    row_id = uuid.UUID(str(entity_id))
+    async with worker_session() as session:
+        value = (
+            await session.execute(
+                text(f"SELECT tenant_id FROM {table} WHERE id = :id"),
+                {"id": row_id},
+            )
+        ).scalar_one_or_none()
+    return None if value is None else uuid.UUID(str(value))
 
 
 def _run(coro):

@@ -13,22 +13,24 @@ from app.models.enums import Role
 # corrected role model (Pickready.docx §2) puts the whole staff hierarchy
 # inside the client organization.
 MANAGE_STAFF = "manage_staff"
-CONFIGURE_APPROVAL_LEVELS = "configure_approval_levels"
+# Three capabilities are DELETED (Vivekium release, PLAN-p7 WP-B6) with the
+# routes that were their only readers: the two the multi-level job approval
+# chain read, and the one the company email-template editor read. Migration
+# 0129_route_scrap deletes their `role_permissions` rows, because a
+# capability and its seeding are one change and so is its removal.
 EDIT_JOB_DESCRIPTION = "edit_job_description"          # HR, post-ratification
 CREATE_JOB = "create_job"                              # Hiring Manager JD creation (FR-3.1)
-APPROVE_JOB = "approve_job"                            # at assigned level only
 ADD_COMPENSATION = "add_compensation"
 VIEW_DATABANK = "view_databank"
 UPLOAD_RESUMES = "upload_resumes"
 TRIGGER_MATCHING = "trigger_matching"
-SEND_OUTREACH = "send_outreach"                        # 40-aspect + verification
+SEND_OUTREACH = "send_outreach"                        # outreach emails and assessment invitations
 VIEW_REVIEW_SCREEN = "view_review_screen"
 DECIDE_PROFILE = "decide_profile"                      # Shortlist / Reject / Hold
 SCHEDULE_INTERVIEWS = "schedule_interviews"
 UPDATE_PIPELINE_STATUS = "update_pipeline_status"
 VIEW_DASHBOARD = "view_dashboard"
 EDIT_ROLE_PERMISSIONS = "edit_role_permissions"        # Super Admin only
-MANAGE_EMAIL_TEMPLATES = "manage_email_templates"
 # Company Portal -> Profile: the About / Work Life / Benefits sections every
 # new job snapshots (spec §3.2/§7.1).
 EDIT_COMPANY_PROFILE = "edit_company_profile"
@@ -54,6 +56,35 @@ MANAGE_COMPLIANCE_DOCUMENTS = "manage_compliance_documents"
 MANAGE_BILLING = "manage_billing"
 VIEW_BILLING = "view_billing"
 
+# ── In-product support (2026-09-10) ──────────────────────────────────────────
+#
+# A third-party customer-success sync was deleted (claude.md, 2026-09-10) and
+# the surface it served moved inside the product. Two capabilities, and the
+# split is by WHICH SIDE of the conversation somebody is on, not by seniority.
+#
+# OPEN_SUPPORT_THREADS is held by every customer role including the Interview
+# Manager, who otherwise holds the narrowest set in the product. Raising a
+# ticket is not a recruitment capability: somebody locked out of a screen has
+# to be able to say so, and a role that could not would have to relay it
+# through a colleague, which is how a bug report loses the detail that made it
+# actionable.
+OPEN_SUPPORT_THREADS = "open_support_threads"
+
+# HANDLE_SUPPORT_THREADS is the PLATFORM side, and it is deliberately absent
+# from DEFAULT_PERMISSION_MATRIX below. That dict is copied into per-tenant
+# rows for every customer the Owner console creates, and the role that holds
+# this one has no tenant. It is seeded as a GLOBAL row by migration 0093.
+#
+# It is also NOT a route gate, and saying so here is the point: the Provider
+# routes are gated by `get_superadmin_db`, which already enforces the owner
+# audience and audit-logs every cross-tenant read, and `require_capability`
+# structurally cannot serve them because it resolves through `get_tenant_db`
+# and a platform user has no tenant to resolve against. What this capability
+# IS is the notification ROUTING list, asked of the permission rows rather
+# than branched on by role name, so a future Vivekium support role is a
+# seeded row instead of an edit to a background task.
+HANDLE_SUPPORT_THREADS = "handle_support_threads"
+
 # ── RBAC_SPECIFICATION.md 24: the capabilities that specification names and
 #    this codebase did not have ────────────────────────────────────────────
 #
@@ -78,8 +109,10 @@ VIEW_BILLING = "view_billing"
 #: VIEW_COMPANY_JOBS held by a Recruiter would read as a lie.
 VIEW_COMPANY_JOBS = "view_company_jobs"
 
-#: 9.3 / 39: the Recruiter hands the draft to the assigned Hiring Manager.
-SEND_JD_TO_HIRING_MANAGER = "send_jd_to_hiring_manager"
+# RBAC 9.3's "send the JD to the Hiring Manager" capability is DELETED
+# (Vivekium release) with the approval-chain route that was its only reader.
+# Migration 0119 deletes its `role_permissions` rows: a capability and its
+# seeding are one change, and so is its removal.
 
 # The six Hiring-Manager-controlled fields (10.4).
 EDIT_MUST_HAVE_SKILLS = "edit_must_have_skills"
@@ -135,6 +168,35 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
     }
 )
 
+#: The Skills step, bucket by bucket (Vivekium release). Each bucket of a
+#: job's skills is written under its OWN capability, so a tenant that lets a
+#: Hiring Manager own the Must-have list and not the Behavioural one is
+#: expressible as data. Keyed by the stored `job_competencies.category`
+#: values; `tests/test_job_skills_api.py` asserts the keys are exactly
+#: `assessment_contract.BUCKETS`, so a fourth bucket cannot arrive without a
+#: capability.
+SKILL_BUCKET_CAPABILITY: dict[str, str] = {
+    "must_have": EDIT_MUST_HAVE_SKILLS,
+    "nice_to_have": EDIT_NICE_TO_HAVE_SKILLS,
+    "behavioural": EDIT_BEHAVIOURAL_COMPETENCIES,
+}
+
+#: What the skills LOCK refuses (D5): the three bucket capabilities, the
+#: rubric capability and Save Skills itself. Once a candidate has started the
+#: assessment these are the contract every candidate on the job is assessed
+#: against. The SWOT and the job philosophy are deliberately NOT here: editing
+#: them after the lock changes no contract, because the contract is the
+#: immutable snapshot, not the documents it was drafted from.
+SKILL_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        EDIT_MUST_HAVE_SKILLS,
+        EDIT_NICE_TO_HAVE_SKILLS,
+        EDIT_BEHAVIOURAL_COMPETENCIES,
+        EDIT_EVALUATION_RUBRICS,
+        FINALIZE_ROLE_DEFINITION,
+    }
+)
+
 # Talent Intelligence dashboards (add-features spec 2026-09-05, sections 2-5).
 # One capability for the whole 18-dashboard suite: the dashboards read the
 # SAME operational aggregates at four altitudes, and splitting the grant per
@@ -145,27 +207,53 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
 # capability constant is only half a change (claude.md).
 VIEW_INTELLIGENCE_DASHBOARDS = "view_intelligence_dashboards"
 
+# RPN-AI-UP-001 W3.6's learning-revocation capability is DELETED (Vivekium
+# release) with the experience memory it guarded, which no route or worker
+# could reach. Migration 0128 deletes its `role_permissions` rows: a
+# capability and its seeding are one change, and so is its removal.
+
 # Business Development Portal (the fourth portal, /bd). Three grants, one per
 # area of the console, so a BD lead can be given the customer database and the
 # AI Reach search without the ability to edit anyone's pipeline.
+# Background verification (2026-09-12). SPLIT INTO READ AND DECIDE, which is
+# the only split that matters here: seeing that an employer is unverified is
+# ordinary pipeline information, while marking one verified is a diligence
+# decision that unblocks an offer. One capability covering both would mean
+# anybody who can read the dashboard can open the gate.
+#
+# Both sit in the flat customer set, like DECIDE_PROFILE, because the four
+# customer roles are functionally identical by product decision. A tenant that
+# wants to narrow the decision to one person does it through the per-user
+# overlay (users.permissions_json) rather than by asking for a fifth role.
+VIEW_BGV = "view_bgv"
+MANAGE_BGV = "manage_bgv"
+
+# Conversations (2026-09-12). One capability for the whole surface: a recruiter
+# who may work a candidate may talk to them, and splitting read from write
+# would produce a screen that renders a thread with no way to answer it.
+# Sending to an employer HR contact additionally requires MANAGE_BGV, because
+# that message is a verification act rather than a conversation.
+USE_CONVERSATIONS = "use_conversations"
+
 MANAGE_BD_LEADS = "manage_bd_leads"        # Personal Reach + Social Reach
 VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
 USE_AI_REACH = "use_ai_reach"              # AI Reach search
 
 ALL_CAPABILITIES = [
-    MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
-    EDIT_JOB_DESCRIPTION, CREATE_JOB, APPROVE_JOB, ADD_COMPENSATION,
+    MANAGE_STAFF,
+    EDIT_JOB_DESCRIPTION, CREATE_JOB, ADD_COMPENSATION,
     VIEW_DATABANK, UPLOAD_RESUMES, TRIGGER_MATCHING, SEND_OUTREACH,
     VIEW_REVIEW_SCREEN, DECIDE_PROFILE, SCHEDULE_INTERVIEWS,
     UPDATE_PIPELINE_STATUS, VIEW_DASHBOARD, EDIT_ROLE_PERMISSIONS,
-    MANAGE_EMAIL_TEMPLATES, EDIT_COMPANY_PROFILE, PUBLISH_JOB,
+    EDIT_COMPANY_PROFILE, PUBLISH_JOB,
     MANAGE_COMPLIANCE_DOCUMENTS,
     MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH,
+    VIEW_BGV, MANAGE_BGV, USE_CONVERSATIONS,
     MANAGE_BILLING, VIEW_BILLING,
     # RBAC_SPECIFICATION.md 24, appended 2026-08-29. Appended rather than
     # interleaved because resolve_capability_set returns capabilities in THIS
     # order and an existing response's field order should not shuffle.
-    VIEW_COMPANY_JOBS, SEND_JD_TO_HIRING_MANAGER,
+    VIEW_COMPANY_JOBS,
     EDIT_MUST_HAVE_SKILLS, EDIT_NICE_TO_HAVE_SKILLS,
     EDIT_BEHAVIOURAL_COMPETENCIES, EDIT_JOB_PHILOSOPHY, EDIT_SWOT,
     EDIT_EVALUATION_RUBRICS, FINALIZE_ROLE_DEFINITION, REJECT_JD,
@@ -174,13 +262,19 @@ ALL_CAPABILITIES = [
     # Talent Intelligence dashboards (2026-09-05 spec). Appended, same rule
     # as above: response field order must not shuffle.
     VIEW_INTELLIGENCE_DASHBOARDS,
+    # In-product support (2026-09-10). APPENDED, same rule again: the response
+    # field order must not shuffle. Only the customer-side one is listed here.
+    # HANDLE_SUPPORT_THREADS is a PLATFORM capability and this list is what
+    # /auth/me returns to a customer's browser, so a platform-only name here
+    # would advertise a surface no customer can reach.
+    OPEN_SUPPORT_THREADS,
 ]
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,
 # Recruiter, and Hiring Manager are EQUAL: all three create+publish jobs and
-# share one candidate pool. There is no multi-level approval surfaced to them
-# (the approval FSM code remains in place but bypassed — jobs publish directly,
-# see api/jobs.py and approval_fsm.plan_direct_publish). The three roles must
+# share one candidate pool. There is no multi-level approval: jobs publish
+# directly (api/jobs.py and approval_fsm.plan_direct_publish), and the chain
+# itself was deleted in the Vivekium release. The three roles must
 # end up FUNCTIONALLY IDENTICAL, so they get the same operational grant set.
 # This stays data (require_capability), never a role branch (claude.md rule 3).
 _STAFF_OPERATIONAL: dict[str, bool] = {
@@ -198,10 +292,17 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     SCHEDULE_INTERVIEWS: True,
     UPDATE_PIPELINE_STATUS: True,
     VIEW_DASHBOARD: True,
-    MANAGE_EMAIL_TEMPLATES: True,
     # Read-only. A recruiter whose invitations stop sending must be able to see
     # that the credit pool is in deficit; they still cannot change the plan.
     VIEW_BILLING: True,
+    # Raising a support ticket. See the constant for why every customer
+    # role holds it.
+    OPEN_SUPPORT_THREADS: True,
+    # Background verification and conversations. Seeded by migration 0095;
+    # a capability constant is only half a change.
+    VIEW_BGV: True,
+    MANAGE_BGV: True,
+    USE_CONVERSATIONS: True,
 }
 
 # The customer-side grant set, shared by all four customer roles.
@@ -220,8 +321,6 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
 _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
     **_STAFF_OPERATIONAL,
     MANAGE_STAFF: True,
-    CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
-    APPROVE_JOB: True,                 # dormant for the same reason
     MANAGE_COMPLIANCE_DOCUMENTS: True,
     MANAGE_BILLING: True,
 }
@@ -232,7 +331,7 @@ _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
 # EDIT_ROLE_PERMISSIONS is never here: it rewrites the matrix itself, so
 # granting it to a customer role removes the boundary rather than widening it.
 # The three MANAGE_BD_* / USE_AI_REACH grants stay with the `bd` role, which is
-# ReadyPick's own sales console and has no tenant. Same two exclusions, and the
+# Vivekium's own sales console and has no tenant. Same two exclusions, and the
 # same reasoning, as migration 0031.
 DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     Role.recruitment_manager: dict(_CUSTOMER_FULL_ACCESS),
@@ -399,11 +498,6 @@ RBAC_INVARIANTS: dict[str, dict[Role, Invariant]] = {
         Role.client: _A, Role.hr_manager: _A, Role.recruiter: _AD,
         Role.hiring_manager: _S, Role.interview_manager: _D,
     },
-    # | Send JD to Hiring Manager | YES | YES | YES | NO | NO |
-    SEND_JD_TO_HIRING_MANAGER: {
-        Role.client: _A, Role.hr_manager: _A, Role.recruiter: _S,
-        Role.hiring_manager: _D, Role.interview_manager: _D,
-    },
     # The six Hiring-Manager-controlled criteria rows, all identical in 24:
     # | ... | YES | YES | NO | YES | NO |
     # NEVER for the Recruiter, not DENY: 26 is a list of things the Recruiter
@@ -561,7 +655,6 @@ _INTERVIEW_MANAGER_ACCESS: dict[str, bool] = {
 # agreement rather than trusting this comment.
 _SPEC_GRANTS_ORG_WIDE: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: True,
     EDIT_MUST_HAVE_SKILLS: True,
     EDIT_NICE_TO_HAVE_SKILLS: True,
     EDIT_BEHAVIOURAL_COMPETENCIES: True,
@@ -582,7 +675,6 @@ _SPEC_GRANTS_RECRUITER: dict[str, bool] = {
     # what narrows it to assigned jobs, and denying the grant outright
     # would leave a Recruiter unable to see the job they own.
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: True,
     EDIT_MUST_HAVE_SKILLS: False,
     EDIT_NICE_TO_HAVE_SKILLS: False,
     EDIT_BEHAVIOURAL_COMPETENCIES: False,
@@ -600,7 +692,6 @@ _SPEC_GRANTS_RECRUITER: dict[str, bool] = {
 
 _SPEC_GRANTS_HIRING_MANAGER: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: False,
     EDIT_MUST_HAVE_SKILLS: True,
     EDIT_NICE_TO_HAVE_SKILLS: True,
     EDIT_BEHAVIOURAL_COMPETENCIES: True,
@@ -618,7 +709,6 @@ _SPEC_GRANTS_HIRING_MANAGER: dict[str, bool] = {
 
 _SPEC_GRANTS_INTERVIEW_MANAGER: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: False,
     EDIT_MUST_HAVE_SKILLS: False,
     EDIT_NICE_TO_HAVE_SKILLS: False,
     EDIT_BEHAVIOURAL_COMPETENCIES: False,
@@ -646,6 +736,15 @@ DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(_SPEC_GRANTS_HIRING_MANAGE
 DEFAULT_PERMISSION_MATRIX[Role.interview_manager] = {
     **_INTERVIEW_MANAGER_ACCESS,
     **_SPEC_GRANTS_INTERVIEW_MANAGER,
+    # Support (2026-09-10, migration 0093). Stated HERE as well as in the
+    # migration, because `seed_dev_data._seed_permission_template` RECONCILES
+    # existing global rows to this matrix: a grant that lived only in the
+    # migration was flipped back to False the first time the dev seed ran,
+    # which is precisely the dev/migrated divergence 0075's docstring warns
+    # about, and it was caught by the full suite ordering rather than by a
+    # targeted run. The narrowest role in the product still gets to say a
+    # screen is broken.
+    OPEN_SUPPORT_THREADS: True,
 }
 
 # ── Corporate email senders (Corporate Email System spec, 2026-09-05) ────────
@@ -703,3 +802,107 @@ DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(
 DEFAULT_PERMISSION_MATRIX[Role.interview_manager].update(
     {VIEW_INTELLIGENCE_DASHBOARDS: False}
 )
+
+
+# ── Drishti, the function's strategic profile (vivekium feature 1, C3) ───────
+#
+# WHY THIS IS ITS OWN CAPABILITY AND NOT `EDIT_COMPANY_PROFILE`
+# --------------------------------------------------------------
+# The brief names the audience in one line and excludes one role by name:
+# "MD, CEO, Functional Heads (CTO, CFO, COO). NOT the Hiring Manager." That
+# exclusion is a product rule, so it has to be expressible, and
+# `EDIT_COMPANY_PROFILE` cannot express it: every client-side staff role holds
+# it (see `_STAFF_OPERATIONAL`), including the Hiring Manager. Reusing it would
+# have made the brief's one explicit exclusion unstatable except as a role
+# branch, which rule 2 forbids.
+#
+# The Recruiter is refused for the complementary reason rather than by
+# analogy: they run a pipeline against criteria somebody else set, and a
+# function's strategic direction is not a pipeline act. Where a functional
+# head genuinely sits in a narrower seat, the per-user overlay
+# (`users.permissions_json`) pins that ONE person, which is the mechanism this
+# module already documents for exactly this case and is better than widening
+# the role default for everybody who shares their seat.
+#
+# Seeded by migration 0115 (a capability constant is only half a change), and
+# compared against the migrated database by tests/test_capability_seed_parity.
+AUTHOR_DRISHTI_PROFILE = "author_drishti_profile"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle. It has to be in this list for a second reason here: /auth/me
+# returns exactly this list, and the customer portal's navigation asks
+# `hasCapability` for it, so a name missing from here is a page the client is
+# told does not exist.
+ALL_CAPABILITIES.append(AUTHOR_DRISHTI_PROFILE)
+
+DEFAULT_PERMISSION_MATRIX[Role.client].update({AUTHOR_DRISHTI_PROFILE: True})
+# hr_manager receives the SAME grant as recruitment_manager, the standing rule
+# above: the legacy role ranks beside Recruitment Manager, and tests/test_rbac
+# pins the two organisation-wide roles as identical grant-for-grant.
+for _role in (Role.recruitment_manager, Role.hr_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: True})
+# Explicit False rather than an absent key: an absent row and a false row deny
+# identically, and the explicit row makes the brief's own exclusion observable
+# in the template instead of being an omission somebody later reads as an
+# oversight and "fixes".
+for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: False})
+
+
+# ── The assessment dispute path (change request 22, owner ruling 2026-09-22) ─
+#
+# WHY A JOB CLOSURE NEEDED A CAPABILITY AT ALL
+# ----------------------------------------------
+# Closing a job now WITHHOLDS its assessment records from everybody rather
+# than deleting them on the spot (see `services/job_assessment_retention` for
+# the reversal and its reason). Withholding them from everybody is only
+# defensible if there is one narrow, named, audited way back in for the thirty
+# days they are retained, and "narrow" is a claim a capability can make and a
+# role branch cannot.
+#
+# WHY IT IS NOT `VIEW_REVIEW_SCREEN`
+# ------------------------------------
+# Every customer-side role holds that one, including the Hiring Manager and
+# the Interview Manager. Reusing it would mean closure withheld the data from
+# nobody, which is the whole feature. The two capabilities also answer
+# different questions: `view_review_screen` asks may this person read a live
+# candidate, and this asks may this person reopen a record the candidate was
+# told had been taken out of use.
+#
+# WHY ONLY THE CLIENT SUPER ADMIN BY DEFAULT
+# --------------------------------------------
+# A dispute is a contractual matter between the customer and Vivekium, not a
+# pipeline act, and the Client Super Admin is the one customer-side role that
+# already carries the tenant's contractual decisions (billing, compliance
+# documents). The three operational roles are refused with an explicit
+# allowed=false row rather than an absent one: both deny, and only the
+# explicit row makes the refusal observable in the template instead of looking
+# like an omission somebody later "fixes". Where a specific person genuinely
+# runs disputes, the per-user overlay (`users.permissions_json`) pins that ONE
+# person, which is the mechanism this module already documents for exactly
+# this case.
+#
+# It is deliberately absent from RBAC_INVARIANTS: `invariant_for` returns
+# ALLOW for a capability the specification does not speak to, and RBAC 24 has
+# no row for a dispute retrieval. The grant engine decides it alone.
+#
+# Seeded by migration 0112 (a capability constant is only half a change), and
+# compared against the migrated database by tests/test_capability_seed_parity.
+RETRIEVE_DISPUTED_ASSESSMENT = "retrieve_disputed_assessment"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle. It must be in this list for the second reason too: /auth/me returns
+# exactly this list and the job page asks `hasCapability` for it, so a name
+# missing from here is a control the client is told does not exist.
+ALL_CAPABILITIES.append(RETRIEVE_DISPUTED_ASSESSMENT)
+
+DEFAULT_PERMISSION_MATRIX[Role.client].update({RETRIEVE_DISPUTED_ASSESSMENT: True})
+# hr_manager receives the SAME grant as recruitment_manager, the standing rule
+# above: the legacy role ranks beside Recruitment Manager, and tests/test_rbac
+# pins the two organisation-wide roles as identical grant-for-grant.
+for _role in (Role.recruitment_manager, Role.hr_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})
+for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})

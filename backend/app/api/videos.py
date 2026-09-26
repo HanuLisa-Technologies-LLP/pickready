@@ -2,17 +2,20 @@
 
 Provenance: the 2026-09-05 Client Candidate Dashboard, Executive Profile &
 Proctored Video Specification, sections 15-19 and 30-36. The recording
-pipeline (upload, processing, compression, storage) lives behind
-`api/assessments.py` and `services/video/`; these routes are the CLIENT side:
+pipeline (segmented upload, compression, storage) lives behind
+`api/assessment_recording.py` and `services/video/`; these routes are the CLIENT side:
 what a recruiter's dashboard and the Executive Profile ask about a finished
 recording, and the two delivery URLs.
 
-EVERY route here follows the same four-part contract the transcript and the
-proctoring report already follow:
+EVERY route here follows the same contract:
 
   * `require_capability(view_review_screen)` -- the capability that opens this
     candidate's transcript and PRISM Report. Someone who may read the
     assessment evidence may watch it; someone who may not certainly may not.
+  * THE JOB'S HIRING TEAM ONLY (2026-09-24): the same capability resolved by
+    `rbac.authorize` over the job (`video_access.require_hiring_team`), so
+    the per-job assignment scope RBAC 24 gives the Recruiter, the Hiring
+    Manager and the Interview Manager binds here too.
   * The RLS-aware tenant session (`get_tenant_db`).
   * The link-in-tenant gate answers 404, never 403: a cross-tenant id must be
     indistinguishable from a nonexistent one (spec section 17).
@@ -27,6 +30,16 @@ compressed object is directly playable mp4, so delivery is a signed GET
 DOWNLOAD is additionally gated on the candidate's own retention consent
 (`retention_consent.video_download_allowed`): an explicit False or a
 never-asked NULL keeps the record preview-only in the client portal.
+
+ONE RECORDING KIND IS WRITTEN NOW, the proctored session's, and a row of the
+deleted video-interview kind is served by exactly the same rules. A recruiter
+reaches both through the same capability, the same scope, the same tenant
+gate, the same audit row, the same consent rule and the same presigned URL.
+
+A recording whose media has been DELETED (erasure, job closure, or the
+retention sweep) is not servable and says so in its own sentence. It is not a
+404: the application exists and the question was reasonable, and "no video was
+ever recorded" is a different fact from "the video has been deleted".
 """
 import logging
 import uuid
@@ -38,9 +51,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.dual_mode import VideoRecording
+from app.models.job import Job
 from app.schemas.videos import VideoAccessOut, VideoDeliveryOut
 from app.services import assessment_video_access as video_access
 from app.services import capabilities as caps
+from app.services import job_assessment_retention
 from app.services import object_storage, retention_consent
 from app.services.audit import audit
 
@@ -61,10 +76,28 @@ async def _link_or_404(
     session: AsyncSession, user: CurrentUser, link_id: uuid.UUID
 ) -> JobCandidateLink:
     """The link-in-tenant gate. 404 for absent AND for cross-tenant, so the
-    two are indistinguishable from outside (spec section 17)."""
+    two are indistinguishable from outside (spec section 17).
+
+    IT ALSO CARRIES THE JOB-CLOSURE GATE (change request 22, 2026-09-22), and
+    it carries it here because all three routes in this module already come
+    through this function. A recording is assessment data exactly as the
+    transcript is, so closing the job withholds it on the same instant and the
+    thirty day sweep deletes the objects on the same day. Putting the check on
+    each route instead would be three copies of one rule, and the copy that
+    drifted would be the one minting a presigned URL.
+    """
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Application not found")
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    # THE HIRING TEAM, NOT THE TENANT (Vivekium release, 2026-09-24). The
+    # route dependency answers "may this role review at all"; this answers
+    # "on THIS job", which is where a scoped Recruiter, Hiring Manager or
+    # Interview Manager stops at the jobs they are assigned to.
+    await video_access.require_hiring_team(session, user, job.id)
+    await job_assessment_retention.require_readable(session, user, job)
     return link
 
 
@@ -88,8 +121,10 @@ async def video_metadata(
     mode, _conversation_status = await video_access.latest_conversation_facts(
         session, link.id
     )
+    deleted = video_access.media_deleted(recording)
     status_word = video_access.video_status_word(
-        recording.status if recording is not None else None
+        recording.status if recording is not None else None,
+        media_deleted=deleted,
     )
     preview_available = video_access.is_servable(recording)
     download_consented = (
@@ -101,7 +136,11 @@ async def video_metadata(
         assessment_mode=mode,
         assessment_mode_label=video_access.mode_label(mode),
         video_status=status_word,
-        video_status_detail=video_access.VIDEO_STATUS_DETAIL[status_word],
+        video_status_detail=(
+            video_access.VIDEO_DELETED_DETAIL
+            if deleted
+            else video_access.VIDEO_STATUS_DETAIL[status_word]
+        ),
         duration_seconds=(
             recording.duration_seconds if preview_available else None
         ),
@@ -125,6 +164,10 @@ async def _servable_recording_or_409(
     link = await _link_or_404(session, user, link_id)
     recording = await video_access.latest_recording(session, link.id)
     if not video_access.is_servable(recording):
+        if video_access.media_deleted(recording):
+            raise HTTPException(
+                status_code=409, detail=video_access.VIDEO_DELETED_DETAIL
+            )
         status_word = video_access.video_status_word(
             recording.status if recording is not None else None
         )
@@ -154,7 +197,7 @@ async def request_video_preview(
         logger.error(
             "video_preview.storage_unavailable recording_id=%s error=%s",
             recording.id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=503,
@@ -192,7 +235,7 @@ async def request_video_download(
         logger.error(
             "video_download.storage_unavailable recording_id=%s error=%s",
             recording.id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=503,

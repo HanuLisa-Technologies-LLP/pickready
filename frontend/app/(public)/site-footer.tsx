@@ -2,16 +2,25 @@ import Link from "next/link";
 
 import { Logo } from "@/components/brand";
 
+/**
+ * Product links that are anchors into the landing page. Same rule as the
+ * header: they render only when `/` serves the landing page, because on the
+ * holding page every one of them is a link to nowhere. See site-header.tsx for
+ * the full note.
+ */
+const LANDING_LINKS = [
+  { label: "How it works", href: "/#how-it-works" },
+  { label: "Platform", href: "/#features" },
+  { label: "Pricing", href: "/#pricing" },
+];
+
+/** Product links that resolve to a real route in either state. */
+const PRODUCT_LINKS = [
+  { label: "For employers", href: "/employers" },
+  { label: "Docs", href: "/docs" },
+];
+
 const COLUMNS = [
-  {
-    heading: "Product",
-    links: [
-      { label: "How it works", href: "/#how-it-works" },
-      { label: "Platform", href: "/#features" },
-      { label: "Product tour", href: "/#workflow" },
-      { label: "Docs", href: "/docs" },
-    ],
-  },
   {
     heading: "Get access",
     links: [
@@ -31,7 +40,25 @@ const COLUMNS = [
   },
 ];
 
-export function SiteFooter() {
+export interface SiteFooterProps {
+  /**
+   * Whether `/` is serving the landing page. Defaults to false so a caller
+   * that forgets it renders no dead anchor.
+   */
+  landingLive?: boolean;
+}
+
+export function SiteFooter({ landingLive = false }: SiteFooterProps) {
+  const columns = [
+    {
+      heading: "Product",
+      links: landingLive
+        ? [...LANDING_LINKS, ...PRODUCT_LINKS]
+        : PRODUCT_LINKS,
+    },
+    ...COLUMNS,
+  ];
+
   return (
     <footer className="border-t border-border bg-surface/60">
       <div className="mx-auto max-w-6xl px-6 py-14 lg:px-10">
@@ -40,9 +67,12 @@ export function SiteFooter() {
             <Logo variant="full" height={38} href="/" />
           </div>
 
-          {COLUMNS.map((column) => (
+          {columns.map((column) => (
             <nav key={column.heading} aria-label={column.heading}>
-              <h2 className="text-xs font-semibold uppercase tracking-wide opacity-70">
+              {/* Full ink at 13px. The heading used to be `opacity-70`, which
+                  is grey text by another name, and DESIGN.md section 3 admits
+                  no exception for a faked one. */}
+              <h2 className="text-xs font-semibold uppercase tracking-[0.12em]">
                 {column.heading}
               </h2>
               <ul className="mt-4 space-y-3">
@@ -50,7 +80,7 @@ export function SiteFooter() {
                   <li key={link.label}>
                     <Link
                       href={link.href}
-                      className="text-sm underline-offset-4 transition-colors hover:text-brand-600 hover:underline"
+                      className="text-sm underline-offset-4 transition-colors hover:text-brand-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     >
                       {link.label}
                     </Link>
@@ -63,11 +93,9 @@ export function SiteFooter() {
 
         <div className="mt-12 flex flex-col gap-2 border-t border-border pt-6 text-sm sm:flex-row sm:items-center sm:justify-between">
           <p>
-            &copy; {new Date().getFullYear()} ReadyPick. All rights reserved.
+            &copy; {new Date().getFullYear()} Vivekium. All rights reserved.
           </p>
-          <p className="opacity-70">
-            A Hanulisa Technologies LLP product.
-          </p>
+          <p>A Varpitech LLP product.</p>
         </div>
       </div>
     </footer>

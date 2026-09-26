@@ -184,7 +184,7 @@ async def test_shared_breaker_trips_surfaces_retry_and_resets(monkeypatch) -> No
     assert opened["status"] == "breaker_open"
     assert "retry automatically" in opened["message"]
 
-    assert await web_research.reset_breaker() is True
+    assert await web_research._clear_breaker() is True
     recovered = await web_research._plan_node(
         {
             "ctx": type(

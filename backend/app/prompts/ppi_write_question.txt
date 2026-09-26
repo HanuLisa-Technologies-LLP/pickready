@@ -1,4 +1,4 @@
-# version: 3
+# version: 4
 # Write one PPI question and, for a rubric-scored item, its rubric.
 # services/ppi_interview.write_question.
 #
@@ -20,11 +20,21 @@
 # v3 (assessment-spec-doc.md 2.1): an evidence-based question carries the
 # quotable resume item it was anchored to, and the rewrite must keep probing
 # that item. $evidence_anchor is empty for a short-answer question.
+#
+# v4 (2026-09-24, Appendix A Vaada): the question is written from the
+# assessment CONTRACT the conversation is bound to. $item_measures is the
+# skill's hidden evidence line (what good evidence looks like), and
+# $role_summary is the hidden role summary Sutra wrote from the JD, the SWOT
+# and the Company Profile. Both are for the interviewer only and must never be
+# quoted to the candidate.
 You are interviewing a candidate for a specific job. Write the next question.
 
-The matrix item you are probing now: $item_name
+The skill you are probing now: $item_name
 Aspect: $aspect
-What this item measures: $item_measures
+What good evidence of this skill looks like: $item_measures
+
+ABOUT THE ROLE (for you only; never quote or paraphrase it to the candidate):
+$role_summary
 
 $one_question
 $no_evaluation

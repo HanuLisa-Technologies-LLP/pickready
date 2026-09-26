@@ -37,17 +37,16 @@ def test_the_interviewer_is_built_on_langgraph() -> None:
     )
     # Compiled at import, not per turn: building a StateGraph on a request a
     # candidate is waiting on would add latency for no behavioural difference.
-    for graph in (interviewer._DECIDE_GRAPH, interviewer._DELIVER_GRAPH):
-        assert hasattr(graph, "ainvoke"), "graph was not compiled"
+    assert hasattr(interviewer._DECIDE_GRAPH, "ainvoke"), "graph was not compiled"
 
 
-def test_both_graphs_expose_their_nodes() -> None:
+def test_the_decide_graph_exposes_its_nodes() -> None:
     """Explicit nodes are the point. A single node would be the old function
-    wearing a graph's clothes."""
+    wearing a graph's clothes. (The second graph, the deliver graph, was
+    deleted on 2026-09-24 with the dead GENERATE and REWORD modes; the base
+    question is written by `ppi_interview.write_question`.)"""
     decide = set(interviewer._DECIDE_GRAPH.get_graph().nodes)
-    deliver = set(interviewer._DELIVER_GRAPH.get_graph().nodes)
     assert {"budget", "substance", "assess", "validate"} <= decide
-    assert {"plan", "compose", "validate"} <= deliver
 
 
 def test_no_canned_acknowledgments_in_the_conversation_path() -> None:
@@ -63,14 +62,17 @@ def test_no_canned_acknowledgments_in_the_conversation_path() -> None:
     """
     import inspect
 
-    from app.api import assessments
+    from app.api import assessment_conversation, assessment_recording, assessment_reports
 
     # CODE lines only. The comment recording the removal necessarily quotes the
     # strings it removed, and a check that could not tell those apart would
-    # forbid explaining the change.
+    # forbid explaining the change. The conversation path spans the three
+    # modules `api/assessments.py` was carved into (2026-09-24, and the report
+    # routes in PLAN-p5 WP5-F).
     code = "\n".join(
         line
-        for line in inspect.getsource(assessments).splitlines()
+        for module in (assessment_reports, assessment_conversation, assessment_recording)
+        for line in inspect.getsource(module).splitlines()
         if not line.lstrip().startswith("#")
     )
     assert "_CONNECTORS" not in code, (
@@ -84,47 +86,6 @@ def test_no_canned_acknowledgments_in_the_conversation_path() -> None:
         "Right, next one.",
     ):
         assert canned not in code, f"canned acknowledgment {canned!r} is back"
-
-
-# ── A rewrite may not change the question ────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "original, delivered, ok",
-    [
-        # Plain rewording, every specific term kept.
-        (
-            "Describe how you tuned Kafka consumer lag under load.",
-            "You mentioned throughput earlier, so: how did you tune Kafka "
-            "consumer lag under load?",
-            True,
-        ),
-        # THE failure this check exists for: the technology is gone, so the
-        # answer would be scored against a rubric for a question nobody asked.
-        (
-            "Describe how you tuned Kafka consumer lag under load.",
-            "How did you tune the message queue when it got slow?",
-            False,
-        ),
-        # A dropped metric is the same defect in a smaller costume.
-        (
-            "How did you bring p99 latency under 200ms?",
-            "How did you bring latency down?",
-            False,
-        ),
-        # Empty is never a question.
-        ("Tell me about CI/CD in your last team.", "", False),
-    ],
-)
-def test_substance_must_survive_delivery(original, delivered, ok) -> None:
-    assert interviewer._substance_preserved(original, delivered) is ok
-
-
-def test_a_delivery_may_not_become_a_speech() -> None:
-    """Length is bounded off the original. A model that answered with an essay
-    would otherwise bury the question it was asked to deliver."""
-    original = "Why did you choose Postgres?"
-    assert not interviewer._substance_preserved(original, "Why did you choose Postgres? " + "x" * 500)
 
 
 # ── No templated acknowledgments, whoever wrote them ─────────────────────────
@@ -151,42 +112,6 @@ def test_leading_praise_is_stripped(raw, expected) -> None:
 
 
 # ── Every failure path is the product's previous behaviour ───────────────────
-
-
-@pytest.mark.asyncio
-async def test_delivery_falls_back_to_the_stored_question_on_outage(monkeypatch) -> None:
-    """An LLM outage costs the phrasing and nothing else."""
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("provider down")
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _boom)
-    stored = "Describe a system you designed end to end."
-    out = await interviewer.compose_next_question(
-        session=None,
-        question=stored,
-        transcript=[{"speaker": "candidate", "content": "I led the billing rewrite."}],
-    )
-    assert out == stored
-
-
-@pytest.mark.asyncio
-async def test_the_first_question_is_never_rewritten(monkeypatch) -> None:
-    """With an empty transcript there is nothing to condition on, so a model
-    call could only paraphrase for its own sake."""
-    called = False
-
-    async def _spy(*args, **kwargs):
-        nonlocal called
-        called = True
-        return '{"question": "something else entirely"}'
-
-    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _spy)
-    stored = "Tell me about your last role."
-    out = await interviewer.compose_next_question(
-        session=None, question=stored, transcript=[]
-    )
-    assert out == stored
-    assert not called, "the opening question should not cost a model call"
 
 
 @pytest.mark.asyncio

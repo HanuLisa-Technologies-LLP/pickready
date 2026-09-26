@@ -1,0 +1,45 @@
+id: adversarial.a_duplicate_application_is_refused_without_a_second_row
+version: 1
+tier: adversarial
+description: >
+  The same candidate applies to the same job twice. The second attempt is
+  refused, no second link is written, no second Profile is minted and the
+  resume parse is queued once. A duplicate submission is the ordinary shape of
+  a double click, a back button and a retry after a lost response, so this is
+  not a hypothetical attack: it is what the apply button does under a flaky
+  connection.
+tags: [apply, idempotency, duplicate]
+
+given:
+  world: job_with_unapplied_candidate
+
+workload:
+  - apply_to_job
+  - apply_to_job_again
+
+expect:
+  state:
+    - job_candidate_links.count_for_job == 1
+    - job_candidate_links.status_for_candidate == applied
+    # The seeded main resume plus the ONE this application minted. A second
+    # accepted application would have minted a third, and a Profile is what
+    # every report is written against.
+    - profiles.count_for_candidate == 2
+    - candidate_updates.count_for_candidate == 1
+  dispatched:
+    pickready.parse_resume: 1
+  output:
+    - status.apply_to_job == 201
+    - status.apply_to_job_again == 409
+  trajectory:
+    - application_accepted
+    - application_retried
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

@@ -205,11 +205,21 @@ def _interpret(raw: str | None) -> Classification:
     """
     try:
         payload = json.loads(raw or "")
-        label = str(payload.get("label") or "").strip().lower()
-        confidence = str(payload.get("confidence") or "").strip().lower()
-        reason = " ".join(str(payload.get("reason") or "").split())[:300]
-    except Exception:  # noqa: BLE001
+    except ValueError:
+        # JSONDecodeError is a ValueError. Logged at INFO like the unknown
+        # label below: it is the provider's defect, and the count is how an
+        # operator tells a flaky provider from a quiet one.
+        logger.info("answer_classification.malformed_json")
         return _degraded("malformed_json")
+    if not isinstance(payload, dict):
+        # A list or a scalar parses and has no `.get`. It used to reach this
+        # verdict through an AttributeError inside a catch-all, which would
+        # have absorbed a real bug in the lines below just as quietly.
+        logger.info("answer_classification.malformed_json shape=%s", type(payload).__name__)
+        return _degraded("malformed_json")
+    label = str(payload.get("label") or "").strip().lower()
+    confidence = str(payload.get("confidence") or "").strip().lower()
+    reason = " ".join(str(payload.get("reason") or "").split())[:300]
 
     if label not in _MODEL_LABELS:
         # An invented label ("uncertain", "partial", "3") is not a verdict this
@@ -247,7 +257,10 @@ def _gate(raw: str | None) -> agent_loop.Critique:
     """
     try:
         payload = json.loads(raw or "")
-    except Exception:  # noqa: BLE001
+    except ValueError:
+        # JSONDecodeError is a ValueError, and it is the only thing a string
+        # handed to `json.loads` can raise. The rejection IS the record: the
+        # loop feeds this defect back verbatim and counts it.
         return agent_loop.reject_defects(
             agent_loop.Defect(
                 "schema", "classification", "return one valid JSON object"

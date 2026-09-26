@@ -1,4 +1,4 @@
-"""The sentences a Hiring Manager confirms a matrix with, and the menu fallback.
+"""The sentences a frozen matrix item explains itself with, and no number.
 
 WHAT MAKES THE RESTATEMENT WORTH ANYTHING IS THAT IT IS CHECKABLE BY THE PERSON
 CHECKING IT. A hiring manager confirming "1.4850" is confirming that some
@@ -15,9 +15,9 @@ identity expressed no opinion, and saying "this was unchanged" about four
 layers in a row is noise a reader learns to skip past -- at which point they
 skip the line that did move too.
 
-`_candidates_from_menu` is the other half tested here: drawing from Layer 1's
-menu is Layer 1 DOING ITS DECLARED JOB, not a fallback, and the provenance says
-so by carrying an anchor and no SWOT origin.
+The menu draw that used to be tested here (`_candidates_from_menu`) was
+DELETED with the matrix compiler in the Vivekium release. `plain_provenance`
+survives with the scorecard's read half, for a frozen matrix written before it.
 
 Pure functions. No database, no network, no model.
 """
@@ -28,11 +28,6 @@ import uuid
 import pytest
 
 from app.services.hiring import scorecard, situations
-from app.services.hiring.department_models import (
-    DEFAULT_DEPARTMENT,
-    DEPARTMENTS,
-    SENIORITIES,
-)
 
 
 def _item(**overrides) -> scorecard.MatrixItem:
@@ -71,14 +66,13 @@ def test_no_sentence_ever_carries_a_number() -> None:
     key = next(iter(situations.SITUATIONS))
     for anchor in ("stream_processing", None):
         for origin in ("the last person never owned anything in production", None):
-            for company in (1.2, 0.8, 1.0, None, "nonsense"):
+            for situation in (1.35, 0.8, 1.0, None, "nonsense"):
                 item = _item(
                     anchor_key=anchor,
                     swot_origin=origin,
                     provenance={
                         "terms": {
-                            "company_layer2": company,
-                            "situation_layer3": 1.35,
+                            "situation_layer3": situation,
                             "role_layer3": 1.1,
                         },
                         "situation_key": key,
@@ -106,42 +100,61 @@ def test_an_unanchored_item_says_it_starts_neutral() -> None:
     assert not any("already recognises" in line for line in lines)
 
 
-# ── Layer 2 and Layer 3: only when they moved something ──────────────────────
+# ── Layer 3: only when it moved something ────────────────────────────────────
 
 
-def test_a_company_layer_that_lifted_the_weight_is_named() -> None:
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=1.2))
-    )
+def _situation_provenance(value):
+    """A provenance carrying one readable situation key and one term."""
+    return {
+        "terms": {"situation_layer3": value},
+        "situation_key": next(iter(situations.SITUATIONS)),
+    }
+
+
+def test_a_layer_that_lifted_the_weight_is_named() -> None:
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(1.35)))
     assert any("more heavily" in line for line in lines)
 
 
-def test_a_company_layer_that_lowered_it_is_named_the_other_way() -> None:
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=0.8))
-    )
+def test_a_layer_that_lowered_it_is_named_the_other_way() -> None:
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(0.8)))
     assert any("less heavily" in line for line in lines)
 
 
 def test_a_layer_that_expressed_no_opinion_says_nothing() -> None:
     """The identity means the layer did not speak. "This was unchanged" about
-    four layers running is noise, and a reader who skips it skips the line that
+    every layer running is noise, and a reader who skips it skips the line that
     did move."""
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=1.0))
-    )
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(1.0)))
     assert not any("heavily" in line for line in lines)
 
 
 @pytest.mark.parametrize("junk", [None, "", "a bit more", {}, []])
 def test_an_unreadable_term_says_nothing_rather_than_guessing(junk) -> None:
     """A provenance dict written by an older pipeline must not produce a
-    sentence claiming a layer did something."""
+    sentence claiming a layer did something.
+
+    A row written before 2026-09-09 still carries a `company_layer2` term. It
+    is not read any more, and nothing reads it back into a sentence.
+    """
     assert scorecard._direction(junk) is None
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(junk)))
+    assert not any("heavily" in line for line in lines)
+
+
+def test_a_retired_company_term_on_an_old_row_produces_no_sentence() -> None:
+    """The removal, asserted from the reader's side.
+
+    Every matrix row frozen before Layer 2 was withdrawn carries a
+    `company_layer2` multiplier in its stored provenance. Those rows are still
+    read on the review screen, and a hiring manager must not be told a layer
+    weighed something when there is no longer any such input.
+    """
     lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=junk))
+        _item(provenance=_provenance(company_layer2=1.4))
     )
     assert not any("heavily" in line for line in lines)
+    assert not any("philosophy" in line for line in lines)
 
 
 def test_the_situation_is_named_by_its_label_when_it_moved_the_weight() -> None:
@@ -237,72 +250,3 @@ def test_an_item_with_no_provenance_at_all_still_explains_itself() -> None:
     lines = scorecard.plain_provenance(_item(provenance=None))
     assert lines
     assert all(line.strip() for line in lines)
-
-
-# ── Layer 1's menu, which is not a fallback ──────────────────────────────────
-
-
-def _menu(wanted: int, used=None, category="must_have"):
-    return scorecard._candidates_from_menu(
-        DEPARTMENTS[DEFAULT_DEPARTMENT],
-        SENIORITIES[0],
-        category=category,
-        used=set() if used is None else used,
-        wanted=wanted,
-    )
-
-
-def test_the_menu_supplies_what_the_higher_layers_left_empty() -> None:
-    picked = _menu(3)
-    assert len(picked) == 3
-    for candidate in picked:
-        assert candidate.phrase
-        assert candidate.category == "must_have"
-
-
-def test_a_menu_item_carries_no_swot_origin_and_that_is_its_provenance() -> None:
-    """"Layer 1 department model, no Layer 3 input", which is exactly what
-    happened. Inventing an origin would credit the hiring manager with a
-    criterion they never raised."""
-    for candidate in _menu(2):
-        assert candidate.swot_origin is None
-        assert candidate.quadrant is None
-
-
-def test_the_menu_is_drawn_heaviest_first_and_is_deterministic() -> None:
-    """Two candidates on one job must be graded against the same criteria, so
-    the draw cannot depend on dictionary order."""
-    assert [c.phrase for c in _menu(4)] == [c.phrase for c in _menu(4)]
-
-
-def test_a_competency_already_on_the_matrix_is_not_drawn_twice() -> None:
-    """Grading a candidate twice on one competency would double-count it."""
-    first = _menu(1)
-    used = {first[0].phrase.casefold()}
-    second = scorecard._candidates_from_menu(
-        DEPARTMENTS[DEFAULT_DEPARTMENT],
-        SENIORITIES[0],
-        category="must_have",
-        used=used,
-        wanted=1,
-    )
-    assert second
-    assert second[0].phrase.casefold() != first[0].phrase.casefold()
-
-
-def test_wanting_nothing_draws_nothing() -> None:
-    """The aspect was already filled by a higher layer, which is the normal
-    case and must not append a menu item on top of it."""
-    assert _menu(0) == []
-
-
-def test_the_used_set_is_updated_so_a_later_draw_sees_it() -> None:
-    used: set[str] = set()
-    picked = scorecard._candidates_from_menu(
-        DEPARTMENTS[DEFAULT_DEPARTMENT],
-        SENIORITIES[0],
-        category="must_have",
-        used=used,
-        wanted=2,
-    )
-    assert {c.phrase.casefold() for c in picked} <= used

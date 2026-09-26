@@ -6,7 +6,7 @@
 //
 //   * the Review Queue: jobs whose stem-score landed in the section 4.4
 //     tentative band (0.30-0.79) or whose classification came from the
-//     engine-error fallback, for the Hanulisa team to verify by hand;
+//     engine-error fallback, for the Varpitech team to verify by hand;
 //   * Reclassify: the support function, permitted STRICTLY before the first
 //     completed assessment (Rule 5). The backend refuses it after; this page
 //     surfaces that refusal rather than hiding the button, because a support
@@ -223,7 +223,7 @@ export default function ClassificationAdminPage() {
                           {(row.classification_confidence * 100).toFixed(0)}%
                         </TableCell>
                         <TableCell className="max-w-[22rem]">
-                          <span className="line-clamp-2 text-xs opacity-80">
+                          <span className="line-clamp-2 text-xs">
                             {row.classification_signals.length
                               ? row.classification_signals.join(", ")
                               : "none"}
@@ -232,7 +232,7 @@ export default function ClassificationAdminPage() {
                         <TableCell>{formatDate(row.created_at)}</TableCell>
                         <TableCell className="text-right">
                           {row.classification_locked ? (
-                            <span className="text-xs font-medium opacity-70">
+                            <span className="text-xs font-medium">
                               Locked (assessments completed)
                             </span>
                           ) : (

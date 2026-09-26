@@ -96,8 +96,20 @@ async def timing_middleware(request, call_next):
     """
     # Opt-in per request: `X-Debug-SQL: 1` logs every statement the request ran,
     # which is how you tell an N+1 apart from a genuinely wide query. Off by
-    # default so normal traffic never holds SQL text in memory, and unreachable
-    # in production because the middleware is not installed there.
+    # default so normal traffic never holds SQL text in memory.
+    #
+    # THIS COMMENT USED TO SAY "and unreachable in production because the
+    # middleware is not installed there", AND THAT WAS FALSE ON THE LIVE SITE
+    # for as long as it was written. The guard in `main.py` was
+    # `not is_production`, which is `environment != "production"`, and the
+    # deployment serving readypick.ai runs `ENVIRONMENT=pilot`. So this header
+    # was accepted from anonymous callers in production while the code asserted
+    # it could not be. Reachability is now
+    # `Settings.expose_request_diagnostics`, which defaults to off and is set
+    # per deployment rather than inferred from a release-channel name.
+    #
+    # The statement TEXT is collected, never its bound parameters, so no
+    # candidate value reaches the log even when this is on.
     stats = begin_request(collect=request.headers.get("X-Debug-SQL") == "1")
     started = time.perf_counter()
     response = await call_next(request)

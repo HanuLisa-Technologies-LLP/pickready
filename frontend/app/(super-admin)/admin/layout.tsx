@@ -1,6 +1,6 @@
 "use client";
 
-// Provider Portal shell, the ReadyPick owner's console.
+// Provider Portal shell, the Vivekium owner's console.
 //
 // The nav is deliberately minimal (Provider Portal spec §1.1). Team
 // Management, Permissions and the Audit Log were removed: the owner's job here
@@ -23,7 +23,15 @@
 // be able to see which customer is on which plan and who is out of credits;
 // it writes nothing, in keeping with read-only-by-absence.
 
-import { Building2, Briefcase, CreditCard, Settings, Tags } from "lucide-react";
+import {
+  Building2,
+  Briefcase,
+  Coins,
+  CreditCard,
+  LifeBuoy,
+  Settings,
+  Tags,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 
@@ -37,7 +45,7 @@ export default function AdminLayout({
       title="Provider Portal"
       nav={[
         { href: "/admin", label: "Customers", icon: Building2, exact: true },
-        // Business Development is ReadyPick's OWN team, not a customer's, and
+        // Business Development is Vivekium's OWN team, not a customer's, and
         // no other screen can create one: every invite path in the product is
         // tenant-scoped and a bd user has no tenant.
         { href: "/admin/bd", label: "Business Development", icon: Briefcase },
@@ -52,6 +60,18 @@ export default function AdminLayout({
         // design; the customer's portal shows a read-only badge and nothing
         // else.
         { href: "/admin/classification", label: "Classification", icon: Tags },
+        // Support (2026-09-10). The queue of customer conversations across
+        // every tenant, which replaced a third-party sync deleted by owner
+        // decision. It belongs in this nav for the same reason Billing does:
+        // the Provider's job here is managing CUSTOMERS, and a customer
+        // waiting on a reply is customer management.
+        { href: "/admin/support", label: "Support", icon: LifeBuoy },
+        // Cost (2026-09-22, change 28D). What running assessments costs the
+        // PLATFORM, per assessment and per client. It belongs on this nav and
+        // on no other: the figures are operational and the per-client
+        // breakdown would show one customer every other customer's spend, so
+        // the backing route sits behind the owner audience like /admin/llm/stats.
+        { href: "/admin/cost", label: "Cost", icon: Coins },
         { href: "/admin/settings", label: "Settings", icon: Settings },
       ]}
     >

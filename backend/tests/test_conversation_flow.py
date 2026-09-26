@@ -23,6 +23,9 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select, text
 
+from app.services import answer_classification, interviewer
+from app.workers import dispatch as dispatch_mod
+
 
 @pytest.fixture(autouse=True)
 def _stub_classifier(monkeypatch):
@@ -174,10 +177,15 @@ async def _seed(factory, fx: _Fx, question_count: int) -> None:
                         ordinal=ordinal, rubric_json={},
                     ))
                 await s.flush()
+                # The first turn is ON SCREEN, as the start leaves it: every
+                # answer names its turn (2026-09-24), and a respond with no
+                # open turn is refused.
                 s.add(AssessmentConversation(
                     id=fx.conv_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
                     job_candidate_link_id=fx.link_id, grade="non_managerial",
                     status="active", next_question_index=0, started_at=now,
+                    invitation_sent_at=now, turn_seq=1, prompt_shown_at=now,
+                    turn_allocation_seconds=180,
                 ))
                 await s.flush()
                 # PROCTORING IS MANDATORY. `respond` refuses a conversation
@@ -225,10 +233,13 @@ _ANSWER = "I rebuilt the ingest pipeline and cut the nightly batch to minutes."
 
 
 async def _respond(mod, fx, s, answer=_ANSWER):
-    from app.schemas.assessments import ConversationMessageIn
+    """Answer the turn on screen, naming it as the client does."""
+    from app.models.assessment import AssessmentConversation
+    from app.schemas.assessment_conversation import ConversationMessageIn
 
+    conversation = await s.get(AssessmentConversation, fx.conv_id)
     return await mod.respond(
-        fx.conv_id, ConversationMessageIn(answer=answer),
+        fx.conv_id, ConversationMessageIn(turn_seq=conversation.turn_seq, answer=answer),
         user=_user(fx), session=s,
     )
 
@@ -237,13 +248,12 @@ async def _respond(mod, fx, s, answer=_ANSWER):
 async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> None:
     """The grouping hinge. A new key here would be silently dropped by every
     scorer, because nothing iterates keys the framework did not define."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
-    from app.services.functional_assessment import answers_by_key
+    from app.services.assessment_pipeline.evidence import answers_by_key
 
     monkeypatch.setattr(mod, "_candidate_link", _link_stub)
-    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -254,7 +264,7 @@ async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> 
         async def _probe(**kwargs):
             return "What broke first when you cut the batch?"
 
-        monkeypatch.setattr(mod.interviewer, "next_follow_up", _probe)
+        monkeypatch.setattr(interviewer, "next_follow_up", _probe)
 
         async with factory() as s:
             async with s.begin():
@@ -295,11 +305,9 @@ async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> 
 async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
     """The billing hinge. The index reaching len(prompts) is what charges the
     customer, so a probe must not push it along."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-
-    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -310,7 +318,7 @@ async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
         async def _probe(**kwargs):
             return "Say more about that?"
 
-        monkeypatch.setattr(mod.interviewer, "next_follow_up", _probe)
+        monkeypatch.setattr(interviewer, "next_follow_up", _probe)
 
         async with factory() as s:
             async with s.begin():
@@ -336,13 +344,9 @@ async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
 async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
     """The completion hinge. A probe outstanding on the LAST base question must
     not let billing and scoring fire while the candidate is still typing."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-
-    dispatched: list[str] = []
-    monkeypatch.setattr(mod, "dispatch",
-                        lambda name, *a, **k: dispatched.append(name))
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -355,18 +359,25 @@ async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
         async def _probe(**kwargs):
             return probes.pop() if probes else None
 
-        monkeypatch.setattr(mod.interviewer, "next_follow_up", _probe)
+        monkeypatch.setattr(interviewer, "next_follow_up", _probe)
 
+        # Two requests, two commits: scoring is dispatched AFTER the commit
+        # that completes the conversation, so what the first commit sent is
+        # the question.
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
                     out = await _respond(mod, fx, s)   # last base question
                     conv = await s.get(AssessmentConversation, fx.conv_id)
                     mid_status = conv.status
-                    mid_dispatched = list(dispatched)
+        mid_dispatched = dispatch_mod.recorded_names()
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
                     await _respond(mod, fx, s)         # answers the probe
-                    await s.refresh(conv)
+                    conv = await s.get(AssessmentConversation, fx.conv_id)
                     final_status = conv.status
+        dispatched = dispatch_mod.recorded_names()
 
         assert mid_status == "active", (
             "the conversation completed while a follow-up was still outstanding"
@@ -386,13 +397,9 @@ async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
 async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
     """The regression guard for every conversation that never gets probed:
     one base question, answered once, completes exactly as it always did."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-
-    dispatched: list[str] = []
-    monkeypatch.setattr(mod, "dispatch",
-                        lambda name, *a, **k: dispatched.append(name))
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -403,7 +410,7 @@ async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
         async def _none(**kwargs):
             return None
 
-        monkeypatch.setattr(mod.interviewer, "next_follow_up", _none)
+        monkeypatch.setattr(interviewer, "next_follow_up", _none)
 
         async with factory() as s:
             async with s.begin():
@@ -414,7 +421,7 @@ async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
         assert conv.status == "completed"
         assert conv.next_question_index == 1
         assert out.prompt is None
-        assert "pickready.run_functional_assessment" in dispatched
+        assert "pickready.run_functional_assessment" in dispatch_mod.recorded_names()
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -427,11 +434,10 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
     monkeypatch,
 ) -> None:
     """A rejected turn must not consume a paid base-question slot."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.services.answer_classification import Classification
 
-    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
     verdicts = iter(
         [
             Classification(
@@ -463,9 +469,9 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
     async def _none(**kwargs):
         return None
 
-    monkeypatch.setattr(mod.answer_classification, "classify", _classify)
-    monkeypatch.setattr(mod.interviewer, "challenge_non_answer", _challenge)
-    monkeypatch.setattr(mod.interviewer, "next_follow_up", _none)
+    monkeypatch.setattr(answer_classification, "classify", _classify)
+    monkeypatch.setattr(interviewer, "challenge_non_answer", _challenge)
+    monkeypatch.setattr(interviewer, "next_follow_up", _none)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -497,12 +503,11 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
 @pytest.mark.asyncio
 async def test_reask_cap_records_evidence_gap_and_moves_on(monkeypatch) -> None:
     """Repeated non-answers are bounded and remain explicit in evidence."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
     from app.services.answer_classification import Classification
 
-    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     async def _invalid(**kwargs):
         return Classification(
@@ -519,8 +524,8 @@ async def test_reask_cap_records_evidence_gap_and_moves_on(monkeypatch) -> None:
             "Please give one specific example."
         )
 
-    monkeypatch.setattr(mod.answer_classification, "classify", _invalid)
-    monkeypatch.setattr(mod.interviewer, "challenge_non_answer", _challenge)
+    monkeypatch.setattr(answer_classification, "classify", _invalid)
+    monkeypatch.setattr(interviewer, "challenge_non_answer", _challenge)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -566,7 +571,7 @@ async def _link_stub(*args, **kwargs):  # replaced per-test by _patch_link
 def _patch_link(monkeypatch, fx: _Fx) -> None:
     """`_candidate_link` resolves the caller's candidate identity, which these
     tests do not exercise: they drive the conversation, not the auth path."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.models import Job
     from app.models.candidate import JobCandidateLink
 
