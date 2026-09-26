@@ -11,16 +11,14 @@ from app.services import functional_assessment as fa
 from app.services import gap_analysis
 from app.services import ppi
 from app.services import rating
+from app.services.assessment_pipeline.evidence import answers_by_key
+from app.services.assessment_pipeline.validation import validation_section
 from app.services.functional_assessment import (
-    _fallback_remark_25,
-    _fallback_remark_45,
-    _unanswered_remark,
-    answers_by_key,
-    assessment_graph,
     build_radar_charts,
     rating_label,
     word_count,
 )
+from app.services.siddhi import remarks as siddhi_remarks
 
 GRADES = ("non_managerial", "managerial", "leadership", "cxo")
 
@@ -177,14 +175,14 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
         "document_readiness": "All documents ready",
         "role_interest": "I want to work on larger distributed systems.",
     }
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=submitted
             ),
-            "session": _CandidateSession(),
-        }
-    )
+        )
+    }
     value = out["validation"]
     assert value["captured"] is True
     for key, expected in submitted.items():
@@ -208,14 +206,14 @@ async def test_validation_node_also_carries_the_full_profile_questionnaire() -> 
             "bgv_consent": "Yes, I consent to a Background Verification check",
         }
     )
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(candidate),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
             ),
-            "session": _CandidateSession(candidate),
-        }
-    )
+        )
+    }
     fields = out["validation"]["fields"]
     # All 38 profile items appear, not just the 6 application ones.
     assert len(fields) == 6 + len(ALL_FIELDS)
@@ -238,14 +236,14 @@ async def test_validation_node_also_carries_the_full_profile_questionnaire() -> 
 async def test_validation_node_survives_a_missing_candidate_row() -> None:
     """A deleted or unlinked candidate must not crash report synthesis; the
     profile section simply renders every item as unanswered."""
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(None),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
             ),
-            "session": _CandidateSession(None),
-        }
-    )
+        )
+    }
     assert out["validation"]["fields"]
 
 
@@ -341,14 +339,14 @@ def test_the_intro_states_the_reuse_behaviour_and_breaks_no_copy_rule() -> None:
 @pytest.mark.asyncio
 async def test_validation_node_is_explicit_when_nothing_was_collected() -> None:
     """Applications submitted before 2026-07-30 predate the mandatory fields."""
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=None
             ),
-            "session": _CandidateSession(),
-        }
-    )
+        )
+    }
     assert out["validation"]["captured"] is False
     assert out["validation"]["current_ctc"] is None
 
@@ -364,21 +362,25 @@ def test_rating_labels_follow_the_four_grade_table() -> None:
 
 
 def test_deterministic_fallbacks_honor_word_contracts() -> None:
+    """Every fixed sentence a report can carry is a COMPLETE 45 to 50 word
+    remark: the template stand-in, the unanswered and the not assessed
+    catalogue sentences, and the withheld Overall (PLAN-p5 WP5-D)."""
     for name in ("Java", "Learning agility", "Enterprise vision & strategy"):
-        assert 25 <= word_count(_fallback_remark_25(name)) <= 30
-        assert 25 <= word_count(_unanswered_remark(name, 25)) <= 30
-        assert 45 <= word_count(_fallback_remark_45(name)) <= 50
-        assert 45 <= word_count(_unanswered_remark(name, 45)) <= 50
+        assert 45 <= word_count(siddhi_remarks.template_remark(name)) <= 50
+        assert 45 <= word_count(siddhi_remarks.unanswered_remark(name).text) <= 50
+    assert 45 <= word_count(siddhi_remarks.not_assessed_remark().text) <= 50
+    assert 45 <= word_count(siddhi_remarks.not_assessed_overall_remark().text) <= 50
 
 
 def test_remarks_end_in_complete_sentences() -> None:
     for value in (
-        _fallback_remark_25("Java"),
-        _unanswered_remark("Java", 25),
-        _fallback_remark_45("Java"),
-        _unanswered_remark("Java", 45),
+        siddhi_remarks.template_remark("Java"),
+        siddhi_remarks.unanswered_remark("Java").text,
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ):
         assert value.rstrip().endswith(".")
+        assert chr(8212) not in value
 
 
 # ── Radar charts (spec §10.4) ────────────────────────────────────────────────
@@ -634,28 +636,37 @@ async def test_the_focus_summary_names_a_real_gap(monkeypatch) -> None:
     assert "SQL" in section["focus_summary"]
 
 
-# ── Graph shape (spec §9) ────────────────────────────────────────────────────
+# ── The orchestrator (PLAN-p5 WP5-D) ───────────────────────────────────────
 
-def test_graph_has_one_scorer_joining_validation_at_synthesis() -> None:
-    """Spec §8 and §19.
+def test_the_graph_is_gone_and_the_orchestrator_calls_the_four_stages() -> None:
+    """The LangGraph whose nodes scored, wrote prose and UPDATEd the report is
+    DELETED. What survives is an orchestrator calling the stage modules in
+    order; the direction itself is `test_assessment_pipeline_direction.py`."""
+    import inspect
 
-    ONE scoring agent, because there is one matrix. `validation_capture` is a
-    node but not a scorer: it copies the application's fields and touches no
-    model. The join edge is what makes "synthesis waits for scoring" a property
-    of the graph rather than a convention.
-    """
-    graph = assessment_graph.get_graph()
-    edges = {(edge.source, edge.target) for edge in graph.edges}
-    assert ("__start__", "ppi_scoring") in edges
-    assert ("__start__", "validation_capture") in edges
-    assert ("ppi_scoring", "report_synthesis") in edges
-    assert ("validation_capture", "report_synthesis") in edges
-    # The retired scorers must not come back. `technical_scoring` was a second
-    # agent for a second question bank that no longer exists, and
-    # `behavioral_scoring` was a third one retired before it.
-    sources = {source for source, _ in edges}
-    assert "technical_scoring" not in sources
-    assert "behavioral_scoring" not in sources
+    assert not hasattr(fa, "assessment_graph")
+    assert not hasattr(fa, "synthesis_node")
+    source = inspect.getsource(fa.run_assessment)
+    order = [
+        source.index("stage_evidence.load_inputs"),
+        source.index("grading.grade"),
+        source.index("composition.compose"),
+        source.index("persistence.write_report"),
+    ]
+    assert order == sorted(order)
+
+
+def test_a_skill_not_assessed_has_no_radar_axis() -> None:
+    """A row with no score is stated "Not assessed"; drawing it would plot a
+    grade nobody made, and at the bottom band it would read Not Matching."""
+    rows = _dimensions() + [
+        {"category": ppi.CATEGORY_MUST_HAVE, "name": "Kafka", "score": None,
+         "required_level": None, "ordinal": 3, "remark": "Not assessed."},
+    ]
+    names = {axis["axis"] for chart in build_radar_charts(rows) for axis in chart["axes"]}
+    assert "Kafka" not in names
+    assert "Python" in names
+
 
 # ── Self-checks retired from module scope (2026-08-24) ──────────────────────
 #
@@ -678,7 +689,6 @@ def test_a_probe_is_shorter_than_an_items_remark() -> None:
 
 
 def test_at_least_one_aspect_is_rubric_scored() -> None:
-    from app.services import ppi_interview  # noqa: PLC0415
 
     assert ppi.RUBRIC_SCORED_CATEGORIES
 
@@ -689,60 +699,16 @@ def test_behavioural_is_never_rubric_scored() -> None:
     assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES
 
 
-# ── The AI Score invents no score (WP5-B) ────────────────────────────────────
+# ── The AI Score is Yukti's frozen snapshot (PLAN-p5 WP5-D) ─────────────────
 
 
-@pytest.mark.parametrize(
-    "raw, expected",
-    [
-        (7, 70),
-        (7.9, 79),
-        ("8", 80),
-        (0, 0),
-        (12, 100),
-        (None, None),
-        (True, None),
-        ("not a number", None),
-        (float("nan"), None),
-        (float("inf"), None),
-    ],
-)
-def test_a_matching_score_is_read_never_defaulted(raw, expected) -> None:
-    assert fa._matching_score(raw) == expected
+def test_the_matching_category_rows_and_their_writer_are_gone() -> None:
+    """The four matching-parameter rows (25 to 30 word remarks, a score read
+    from `match_breakdown_json`) are no longer written: the AI Score section is
+    Yukti's snapshot on `ai_score_json`, and `services/matching_categories`
+    went with its last reader."""
+    import importlib.util
 
-
-@pytest.mark.asyncio
-async def test_an_unscored_matching_parameter_is_omitted_rather_than_read_as_five(
-    monkeypatch, caplog
-) -> None:
-    """A parameter the matching run recorded no score for used to read as five
-    of ten, a Not Matching row written from nothing. It is omitted and logged:
-    the snapshot has no reading for it, which is what happened."""
-    from app.services import matching_categories
-
-    async def _categories(session, job_id):
-        return [
-            ("skills_match", "Skills", "d"),
-            ("experience_relevance", "Experience", "d"),
-        ]
-
-    async def _remark(session, name, evidence, minimum, maximum, *, rating=None):
-        return f"remark for {name}"
-
-    monkeypatch.setattr(matching_categories, "resolved_categories", _categories)
-    monkeypatch.setattr(fa, "bounded_remark", _remark)
-    link = SimpleNamespace(
-        id=uuid.uuid4(),
-        match_breakdown_json={"skills_match": {"score": 8, "comment": "Python, SQL"}},
-    )
-    state = {"session": None, "job": SimpleNamespace(id=uuid.uuid4()), "link": link}
-
-    caplog.set_level("WARNING", logger=fa.__name__)
-    rows = await fa._matching_dimensions(state)
-
-    assert [(row["name"], row["score"]) for row in rows] == [("Skills", 80)]
-    assert any(
-        "ai_score_parameter_unscored" in record.getMessage()
-        and "experience_relevance" in record.getMessage()
-        for record in caplog.records
-    )
+    assert not hasattr(fa, "_matching_dimensions")
+    assert not hasattr(fa, "_matching_score")
+    assert importlib.util.find_spec("app.services.matching_categories") is None

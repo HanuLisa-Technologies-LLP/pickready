@@ -36,7 +36,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from app.services import functional_assessment as fa
+from app.services.assessment_pipeline import composition, grading
 from app.services.assessment_contract import ContractSkill
 from app.services.assessment_pipeline import evidence as answer_evidence
 from app.services.assessment_pipeline.types import AnswerRecord
@@ -48,6 +48,13 @@ _GIBBERISH = "ewidjverip"
 
 
 # ── Harness ──────────────────────────────────────────────────────────────────
+
+
+async def _uncertainty(state: dict):
+    """Stage 2's ledger verdict (`grading.evidence_uncertainty`), fed the same
+    job and link the fixture's state carries."""
+    inputs = SimpleNamespace(job=state["job"], link=state["link"])
+    return await grading.evidence_uncertainty(state["session"], inputs)
 
 
 class _Nested:
@@ -248,7 +255,7 @@ async def test_a_ledger_read_failure_raises_rather_than_passing_as_no_contradict
     grade = await _grade(state, competency, question)
     assert grade.score == 80, "the item grade itself never read the ledger back"
     with pytest.raises(RuntimeError, match="the ledger is unreadable"):
-        await fa._uncertainty_from_evidence(state)
+        await _uncertainty(state)
 
 
 @pytest.mark.asyncio
@@ -261,17 +268,41 @@ async def test_a_locator_read_failure_raises_rather_than_scoring_unanswered(
     read before Miti runs, and a failed read raises: the scoring task fails and
     is retried rather than writing a grade from nothing."""
     recorder = _Recorder().install(monkeypatch)
+    from app.services.coding_assessment import evidence as coding_evidence
 
     async def _explode(session, link_id):
         raise RuntimeError("no locators")
 
+    async def _no_coding(session, conversation_id):
+        return {}
+
+    class _Rows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class _InputsSession:
+        async def execute(self, *_args, **_kwargs):
+            return _Rows()
+
+        async def get(self, *_args, **_kwargs):
+            return None
+
     monkeypatch.setattr(answer_evidence, "answer_records", _explode)
-    state, _competency, _question, _message_id = _fixture()
-    state.pop("answer_refs")
-    state["conversation"] = SimpleNamespace(id=uuid.uuid4())
+    monkeypatch.setattr(coding_evidence, "for_conversation", _no_coding)
+    state, _competency, question, _message_id = _fixture()
 
     with pytest.raises(RuntimeError, match="no locators"):
-        await fa.ppi_scoring_node(state)
+        await answer_evidence.load_inputs(
+            _InputsSession(),
+            job=state["job"],
+            link=state["link"],
+            conversation=SimpleNamespace(id=uuid.uuid4()),
+            questions=[question],
+            grade="non_managerial",
+        )
     assert not recorder.evidence
 
 
@@ -496,7 +527,7 @@ async def test_a_material_contradiction_flags_the_report_and_moves_no_grade(
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
     grade = await _grade(state, competency, _question)
-    review, findings = await fa._uncertainty_from_evidence(state)
+    review, findings = await _uncertainty(state)
 
     assert review is True
     assert findings, "a flagged report must say why"
@@ -521,7 +552,7 @@ async def test_a_flagged_finding_carries_no_report_prose(monkeypatch) -> None:
 
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
-    _review, findings = await fa._uncertainty_from_evidence(state)
+    _review, findings = await _uncertainty(state)
 
     for finding in findings:
         assert set(finding) == {"severity", "issue", "location", "recommendation"}
@@ -564,7 +595,7 @@ async def test_a_minor_disagreement_does_not_flag_a_report(monkeypatch) -> None:
 
     monkeypatch.setattr(ledger, "load_claims", _claims)
 
-    review, findings = await fa._uncertainty_from_evidence(state)
+    review, findings = await _uncertainty(state)
     assert review is False
     assert findings == []
 
@@ -576,7 +607,7 @@ async def test_an_empty_ledger_is_not_a_contradiction(monkeypatch) -> None:
     _Recorder(raising=True).install(monkeypatch)
     state, _competency, _question, _message_id = _fixture()
 
-    review, _findings = await fa._uncertainty_from_evidence(state)
+    review, _findings = await _uncertainty(state)
 
     assert review is False
 
@@ -591,15 +622,15 @@ def test_the_report_row_carries_the_flag_beside_the_gates() -> None:
     engine went live. It is OR'd for the same reason as the other three: an
     average of independent review signals lets one clean answer hide another.
     """
-    source = inspect.getsource(fa.synthesis_node)
+    source = inspect.getsource(composition.compose)
     for term in (
-        "not gate_verdict.passed",
-        "uncertainty_review",
+        "not gate.passed",
+        "or uncertain",
         "aggregate.needs_human_review",
-        "evaluation.unresolved_evidence",
+        "miti.unresolved_evidence",
     ):
         assert term in source, term
-    assert "+ evidence_findings" in source
+    assert "+ list(uncertainty_findings)" in source
     assert "+ miti_findings" in source
 
 
@@ -670,7 +701,7 @@ def test_the_evidence_path_can_reach_no_grading_rule() -> None:
     so neither is in a position to change any of them."""
     for name, source in (
         ("items._record_evidence", inspect.getsource(items._record_evidence)),
-        ("_uncertainty_from_evidence", inspect.getsource(fa._uncertainty_from_evidence)),
+        ("grading.evidence_uncertainty", inspect.getsource(grading.evidence_uncertainty)),
         ("record_answer_evidence", inspect.getsource(answer_evidence)),
     ):
         for rule in (
@@ -693,10 +724,10 @@ def test_the_evidence_package_is_never_imported_at_module_scope() -> None:
     went red, because pytest happened to initialise the other side first.
     `tests/test_import_graph.py` pins the general rule; this pins the specific
     line most likely to break it again."""
-    source = inspect.getsource(fa)
+    source = inspect.getsource(grading)
     for line in source.splitlines():
         if line.startswith(("from app.services.evidence", "import app.services.evidence")):
             raise AssertionError(f"module-scope evidence import: {line}")
-    assert "from app.services.evidence import ledger" in source, (
+    assert "from app.services.evidence import contradictions, ledger" in source, (
         "the function-scoped import went missing"
     )

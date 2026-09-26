@@ -32,7 +32,8 @@ import pytest
 
 from app.config import llm_providers
 from app.services import agent_loop, rating
-from app.services import functional_assessment as fa
+from app.services.assessment_pipeline import composition
+from app.services.assessment_pipeline.types import ProvenanceRecorder
 from app.services.assessment_contract import ContractSkill
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.assessment_formats import types as question_types
@@ -104,7 +105,7 @@ def _question(skill: ContractSkill, *, rubric=_RUBRIC, question_type=None, weigh
     )
 
 
-async def _grade(skill, questions, answers, *, judge, structured=None):
+async def _grade(skill, questions, answers, *, judge, structured=None, coding=None):
     return await items.evaluate_skill(
         None,
         context=_context(),
@@ -113,6 +114,7 @@ async def _grade(skill, questions, answers, *, judge, structured=None):
         answers=answers,
         locators={},
         structured=structured or {},
+        coding=coding,
         invoke=judge,
     )
 
@@ -384,6 +386,88 @@ async def test_a_coding_question_with_no_code_is_unanswered(monkeypatch) -> None
     assert grade.status == grades.ANSWER_UNANSWERED
 
 
+# ── 5b. coding: the sandbox result, 70 / 30, never a reading of the code ────
+
+
+def _coding_evidence(question, *, state, score=None):
+    from app.services.coding_assessment import evidence as coding_evidence
+
+    return coding_evidence.CodingEvidence(
+        answer_id=uuid.uuid4(),
+        question_id=question.id,
+        skill_id=question.competency_id,
+        state=state,
+        language="python",
+        auto_submitted=False,
+        tests_total=10 if score is not None else None,
+        tests_passed=7 if score is not None else None,
+        score=score,
+        phrase="passed seven of ten hidden tests" if score is not None else "",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_complete_coding_result_is_graded_from_the_sandbox_and_calls_no_model() -> None:
+    from app.services.coding_assessment import evidence as coding_evidence
+
+    skill = _skill()
+    question = _question(skill, question_type=question_types.CODING)
+    judge = _Judge()
+    record = SimpleNamespace(auto_score=None, answer_json={"code": "print(1)"})
+    grade = await _grade(
+        skill, [question], {}, judge=judge,
+        structured={str(question.id): record},
+        coding={str(question.id): _coding_evidence(question, state=coding_evidence.STATE_COMPLETE, score=67)},
+    )
+    assert judge.calls == []
+    assert (grade.status, grade.score) == (grades.ANSWER_GRADED, 67)
+    assert grade.items[0].method == grades.METHOD_CODING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["pending", "unavailable"])
+async def test_an_unfinished_coding_result_is_not_assessed_never_a_score(state) -> None:
+    skill = _skill()
+    question = _question(skill, question_type=question_types.CODING)
+    grade = await _grade(
+        skill, [question], {}, judge=_Judge(),
+        structured={str(question.id): SimpleNamespace(auto_score=None, answer_json={"code": "x = 1"})},
+        coding={str(question.id): _coding_evidence(question, state=state)},
+    )
+    assert grade.status == grades.ANSWER_NOT_ASSESSED
+    assert grade.items[0].failure == f"coding_{state}"
+
+
+@pytest.mark.asyncio
+async def test_code_the_sandbox_never_saw_is_not_assessed_rather_than_read() -> None:
+    """The reading-the-code evaluation is gone: code with no submission row
+    has no hidden-test result, so it is not assessed and no model reads it."""
+    skill = _skill()
+    question = _question(skill, question_type=question_types.CODING)
+    judge = _Judge()
+    grade = await _grade(
+        skill, [question], {}, judge=judge,
+        structured={str(question.id): SimpleNamespace(auto_score=None, answer_json={"code": "x = 1"})},
+    )
+    assert judge.calls == []
+    assert grade.status == grades.ANSWER_NOT_ASSESSED
+    assert grade.items[0].failure == items.FAILURE_CODING_NOT_EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_an_empty_coding_submission_is_unanswered() -> None:
+    from app.services.coding_assessment import evidence as coding_evidence
+
+    skill = _skill()
+    question = _question(skill, question_type=question_types.CODING)
+    grade = await _grade(
+        skill, [question], {}, judge=_Judge(),
+        structured={str(question.id): SimpleNamespace(auto_score=None, answer_json={"code": ""})},
+        coding={str(question.id): _coding_evidence(question, state=coding_evidence.STATE_NOT_ANSWERED)},
+    )
+    assert grade.status == grades.ANSWER_UNANSWERED
+
+
 # ── The skill set and parsing ────────────────────────────────────────────────
 
 
@@ -412,53 +496,18 @@ def test_parse_score_accepts_only_a_usable_score(raw, expected) -> None:
     assert items.parse_score(raw) == expected
 
 
-# ── 6. the scoring node refuses an incomplete run ────────────────────────────
-
-
-class _Session:
-    async def get(self, model, ident):
-        return None
-
-
-def _state(conversation=True):
-    job = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Engineer")
-    link = SimpleNamespace(id=uuid.uuid4(), candidate_id=uuid.uuid4())
-    state = {
-        "session": _Session(), "job": job, "link": link, "candidate_questions": [],
-        "answers": {}, "answer_refs": {}, "structured_answers": {}, "transcript": [],
-    }
-    if conversation:
-        state["conversation"] = SimpleNamespace(id=uuid.uuid4())
-    return state
+# ── 6. the report rows are Miti's grades, in contract order (WP5-D) ─────────
 
 
 @pytest.mark.asyncio
-async def test_the_scoring_node_writes_no_remark_when_a_skill_was_not_assessed(monkeypatch) -> None:
-    remarks: list[str] = []
+async def test_the_report_rows_lay_out_miti_grades_in_contract_order(monkeypatch) -> None:
+    """Composition states Miti's grades and writes prose; it decides nothing.
+    A graded skill gets a model remark, an unanswered one the catalogue
+    sentence, and neither costs a second judgement."""
+    from app.services.siddhi import remarks
 
-    async def _remark(*args, **kwargs):
-        remarks.append(args[1])
-        return "remark"
-
-    async def _evaluate(session, **kwargs):
-        return miti_live.MitiResult(
-            contract=mf.contract(),
-            skills=(mf.skill("Kafka", score=None), mf.skill("Ownership", "behavioural", 80)),
-        )
-
-    monkeypatch.setattr(fa, "bounded_remark", _remark)
-    monkeypatch.setattr(miti_live, "evaluate_application", _evaluate)
-
-    with pytest.raises(fa.SkillsNotAssessed) as raised:
-        await fa.ppi_scoring_node(_state())
-    assert remarks == []
-    assert "Kafka" not in str(raised.value), "skill names are job content"
-
-
-@pytest.mark.asyncio
-async def test_the_scoring_node_lays_out_miti_grades_in_contract_order(monkeypatch) -> None:
-    async def _remark(session, name, evidence, minimum, maximum, *, rating=None):
-        return f"remark for {name} at {rating}"
+    async def _remark(session, name, evidence, minimum=45, maximum=50, *, rating=None, provenance):
+        return remarks.Remark(text=f"remark for {name} at {rating}", source=remarks.SOURCE_MODEL)
 
     skills = (
         mf.skill("Kafka", "must_have", 92),
@@ -469,78 +518,45 @@ async def test_the_scoring_node_lays_out_miti_grades_in_contract_order(monkeypat
         dataclasses.replace(skill, used_answers=() if skill.status == "unanswered" else (_ANSWER,))
         for skill in skills
     )
+    monkeypatch.setattr(remarks, "bounded_remark", _remark)
+    result = miti_live.MitiResult(contract=mf.contract(), skills=skills)
 
-    async def _evaluate(session, **kwargs):
-        return miti_live.MitiResult(contract=mf.contract(), skills=skills)
+    rows = await composition.skill_rows(None, result, provenance=ProvenanceRecorder())
 
-    async def _no_claims(session, **kwargs):
-        return []
-
-    from app.services.evidence import ledger
-
-    monkeypatch.setattr(ledger, "load_claims", _no_claims)
-    monkeypatch.setattr(fa, "bounded_remark", _remark)
-    monkeypatch.setattr(miti_live, "evaluate_application", _evaluate)
-
-    out = await fa.ppi_scoring_node(_state())
-
-    assert [(row["name"], row["category"], row["score"]) for row in out["ppi"]] == [
+    assert [(row["name"], row["category"], row["score"]) for row in rows] == [
         ("Kafka", "must_have", 92), ("Go", "nice_to_have", 25), ("Ownership", "behavioural", 70),
     ]
-    assert out["ppi"][0]["remark"] == f"remark for Kafka at {rating.GRADE_HIGHLY}"
-    assert "No substantive answer" in out["ppi"][1]["remark"]
-    assert all(row["required_level"] is None for row in out["ppi"])
-    assert out["ppi_mode"] == fa.MODE_MITI
-    assert out["miti"].skills == skills
-    # The report-side helpers read the LOCKED contract's skills, never live rows.
-    assert [skill.name for skill in out["competencies"]] == ["Kafka", "Ownership"]
+    assert rows[0]["remark"] == f"remark for Kafka at {rating.GRADE_HIGHLY}"
+    assert rows[0]["remark_provenance"] == remarks.SOURCE_MODEL
+    assert "No substantive answer" in rows[1]["remark"]
+    assert rows[1]["remark_provenance"] == remarks.SOURCE_CATALOGUE
+    assert all(row["required_level"] is None for row in rows)
+    assert [row["assessment_status"] for row in rows] == ["graded", "unanswered", "graded"]
 
 
 @pytest.mark.asyncio
-async def test_the_scoring_node_refuses_without_a_conversation() -> None:
-    with pytest.raises(miti_live.ScorecardUnavailable):
-        await fa.ppi_scoring_node(_state(conversation=False))
-
-
-@pytest.mark.asyncio
-async def test_synthesis_refuses_a_withheld_overall_before_paying_for_any_remark(
-    monkeypatch,
-) -> None:
-    """The report states `stated_score` and nothing else. A withheld overall
-    (a Must-have Miti could not assess) has NO number to state; writing the
-    working `delivered_score` beside it would state a judgement nobody made.
-    Until WP5-D writes a final "Not assessed" report this is a refusal, and it
-    comes before the AI Score section or a single remark is paid for."""
-    from app.services.miti import aggregation, pipeline
+async def test_a_not_assessed_skill_is_stated_with_no_score_and_no_model_call(monkeypatch) -> None:
+    """The final attempt's report (P5-D4): a skill nobody could grade carries
+    NO score, the catalogue sentence, and pays for no remark."""
+    from app.services.siddhi import remarks
 
     paid: list[str] = []
 
     async def _remark(*args, **kwargs):
-        paid.append("remark")
-        return "remark"
+        paid.append(args[1])
+        return remarks.Remark(text="remark", source=remarks.SOURCE_MODEL)
 
-    async def _matching(state):
-        paid.append("ai_score")
-        return []
-
-    monkeypatch.setattr(fa, "bounded_remark", _remark)
-    monkeypatch.setattr(fa, "_matching_dimensions", _matching)
-
-    withheld = aggregation.Aggregate()
-    withheld.delivered_score = 88.0
-    withheld.overall_status = aggregation.OVERALL_NOT_ASSESSED
-    assert withheld.stated_score is None
+    monkeypatch.setattr(remarks, "bounded_remark", _remark)
     result = miti_live.MitiResult(
-        contract=mf.contract(),
-        skills=(mf.skill("Kafka", score=None), mf.skill("Ownership", "behavioural", 80)),
-        outcome=pipeline.EvaluationOutcome(aggregate=withheld),
+        contract=mf.contract(), skills=(mf.skill("Kafka", score=None),)
     )
-    state = _state()
-    state.update({"miti": result, "ppi": [], "validation": {}, "grade": "managerial"})
 
-    with pytest.raises(fa.SkillsNotAssessed):
-        await fa.synthesis_node(state)
-    assert paid == [], "nothing is paid for before the refusal"
+    rows = await composition.skill_rows(None, result, provenance=ProvenanceRecorder())
+
+    assert paid == []
+    assert rows[0]["score"] is None and rows[0]["grade"] is None
+    assert rows[0]["assessment_status"] == grades.ANSWER_NOT_ASSESSED
+    assert rows[0]["remark"] == remarks.NOT_ASSESSED_REMARK
 
 
 def test_the_skill_grade_statuses_tie_a_score_to_an_assessment() -> None:

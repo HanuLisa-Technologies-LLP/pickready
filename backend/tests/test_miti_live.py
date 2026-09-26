@@ -330,27 +330,30 @@ def test_the_live_module_has_no_default_matrix_anywhere_in_it() -> None:
 
 
 def test_scoring_calls_miti_once_and_does_not_catch_the_gate(monkeypatch) -> None:
-    """THE LIVE ENTRY POINT. `functional_assessment.ppi_scoring_node` is the only
-    caller, synthesis reads its result rather than running Miti a second time,
-    and neither may swallow G1: catching the refusal and scoring against the
-    job's live skills would be a second implementation of the criteria chosen
-    at runtime, which is the dual path the anti-slop rules forbid."""
+    """THE LIVE ENTRY POINT. `assessment_pipeline.grading.grade` is the only
+    caller (PLAN-p5 WP5-D), the orchestrator calls it once and composition
+    reads its result rather than running Miti a second time, and none of them
+    may swallow G1: catching the refusal and scoring against the job's live
+    skills would be a second implementation of the criteria chosen at
+    runtime, which is the dual path the anti-slop rules forbid."""
     import ast
 
-    assert "miti_live.evaluate_application" in inspect.getsource(fa.ppi_scoring_node)
-    assert "evaluate_application" not in inspect.getsource(fa.synthesis_node)
-    source = inspect.getsource(fa.ppi_scoring_node)
+    from app.services.assessment_pipeline import composition, grading
 
-    # Read the AST rather than the prose: the comment above the call explains
-    # WHY the refusal is allowed to propagate, and a substring scan would
-    # report the explanation as the violation.
-    tree = ast.parse(source.lstrip())
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler):
-            continue
-        caught = ast.dump(node.type) if node.type else "bare except"
-        assert "ScorecardUnavailable" not in caught, caught
-        assert node.type is not None, "a bare except would swallow gate G1"
+    assert "miti_live.evaluate_application" in inspect.getsource(grading.grade)
+    assert "evaluate_application" not in inspect.getsource(composition)
+    assert inspect.getsource(fa.run_assessment).count("grading.grade(") == 1
+
+    # Read the AST rather than the prose: a comment explaining WHY the refusal
+    # propagates must not read as the violation.
+    for function in (grading.grade, fa.run_assessment):
+        tree = ast.parse(inspect.getsource(function).lstrip())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            caught = ast.dump(node.type) if node.type else "bare except"
+            assert "ScorecardUnavailable" not in caught, caught
+            assert node.type is not None, "a bare except would swallow gate G1"
 
 
 # -- 2. ISOLATION SURVIVES THE WIRING ---------------------------------------

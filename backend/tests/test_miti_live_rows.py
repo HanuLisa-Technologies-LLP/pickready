@@ -36,7 +36,7 @@ from sqlalchemy import text
 
 from app.core.db import superadmin_scope
 from app.services import agent_loop, rating
-from app.services import functional_assessment as fa
+
 from app.services import ppi_interview
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.assessment_pipeline import evidence as answer_evidence
@@ -155,7 +155,7 @@ async def _grade(factory, w, *, judge, evaluators):
             questions = await ppi_interview.load_for_link(session, link_id)
             locators = await answer_evidence.answer_records(session, link_id)
             answers = {key: [record.text for record in records] for key, records in locators.items()}
-            structured = await fa._structured_answers(session, link)
+            structured = await answer_evidence.structured_answers(session, link.id)
             result = await live.evaluate_application(
                 session,
                 job=SimpleNamespace(id=w.job, tenant_id=w.tenant, title="Data Engineer"),

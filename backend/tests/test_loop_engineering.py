@@ -15,12 +15,16 @@ import json
 import pytest
 
 from app.services import agent_loop
-from app.services import functional_assessment as fa
+from app.services.assessment_pipeline.types import ProvenanceRecorder
+from app.services.siddhi import remarks as fa
 from app.services import gap_analysis
 from app.services import interviewer
 
 
 # ── bounded_remark: the string a client actually reads ───────────────────────
+#
+# The writer moved to `siddhi.remarks` with the grading split (WP5-D); these
+# pin the same loop there. `fa` is that module, kept as a short name.
 
 
 @pytest.mark.asyncio
@@ -34,7 +38,7 @@ async def test_a_remark_outside_the_word_contract_is_regenerated(monkeypatch) ->
         return "query " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "they tuned the query plan", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "they tuned the query plan", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert 25 <= fa.word_count(out) <= 30
     assert len(calls) == 2
@@ -55,7 +59,7 @@ async def test_corrections_do_not_accumulate_into_one_prompt(monkeypatch) -> Non
         return "short"
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     # Every correction is a self-contained turn naming exactly one word count.
     for text in corrections:
@@ -76,11 +80,11 @@ async def test_one_transient_failure_no_longer_abandons_the_remark(monkeypatch) 
         return "evidence " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert calls["n"] == 2
     assert out == "evidence " + " ".join(["word"] * 26)
-    assert out != fa._fallback_remark_25("PostgreSQL")
+    assert out != fa.template_remark("PostgreSQL")
 
 
 @pytest.mark.asyncio
@@ -106,7 +110,7 @@ async def test_a_remark_that_states_a_score_is_rejected(monkeypatch) -> None:
         return clean
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert len(attempts) == 2
     assert out == clean
@@ -119,7 +123,7 @@ async def test_a_total_outage_still_returns_the_canned_remark(monkeypatch) -> No
         raise RuntimeError("every provider down")
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
-    out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 45, 50)
+    out = (await fa.bounded_remark(None, "PostgreSQL", "evidence", 45, 50, rating=None, provenance=ProvenanceRecorder())).text
     assert 45 <= fa.word_count(out) <= 50
     assert agent_loop.banned_phrase_gate(
         out, fa.REPORT_BANNED_PHRASES
@@ -140,13 +144,12 @@ async def test_report_remark_revises_a_banned_template_phrase(monkeypatch) -> No
         return rejected if len(attempts) == 1 else accepted
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    out = await fa.bounded_remark(
+    out = (await fa.bounded_remark(
         None,
         "PostgreSQL",
         "The candidate explained PostgreSQL query planning.",
         25,
-        30,
-    )
+        30, rating=None, provenance=ProvenanceRecorder())).text
 
     assert out == accepted
     assert len(attempts) == 2
