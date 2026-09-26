@@ -56,6 +56,22 @@ def test_miti_is_handed_the_transcript_reader_by_the_grading_stage() -> None:
     assert isinstance(passages.value, ast.Name) and passages.value.id == "evidence_retrieval"
 
 
+def test_the_transcript_is_indexed_before_miti_reads_passages_from_it() -> None:
+    """PLAN-p5 3.6. Completion dispatches `pickready.index_document` and
+    scoring from the same commit, so the two race; without the inline pass
+    Miti's passage read finds an empty index and reads as a transcript with
+    nothing related in it, recorded nowhere."""
+    import inspect
+
+    from app.services import functional_assessment as fa
+
+    source = inspect.getsource(fa.run_assessment)
+    assert "stage_evidence.ensure_transcript_indexed(" in source
+    assert source.index("stage_evidence.ensure_transcript_indexed(") < source.index(
+        "grading.grade("
+    )
+
+
 def test_siddhi_is_handed_the_support_reader_by_the_composition_stage() -> None:
     tree = _tree("services/assessment_pipeline/composition.py")
     assert _attribute_uses(tree, "evidence_retrieval", "support_passages_for_statement")

@@ -517,7 +517,10 @@ async def compose(
     )
     return ComposedReport(
         fields={
-            "grade": inputs.grade,
+            # The grade LOCKED on the contract Miti graded against (D5), never
+            # the job's live column: a grade edited after the invitation must
+            # not relabel the report of somebody assessed before it.
+            "grade": miti.contract.grade,
             "overall_summary": overall,
             "overall_score": overall_score,
             "overall_status": aggregate.overall_status,

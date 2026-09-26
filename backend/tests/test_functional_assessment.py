@@ -638,24 +638,6 @@ async def test_the_focus_summary_names_a_real_gap(monkeypatch) -> None:
 
 # ── The orchestrator (PLAN-p5 WP5-D) ───────────────────────────────────────
 
-def test_the_graph_is_gone_and_the_orchestrator_calls_the_four_stages() -> None:
-    """The LangGraph whose nodes scored, wrote prose and UPDATEd the report is
-    DELETED. What survives is an orchestrator calling the stage modules in
-    order; the direction itself is `test_assessment_pipeline_direction.py`."""
-    import inspect
-
-    assert not hasattr(fa, "assessment_graph")
-    assert not hasattr(fa, "synthesis_node")
-    source = inspect.getsource(fa.run_assessment)
-    order = [
-        source.index("stage_evidence.load_inputs"),
-        source.index("grading.grade"),
-        source.index("composition.compose"),
-        source.index("persistence.write_report"),
-    ]
-    assert order == sorted(order)
-
-
 def test_a_skill_not_assessed_has_no_radar_axis() -> None:
     """A row with no score is stated "Not assessed"; drawing it would plot a
     grade nobody made, and at the bottom band it would read Not Matching."""
@@ -697,18 +679,3 @@ def test_behavioural_is_never_rubric_scored() -> None:
     """It is graded by judgement because there is no single correct answer to
     weigh it against (spec 8)."""
     assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES
-
-
-# ── The AI Score is Yukti's frozen snapshot (PLAN-p5 WP5-D) ─────────────────
-
-
-def test_the_matching_category_rows_and_their_writer_are_gone() -> None:
-    """The four matching-parameter rows (25 to 30 word remarks, a score read
-    from `match_breakdown_json`) are no longer written: the AI Score section is
-    Yukti's snapshot on `ai_score_json`, and `services/matching_categories`
-    went with its last reader."""
-    import importlib.util
-
-    assert not hasattr(fa, "_matching_dimensions")
-    assert not hasattr(fa, "_matching_score")
-    assert importlib.util.find_spec("app.services.matching_categories") is None

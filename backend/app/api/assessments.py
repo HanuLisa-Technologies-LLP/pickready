@@ -68,6 +68,11 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
+from app.services.siddhi.synthesis import NOT_ASSESSED_WORD
+
+#: `report_dimensions.assessment_status` / `functional_skills_reports.
+#: overall_status` for a skill or an overall Miti could not assess (0130).
+NOT_ASSESSED_STATUS = "not_assessed"
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +146,13 @@ async def get_report(
         return DimensionOut(
             name=row.name,
             description=row.description,
-            grade=rating_label(row.score) or GRADES[-1],
+            # A skill Miti could not assess (0130) carries NO score and says
+            # so in words; projecting its missing score would read Not Matching.
+            grade=(
+                NOT_ASSESSED_WORD
+                if row.assessment_status == NOT_ASSESSED_STATUS
+                else rating_label(row.score) or GRADES[-1]
+            ),
             required_level=grade_for_percent(row.required_level),
             remark=row.remark,
             # EVIDENCE CONFIDENCE (0107). The stored code becomes a word HERE,
@@ -177,9 +188,13 @@ async def get_report(
     )
 
     overall = report.overall_score
-    if overall is None:
+    if overall is None and report.overall_status != NOT_ASSESSED_STATUS:
         # Written before migration 0030. Recompute rather than showing nothing.
-        assessed = [row.score for row in rows if row.category != CATEGORY_MATCHING]
+        assessed = [
+            row.score
+            for row in rows
+            if row.category != CATEGORY_MATCHING and row.score is not None
+        ]
         overall = round(sum(assessed) / len(assessed)) if assessed else 0
 
     # The Proctoring Report, appended as the final, informational section.
@@ -205,7 +220,13 @@ async def get_report(
         ),
         grade=report.grade,
         ai_score=grouped.get(CATEGORY_MATCHING, []),
-        overall_grade=grade_for_percent(overall) or GRADES[-1],
+        # Miti withheld the overall (a Must-have not assessed on the final
+        # attempt, 0130): stated in words, never recomputed from the rows.
+        overall_grade=(
+            NOT_ASSESSED_WORD
+            if report.overall_status == NOT_ASSESSED_STATUS
+            else grade_for_percent(overall) or GRADES[-1]
+        ),
         overall_summary=report.overall_summary,
         must_have=grouped.get(ppi.CATEGORY_MUST_HAVE, []),
         nice_to_have=grouped.get(ppi.CATEGORY_NICE_TO_HAVE, []),
