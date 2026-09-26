@@ -589,7 +589,7 @@ export default function BillingPage() {
               title="Purchase Vivekium Intelligence Report Credits"
               description={
                 canManage
-                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits never expire, and volume packs add bonus credits free.`
+                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`
                   : `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Ask your Company Admin to buy credits.`
               }
             >

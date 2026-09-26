@@ -997,6 +997,9 @@ export interface CreditSummary {
   average_credits_per_assessment?: number;
   alert_message: string | null;
   unlimited: boolean;
+  /** How long a NEW grant stays spendable. Credits granted before expiry
+   *  was introduced carry no expiry at all (change request 25). */
+  credit_validity_months: number;
 }
 
 export interface CreditLedgerEntry {

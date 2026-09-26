@@ -21,8 +21,10 @@ import { cn } from "@/lib/utils";
  * per credit, purchased in packs, consumed per completed Vivekium
  * Intelligence Report - 1.0 credit for a Non-STEM role, 1.5 for a STEM role,
  * classified by the platform. No monthly subscription exists, no annual plan
- * exists, and credits never expire (Rule 4 is a stated promise, so the page
- * states it).
+ * exists. Credits bought now stay valid for three months from purchase
+ * (change request 25, new grants only); credits granted before expiry was
+ * introduced keep the never-expire promise their invoices printed, and the
+ * page states both so neither reads as a promise the product breaks.
  *
  * The figures here are the DIRECTIVE'S OWN fixed numbers, written as
  * constants: Part 5 fixes the price per credit, the pack sizes and the bonus
@@ -85,7 +87,7 @@ const MODEL_COPY = [
     body: [
       "One credit costs Rs. 600, plus 18% GST. A completed Vivekium Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
       "A candidate who starts an assessment and never finishes consumes a third of the role's rate. A candidate who never opens the invitation consumes a fifteenth of a credit. Reviewing a profile carried over from an earlier posting uses a twentieth.",
-      "Credits never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and whatever you do not use waits for the next role.",
+      "Credits you buy stay valid for three months from purchase, and credits granted before expiry was introduced never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and use them on any role while they are valid.",
     ],
   },
   {
