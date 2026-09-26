@@ -255,6 +255,24 @@ def not_assessed_remark() -> Remark:
     return Remark(text=NOT_ASSESSED_REMARK, source=SOURCE_CATALOGUE)
 
 
+#: The Overall Remark when Miti withheld the overall because a Must-have skill
+#: was still not assessed on the final attempt (PLAN-p5 P5-D4). 45 to 50 words,
+#: no model call: a model asked to summarise a candidate whose essential skill
+#: nobody could grade would write a judgement nobody made.
+NOT_ASSESSED_OVERALL_REMARK = (
+    "The overall suitability could not be stated because at least one "
+    "Must-have skill could not be evaluated after repeated attempts. No "
+    "overall grade is given, and nothing should be inferred from its absence. "
+    "A person should read the candidate's answers for the skills marked not "
+    "assessed before deciding."
+)
+
+
+def not_assessed_overall_remark() -> Remark:
+    """The catalogue Overall Remark for a withheld overall."""
+    return Remark(text=NOT_ASSESSED_OVERALL_REMARK, source=SOURCE_CATALOGUE)
+
+
 # ── The invented-term guard ──────────────────────────────────────────────────
 
 #: Capitalised words that are ordinary English rather than a named technology,

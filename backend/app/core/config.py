@@ -71,7 +71,7 @@ def _parse_pairs(raw: str, setting: str) -> list[tuple[str, str]]:
 
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -665,6 +665,18 @@ class Settings(BaseSettings):
     #: 0.55 over voyage-4 document vectors; reversible here without a deploy of
     #: new code.
     siddhi_support_similarity_min: float = 0.55
+
+    # ── Miti's bounded retry of a not-assessed run (PLAN-p5 P5-D4, WP5-D) ────
+    #: A scoring run in which some skill could not be assessed (a model
+    #: failure on every substantive answer, a coding result the sandbox never
+    #: produced) writes NO report on attempts before this one: the hourly
+    #: `pickready.release_held_assessments` sweep re-dispatches it. On this
+    #: attempt the report IS written, those skills stated "Not assessed", the
+    #: report routed to a person, and `miti.not_assessed_final_report` logged
+    #: at ERROR for the CloudWatch alarm. A report is permanent, so a
+    #: two-minute outage must not become a permanent "Not assessed"; the bound
+    #: stops a permanent state re-paying the other skills' evaluations forever.
+    miti_not_assessed_attempts: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def _siddhi_support_similarity_in_range(self) -> "Settings":

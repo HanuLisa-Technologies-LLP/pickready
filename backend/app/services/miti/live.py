@@ -155,7 +155,7 @@ class MitiResult:
             for item in grade.items:
                 prompt = items.MODEL_PROMPT_FOR_METHOD.get(item.method)
                 if prompt is not None and item.status == ANSWER_GRADED:
-                    calls.add((items.EVALUATION_TASK, prompt))
+                    calls.add((items.MODEL_TASK_FOR_METHOD[item.method], prompt))
         if self.outcome is not None and any(
             not result.insufficient_evidence for result in self.outcome.results
         ):
@@ -359,6 +359,7 @@ async def evaluate_application(
     answers: Mapping[str, Sequence[str]],
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
+    coding: Mapping[str, Any] | None = None,
     subject_names: Sequence[str] = (),
     allow_incomplete: bool = False,
     invoke: Any = None,
@@ -371,6 +372,11 @@ async def evaluate_application(
     the rubric written with it), `answers` the transcript grouped by question
     key, `locators` where each answer lives, and `structured` the
     `assessment_answers` rows keyed by question id.
+
+    `coding` is `{question id: CodingEvidence}` from Phase 4's one evidence
+    helper (`coding_assessment.evidence.for_conversation`): the hidden-test
+    result and the quality review, already combined 70 / 30. A coding answer
+    with code and no entry here is not assessed, never read and guessed at.
 
     `passages` is the Evidence RAG reader the item stage shows a Must-have or
     Behavioural judgement related passages through
@@ -399,6 +405,7 @@ async def evaluate_application(
         answers=answers,
         locators=locators,
         structured=structured,
+        coding=coding,
         invoke=item_invoke or _item_invoke,
         passages=passages,
     )

@@ -15,9 +15,11 @@ THE FORMAT DECIDES WHERE A SCORE COMES FROM
 --------------------------------------------
     mcq, fill-in-the-blank   `assessment_answers.auto_score`, written at
                              submission, deterministic. No row = unanswered.
-    coding                   the coding evaluation (read, not executed).
-                             No code = unanswered; evaluation failed = not
-                             assessed.
+    coding                   Phase 4's sandbox result: hidden tests and the
+                             code-quality review, 70 / 30
+                             (`coding_assessment.evidence`). No code =
+                             unanswered; pending, unavailable or never
+                             executed = not assessed. Miti calls no model.
     evidence-based prose     the evaluation with reasoning, against the rubric
                              written with the question; failed = not assessed.
     other prose              the STORED rubric (`candidate_questions.
@@ -76,6 +78,7 @@ from app.services.assessment_contract import (
     ContractSkill,
 )
 from app.services.assessment_formats import types as question_types
+from app.services.coding_assessment import evidence as coding_states
 from app.services.miti.grades import (
     ANSWER_GRADED,
     ANSWER_NOT_ASSESSED,
@@ -103,6 +106,8 @@ __all__ = [
     "FAILURE_NO_QUESTION",
     "ItemContext",
     "MODEL_PROMPT_FOR_METHOD",
+    "MODEL_TASK_FOR_METHOD",
+    "FAILURE_CODING_NOT_EXECUTED",
     "PassageReader",
     "RETRIEVED_BUCKETS",
     "SCORING_PROMPT",
@@ -166,8 +171,30 @@ MODEL_PROMPT_FOR_METHOD: dict[str, str] = {
     METHOD_GENERAL_STANDARD: SCORING_PROMPT,
     METHOD_BEHAVIOURAL_STANDARD: SCORING_PROMPT,
     METHOD_EVIDENCE: "assessment_answer_evaluation_evidence",
-    METHOD_CODING: "assessment_answer_evaluation_coding",
+    # A coding item's model call is the code-quality review Phase 4 wrote at
+    # submission (the 30 part of the 70/30 score); Miti reads its result and
+    # makes no call of its own for the item.
+    METHOD_CODING: "coding_quality_review",
 }
+
+#: The task type each model-backed method ran under, beside its prompt, so
+#: the report's provenance names the model that actually wrote the judgement.
+MODEL_TASK_FOR_METHOD: dict[str, str] = {
+    METHOD_RUBRIC: EVALUATION_TASK,
+    METHOD_GENERAL_STANDARD: EVALUATION_TASK,
+    METHOD_BEHAVIOURAL_STANDARD: EVALUATION_TASK,
+    METHOD_EVIDENCE: EVALUATION_TASK,
+    METHOD_CODING: "coding_quality_review",
+}
+
+#: `failure` words for a coding answer whose sandbox result cannot grade it.
+#: `coding_pending` and `coding_unavailable` are Phase 4's evidence states: a
+#: run still open when scoring was forced to proceed, and one that outlived
+#: `coding_execution_max_wait_hours`. `coding_not_executed` is a final coding
+#: answer with code and no submission row at all: it was never handed to the
+#: sandbox, so there is no hidden-test result to grade, and reading the code
+#: instead would grade a different thing than the one this release promises.
+FAILURE_CODING_NOT_EXECUTED = "coding_not_executed"
 
 Invoke = Callable[..., Awaitable[str]]
 
@@ -555,6 +582,7 @@ async def _rubric_scored(
     structured: Mapping[str, Any],
     invoke: Invoke,
     passages: PassageReader | None = None,
+    coding: Mapping[str, Any] | None = None,
 ) -> SkillGrade:
     """Must-have and Nice-to-have: each answer against ITS OWN question's rubric.
 
@@ -593,20 +621,34 @@ async def _rubric_scored(
             continue
 
         if question_type == question_types.CODING:
+            # THE SANDBOX RESULT, NEVER A READING OF THE CODE (CONTRACT v2 P4).
+            # Phase 4's evidence carries the hidden-test outcome and the
+            # code-quality review already combined 70 / 30; Miti grades from
+            # it and calls no model of its own for the item.
+            evidence = (coding or {}).get(key)
             code = str((record.answer_json or {}).get("code") or "") if record is not None else ""
-            if not code.strip():
+            if evidence is None:
+                if not code.strip():
+                    items.append(ItemEvaluation(question.id, ANSWER_UNANSWERED, UNANSWERED_SCORE, weight, METHOD_UNANSWERED))
+                    continue
+                _log_not_assessed(context, skill, question.id, FAILURE_CODING_NOT_EXECUTED)
+                items.append(
+                    ItemEvaluation(
+                        question.id, ANSWER_NOT_ASSESSED, None, weight, METHOD_CODING, FAILURE_CODING_NOT_EXECUTED
+                    )
+                )
+                continue
+            if evidence.state == coding_states.STATE_NOT_ANSWERED:
                 items.append(ItemEvaluation(question.id, ANSWER_UNANSWERED, UNANSWERED_SCORE, weight, METHOD_UNANSWERED))
                 continue
-            used.append(answer or code)
+            used.append(answer or evidence.phrase or code)
             await _record_evidence(session, context, skill, question, locators.get(key, ()))
-            score, failure = await _format_evaluation(
-                session, skill=skill, question=question, answer=answer or code, record=record
-            )
-            if score is None:
-                _log_not_assessed(context, skill, question.id, failure or FAILURE_EVALUATION_DEGRADED)
-                items.append(ItemEvaluation(question.id, ANSWER_NOT_ASSESSED, None, weight, METHOD_CODING, failure))
+            if evidence.state == coding_states.STATE_COMPLETE and evidence.score is not None:
+                items.append(ItemEvaluation(question.id, ANSWER_GRADED, int(evidence.score), weight, METHOD_CODING))
             else:
-                items.append(ItemEvaluation(question.id, ANSWER_GRADED, score, weight, METHOD_CODING))
+                failure = f"coding_{evidence.state}"
+                _log_not_assessed(context, skill, question.id, failure)
+                items.append(ItemEvaluation(question.id, ANSWER_NOT_ASSESSED, None, weight, METHOD_CODING, failure))
             continue
 
         # Prose. A non-answer never reaches a scoring prompt: empty, gibberish
@@ -739,6 +781,7 @@ async def evaluate_skill(
     structured: Mapping[str, Any],
     invoke: Invoke,
     passages: PassageReader | None = None,
+    coding: Mapping[str, Any] | None = None,
 ) -> SkillGrade:
     """Grade ONE contract skill from the questions the candidate was asked on it.
 
@@ -778,6 +821,7 @@ async def evaluate_skill(
         structured=structured,
         invoke=invoke,
         passages=passages,
+        coding=coding,
     )
 
 
@@ -792,6 +836,7 @@ async def evaluate_skills(
     structured: Mapping[str, Any],
     invoke: Invoke,
     passages: PassageReader | None = None,
+    coding: Mapping[str, Any] | None = None,
 ) -> tuple[SkillGrade, ...]:
     """Every skill in the contract, in contract order. Sequential on purpose.
 
@@ -823,6 +868,7 @@ async def evaluate_skills(
                 structured=structured,
                 invoke=invoke,
                 passages=passages,
+                coding=coding,
             )
         )
     return tuple(grades)

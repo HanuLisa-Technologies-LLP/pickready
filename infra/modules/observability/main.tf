@@ -474,6 +474,45 @@ resource "aws_cloudwatch_metric_alarm" "prism_statement_withheld" {
   tags          = var.tags
 }
 
+# ── A PRISM Report written with skills Not assessed (PLAN-p5 P5-D4, WP5-D) ──
+#
+# A scoring run that could not assess a skill writes no report and is retried
+# by the hourly held-assessment sweep. On the final attempt
+# (`miti_not_assessed_attempts`) the report IS written, those skills stated
+# "Not assessed", and the scoring task logs `miti.not_assessed_final_report`
+# at ERROR on the agent log group. A candidate's permanent record now carries
+# a hole the platform made, so ONE is worth a page. The token is pinned to
+# `functional_assessment.run_assessment` by `tests/test_miti_not_assessed.py`.
+
+resource "aws_cloudwatch_log_metric_filter" "miti_not_assessed_final" {
+  name           = "${local.name}-miti-not-assessed-final"
+  log_group_name = var.agent_log_group_name
+  pattern        = "\"miti.not_assessed_final_report\""
+
+  metric_transformation {
+    name          = "MitiNotAssessedFinalReport"
+    namespace     = "ReadyPick/${var.environment}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "miti_not_assessed_final" {
+  alarm_name          = "${local.name}-miti-not-assessed-final"
+  alarm_description   = "A PRISM Report was written with one or more skills Not assessed after the final scoring attempt; it is flagged for human review. Read the evaluation's not_assessed skills and the agent log line."
+  namespace           = "ReadyPick/${var.environment}"
+  metric_name         = aws_cloudwatch_log_metric_filter.miti_not_assessed_final.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [var.alarm_topic_arn]
+  tags          = var.tags
+}
+
 # ── One dashboard ────────────────────────────────────────────────────────────
 #
 # The five things above, on one page, so the first question during an incident

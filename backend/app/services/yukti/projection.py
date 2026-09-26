@@ -437,3 +437,72 @@ def ai_score_summary(link: Any, view: JobSkillsView) -> dict[str, Any]:
             stale_lines=stale_lines,
         ),
     }
+
+
+# ── The frozen snapshot the PRISM Report stores (PLAN-p5 WP5-D) ──────────────
+
+
+@dataclass(frozen=True)
+class SnapshotTag:
+    """One evidence tag as the report freezes it: text and polarity."""
+
+    text: str
+    polarity: str
+
+
+@dataclass(frozen=True)
+class PreAssessmentSnapshot:
+    """`siddhi.ai_score.SnapshotSource`'s value: read by attribute, no score.
+
+    `status` is Siddhi's vocabulary (`scored | not_assessed | pending`). A
+    `legacy` reading is the old matcher's number carried over by 0122, which
+    ranks exactly like a scored one, so it is `scored` here and the header (the
+    first provenance line) says where it came from.
+    """
+
+    status: str
+    grade: str | None
+    tags: tuple[SnapshotTag, ...]
+    header: str
+
+
+_SNAPSHOT_STATUS: dict[str, str] = {
+    config.STATUS_SCORED: "scored",
+    config.STATUS_LEGACY: "scored",
+    config.STATUS_NOT_ASSESSED: "not_assessed",
+    config.STATUS_PENDING: "pending",
+}
+
+
+async def pre_assessment_snapshot(
+    db: AsyncSession, link_id: uuid.UUID
+) -> PreAssessmentSnapshot | None:
+    """Yukti's pre-assessment reading of one application, for the report.
+
+    None when the application does not exist. A scored reading with no grade
+    word is `not_assessed`: Siddhi refuses a scored snapshot without a grade,
+    and a report must never state a grade Yukti did not decide. Deterministic,
+    no model; `ai_score_summary` stays the one projection.
+    """
+    from app.models.candidate import JobCandidateLink
+
+    link = await db.get(JobCandidateLink, link_id)
+    if link is None:
+        return None
+    summary = ai_score_summary(link, await job_skills_view(db, link.job_id))
+    status = _SNAPSHOT_STATUS.get(
+        getattr(link, "yukti_status", None) or config.STATUS_PENDING, "pending"
+    )
+    grade = summary["grade_word"] if status == "scored" else None
+    if status == "scored" and grade is None:
+        status = "not_assessed"
+    lines = [line for line in summary["provenance"] if line]
+    return PreAssessmentSnapshot(
+        status=status,
+        grade=grade,
+        tags=tuple(
+            SnapshotTag(text=str(tag["text"]), polarity=str(tag["polarity"]))
+            for tag in summary["tags"]
+        ),
+        header=lines[0] if lines else "",
+    )

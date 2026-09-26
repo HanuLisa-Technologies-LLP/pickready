@@ -75,11 +75,12 @@ def must_have_ceiling() -> int:
 
     It is the top of the Runbook's "Consider with reservations" band
     (section 10.8 via section 12.2), which grades Moderately Matching on the
-    product's four-word scale. Phase 5 owns the number and exposes it as
-    `miti.caps.must_have_ceiling()`; until that lands this reads the same band
-    through the same module, so the value cannot differ between the two.
+    product's four-word scale. Phase 5 owns the number as
+    `miti.caps.must_have_ceiling()`, and this delegates to it (CONTRACT v2 P2):
+    one implementation, so Miti's aggregation and the ranking blend cannot
+    hold two numbers for one rule.
     """
-    return caps.band_ceiling(caps.BAND_CONSIDER_WITH_RESERVATIONS)
+    return caps.must_have_ceiling()
 
 
 def rank_score_sql(link: str = "l", report: str = "rep", tenant: str = "t") -> str:

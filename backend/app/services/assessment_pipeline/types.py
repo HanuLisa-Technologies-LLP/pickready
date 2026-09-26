@@ -7,8 +7,9 @@ into the database a previous stage read.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -93,3 +94,49 @@ class ProvenanceRecorder:
             "prompts": list(self._prompts),
             "templates": list(self._templates),
         }
+
+
+#: The report's `scoring_mode` for a run in which Miti graded every skill.
+MODE_MITI = "miti"
+#: The FINAL attempt's mode when some skill still could not be assessed
+#: (PLAN-p5 P5-D4): those skills are written "Not assessed" and the report is
+#: always routed to a person.
+MODE_MITI_PARTIAL = "miti_partial"
+
+#: What one scoring run ended as (`functional_assessment.RunResult.status`).
+RUN_WRITTEN = "written"
+RUN_NOT_ASSESSED = "not_assessed"
+RUN_ALREADY_WRITTEN = "already_written"
+
+
+@dataclass(frozen=True)
+class AssessmentInputs:
+    """Everything the later stages read, gathered ONCE by stage 1.
+
+    `job`, `link`, `conversation` and the question and structured-answer rows
+    are the rows stage 1 loaded, read by attribute and never written through:
+    Miti reads `.id`, `.tenant_id`, `.title`, `.candidate_id` and the question
+    columns, and nothing after stage 1 issues a query through them. The
+    transcript is read from the DATABASE, never from a caller-assembled list,
+    so the answers graded are the answers stored.
+    """
+
+    job: Any
+    link: Any
+    conversation: Any
+    #: `jobs.assessment_grade`, locked on the contract (D5).
+    grade: str
+    #: This candidate's own `candidate_questions`, each rubric with its question.
+    questions: tuple[Any, ...]
+    #: {question key: [answer text]} in turn order: what every scorer reads.
+    answers: Mapping[str, list[str]]
+    #: {question key: [AnswerRecord]}: where each answer lives.
+    locators: Mapping[str, list[AnswerRecord]]
+    #: {question id: AssessmentAnswer}: objective scores, evaluation records.
+    structured: Mapping[str, Any]
+    #: {question id: CodingEvidence}: the 70/30 coding result per coding answer.
+    coding: Mapping[str, Any] = field(default_factory=dict)
+    #: The candidate's own name parts, removed from every evaluator excerpt.
+    subject_names: tuple[str, ...] = ()
+    #: The Validation section, the application's fields VERBATIM, unrated.
+    validation: Mapping[str, Any] = field(default_factory=dict)

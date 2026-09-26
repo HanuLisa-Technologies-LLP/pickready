@@ -62,7 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import AssessmentConversation, AssessmentMessage
 from app.services import answer_quality
-from app.services.assessment_pipeline.types import AnswerRecord
+from app.services.assessment_pipeline.types import AnswerRecord, AssessmentInputs
 
 logger = logging.getLogger(__name__)
 
@@ -282,3 +282,100 @@ async def backfill_answer_evidence(
             text=record.text,
             answered_at=record.answered_at,
         )
+
+
+# ── Stage 1: everything the later stages read, gathered once ────────────────
+
+
+def answers_by_key(transcript: Iterable[Any] | None) -> dict[str, list[str]]:
+    """Candidate answers grouped by the `question_key` stamped on each message.
+
+    Accepts message rows or dicts (`speaker`, `question_key`, `content`). The
+    key is the QUESTION's own id, which is what the conversation stamps and
+    what Miti's item stage looks answers up by
+    (`tests/test_conversation_key_contract.py`).
+    """
+    grouped: dict[str, list[str]] = {}
+    for message in transcript or []:
+        if isinstance(message, dict):
+            speaker = message.get("speaker")
+            key = message.get("question_key")
+            content = message.get("content")
+        else:
+            speaker = getattr(message, "speaker", None)
+            key = getattr(message, "question_key", None)
+            content = getattr(message, "content", None)
+        text = str(content or "").strip()
+        if str(speaker) != "candidate" or not key or not text:
+            continue
+        grouped.setdefault(str(key), []).append(text)
+    return grouped
+
+
+async def structured_answers(
+    session: AsyncSession, link_id: uuid.UUID
+) -> dict[str, Any]:
+    """Every `assessment_answers` row on this application, keyed exactly as the
+    scorer keys answers: by the question's own id.
+
+    A failed read RAISES: scoring every structured answer as unanswered because
+    the table could not be read would be a synthetic Not Matching written from
+    an outage.
+    """
+    from app.models.assessment import AssessmentAnswer
+
+    rows = (
+        await session.execute(
+            select(AssessmentAnswer)
+            .join(
+                AssessmentConversation,
+                AssessmentConversation.id == AssessmentAnswer.conversation_id,
+            )
+            .where(AssessmentConversation.job_candidate_link_id == link_id)
+        )
+    ).scalars().all()
+    return {str(row.question_id): row for row in rows}
+
+
+async def load_inputs(
+    session: AsyncSession,
+    *,
+    job: Any,
+    link: Any,
+    conversation: Any,
+    questions: Iterable[Any],
+    grade: str,
+) -> AssessmentInputs:
+    """Stage 1: read what the grading and the report are written from.
+
+    The transcript, the answer locators, the structured answers, the coding
+    evidence (hidden tests and the quality review, Phase 4's one evidence
+    helper), the candidate's name parts and the Validation section. Every read
+    RAISES on a failure; none is absorbed into "nothing recorded".
+    """
+    from app.models.candidate import Candidate
+    from app.services.assessment_pipeline.validation import validation_section
+    from app.services.coding_assessment import evidence as coding_evidence
+
+    messages = (
+        await session.execute(
+            select(AssessmentMessage)
+            .where(AssessmentMessage.conversation_id == conversation.id)
+            .order_by(AssessmentMessage.ordinal)
+        )
+    ).scalars().all()
+    coding = await coding_evidence.for_conversation(session, conversation.id)
+    candidate = await session.get(Candidate, link.candidate_id)
+    return AssessmentInputs(
+        job=job,
+        link=link,
+        conversation=conversation,
+        grade=grade,
+        questions=tuple(questions),
+        answers=answers_by_key(messages),
+        locators=await answer_records(session, link.id),
+        structured=await structured_answers(session, link.id),
+        coding={str(question_id): item for question_id, item in coding.items()},
+        subject_names=tuple(str(getattr(candidate, "full_name", "") or "").split()),
+        validation=await validation_section(session, link),
+    )
