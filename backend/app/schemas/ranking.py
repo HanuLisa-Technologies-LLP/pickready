@@ -94,13 +94,14 @@ class RankedCandidateOut(BaseModel):
     # ── Reports ──────────────────────────────────────────────────────────────
     has_report: bool = False
     report_ready_at: datetime | None = None
-    #: 'conversational' | 'video_interview', null before any session opens.
-    #: Phase 3 retires the mode and video fields with the second mode.
-    assessment_mode: str | None = None
-    assessment_mode_label: str = "Not started"
+    #: The assessment mode and video words (`assessment_mode`,
+    #: `assessment_mode_label`, `video_status`) and the table's "Assessment"
+    #: column went in the stage 3 final sweeps: one assessment mode is left,
+    #: so the mode word told a recruiter nothing, and the recording is
+    #: reached from the report's own video section (`api/videos`), which
+    #: still carries both words.
     prism_report_status: str = "Not available"
     proctoring_report_status: str = "Not available"
-    video_status: str = "No recording"
 
     # ── Type of procurement ──────────────────────────────────────────────────
     #: applied | sourced | databank. Display only: all three are parsed,
