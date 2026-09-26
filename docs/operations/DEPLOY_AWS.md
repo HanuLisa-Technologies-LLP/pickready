@@ -397,6 +397,80 @@ This is listed so the gap is visible rather than silently skipped.
 
 ## 5. Deploying
 
+### Building the images (default: the native arm64 builder)
+
+Every image runs on arm64 (Fargate and Lambda). Built on an x86 laptop they go
+through QEMU emulation, which cost a release about two hours.
+`infra/modules/image_builder` is a CodeBuild project on a NATIVE arm64 host
+(`ARM_CONTAINER`, `amazonlinux2-aarch64-standard:3.0`, `BUILD_GENERAL1_LARGE`),
+created in pilot by `image_builder_enabled` (default true, purely additive).
+`scripts/build-images-remote.sh` is the only intended way to start it:
+
+```bash
+git checkout main && git pull            # main is the only deployable branch
+export AWS_REGION=ap-south-2
+
+# The usual release: backend and frontend rebuilt, analysis kept on the tag the
+# environment already pins (`analysis_image_tag`).
+./scripts/build-images-remote.sh pilot --analysis-tag <tag analysis runs today>
+
+# A release that changes analysis-service/ as well:
+./scripts/build-images-remote.sh pilot --with-analysis
+```
+
+What it does, and what it refuses:
+
+- **It builds a COMMIT, never the tree.** A dirty working tree is refused
+  (tracked or untracked), and so is a commit that is not on `origin/main`
+  unless `--allow-non-main` is passed for a test build that will not be
+  deployed. `git archive` of `backend/`, `frontend/` and `analysis-service/` at
+  that commit is uploaded under `builds/` in the builder's private bucket,
+  which expires everything after 14 days.
+- **The tag is `sha-` plus the first twelve characters of the commit**, exactly
+  as before. ECR tags are immutable, so an image already pushed under the tag
+  is REUSED and the script says so; a rerun after a partial failure builds only
+  what is missing.
+- **The backend is one build pushed as `backend:<tag>` and `backend:<tag>-fn`**,
+  the same digest under both names, as a single Docker v2 manifest with no
+  provenance or SBOM attestation (Lambda refuses an OCI index). The script
+  reads both back from ECR and refuses a mismatch or any other media type.
+- **The frontend's six `NEXT_PUBLIC_FIREBASE_*` values are read (never
+  sourced) from `frontend/.env.local`** at build start and passed as build
+  environment variables. They are public web config; they are still kept out
+  of Terraform state and the repository.
+- **The analysis image's Hugging Face token** is resolved by CodeBuild from
+  `readypick-pilot/HUGGINGFACE_TOKEN` only when `--with-analysis` is given, and
+  reaches the build as a BuildKit secret, never a build arg.
+- **The applied buildspec must match the one in the commit.** A buildspec edit
+  is deployed by `terraform apply`; until then the script refuses, rather than
+  running a buildspec other than the one being reviewed.
+- **It waits** (`--timeout-minutes`, default 80) and **stops the build** if it
+  gives up, so nothing pushes after nobody is watching. A failed build prints
+  the failed phase and the last lines of its log.
+
+On success it prints `IMAGE_TAG`, `ANALYSIS_IMAGE_TAG`, `LAMBDA_IMAGE_URI` and
+the three `export EXPECTED_*_DIGEST=` lines `scripts/verify-deployment.sh`
+reads. Then, as before: `terraform apply -var image_tag=<IMAGE_TAG>` (with
+`analysis_image_tag` set to `ANALYSIS_IMAGE_TAG`), `scripts/run-migration.sh`,
+`scripts/deploy-services.sh`, `scripts/update-lambda-code.sh pilot
+<LAMBDA_IMAGE_URI>`, then `verify-deployment.sh` with the three exports.
+
+**What has NOT been proven.** The builder has never run in the account. The
+offline plan shows eleven additive resources and no change to anything
+existing; it cannot show that ARM `BUILD_GENERAL1_LARGE` is offered in
+ap-south-2, that the image ships `docker buildx`, or that anonymous Docker Hub
+pulls of the base images are not throttled from CodeBuild's shared addresses.
+Each of those fails the FIRST build loudly (the buildspec refuses a non-aarch64
+host and a missing buildx by name), and the fallback below still works.
+
+**Fallback: the local QEMU build.** When the builder is unavailable, build on
+the laptop exactly as `DEPLOYMENT_LOG.md` section 5 records: `docker buildx
+build --platform linux/arm64 --push` for each image, the `-fn` sibling with
+`--provenance=false --sbom=false --output type=image,oci-mediatypes=false,push=true`,
+and the frontend with the six `--build-arg NEXT_PUBLIC_FIREBASE_*` values from
+`frontend/.env.local`. It is slow, and it is the same bytes-by-digest
+discipline afterwards: read each digest with `aws ecr describe-images`.
+
 ### Staging
 
 ```bash

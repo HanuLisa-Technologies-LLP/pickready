@@ -130,3 +130,8 @@ output "redis_auth_token" {
   value       = module.elasticache.auth_token
   sensitive   = true
 }
+
+output "image_builder_project_name" {
+  description = "The CodeBuild project scripts/build-images-remote.sh starts. Null when image_builder_enabled is false."
+  value       = var.image_builder_enabled ? module.image_builder[0].project_name : null
+}

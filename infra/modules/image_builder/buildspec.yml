@@ -1,0 +1,136 @@
+# The native arm64 image build. Embedded in the CodeBuild project by
+# infra/modules/image_builder at apply time; started by
+# scripts/build-images-remote.sh, which supplies the per-build variables below.
+#
+# It builds EXACTLY what the deploy scripts consume, under the tag they expect:
+#
+#   backend:sha-<12>      and  backend:sha-<12>-fn   ONE build, ONE push, two
+#                                                    names, so the ECS tasks and
+#                                                    the Lambda functions run
+#                                                    the same digest
+#   frontend:sha-<12>     with the six NEXT_PUBLIC_FIREBASE_* build args
+#   analysis:sha-<12>     only when BUILD_ANALYSIS is true
+#
+# Every image is a single-platform Docker (non-OCI) manifest with no
+# provenance or SBOM attestation. Lambda refuses an OCI index, and an index is
+# exactly what buildx writes whenever an attestation is on
+# (DEPLOYMENT_LOG.md, 2026-09-05, item 5). The script reads the manifest media
+# type back from ECR and refuses anything else.
+#
+# Per-build variables (environment overrides from the script):
+#   SOURCE_COMMIT     the full 40-character commit the archive was made from
+#   IMAGE_TAG         sha-<first 12 of SOURCE_COMMIT>, checked below
+#   BUILD_BACKEND, BUILD_FRONTEND, BUILD_ANALYSIS   "true" or "false"
+#   NEXT_PUBLIC_FIREBASE_*   public web config, when the frontend is built
+#   HUGGINGFACE_TOKEN        resolved by CodeBuild from Secrets Manager, when
+#                            the analysis image is built; a BuildKit secret,
+#                            never a build arg, so it is in no layer
+version: 0.2
+
+env:
+  shell: bash
+  variables:
+    BUILD_BACKEND: "false"
+    BUILD_FRONTEND: "false"
+    BUILD_ANALYSIS: "false"
+
+phases:
+  install:
+    commands:
+      - |
+        set -euo pipefail
+        # NATIVE, or this whole module is pointless: an x86 host would build
+        # arm64 under QEMU again, slowly, and nothing would say so.
+        arch="$(uname -m)"
+        if [ "$arch" != "aarch64" ]; then
+          echo "REFUSED: this build host is ${arch}, not aarch64. The project must be ARM_CONTAINER." >&2
+          exit 1
+        fi
+        docker version --format 'docker {{.Server.Version}} on {{.Server.Arch}}'
+        if ! docker buildx version; then
+          echo "REFUSED: docker buildx is not available on ${CODEBUILD_BUILD_IMAGE}. Pin a build image that ships it." >&2
+          exit 1
+        fi
+
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        for flag in BUILD_BACKEND BUILD_FRONTEND BUILD_ANALYSIS; do
+          case "${!flag}" in
+            true|false) ;;
+            *) echo "REFUSED: ${flag} must be true or false, got '${!flag}'." >&2; exit 1 ;;
+          esac
+        done
+        if [ "$BUILD_BACKEND$BUILD_FRONTEND$BUILD_ANALYSIS" = "falsefalsefalse" ]; then
+          echo "REFUSED: nothing to build." >&2
+          exit 1
+        fi
+        if ! [[ "${SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "REFUSED: SOURCE_COMMIT must be a full 40-character commit id." >&2
+          exit 1
+        fi
+        # THE TAG IS DERIVED, NEVER CHOSEN. The same shape as today's deploys
+        # and CI (`sha-` plus the first twelve characters), checked here so a
+        # tag that names a different commit than the bytes cannot be pushed.
+        if [ "${IMAGE_TAG:-}" != "sha-${SOURCE_COMMIT:0:12}" ]; then
+          echo "REFUSED: IMAGE_TAG '${IMAGE_TAG:-}' is not sha-${SOURCE_COMMIT:0:12}." >&2
+          exit 1
+        fi
+        if [ "$BUILD_FRONTEND" = "true" ]; then
+          for name in API_KEY AUTH_DOMAIN PROJECT_ID STORAGE_BUCKET MESSAGING_SENDER_ID APP_ID; do
+            var="NEXT_PUBLIC_FIREBASE_${name}"
+            if [ -z "${!var:-}" ]; then
+              echo "REFUSED: ${var} is empty. The frontend inlines it into the browser bundle at build time." >&2
+              exit 1
+            fi
+          done
+        fi
+        if [ "$BUILD_ANALYSIS" = "true" ] && [ -z "${HUGGINGFACE_TOKEN:-}" ]; then
+          echo "REFUSED: HUGGINGFACE_TOKEN did not resolve. The analysis image downloads gated models at build time." >&2
+          exit 1
+        fi
+        for context in backend frontend analysis-service; do
+          [ -f "${context}/Dockerfile" ] || { echo "REFUSED: ${context}/Dockerfile is not in the source archive." >&2; exit 1; }
+        done
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        if [ "$BUILD_BACKEND" = "true" ]; then
+          echo "==> backend ${IMAGE_TAG} and ${IMAGE_TAG}-fn"
+          docker buildx build --platform linux/arm64 \
+            --provenance=false --sbom=false \
+            --output "type=image,\"name=${BACKEND_REPOSITORY_URI}:${IMAGE_TAG},${BACKEND_REPOSITORY_URI}:${IMAGE_TAG}-fn\",oci-mediatypes=false,push=true" \
+            backend
+        fi
+      - |
+        set -euo pipefail
+        if [ "$BUILD_FRONTEND" = "true" ]; then
+          echo "==> frontend ${IMAGE_TAG}"
+          # `--build-arg NAME` with no value reads NAME from this environment,
+          # so the values never appear on a command line or in the build log.
+          docker buildx build --platform linux/arm64 \
+            --provenance=false --sbom=false \
+            --build-arg NEXT_PUBLIC_FIREBASE_API_KEY \
+            --build-arg NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN \
+            --build-arg NEXT_PUBLIC_FIREBASE_PROJECT_ID \
+            --build-arg NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET \
+            --build-arg NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID \
+            --build-arg NEXT_PUBLIC_FIREBASE_APP_ID \
+            --output "type=image,name=${FRONTEND_REPOSITORY_URI}:${IMAGE_TAG},oci-mediatypes=false,push=true" \
+            frontend
+        fi
+      - |
+        set -euo pipefail
+        if [ "$BUILD_ANALYSIS" = "true" ]; then
+          echo "==> analysis ${IMAGE_TAG}"
+          docker buildx build --platform linux/arm64 \
+            --provenance=false --sbom=false \
+            --secret id=huggingface_token,env=HUGGINGFACE_TOKEN \
+            --output "type=image,name=${ANALYSIS_REPOSITORY_URI}:${IMAGE_TAG},oci-mediatypes=false,push=true" \
+            analysis-service
+        fi
