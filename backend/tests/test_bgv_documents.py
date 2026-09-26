@@ -90,6 +90,10 @@ class _Settings:
     s3_bucket = BUCKET
     aws_region = REGION
     s3_endpoint_url = LIVE_ENDPOINT
+    #: MinIO's static KMS key (`docker-compose.test.yml`); moto accepts it
+    #: too. Every bucket write names it, as the pilot bucket policy requires
+    #: (`object_storage.sse_arguments`).
+    s3_kms_key_id = "readypick-test-key"
 
 
 @pytest.fixture
