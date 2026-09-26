@@ -213,9 +213,9 @@ class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
 
     THE OWNER RULING OF 2026-09-22 reversed the 2026-07-30 "reuse is retired"
     decision, and this table is where the reversal lived. The module that
-    explained the reversal (`services/retake.py`) is deleted with the
-    six-month window; what matters here is the shape, because the shape is
-    what made the reversal safe.
+    explained the reversal is deleted with the waiting period it described;
+    what matters here is the shape, because the shape is what made the
+    reversal safe.
 
     WHAT IS ABSENT IS THE POINT
     -----------------------------

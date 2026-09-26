@@ -285,9 +285,10 @@ async def resolve_invitation(
     if conversation is None or conversation.invitation_sent_at is None:
         return _invite_out("not_invited", **context)
 
-    # REMOVED 2026-09-24: the six-month `retake.decide` classification that fed
-    # `recent_prior_report`. Nothing is portable between jobs, so it only ever
-    # supplied a sentence, and its `except Exception` swallowed every failure.
+    # REMOVED 2026-09-24: the six-month classification that explained a
+    # returning candidate's earlier report. Nothing is portable between jobs, so
+    # it only ever supplied a sentence, and its `except Exception` swallowed
+    # every failure. `tests/test_retake_removed.py` keeps it gone.
     started = conversation.started_at is not None
     return _invite_out(
         "in_progress" if started else "ready",
