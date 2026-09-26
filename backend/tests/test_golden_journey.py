@@ -41,7 +41,9 @@ from app.core.db import superadmin_scope
 from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG
 from app.main import app
 from app.models.user import User
+from app.services import rating
 from harness import golden_journey as journey
+from harness import probes
 from harness import world as harness_world
 from harness.doubles.golden_model import GoldenModel
 
@@ -334,8 +336,33 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         )
         assert rival[0].status == "applied", "the rival was never invited"
     elif name == "profile_read":
+        # THE EXECUTIVE PROFILE IS THE PRISM REPORT (2026-09-04), read by the
+        # recruiter who invited the candidate, and it states WORDS: every grade
+        # is one of the four, every remark is prose, and the proctoring report
+        # travels inside it as its last section.
         profile = state.responses["executive_profile"]
-        assert profile.get("proctoring"), "the executive profile carries no proctoring section"
+        assert profile["overall_grade"] in rating.GRADES, profile["overall_grade"]
+        items = profile["must_have"] + profile["nice_to_have"] + profile["behavioural"]
+        assert profile["must_have"] and profile["behavioural"], "a PRISM section is empty"
+        assert all(item["grade"] in rating.GRADES for item in items), [i["grade"] for i in items]
+        assert all(item["remark"].strip() for item in items)
+        proctoring = profile["proctoring"]
+        assert proctoring, "the executive profile carries no proctoring section"
+        assert proctoring == state.responses["proctoring_report"], (
+            "the PRISM Report and the proctoring route disagree about the same report"
+        )
+        report = await _rows(
+            "SELECT model_id, generation_provenance_json FROM functional_skills_reports "
+            "WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        # WRITTEN, not templated: a report no model wrote carries NULL here,
+        # and a template that stood in for a remark is named in the provenance.
+        assert report[0].model_id is not None
+        provenance = report[0].generation_provenance_json or {}
+        assert not provenance.get("templates"), provenance
+        transcript = state.responses["transcript"]
+        assert journey.SPOKEN_ANSWER in str(transcript), "the spoken answer is not in the transcript"
     else:
         raise AssertionError(f"no judge for gate {name!r}")
 
@@ -376,11 +403,12 @@ def test_the_golden_journey() -> None:
         with (
             TestClient(app) as http,
             model.installed(),
-            journey.deployment(),
+            journey.deployment() as deployment,
             journey.digest_lines() as digests,
         ):
             client = _RealClient(http, staff, candidates)
             journey.drive(client, state, gate)
+            installed = deployment.store
         assert reached == list(journey.GATES)
         assert model.unscripted == [], f"a model call nobody scripted: {model.unscripted}"
         # THE DIGEST PAIR: Vaada logged the contract it locked at the start and
@@ -389,5 +417,21 @@ def test_the_golden_journey() -> None:
         assert set(by_stage) == {"vaada", "miti"}, digests
         assert by_stage["vaada"] == by_stage["miti"]
         assert by_stage["vaada"][0] == str(state.conversation)
+        # RULE 1 AND RULE 7 OVER EVERY PAYLOAD THE JOURNEY RECEIVED, recruiter
+        # and candidate alike, judged by the harness's own probes so the suite
+        # and the scenario cannot disagree about what a number is.
+        received = [(path, body) for _step, path, body in client.bodies]
+        assert received, "the journey recorded no response"
+        numbers_seen = probes.number_hits(received)
+        assert numbers_seen == [], "; ".join(numbers_seen)
+        dashes_seen = probes.em_dash_hits(received)
+        assert dashes_seen == [], "; ".join(dashes_seen)
+        # The spoken answer was stored under the bucket policy's own key, and
+        # deleted once transcribed (the gate read the row; this reads the store).
+        voice_keys = [key for key in installed.encryption if key.startswith("voice-answers/")]
+        assert voice_keys and all(
+            installed.encryption[key] == ("aws:kms", "golden-journey-key") for key in voice_keys
+        ), installed.encryption
+        assert not [key for key in installed.objects if key.startswith("voice-answers/")]
     finally:
         asyncio.run(harness_world.teardown(world, sessions=sessions))
