@@ -41,7 +41,11 @@ PROCTORING_MODULE = "app.services.proctoring"
 #: reason it is allowed. Anything else is a scoring or ranking surface.
 PERMITTED_IMPORTERS: dict[str, str] = {
     "api/proctoring.py": "the routes themselves",
-    "api/assessments.py": "the gate on the conversation, and the report join",
+    # The report join, which lived in the deleted api/assessments.py and moved
+    # with the report routes (PLAN-p5 WP5-F) into the one serializer: it
+    # attaches the finished Proctoring Report as the report's last, words-only
+    # section and reads nothing from it into a grade.
+    "services/prism_view.py": "attaches the finished Proctoring Report section",
     # Carved out of api/assessments.py on 2026-09-24 (PLAN-p3 WP0), carrying
     # the same narrow permission: the gate on the conversation and on the
     # recording start, and nothing else.
@@ -191,14 +195,15 @@ def test_the_import_detector_sees_a_deferred_import(tmp_path: pathlib.Path) -> N
 
 
 def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> None:
-    """`api/assessments.py` is on the permitted list, and the permission is
+    """The report routes and the conversation are on the permitted list, and the permission is
     narrow: it may ask whether the conversation may proceed and attach the
     finished report. It may not read a warning count, an event or a session's
     behaviour profile into anything it computes."""
     source = "\n".join(
         (APP / name).read_text(encoding="utf-8")
         for name in (
-            "api/assessments.py",
+            "api/assessment_reports.py",
+            "services/prism_view.py",
             "api/assessment_conversation.py",
             "api/assessment_recording.py",
             "services/assessment_conversation/turns.py",
@@ -211,7 +216,7 @@ def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> Non
         "proctoring_session.outcome",
     ):
         assert banned not in source, (
-            f"api/assessments.py reads {banned!r}. Proctoring state must not "
+            f"the assessment API reads {banned!r}. Proctoring state must not "
             "reach the code that decides what a candidate is asked or scored."
         )
 
