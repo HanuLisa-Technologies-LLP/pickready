@@ -539,16 +539,23 @@ def _remark_cell(row: Any) -> str:
     return cell
 
 
+#: The section's PRINTED heading. The key stays `ai_score` (stored payloads
+#: carry it); the words a recruiter reads are the product's vocabulary, the
+#: same "AI Match" the candidate table uses for the same pre-assessment check
+#: (CONTRACT v4 item 5). The screen prints the same words.
+AI_MATCH_HEADING = "AI Match"
+
+
 def _ai_score(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
-    """The AI Score: Yukti's frozen snapshot on a report written from the
-    Vivekium release on (a grade word, a header, evidence tags), or the four
-    legacy matching rows an older report was written with."""
+    """The AI Match section: Yukti's frozen snapshot on a report written from
+    the Vivekium release on (a grade word, a header, evidence tags), or the
+    four legacy matching rows an older report was written with."""
     snapshot = _value(report, "ai_score_snapshot")
     if not snapshot:
-        return _dimension_cards("AI Score", _value(report, "ai_score", []), styles)
+        return _dimension_cards(AI_MATCH_HEADING, _value(report, "ai_score", []), styles)
     grade = _value(snapshot, "grade") or NOT_ASSESSED_WORD
     story: list[Any] = [
-        Paragraph("AI Score", styles["Section"]),
+        Paragraph(AI_MATCH_HEADING, styles["Section"]),
         Spacer(1, 2 * mm),
         Paragraph(f"<b>{_text(grade)}</b>", styles["Body"]),
     ]

@@ -486,7 +486,7 @@ def _focus_summary(ordered_gaps: list[tuple[str, dict[str, Any]]]) -> str:
     """
     if not ordered_gaps:
         return (
-            "No gaps were identified against this job's matrix; interview time is "
+            "No gaps were identified against this job's skills; interview time is "
             "best spent confirming the strongest evidence in the assessment."
         )
     top = ordered_gaps[:2]
@@ -495,7 +495,7 @@ def _focus_summary(ordered_gaps: list[tuple[str, dict[str, Any]]]) -> str:
     where = (
         ppi.CATEGORY_LABELS[next(iter(aspects))]
         if len(aspects) == 1
-        else "the matrix"
+        else "the job's skills"
     )
     if len(names) == 1:
         return f"Focus the interview on {names[0]}, the clearest gap in {where}."
