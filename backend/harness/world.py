@@ -931,6 +931,36 @@ async def _job_with_unapplied_candidate(
     )
 
 
+async def _golden_journey_ready(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """A funded customer with a Company Profile and one registered candidate
+    holding a main resume, and NOTHING else.
+
+    The golden journey (`harness.golden_journey`) creates the job, the SWOT,
+    the skills, the application and the assessment through the routes, so a
+    row seeded here for any of them would be a row the product never wrote.
+    What is seeded is what onboarding (a Provider act) and a candidate's own
+    earlier resume upload leave behind.
+    """
+    await _funded_tenant(session, world, overrides)
+    await _seed_candidate(
+        session,
+        world,
+        key="candidate",
+        resume_text=str(
+            _override(
+                overrides,
+                "candidate.resume_text",
+                "Settlement engineer, six years. Built the Python reconciliation "
+                "service for a multi-bank payments switch and tuned its "
+                "PostgreSQL ledger; owned the rollback when a settlement file "
+                "broke in production.",
+            )
+        ),
+    )
+
+
 async def _seed_candidate_questions(
     session: AsyncSession,
     world: World,
@@ -1389,6 +1419,13 @@ _BUILDERS: dict[str, Builder] = {
         _APPLIED,
         _job_with_unapplied_candidate,
         "a published job and a registered candidate who has not applied",
+    ),
+    "golden_journey_ready": Builder(
+        "golden_journey_ready",
+        _APPLIED,
+        _golden_journey_ready,
+        "a funded customer with a Company Profile and a registered candidate "
+        "with a main resume; the golden journey creates everything else",
     ),
     "job_with_invited_candidate": Builder(
         "job_with_invited_candidate",
