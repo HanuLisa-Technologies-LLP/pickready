@@ -124,8 +124,6 @@ class AssessmentInputs:
     job: Any
     link: Any
     conversation: Any
-    #: `jobs.assessment_grade`, locked on the contract (D5).
-    grade: str
     #: This candidate's own `candidate_questions`, each rubric with its question.
     questions: tuple[Any, ...]
     #: {question key: [answer text]} in turn order: what every scorer reads.

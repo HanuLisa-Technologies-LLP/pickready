@@ -24,7 +24,10 @@ import re
 
 import pytest
 
+from sqlalchemy import text
+
 from app.core.config import get_settings
+from app.core.db import superadmin_scope
 from app.services import agent_loop
 from app.services import functional_assessment as fa
 from app.services.assessment_formats import evaluation as format_evaluation
@@ -93,6 +96,19 @@ async def test_an_outage_retries_without_a_report_then_writes_not_assessed(
             )
             assert live == [("not_assessed", attempt, None)]
 
+        # The job's LIVE grade moves after the contract locked it: the report
+        # must state the grade the candidate was assessed at, the contract's.
+        async with factory() as session:
+            async with superadmin_scope(session):
+                await session.execute(
+                    text(
+                        "UPDATE jobs SET assessment_grade = CASE WHEN assessment_grade = 'cxo' "
+                        "THEN 'non_managerial' ELSE 'cxo' END WHERE id = :j"
+                    ),
+                    {"j": w.job},
+                )
+                await session.commit()
+
         # 2. The final attempt writes the report, with the skills Not assessed.
         caplog.set_level(logging.ERROR, logger=fa.__name__)
         result, miti = await _run(
@@ -107,10 +123,16 @@ async def test_an_outage_retries_without_a_report_then_writes_not_assessed(
         report = await _second_read(
             factory,
             "SELECT scoring_mode, needs_human_review, overall_status, overall_score, "
-            "review_findings_json FROM functional_skills_reports WHERE job_candidate_link_id = :l",
+            "review_findings_json, grade FROM functional_skills_reports "
+            "WHERE job_candidate_link_id = :l",
             l=w.links[0],
         )
-        mode, review, overall_status, overall_score, findings = report[0]
+        mode, review, overall_status, overall_score, findings, stated_grade = report[0]
+        live_grade = await _second_read(
+            factory, "SELECT assessment_grade FROM jobs WHERE id = :j", j=w.job
+        )
+        assert stated_grade == miti.contract.grade, "the locked grade, never the live one"
+        assert stated_grade != live_grade[0][0]
         assert mode == "miti_partial"
         assert review is True
         if any(

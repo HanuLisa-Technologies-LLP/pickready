@@ -344,7 +344,6 @@ async def load_inputs(
     link: Any,
     conversation: Any,
     questions: Iterable[Any],
-    grade: str,
 ) -> AssessmentInputs:
     """Stage 1: read what the grading and the report are written from.
 
@@ -370,7 +369,6 @@ async def load_inputs(
         job=job,
         link=link,
         conversation=conversation,
-        grade=grade,
         questions=tuple(questions),
         answers=answers_by_key(messages),
         locators=await answer_records(session, link.id),

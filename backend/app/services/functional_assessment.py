@@ -62,7 +62,6 @@ from app.services.assessment_pipeline.types import (
     RUN_WRITTEN,
     ProvenanceRecorder,
 )
-from app.services.assessment_questions import budget as question_budget
 from app.services.miti.items import UNANSWERED_SCORE
 from app.services.rating import GRADES, band_index_for, grade_for_percent
 from app.services.siddhi import remarks as siddhi_remarks
@@ -83,15 +82,10 @@ __all__ = [
     "UNANSWERED_SCORE",
     "band_index_for",
     "build_radar_charts",
-    "infer_grade_fallback",
     "rating_label",
     "run_assessment",
     "word_count",
 ]
-
-#: The four grades. How many questions a grade is asked is
-#: `assessment_questions.budget`.
-GRADE_NAMES: tuple[str, ...] = question_budget.GRADES
 
 #: LEGACY. Reports written before the Vivekium release carry AI Score rows
 #: under this category (four matching parameters, 25 to 30 word remarks). The
@@ -219,18 +213,6 @@ def build_radar_charts(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]
     return charts
 
 
-def infer_grade_fallback(job: Job) -> str:
-    """Keyword grade inference. Mirrored exactly by migration 0014's SQL CASE."""
-    title = f"{job.title} {job.level or ''}".lower()
-    if any(term in title for term in ("chief", "cxo", "ceo", "cto", "cfo", "coo")):
-        return "cxo"
-    if any(term in title for term in ("director", "head", "vice president", "vp", "leader")):
-        return "leadership"
-    if any(term in title for term in ("manager", "lead", "supervisor")):
-        return "managerial"
-    return "non_managerial"
-
-
 # ── The orchestrator ─────────────────────────────────────────────────────────
 
 
@@ -287,7 +269,6 @@ async def run_assessment(
             f"link {link.id} has an assessment conversation and no issued "
             "questions, so there is nothing the candidate can be graded on"
         )
-    grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
 
     live = await persistence.live_evaluation(session, link.id)
     previous = (
@@ -310,7 +291,6 @@ async def run_assessment(
             link=link,
             conversation=conversation,
             questions=questions,
-            grade=grade,
         )
         miti = await grading.grade(
             session, inputs, allow_incomplete=final_attempt, provenance=provenance
