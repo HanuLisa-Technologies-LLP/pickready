@@ -36,6 +36,16 @@ def test_the_compatibility_redirect_pages_are_gone() -> None:
     ).is_dir()
 
 
+def test_the_second_band_order_alias_is_gone() -> None:
+    """`ASSESSMENT_BAND_ORDER` was a deprecated alias for the one four-grade
+    order, kept "so older imports keep compiling" after nothing imported it."""
+    source = (REPO / "frontend" / "components" / "rating-label.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "ASSESSMENT_BAND_ORDER" not in source
+    assert "MATCHING_BAND_ORDER" in source
+
+
 def test_the_old_five_value_stage_projection_is_gone() -> None:
     assert "stage" not in ApplicationOut.model_fields
     assert {"status", "stage_label"} <= set(ApplicationOut.model_fields)
