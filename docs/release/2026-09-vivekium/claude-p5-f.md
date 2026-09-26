@@ -149,3 +149,14 @@ are quoted in issued links and keys are read from immutable stored reports.
 - The frontend typecheck reports `@monaco-editor/react` / `monaco-editor`
   missing in the main checkout's `node_modules` (Phase 4's dependency, not yet
   installed there). No error is in a file this package touched.
+- Six tests fail on the p5-d base (`wip/s3-p5d`, verified by running them
+  against that tree) and are untouched here: `test_evidence_retrieval_through_tools`
+  (two: `assessment_pipeline/evidence.py` imports `services.rag` for the
+  inline transcript index, and a stale pending entry for
+  `assessment_questions/generate.py`), `test_job_level_removed` (two: a
+  landed hand-off entry and a walk that now finds no `.level` read at all),
+  `test_miti_evidence_wiring::test_the_evidence_path_can_reach_no_grading_rule`
+  (the substring `GRADES` inside the word "DEGRADES" in a docstring) and
+  `test_miti_report_rows` (the inline transcript index writes no chunk in
+  the test).
+
