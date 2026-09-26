@@ -1439,7 +1439,26 @@ _BUILDERS: dict[str, Builder] = {
     ),
     "golden_journey_ready": Builder(
         "golden_journey_ready",
-        _APPLIED,
+        # The world inserts little; the JOURNEY reaches every one of these, and
+        # a stack missing one is `unavailable` before anything runs.
+        _APPLIED
+        + (
+            "job_swot_analyses",
+            "job_skill_snapshots",
+            "assessment_conversations",
+            "assessment_consents",
+            "candidate_questions",
+            "assessment_answers",
+            "proctoring_sessions",
+            "proctoring_reports",
+            "voice_answers",
+            "coding_runs",
+            "coding_submissions",
+            "evaluations",
+            "functional_skills_reports",
+            "report_dimensions",
+        )
+        + _BILLING,
         _golden_journey_ready,
         "a funded customer with a Company Profile and two registered candidates "
         "with a main resume; the golden journey creates everything else",
