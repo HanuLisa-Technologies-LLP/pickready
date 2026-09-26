@@ -5,7 +5,6 @@ a wrong answer is silent rather than loud:
 
   * LLM task-type routing, round-robin balancing, and the graph's retry edge
   * the grade-driven candidate sort and its pagination guarantees
-  * the six-month retake boundary
   * the per-user permission overlay
   * the matching word-label projection (the "no numbers" boundary)
   * per-job JD section resolution (override vs inherited)
@@ -16,7 +15,7 @@ Everything here is DB-free and deterministic.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+
 from types import SimpleNamespace
 
 import pytest
@@ -136,76 +135,6 @@ def test_grade_label_never_shows_a_raw_enum() -> None:
     assert "_" not in jc.grade_label("leadership")
 
 
-# ── Six-month retake rule (spec §5.1) ────────────────────────────────────────
-
-from app.services import retake
-
-_NOW = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
-
-
-def test_no_prior_assessment_is_a_first_assessment() -> None:
-    assert retake.classify_age(None, _NOW) == (retake.DECISION_FIRST_ASSESSMENT, None)
-
-
-@pytest.mark.parametrize("days", [0, 1, 90, 182])
-def test_recent_assessment_is_reused(days: int) -> None:
-    decision, age = retake.classify_age(_NOW - timedelta(days=days), _NOW)
-    assert decision == retake.DECISION_REUSE
-    assert age == days
-
-
-def test_the_boundary_day_is_a_retake_not_a_reuse() -> None:
-    """Exactly six months old must NOT be reused — the window is the
-    strictly-less-than side, so the rule never quietly extends itself."""
-    assert retake.classify_age(
-        _NOW - timedelta(days=retake.RETAKE_WINDOW_DAYS), _NOW
-    )[0] == retake.DECISION_RETAKE
-    assert retake.classify_age(
-        _NOW - timedelta(days=retake.RETAKE_WINDOW_DAYS - 1), _NOW
-    )[0] == retake.DECISION_REUSE
-
-
-def test_naive_timestamps_are_read_as_utc() -> None:
-    """A stored value with no tzinfo is UTC in this database; reading it as
-    local time would shift the boundary by hours."""
-    naive = (_NOW - timedelta(days=10)).replace(tzinfo=None)
-    assert retake.classify_age(naive, _NOW) == (retake.DECISION_REUSE, 10)
-
-
-def test_a_future_timestamp_is_not_treated_as_evidence_of_recency() -> None:
-    decision, age = retake.classify_age(_NOW + timedelta(days=30), _NOW)
-    assert (decision, age) == (retake.DECISION_REUSE, 0)
-
-
-def test_nothing_travels_between_jobs_under_ppi() -> None:
-    """Every section of a report is scoped to the job it was written for.
-
-    Skills-vs-JD always was. Since 2026-07-30 the PPI framework is generated
-    from each job's own JD, so Primary Skills, Secondary Skills, Behavioural
-    Competencies and the technical bank are all job-scoped too. Carrying any of
-    them onto another job would assert a grade against criteria the candidate
-    was never assessed on.
-    """
-    assert retake.PORTABLE_CATEGORIES == frozenset()
-
-
-def test_retake_decision_explains_itself_to_the_candidate() -> None:
-    reuse = retake.RetakeDecision(decision=retake.DECISION_REUSE, age_days=30)
-    # Reuse is retired: a recent assessment is acknowledged, but the candidate
-    # still answers this role's own questions and is told why.
-    assert "written for each specific role" in (reuse.message() or "")
-    assert reuse.requires_new_assessment is True
-
-    redo = retake.RetakeDecision(decision=retake.DECISION_RETAKE, age_days=400)
-    assert "fresh one" in (redo.message() or "")
-    assert redo.requires_new_assessment is True
-
-    # A first assessment needs no preamble.
-    first = retake.RetakeDecision(decision=retake.DECISION_FIRST_ASSESSMENT)
-    assert first.message() is None
-    assert first.requires_new_assessment is True
-
-
 # ── Per-user permission overlay (spec §7.1) ──────────────────────────────────
 
 from app.services import rbac
@@ -316,12 +245,12 @@ def test_sections_are_none_when_neither_layer_has_text() -> None:
 
 # ── Radar geometry (spec §10.4) ──────────────────────────────────────────────
 
-from app.services.functional_assessment import (
+from app.services.prism_view import (
     RADAR_BANDS,
     RADAR_SERIES,
-    band_index_for,
     build_radar_charts,
 )
+from app.services.rating import band_index_for
 from app.services import ppi as ppi_service
 
 

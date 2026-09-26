@@ -435,7 +435,7 @@ def test_the_purge_refuses_while_g1_is_unreachable() -> None:
 
 def test_a_reachable_gate_passes() -> None:
     reachable = reset.GateWiring(
-        ("app/services/miti/pipeline.py:290",), ("app.api.assessments",)
+        ("app/services/miti/pipeline.py:290",), ("app.api.assessment_reports",)
     )
     assert reachable.enforced
     reset.assert_gate_enforced(reachable)
@@ -443,7 +443,7 @@ def test_a_reachable_gate_passes() -> None:
 
 def test_a_gate_that_is_never_called_is_not_enforced_either() -> None:
     with pytest.raises(reset.GateNotWired) as raised:
-        reset.assert_gate_enforced(reset.GateWiring((), ("app.api.assessments",)))
+        reset.assert_gate_enforced(reset.GateWiring((), ("app.api.assessment_reports",)))
     assert "never called" in str(raised.value)
 
 

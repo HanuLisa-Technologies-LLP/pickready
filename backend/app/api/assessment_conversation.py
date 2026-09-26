@@ -3,8 +3,9 @@
 Carved out of `api/assessments.py` on 2026-09-24 (PLAN-p3 WP0), then rebuilt the
 same day (PLAN-p3 WP3) around the conversation ENGINE in
 `services/assessment_conversation/`: the routes resolve who is asking and which
-turn they name, and the engine takes the answer. `api/assessments.py` keeps the
-staff side; `api/assessment_recording.py` holds the session recording routes.
+turn they name, and the engine takes the answer. The staff side is
+`api/assessment_reports.py` (PLAN-p5 WP5-F; `api/assessments.py` is gone);
+`api/assessment_recording.py` holds the session recording routes.
 
 WHAT CHANGED, IN ONE PLACE
 --------------------------
@@ -33,7 +34,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.api.assessments import READY_FOR_CANDIDATES
 from app.api.deps import (
     CurrentUser,
     get_candidate_db,
@@ -96,6 +96,7 @@ from app.services.rate_limit import rate_limit
 # The sanctioned media package: a spoken answer is stored and transcribed
 # there, and nothing here reads media back.
 from app.services.video import transcribe, voice
+from app.services.skills import READY_FOR_CANDIDATES
 from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
@@ -285,9 +286,10 @@ async def resolve_invitation(
     if conversation is None or conversation.invitation_sent_at is None:
         return _invite_out("not_invited", **context)
 
-    # REMOVED 2026-09-24: the six-month `retake.decide` classification that fed
-    # `recent_prior_report`. Nothing is portable between jobs, so it only ever
-    # supplied a sentence, and its `except Exception` swallowed every failure.
+    # REMOVED 2026-09-24: the six-month classification that explained a
+    # returning candidate's earlier report. Nothing is portable between jobs, so
+    # it only ever supplied a sentence, and its `except Exception` swallowed
+    # every failure. `tests/test_retake_removed.py` keeps it gone.
     started = conversation.started_at is not None
     return _invite_out(
         "in_progress" if started else "ready",

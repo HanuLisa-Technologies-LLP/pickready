@@ -32,6 +32,7 @@ from app.core.db import superadmin_scope
 from app.models import Job, JobCandidateLink
 from app.services import agent_loop
 from app.services import functional_assessment as fa
+from app.services import prism_view
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.hiring import gates
 from app.services.miti import grades
@@ -127,7 +128,7 @@ async def test_the_report_carries_mitis_grades_and_nothing_else(monkeypatch) -> 
             factory,
             "SELECT count(*) FROM report_dimensions d JOIN functional_skills_reports r "
             "ON r.id = d.report_id WHERE r.job_candidate_link_id = :l AND d.category = :m",
-            l=w.links[0], m=fa.CATEGORY_MATCHING,
+            l=w.links[0], m=prism_view.CATEGORY_MATCHING,
         )
         assert matching[0][0] == 0
 
@@ -138,7 +139,7 @@ async def test_the_report_carries_mitis_grades_and_nothing_else(monkeypatch) -> 
             "JOIN functional_skills_reports r ON r.id = d.report_id "
             "WHERE r.job_candidate_link_id = :l AND d.category <> :m "
             "ORDER BY d.category, d.ordinal",
-            l=w.links[0], m=fa.CATEGORY_MATCHING,
+            l=w.links[0], m=prism_view.CATEGORY_MATCHING,
         )
         by_name = {grade.name: grade for grade in miti.skills}
         assert {row[0] for row in rows} == set(by_name)

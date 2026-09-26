@@ -26,6 +26,16 @@ from tests.test_retention_consent import (
 )
 
 
+def _http_request(path: str = "/api/v2/assessments/reports", method: str = "GET"):
+    """A real Starlette Request: the report routes read its method and path
+    for the audit row they write."""
+    from starlette.requests import Request
+
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": [], "query_string": b""}
+    )
+
+
 async def _consent_and_flag(factory, fx: _Fixture) -> None:
     from app.core.db import superadmin_scope
     from app.models import Candidate
@@ -61,21 +71,44 @@ async def _consent_and_flag(factory, fx: _Fixture) -> None:
                 )
 
 
+async def _audit_rows(factory, fx: _Fixture, action: str) -> list:
+    """Committed audit rows for this application, read from a SECOND session
+    after the route's transaction ended: a row that answered and then rolled
+    back is invisible to an assertion on the response."""
+    from sqlalchemy import text
+
+    from app.core.db import superadmin_scope
+
+    async with factory() as s:
+        async with superadmin_scope(s):
+            return (
+                await s.execute(
+                    text(
+                        "SELECT action, target_type, application_id, candidate_id, "
+                        "request_method FROM audit_log "
+                        "WHERE application_id = :a AND action = :action"
+                    ),
+                    {"a": str(fx.link_id), "action": action},
+                )
+            ).all()
+
+
 async def _download(factory, fx: _Fixture):
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.core.db import superadmin_scope
 
     async with factory() as s:
         async with s.begin():
             async with superadmin_scope(s):
                 return await assessments_mod.download_report_pdf(
+                    request=_http_request(method="GET"),
                     link_id=fx.link_id, user=_staff_user(fx), session=s
                 )
 
 
 @pytest.mark.asyncio
 async def test_a_flagged_report_without_a_disposition_is_refused_with_the_servers_sentence() -> None:
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.core.db import superadmin_scope
     from app.services.siddhi import delivery
 
@@ -88,6 +121,10 @@ async def test_a_flagged_report_without_a_disposition_is_refused_with_the_server
             await _download(factory, fx)
         assert caught.value.status_code == 409
         assert caught.value.detail == delivery.PDF_BLOCKED_REASON
+        # A refused download downloaded nothing, so nothing says it did.
+        from app.services import audit
+
+        assert await _audit_rows(factory, fx, audit.PRISM_PDF_DOWNLOADED) == []
 
         # The on-screen report is NOT gated: it is where the decision is made.
         async with factory() as s:
@@ -97,6 +134,10 @@ async def test_a_flagged_report_without_a_disposition_is_refused_with_the_server
                         link_id=fx.link_id, user=_staff_user(fx), session=s
                     )
         assert report_out.overall_summary
+        # The payload says the PDF is withheld and why, in the SAME sentence
+        # the route refuses with, so the screen never offers a dead button.
+        assert report_out.pdf_available is False
+        assert report_out.pdf_blocked_reason == delivery.PDF_BLOCKED_REASON
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -127,6 +168,17 @@ async def test_a_recorded_human_disposition_releases_the_pdf() -> None:
         response = await _download(factory, fx)
         assert response.media_type == "application/pdf"
         assert response.body.startswith(b"%PDF")
+
+        # ONE audit row for the download, committed with the request.
+        from app.services import audit
+
+        rows = await _audit_rows(factory, fx, audit.PRISM_PDF_DOWNLOADED)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.target_type == "functional_skills_report"
+        assert str(row.application_id) == str(fx.link_id)
+        assert str(row.candidate_id) == str(fx.cand_id)
+        assert row.request_method == "GET"
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
@@ -137,7 +189,7 @@ def test_the_route_reaches_the_renderer_only_through_the_gated_path() -> None:
     renderer, and never the raw renderer."""
     import inspect
 
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
 
     source = inspect.getsource(assessments_mod.download_report_pdf)
     assert "delivery.gate_delivery(" in source

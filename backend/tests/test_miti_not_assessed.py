@@ -47,7 +47,7 @@ OBSERVABILITY = (
 async def _report_route(factory, w):
     """The recruiter's report read, called as the route handler with a staff
     principal of the seeded tenant."""
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.api.deps import CurrentUser
     from app.core.security import AUDIENCE_ORG
     from app.models import Role

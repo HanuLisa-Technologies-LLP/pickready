@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { apiGet, toastApi } = vi.hoisted(() => ({
@@ -17,8 +17,27 @@ vi.mock("@/lib/api", () => ({ apiGet }));
 vi.mock("@/components/ui/toast", () => ({
   useToast: () => toastApi,
 }));
+// The view is mocked; what the modal hands it is the citations loader, so the
+// mock exposes it as a button that asks twice, the way two remarks would.
 vi.mock("@/components/functional-skills-report", () => ({
-  FunctionalSkillsReportView: () => <div>Rendered report</div>,
+  FunctionalSkillsReportView: ({
+    loadCitations,
+  }: {
+    loadCitations?: () => Promise<unknown>;
+  }) => (
+    <div>
+      Rendered report
+      <button
+        type="button"
+        onClick={() => {
+          void loadCitations?.();
+          void loadCitations?.();
+        }}
+      >
+        Open two remarks
+      </button>
+    </div>
+  ),
 }));
 // Mocked so these tests stay about the modal: the section has its own fetch
 // (the video metadata route), which would otherwise consume the mocked apiGet.
@@ -190,5 +209,81 @@ describe("PPIReportModal PDF export", () => {
     expect(
       await screen.findByText("Assessment video section for link-1")
     ).toBeTruthy();
+  });
+
+  it("shows the server's G4 sentence instead of a Download button the route would refuse", async () => {
+    const reason =
+      "A person with integrity review authority must record a decision on this candidate before the PRISM Report can be downloaded.";
+    apiGet.mockResolvedValue({
+      id: "report-1",
+      job_candidate_link_id: "link-1",
+      ai_score: [],
+      must_have: [],
+      nice_to_have: [],
+      behavioural: [],
+      validation: {},
+      radar_charts: [],
+      overall_grade: "Matching",
+      overall_summary: "Evidence summary",
+      synthesized_at: "2026-09-26T00:00:00Z",
+      report_download_allowed: true,
+      pdf_available: false,
+      pdf_blocked_reason: reason,
+    });
+
+    render(
+      <PPIReportModal
+        open
+        onOpenChange={() => undefined}
+        linkId="link-1"
+        candidateName="Fixture Candidate"
+      />
+    );
+
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Download PDF/i })).toBeNull();
+  });
+
+  it("fetches the citations only when a remark is opened, and once per report", async () => {
+    apiGet.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.endsWith("/citations")
+          ? { trail_available: true, statements: [] }
+          : {
+              id: "report-1",
+              job_candidate_link_id: "link-1",
+              ai_score: [],
+              must_have: [],
+              nice_to_have: [],
+              behavioural: [],
+              validation: {},
+              radar_charts: [],
+              overall_grade: "Matching",
+              overall_summary: "Evidence summary",
+              synthesized_at: "2026-09-26T00:00:00Z",
+            }
+      )
+    );
+
+    render(
+      <PPIReportModal
+        open
+        onOpenChange={() => undefined}
+        linkId="link-1"
+        candidateName="Fixture Candidate"
+      />
+    );
+
+    const open = await screen.findByRole("button", { name: "Open two remarks" });
+    const citationCalls = () =>
+      apiGet.mock.calls.filter(([path]) => String(path).endsWith("/citations"));
+    // Opening the report is not reading the evidence behind it.
+    expect(citationCalls()).toHaveLength(0);
+
+    fireEvent.click(open);
+    fireEvent.click(open);
+    expect(citationCalls()).toEqual([
+      ["/api/v2/assessments/reports/links/link-1/citations"],
+    ]);
   });
 });

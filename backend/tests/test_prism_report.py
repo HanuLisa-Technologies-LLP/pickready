@@ -50,7 +50,9 @@ SPEC_ORDER = (
 #: The heading each section prints, in the same order. Kept beside the keys so
 #: a reordering has to move both halves of the pair.
 SECTION_HEADINGS = {
-    "ai_score": "AI Score",
+    # The key stays `ai_score`; the printed words are the product's own name
+    # for the pre-assessment check (CONTRACT v4 item 5).
+    "ai_score": "AI Match",
     "overall": "Overall Assessment",
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",

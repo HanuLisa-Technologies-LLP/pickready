@@ -62,8 +62,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed_mock_data")
 
 #: Anchor for every generated timestamp. Fixed relative to "now" at run time but
-#: applied consistently, so a report is never stamped in the future and the
-#: six-month retake window behaves predictably during a demo.
+#: applied consistently, so a report is never stamped in the future.
 NOW = datetime.now(timezone.utc)
 
 #: Set by --refresh-rankings. When true, `fill_link_scores` also re-generates

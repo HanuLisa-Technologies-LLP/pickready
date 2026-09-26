@@ -22,6 +22,16 @@ from sqlalchemy import text
 from app.services import retention_consent
 
 
+def _http_request(path: str = "/api/v2/assessments/reports", method: str = "GET"):
+    """A real Starlette Request: the report routes read its method and path
+    for the audit row they write."""
+    from starlette.requests import Request
+
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": [], "query_string": b""}
+    )
+
+
 # ── The pure permission rule ─────────────────────────────────────────────────
 
 
@@ -274,7 +284,7 @@ async def test_explicit_null_is_refused_once_asked() -> None:
 async def test_pdf_download_is_refused_without_consent() -> None:
     """NULL (never asked) blocks the PDF route with 403 and a plain message;
     the on-screen report stays readable and says the download is off."""
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.core.db import superadmin_scope
 
     engine, factory = await _factory_or_skip()
@@ -294,6 +304,7 @@ async def test_pdf_download_is_refused_without_consent() -> None:
 
                     with pytest.raises(HTTPException) as excinfo:
                         await assessments_mod.download_report_pdf(
+                            request=_http_request(method="GET"),
                             link_id=fx.link_id, user=staff, session=s
                         )
         assert excinfo.value.status_code == 403
@@ -306,7 +317,7 @@ async def test_pdf_download_is_refused_without_consent() -> None:
 
 
 async def test_explicit_false_also_blocks_the_pdf() -> None:
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.core.db import superadmin_scope
     from app.models import Candidate
 
@@ -329,6 +340,7 @@ async def test_explicit_false_also_blocks_the_pdf() -> None:
                 async with superadmin_scope(s):
                     with pytest.raises(HTTPException) as excinfo:
                         await assessments_mod.download_report_pdf(
+                            request=_http_request(method="GET"),
                             link_id=fx.link_id, user=staff, session=s
                         )
         assert excinfo.value.status_code == 403
@@ -340,7 +352,7 @@ async def test_explicit_false_also_blocks_the_pdf() -> None:
 async def test_explicit_true_serves_the_pdf_and_flags_the_serializer() -> None:
     """An explicit Yes opens the download: the route answers a real PDF and
     the on-screen payload advertises the enabled control."""
-    from app.api import assessments as assessments_mod
+    from app.api import assessment_reports as assessments_mod
     from app.core.db import superadmin_scope
     from app.models import Candidate
 
@@ -367,6 +379,7 @@ async def test_explicit_true_serves_the_pdf_and_flags_the_serializer() -> None:
                     assert report_out.report_download_allowed is True
 
                     response = await assessments_mod.download_report_pdf(
+                        request=_http_request(method="GET"),
                         link_id=fx.link_id, user=staff, session=s
                     )
         assert response.media_type == "application/pdf"

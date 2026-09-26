@@ -6,7 +6,7 @@ import uuid
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.assessments import router
+from app.api.assessment_reports import router
 from app.api.job_setup import router as job_setup_router
 
 

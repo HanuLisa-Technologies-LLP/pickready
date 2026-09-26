@@ -346,7 +346,7 @@ def _jd_versus_swot(
                 ),
                 recommendation=(
                     f"confirm with the hiring manager whether {term} is a "
-                    "requirement before the matrix is locked; do not drop it "
+                    "requirement before the job's skills are saved; do not drop it "
                     "and do not keep it on one source's word"
                 ),
                 actions=actions_for(MATERIAL, phase=phase),

@@ -35,9 +35,10 @@ the other skills' evaluations every hour for ever.
 
 THE READ SHAPE
 --------------
-The category names, the radar builder and `rating_label` below are read by
-the report route and the PDF. They are the report's SHAPE, not grading, and
-none of them imports a stage. They move to the report read model with WP5-F.
+The report's categories, the radar builder and the rest of its read shape
+live in `services/prism_view` (WP5-F), which the report and PDF routes read.
+`rating_label` stays here as the thin alias over `rating.grade_for_percent`
+that `eval_report` and the grade-scale tests pin.
 """
 from __future__ import annotations
 
@@ -53,7 +54,7 @@ from app.core.config import get_settings
 from app.models.assessment import AssessmentConversation
 from app.models.candidate import JobCandidateLink
 from app.models.job import Job
-from app.services import cost_telemetry, ppi, ppi_interview
+from app.services import cost_telemetry, ppi_interview
 from app.services.assessment_pipeline import composition, grading, persistence
 from app.services.assessment_pipeline import evidence as stage_evidence
 from app.services.assessment_pipeline.types import (
@@ -63,57 +64,27 @@ from app.services.assessment_pipeline.types import (
     ProvenanceRecorder,
 )
 from app.services.miti.items import UNANSWERED_SCORE
-from app.services.rating import GRADES, band_index_for, grade_for_percent
+from app.services.rating import GRADES, grade_for_percent
 from app.services.siddhi import remarks as siddhi_remarks
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "CATEGORY_MATCHING",
-    "CATEGORY_TECHNICAL",
     "GRADES",
     "MODE_MITI",
     "PPI_REMARK_WORDS",
     "PROBE_REMARK_WORDS",
-    "RADAR_BANDS",
-    "RADAR_SERIES",
-    "REPORT_CATEGORIES",
     "RunResult",
     "UNANSWERED_SCORE",
-    "band_index_for",
-    "build_radar_charts",
     "rating_label",
     "run_assessment",
     "word_count",
 ]
 
-#: LEGACY. Reports written before the Vivekium release carry AI Score rows
-#: under this category (four matching parameters, 25 to 30 word remarks). The
-#: AI Score is now Yukti's frozen snapshot on `ai_score_json`; nothing writes
-#: this category any more, and it is read so a historic report still renders.
-CATEGORY_MATCHING = "matching"
-
-#: LEGACY. Reports written before Draft v4 carry rows scored against the
-#: standalone technical bank that no longer exists; read, never written.
-CATEGORY_TECHNICAL = "technical"
-
-#: Report section order. The two legacy categories trail it because only a
-#: historic report carries them.
-REPORT_CATEGORIES: tuple[str, ...] = (
-    CATEGORY_MATCHING,
-    ppi.CATEGORY_MUST_HAVE,
-    ppi.CATEGORY_NICE_TO_HAVE,
-    ppi.CATEGORY_BEHAVIOURAL,
-    CATEGORY_TECHNICAL,
-)
-
 #: Word contracts, owned by Siddhi's writer and re-exported for the readers
 #: that still import them from here.
 PPI_REMARK_WORDS = siddhi_remarks.SKILL_REMARK_WORDS
 PROBE_REMARK_WORDS = siddhi_remarks.PROBE_REMARK_WORDS
-
-#: Ordered best-to-worst grade labels, for the radar legend and colour ramp.
-RADAR_BANDS: tuple[str, ...] = GRADES
 
 
 def rating_label(score: int | float | None) -> str | None:
@@ -129,88 +100,6 @@ def word_count(value: str) -> int:
     return siddhi_remarks.word_count(value)
 
 
-# ── Radar charts (spec 9.4) ──────────────────────────────────────────────────
-# Each chart plots TWO shapes on the same axes (what the job requires, what
-# the candidate demonstrated). No number appears on an axis, a data label or a
-# tooltip: `*_index` is a RENDERING COORDINATE (1..4), because a radar has no
-# geometry without a radius and the four grades ARE the radial axis.
-
-RADAR_CHART_KEYS: tuple[str, ...] = ("overall", *ppi.CATEGORIES)
-
-RADAR_CHART_TITLES: dict[str, str] = {
-    "overall": "Overall",
-    **{category: ppi.CATEGORY_LABELS[category] for category in ppi.CATEGORIES},
-}
-
-#: The legend below every chart, by word only (spec 9.4).
-RADAR_SERIES: tuple[str, ...] = ("Job Requirement", "Candidate Assessment")
-
-#: One Overall spoke per aspect, both shapes derived from the same rows the
-#: sections render, so a chart can never disagree with the text beside it.
-OVERALL_AXES: tuple[tuple[str, str], ...] = tuple(
-    (category, ppi.CATEGORY_LABELS[category]) for category in ppi.CATEGORIES
-)
-
-
-def _mean(values: list[int]) -> int:
-    return round(sum(values) / len(values)) if values else UNANSWERED_SCORE
-
-
-def _axis(name: str, candidate_score: int, required: int | None) -> dict[str, Any]:
-    candidate_band = grade_for_percent(candidate_score) or GRADES[-1]
-    requirement_band = grade_for_percent(
-        required if required is not None else ppi.DEFAULT_REQUIRED_LEVEL
-    ) or GRADES[-1]
-    return {
-        "axis": name,
-        "requirement_band": requirement_band,
-        "requirement_index": band_index_for(requirement_band),
-        "candidate_band": candidate_band,
-        "candidate_index": band_index_for(candidate_band),
-    }
-
-
-def build_radar_charts(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The radar charts, built from the SAME dimension rows the sections render.
-
-    A row with no score (a skill stated "Not assessed", 0130) has NO axis: a
-    candidate shape drawn for it would plot a grade nobody made, and drawing
-    it at the bottom band would state Not Matching. Pure; unit-tested.
-    """
-    scored = [row for row in dimensions if row.get("score") is not None]
-    by_category: dict[str, list[dict[str, Any]]] = {}
-    for row in scored:
-        by_category.setdefault(row["category"], []).append(row)
-
-    charts: list[dict[str, Any]] = []
-    overall_axes = []
-    for category, label in OVERALL_AXES:
-        rows = by_category.get(category) or []
-        if not rows:
-            continue
-        overall_axes.append(
-            _axis(
-                label,
-                _mean([row["score"] for row in rows]),
-                _mean([row["required_level"] for row in rows if row.get("required_level")])
-                if any(row.get("required_level") for row in rows)
-                else None,
-            )
-        )
-    charts.append({"key": "overall", "title": RADAR_CHART_TITLES["overall"], "axes": overall_axes})
-
-    for category in ppi.CATEGORIES:
-        rows = sorted(by_category.get(category) or [], key=lambda item: item["ordinal"])
-        charts.append(
-            {
-                "key": category,
-                "title": RADAR_CHART_TITLES[category],
-                "axes": [
-                    _axis(row["name"], row["score"], row.get("required_level")) for row in rows
-                ],
-            }
-        )
-    return charts
 
 
 # ── The orchestrator ─────────────────────────────────────────────────────────
