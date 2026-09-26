@@ -413,13 +413,81 @@ def test_workflow_one_fast_triage(caller: Caller, world: World) -> None:
         f"{BASE}/jobs/{world.job}/candidates/{top['link_id']}/stage"
     ).json()
     assert stage["can_move"] is True
-    target = stage["allowed_transitions"][0]["status"]
+    # The first move a stage control offers from Applied is the invitation,
+    # which is an INVITATION rather than a bare stage write and has its own
+    # test below (`test_the_stage_control_is_not_a_second_invitation_door`).
+    # Triage here moves the candidate by the first plain transition.
+    target = next(
+        option["status"]
+        for option in stage["allowed_transitions"]
+        if option["status"] != "assessment_invited"
+    )
     moved = caller.http.post(
         f"{BASE}/jobs/{world.job}/candidates/{top['link_id']}/stage",
         json={"status": target},
     )
     assert moved.status_code == 200, moved.text
     assert moved.json()["stored_status"] == target
+
+
+async def _stage_and_invitations(link_id) -> tuple[str, int]:
+    """The link's stored status and its invitation count, read back from a
+    second connection after the response."""
+    eng = engine()
+    try:
+        async with eng.connect() as conn:
+            await conn.execute(sa.text("SET app.bypass_rls = 'on'"))
+            status = (
+                await conn.execute(
+                    sa.text("SELECT status FROM job_candidate_links WHERE id = :l"),
+                    {"l": link_id},
+                )
+            ).scalar_one()
+            invitations = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT count(*) FROM assessment_conversations "
+                        "WHERE job_candidate_link_id = :l"
+                    ),
+                    {"l": link_id},
+                )
+            ).scalar_one()
+            return str(status), int(invitations)
+    finally:
+        await eng.dispose()
+
+
+def test_the_stage_control_is_not_a_second_invitation_door(
+    caller: Caller, world: World
+) -> None:
+    """CONTRACT v8. The dashboard's stage control reached `apply_transition`
+    for ANY legal target, so "Assessment invitation sent" was written with no
+    `assessment_conversations` row (which IS the invitation), no credit
+    question and no email, the defect `api/pipeline.change_status` had
+    already closed. And "Assessment in progress" could be set by hand, which
+    claims a session the candidate never opened."""
+    from app.services import hiring_pipeline
+
+    _as(caller, world, Role.recruiter)
+    link_id = world.links["Unread Applicant"]
+    url = f"{BASE}/jobs/{world.job}/candidates/{link_id}/stage"
+
+    in_progress = caller.http.post(url, json={"status": "assessment_in_progress"})
+    assert in_progress.status_code == 409, in_progress.text
+    assert in_progress.json()["detail"] == hiring_pipeline.SYSTEM_ONLY_REFUSAL
+    assert asyncio.run(_stage_and_invitations(link_id)) == ("applied", 0)
+
+    # The world's job has no saved skills, so the INVITATION SERVICE refuses
+    # it with its own sentence. A bare `apply_transition` (the defect) would
+    # have answered 200 and written the stage with no invitation row, so the
+    # refusal naming the skills is itself the proof the move went through
+    # `assessment_invitations`, and the stage did not move alone.
+    from app.services import assessment_invitations
+
+    invited = caller.http.post(url, json={"status": "assessment_invited"})
+    assert invited.status_code == 409, invited.text
+    assert invited.json()["detail"] == assessment_invitations.NOT_READY_DETAIL
+    assert asyncio.run(_stage_and_invitations(link_id)) == ("applied", 0)
 
 
 def _label(world: World, row: dict) -> str:

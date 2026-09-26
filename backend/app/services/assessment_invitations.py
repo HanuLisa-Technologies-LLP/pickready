@@ -389,3 +389,49 @@ async def send_invitation_email(
     if row is None:
         return {"status": "skipped", "reason": "no recipient or already queued"}
     return {"status": "queued", "email_log_id": str(row.id)}
+
+
+async def invite_by_stage_move(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    job_id: uuid.UUID,
+    link_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    actor_role: object,
+    remarks: str | None = None,
+) -> pipeline.TransitionResult:
+    """A hand "move to Assessment invitation sent" IS an invitation.
+
+    The ONE implementation behind both stage controls, `api/pipeline.
+    change_status` and `api/dashboard.move_stage`. Applied as a bare
+    transition it wrote the stage with no `assessment_conversations` row
+    (which IS the invitation): the candidate was mailed a link the start
+    route refused, no credit was asked about, and `select-candidates` could
+    never invite them afterwards because they were no longer at `applied`
+    (PLAN-p3 WP1). The dashboard control was the second door with that
+    defect until the stage 3 final sweeps (CONTRACT v8).
+
+    Inviting takes the invitation's own capability, SEND_OUTREACH, on top of
+    whatever the calling route requires: a person who may move a stage but
+    not invite must not invite by this door. Every refusal is an
+    `InvitationRefused` raised before the first write.
+    """
+    from app.services import capabilities as caps  # noqa: PLC0415
+    from app.services import rbac  # noqa: PLC0415 -- rbac reaches the tool layer
+
+    if not await rbac.has_capability(
+        session, tenant_id, actor_role, caps.SEND_OUTREACH, actor_user_id
+    ):
+        raise InvitationRefused(403, f"Missing capability: {caps.SEND_OUTREACH}")
+    invited = await invite_batch(
+        session,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        link_ids=[link_id],
+        actor_user_id=actor_user_id,
+        remarks=remarks,
+    )
+    if not invited.transitions:
+        raise InvitationRefused(409, invited.skipped[0]["reason"])
+    return invited.transitions[0]

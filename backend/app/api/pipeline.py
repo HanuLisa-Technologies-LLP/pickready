@@ -20,7 +20,7 @@ from app.api.deps import CurrentUser, get_tenant_db, require_capability
 from app.services import assessment_invitations, capabilities as caps
 from app.services import email_outbox
 from app.services import hiring_pipeline as pipeline
-from app.services import rbac, telemetry_events
+from app.services import telemetry_events
 from app.services.audit import audit
 
 router = APIRouter()
@@ -194,27 +194,20 @@ async def change_status(
         # withhold it, and `email_queued` says so. Inviting takes the
         # invitation's own capability as well as this route's: a person who
         # may decide on a profile but not invite must not invite by this door.
-        if not await rbac.has_capability(
-            session, user.tenant_id, user.role, caps.SEND_OUTREACH, user.user_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing capability: {caps.SEND_OUTREACH}",
-            )
+        # (`assessment_invitations.invite_by_stage_move`, shared with the
+        # dashboard's stage control.)
         try:
-            invited = await assessment_invitations.invite_batch(
+            result = await assessment_invitations.invite_by_stage_move(
                 session,
                 tenant_id=uuid.UUID(str(user.tenant_id)),
                 job_id=uuid.UUID(str(row["job_id"])),
-                link_ids=[link_id],
+                link_id=link_id,
                 actor_user_id=user.user_id,
+                actor_role=user.role,
                 remarks=body.remarks,
             )
         except assessment_invitations.InvitationRefused as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-        if not invited.transitions:
-            raise HTTPException(status_code=409, detail=invited.skipped[0]["reason"])
-        result = invited.transitions[0]
         queued = True
     else:
         try:
