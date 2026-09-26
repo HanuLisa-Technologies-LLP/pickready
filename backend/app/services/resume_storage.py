@@ -256,12 +256,27 @@ def _fetch_object_bytes(object_name: str) -> bytes:
         ) from exc
 
 
+def is_in_current_store(provider: str | None, url: str | None) -> bool:
+    """Whether a resume row names an object in the store this product uses.
+
+    The ONE answer, read by `fetch_resume_bytes` and by the candidate erasure
+    (`erasure.candidate_object_keys`), so reading and deleting cannot disagree
+    about which rows they may touch. Either half is enough: the provider
+    label, or an `s3://` URL. The URL half matters because the column's server
+    default was 'cloudinary' until migration 0128, so a writer that forgot the
+    column labelled an S3 object with a store it never touched; that row's
+    bytes are in S3 and must be both readable and erasable.
+    """
+    return provider == STORAGE_PROVIDER or str(url or "").startswith(
+        object_storage.S3_SCHEME
+    )
+
+
 async def fetch_resume_bytes(profile: Any) -> bytes:
     if not profile_has_resume(profile):
         raise ResumeStorageError("The resume file is missing its storage metadata.")
     provider = getattr(profile, "resume_storage_provider", None)
-    url = str(profile.resume_url or "")
-    if provider != STORAGE_PROVIDER and not url.startswith(object_storage.S3_SCHEME):
+    if not is_in_current_store(provider, profile.resume_url):
         raise ResumeStorageError("The resume has not been migrated to private storage.")
     return await run_in_threadpool(_fetch_object_bytes, profile.resume_public_id)
 

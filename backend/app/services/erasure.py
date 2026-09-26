@@ -628,19 +628,19 @@ class LegacyObjectNotDeletable(RuntimeError):
     deleted while the actual bytes sat untouched elsewhere. A deletion that
     cannot be performed must be visible, not confirmed.
 
-    Decided by "not `resume_storage.STORAGE_PROVIDER`" rather than by naming
-    the pre-AWS provider: that constant and its readers went in the 2026-09
-    final sweeps, and the database CHECK still admits the old value until a
-    migration narrows it, so the refusal must not depend on a name.
+    Decided by `resume_storage.is_in_current_store`, the same answer the
+    resume READ path uses, rather than by naming the pre-AWS provider: that
+    constant and its readers went in the 2026-09 final sweeps, and the
+    database CHECK still admits the old value until a migration narrows it,
+    so the refusal must not depend on a name.
     """
 
 
-def _current_storage_provider() -> str:
-    """The one provider this module can delete from, read from
-    `resume_storage` rather than repeated so the two cannot disagree."""
+def _in_current_store(provider: str | None, url: str | None) -> bool:
+    """`resume_storage.is_in_current_store`, imported late to avoid a cycle."""
     from app.services import resume_storage  # noqa: PLC0415 -- avoids a cycle
 
-    return resume_storage.STORAGE_PROVIDER
+    return resume_storage.is_in_current_store(provider, url)
 
 
 async def candidate_object_keys(
@@ -665,21 +665,21 @@ async def candidate_object_keys(
     identifier = uuid.UUID(str(candidate_id))
     params = {"candidate_id": str(identifier)}
     found: list[dict[str, str]] = []
-    current_provider = _current_storage_provider()
 
     # 1. Resumes. The key is `resume_public_id`; `resume_storage_provider`
     # says which store it is in, and a row written before the AWS migration is
     # named rather than silently mishandled (see LegacyObjectNotDeletable).
     resumes = await session.execute(
         text(
-            "SELECT resume_public_id, resume_storage_provider FROM profiles "
+            "SELECT resume_public_id, resume_storage_provider, resume_url "
+            "FROM profiles "
             "WHERE candidate_id = :candidate_id "
             "AND resume_public_id IS NOT NULL AND btrim(resume_public_id) <> ''"
         ),
         params,
     )
-    for key, provider in resumes.all():
-        legacy = str(provider or "") != current_provider
+    for key, provider, url in resumes.all():
+        legacy = not _in_current_store(provider, url)
         found.append(
             {"key": str(key), "kind": KIND_RESUME_LEGACY if legacy else KIND_RESUME}
         )
