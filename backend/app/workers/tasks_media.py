@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.purge_assessment_media",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def purge_assessment_media():
     """Hourly retention sweep: owner decision D4.
@@ -81,6 +83,8 @@ def purge_assessment_media():
 @task(
     name="pickready.reconcile_assessment_recordings",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_assessment_recordings():
     """Hourly repair of the recording pipeline. Five passes, each asking the
@@ -230,6 +234,11 @@ def reconcile_assessment_recordings():
 @task(
     name="pickready.process_assessment_video",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason=(
+        "one tenant's work, not yet proven under tenant_worker_session (PLAN-p7 3.3 "
+        "converts only with a real-Postgres read-back test)"
+    ),
     max_attempts=2,
     backoff_seconds=10.0,
 )

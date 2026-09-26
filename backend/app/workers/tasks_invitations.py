@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.send_assessment_invitation",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads the candidate row, which a tenant session cannot see when a databank "
+        "candidate owned by another tenant is linked to this job"
+    ),
     # Safe to retry: the run is idempotent on the application's invitation
     # email (`email_outbox.invitation_key`), so a second attempt after a
     # transient database error queues nothing twice.

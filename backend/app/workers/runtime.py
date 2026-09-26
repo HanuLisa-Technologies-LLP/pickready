@@ -51,9 +51,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -135,12 +136,13 @@ async def worker_session():
     first use, which is the worst version of a broken connection because it
     fails inside the task rather than at connect time.
 
-    ASSUMPTION (unchanged from the Celery worker this replaces): background
-    tasks are trusted backend processes that legitimately operate across
-    tenants (databank matching spans `tenant_id IS NULL` rows), so the session
-    runs with `app.bypass_rls = 'on'`, the same escape hatch the RLS policies
-    define for the audit-logged super-admin path. Tenant scoping inside a task
-    is done explicitly per query where a tenant is known.
+    THE BYPASS PATH. The session runs with `app.bypass_rls = 'on'`, the same
+    escape hatch the RLS policies define for the audit-logged super-admin path.
+    Only a task registered `rls="bypass"` opens it, and its registration says
+    why in words (`registry.task`): a sweep over every tenant, a read of a
+    tenant-free table such as `candidates` or `profiles`, or a body not yet
+    proven under `tenant_worker_session`. A task that belongs to one tenant
+    and has been proven opens `tenant_worker_session` instead.
     """
     engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
     try:
@@ -153,6 +155,97 @@ async def worker_session():
             yield session
     finally:
         await engine.dispose()
+
+
+@asynccontextmanager
+async def tenant_worker_session(tenant_id: uuid.UUID):
+    """Fresh engine + session for one task run, confined to ONE tenant by RLS.
+
+    The tenant twin of `worker_session`, for tasks registered `rls="tenant"`.
+    The Postgres policy, not the task's WHERE clauses, is what keeps the run
+    inside the customer it was dispatched for (claude.md rule 3).
+
+    - A fresh engine per run, for the Lambda-freeze reason `worker_session`
+      gives, and disposed on exit.
+    - The scope is a CONNECTION STARTUP PARAMETER (asyncpg `server_settings`),
+      not a statement run after connecting and not the transaction-local
+      `SET LOCAL` that `core.db.tenant_scope` uses. Every connection this
+      engine ever opens carries it from its first byte, INCLUDING the one
+      `pool_pre_ping` opens to replace a connection that died between two of
+      the task's commits. A `SET ROLE` / `set_config` issued once on the first
+      connection would be missing on that replacement, and under a login role
+      that owns the tables (dev, the test database) the replacement would run
+      with no policy at all. A startup parameter is also the session DEFAULT,
+      so a rollback in the body, a commit, or even `RESET ALL` returns to it
+      rather than shedding it. Correct HERE and nowhere else: the engine is
+      private to this run and disposed on exit, so nothing set on its
+      connections can reach another tenant's work through a shared pool.
+    - `role` drops to `postgres_rls_app_role` when one is configured, so the
+      policy binds even when the login role owns the tables or bypasses RLS.
+      The name is validated as a plain SQL identifier by the same rule the API
+      path uses (`core.db._app_role`).
+    - `app.bypass_rls` is set to 'off' EXPLICITLY. "off" is the value the
+      policies compare against, and saying it costs nothing.
+    """
+    from app.core.db import _app_role
+
+    tid = uuid.UUID(str(tenant_id))
+    scope = {"app.tenant_id": str(tid), "app.bypass_rls": "off"}
+    role = _app_role()
+    if role is not None:
+        scope["role"] = role
+    engine = create_async_engine(
+        get_settings().database_url,
+        pool_pre_ping=True,
+        connect_args={"server_settings": scope},
+    )
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
+
+#: The ONLY tables `resolve_tenant_id` may read, each by its primary key, each
+#: with a NOT NULL `tenant_id` (asserted against `information_schema` by
+#: `tests/test_worker_tenant_session.py`). An allowlist rather than a table-name
+#: argument, because the name is interpolated into SQL and a map keyed by a
+#: Literal cannot be steered by a payload.
+TENANT_OWNER_TABLES: dict[str, str] = {
+    "link": "job_candidate_links",
+    "job": "jobs",
+    "email_log": "email_log",
+    "purchase": "credit_purchases",
+    "support_thread": "support_threads",
+}
+
+TenantOwnerKind = Literal["link", "job", "email_log", "purchase", "support_thread"]
+
+
+async def resolve_tenant_id(kind: TenantOwnerKind, entity_id: Any) -> uuid.UUID | None:
+    """The tenant that owns one row, read BEFORE the tenant session opens.
+
+    A task dispatched with an entity id rather than a tenant id has to learn
+    the tenant before it can open `tenant_worker_session`, and under RLS it
+    cannot read the row to find out. So this is a one-query BYPASS read of
+    exactly one column, `tenant_id`, from one allowlisted table by primary key,
+    and nothing else of the row ever crosses into the task through it.
+
+    None means the row does not exist, which the caller answers exactly as its
+    body already answered a missing row (a skip, logged). It is not a
+    fallback: there is no tenant to confine a run over nothing to.
+    """
+    table = TENANT_OWNER_TABLES[kind]
+    row_id = uuid.UUID(str(entity_id))
+    async with worker_session() as session:
+        value = (
+            await session.execute(
+                text(f"SELECT tenant_id FROM {table} WHERE id = :id"),
+                {"id": row_id},
+            )
+        ).scalar_one_or_none()
+    return None if value is None else uuid.UUID(str(value))
 
 
 def _run(coro):

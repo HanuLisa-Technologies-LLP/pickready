@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.generate_candidate_questions",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason="reads the candidate's tenant-free profile and resume",
     max_attempts=2,
     backoff_seconds=5.0,
 )
