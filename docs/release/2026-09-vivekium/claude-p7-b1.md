@@ -26,23 +26,33 @@ clause is defence in depth") had never been true for background work.
   need not invent a scope.** None reads as "undeclared" and the registry sweep
   fails on it; it never reads as bypass.
 
-## `tenant_worker_session(tenant_id)` IS SESSION-LEVEL, AND THAT IS CORRECT ONLY HERE
+## `tenant_worker_session(tenant_id)` SCOPES EVERY CONNECTION AT STARTUP, AND THAT IS CORRECT ONLY HERE
 
 - A fresh engine per run (the Lambda-freeze reason `worker_session` gives),
   disposed on exit.
-- `SET ROLE "<postgres_rls_app_role>"` (validated by `core.db._app_role`, the
-  API's own rule), then `set_config('app.tenant_id', tid, false)` and
-  `set_config('app.bypass_rls', 'off', false)`, then a commit so a rollback in
-  the body cannot roll back the tenant it runs as.
-- **Session-level rather than `SET LOCAL`** because the engine is private to
-  the run (no pool can carry the setting to another tenant) and a task commits
-  several times (claim, send, settle): a transaction-local tenant would be gone
-  after the first commit and every later statement would run with none. Do NOT
-  copy this into anything that shares a pool; `core.db.tenant_scope` stays
+- The scope is asyncpg `server_settings`, a CONNECTION STARTUP PARAMETER:
+  `role` = `postgres_rls_app_role` (validated by `core.db._app_role`, the
+  API's own rule), `app.tenant_id` = the tenant, `app.bypass_rls` = `off`.
+  A startup parameter is the session DEFAULT, so a commit, a rollback in the
+  body or even `RESET ALL` returns to it rather than shedding it.
+- **NOT statements run once after connecting, and the first draft of this
+  package did exactly that.** A task commits several times (claim, send,
+  settle), each commit hands the connection back to the engine's pool, and
+  `pool_pre_ping` silently REPLACES one that died in between. `SET ROLE` and
+  `set_config` issued on the first connection are absent on the replacement,
+  so under a login role that owns the tables (dev, the test database) the rest
+  of the run saw every tenant. `test_a_replacement_connection_carries_the_same_scope`
+  kills the backend between two commits and reads back from the replacement;
+  mutation-checked against the statement version, which answers as the
+  superuser.
+- **Session-scoped rather than `SET LOCAL`** because the engine is private to
+  the run (no shared pool can carry the setting to another tenant) and a
+  transaction-local tenant would be gone after the first commit. Do NOT copy
+  this into anything that shares a pool; `core.db.tenant_scope` stays
   transaction-local for exactly that reason.
-- **The test database logs in as a superuser**, so without the `SET ROLE` the
-  policy would not bind at all and every isolation test would pass by
-  construction. The mutation check that removes it fails four tests.
+- **The test database logs in as a superuser**, so without the `role`
+  parameter the policy would not bind at all and every isolation test would
+  pass by construction. The mutation check that removes it fails five tests.
 
 ## `resolve_tenant_id(kind, id)` READS ONE COLUMN FROM AN ALLOWLISTED TABLE
 

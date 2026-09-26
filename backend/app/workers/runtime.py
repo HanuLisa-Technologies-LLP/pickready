@@ -167,42 +167,41 @@ async def tenant_worker_session(tenant_id: uuid.UUID):
 
     - A fresh engine per run, for the Lambda-freeze reason `worker_session`
       gives, and disposed on exit.
-    - SESSION-level settings (`set_config(..., false)` and a plain `SET ROLE`),
-      not the transaction-local ones `core.db.tenant_scope` uses. That is
-      correct HERE and nowhere else: the engine is private to this run and
-      disposed on exit, so nothing set on its connection can leak into another
-      tenant's work through a pool, and a task commits several times (claim,
-      send, settle), so a transaction-local setting would be gone after the
-      first commit and every later statement would run with no tenant at all.
-    - `SET ROLE` drops to `postgres_rls_app_role` when one is configured, so
-      the policy binds even when the login role owns the tables or bypasses
-      RLS (dev, the test database). The name is validated as a plain SQL
-      identifier by the same rule the API path uses.
+    - The scope is a CONNECTION STARTUP PARAMETER (asyncpg `server_settings`),
+      not a statement run after connecting and not the transaction-local
+      `SET LOCAL` that `core.db.tenant_scope` uses. Every connection this
+      engine ever opens carries it from its first byte, INCLUDING the one
+      `pool_pre_ping` opens to replace a connection that died between two of
+      the task's commits. A `SET ROLE` / `set_config` issued once on the first
+      connection would be missing on that replacement, and under a login role
+      that owns the tables (dev, the test database) the replacement would run
+      with no policy at all. A startup parameter is also the session DEFAULT,
+      so a rollback in the body, a commit, or even `RESET ALL` returns to it
+      rather than shedding it. Correct HERE and nowhere else: the engine is
+      private to this run and disposed on exit, so nothing set on its
+      connections can reach another tenant's work through a shared pool.
+    - `role` drops to `postgres_rls_app_role` when one is configured, so the
+      policy binds even when the login role owns the tables or bypasses RLS.
+      The name is validated as a plain SQL identifier by the same rule the API
+      path uses (`core.db._app_role`).
     - `app.bypass_rls` is set to 'off' EXPLICITLY. "off" is the value the
-      policies compare against, and saying it costs one statement.
+      policies compare against, and saying it costs nothing.
     """
     from app.core.db import _app_role
 
     tid = uuid.UUID(str(tenant_id))
-    engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
+    scope = {"app.tenant_id": str(tid), "app.bypass_rls": "off"}
+    role = _app_role()
+    if role is not None:
+        scope["role"] = role
+    engine = create_async_engine(
+        get_settings().database_url,
+        pool_pre_ping=True,
+        connect_args={"server_settings": scope},
+    )
     try:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            role = _app_role()
-            if role is not None:
-                # Identifier validated by `_app_role`; a role cannot be bound.
-                await session.execute(text(f'SET ROLE "{role}"'))
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', :tid, false)"),
-                {"tid": str(tid)},
-            )
-            await session.execute(
-                text("SELECT set_config('app.bypass_rls', 'off', false)")
-            )
-            # Committed so the settings are not tied to a transaction the task
-            # body might roll back: rolling back the body's first statement
-            # must not also roll back the tenant it runs as.
-            await session.commit()
             yield session
     finally:
         await engine.dispose()
@@ -247,6 +246,7 @@ async def resolve_tenant_id(kind: TenantOwnerKind, entity_id: Any) -> uuid.UUID 
             )
         ).scalar_one_or_none()
     return None if value is None else uuid.UUID(str(value))
+
 
 def _run(coro):
     """Run a coroutine to completion from sync task code.

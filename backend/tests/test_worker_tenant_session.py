@@ -23,10 +23,13 @@ What is pinned here, in four layers:
    row it finds nothing, which is the policy doing the work rather than a
    WHERE clause.
 
-Mutation checks recorded in the release report: `SET ROLE` removed from
-`tenant_worker_session` (the test database logs in as a superuser, so the
-policy stops binding) fails `test_another_tenants_rows_are_invisible`; a
-converted task switched back to `_worker_session` fails
+Mutation checks recorded in the release report: the `role` startup parameter
+removed from `tenant_worker_session` (the test database logs in as a
+superuser, so the policy stops binding) fails five tests here, including
+`test_another_tenants_rows_are_invisible`; the scope applied as statements on
+the first connection instead of as startup parameters fails
+`test_a_replacement_connection_carries_the_same_scope`; a converted task
+switched back to `_worker_session` fails
 `test_a_declaration_is_binding_on_the_body`.
 """
 from __future__ import annotations
@@ -189,6 +192,34 @@ async def test_the_scope_survives_the_tasks_own_commits(two_tenants) -> None:
         )).scalar_one()
     assert seen == {a.job}
     assert flag == "off"
+
+
+async def test_a_replacement_connection_carries_the_same_scope(two_tenants) -> None:
+    """A connection that dies between two of the task's commits is replaced by
+    `pool_pre_ping`, and the replacement is scoped exactly like the first.
+
+    This is why the scope is a connection startup parameter: a `SET ROLE` and
+    `set_config` run once on the first connection would be absent on the
+    replacement, and under a login role that owns the tables (this database)
+    the rest of the run would see every tenant.
+    """
+    a, b = two_tenants
+    async with tenant_worker_session(a.tenant) as session:
+        first = (await session.execute(sa.text("SELECT pg_backend_pid()"))).scalar_one()
+        await session.commit()
+        await comms_world.rows(
+            comms_world.factory(), "SELECT pg_terminate_backend(:pid) AS ok", {"pid": first}
+        )
+        second = (await session.execute(sa.text("SELECT pg_backend_pid()"))).scalar_one()
+        role = (await session.execute(sa.text("SELECT current_user"))).scalar_one()
+        seen = set(
+            (await session.execute(
+                sa.text("SELECT id FROM jobs WHERE id = ANY(:ids)"), {"ids": [a.job, b.job]}
+            )).scalars()
+        )
+    assert second != first, "the connection was not replaced; the test proves nothing"
+    assert role == runtime.get_settings().postgres_rls_app_role
+    assert seen == {a.job}
 
 
 async def test_a_write_into_another_tenant_is_refused_by_the_policy(two_tenants) -> None:
