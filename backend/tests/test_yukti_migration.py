@@ -155,7 +155,16 @@ def _seed(connection) -> dict[str, uuid.UUID]:
     return ids
 
 
+#: The report tables 0130 makes insert-only by trigger. This test replays 0122
+#: on a HEAD schema, so it first returns them to the world 0122 actually runs
+#: in, where its `must_have_failed` backfill is an ordinary UPDATE. The
+#: enclosing transaction is rolled back, which restores both triggers.
+IMMUTABLE_AFTER_0130 = ("functional_skills_reports", "report_dimensions")
+
+
 def _round_trip(connection) -> None:
+    for table in IMMUTABLE_AFTER_0130:
+        connection.execute(text(f"ALTER TABLE {table} DISABLE TRIGGER trg_{table}_immutable"))
     context = MigrationContext.configure(connection)
     with Operations.context(context):
         migration.downgrade()

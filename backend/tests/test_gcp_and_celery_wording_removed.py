@@ -42,8 +42,6 @@ HISTORY: dict[tuple[str, str], str] = {
         "PLATFORM_TIMEZONE records that it used to live on the Celery app object",
     ("backend/app/workers/dispatch.py", "celery_app"):
         "dispatch documents the call it replaced and the signature it mirrors",
-    ("backend/app/workers/runtime.py", "Celery worker"):
-        "an ASSUMPTION carried over unchanged from the worker this replaced",
     ("backend/tests/test_deploy_secret_hygiene.py", "Celery worker"):
         "the docstring names what the on-demand agent replaced",
     ("backend/tests/test_task_registry.py", "celery_app"):

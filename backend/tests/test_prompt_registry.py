@@ -206,6 +206,13 @@ def test_no_prompt_is_left_inline_in_a_service() -> None:
             # the thing being asked for, not a prompt inline.
             if any(n.endswith(("_NAME", "_PATH", "_KEY")) for n in names):
                 continue
+            # "SYSTEM_ONLY" is the pipeline's word for a stage only a system
+            # writer may set (`hiring_pipeline.SYSTEM_ONLY_REFUSAL` is the
+            # sentence a refused hand move answers with), not the system ROLE
+            # of a prompt. Matched as that exact token pair, so `_SYSTEM`,
+            # `EVALUATOR_SYSTEM` and `SYSTEM_PROMPT` are all still swept.
+            if all("SYSTEM_ONLY" in n and "PROMPT" not in n for n in names):
+                continue
             # A literal string, or a concatenation of them. A call
             # (`registry.render(...)`) is the shape we want.
             if not isinstance(node.value, (ast.Constant, ast.JoinedStr, ast.BinOp)):
