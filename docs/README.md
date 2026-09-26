@@ -20,15 +20,20 @@ design tooling reads them from the project root).
 | Know how candidates are evaluated | [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md) |
 | Follow a candidate or a job end to end | [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) |
 | Set up a job: JD, SWOT, Skills, publish, the lock | [spec/JOB_SETUP_FLOW.md](spec/JOB_SETUP_FLOW.md) |
+| Follow an assessment from invitation to PRISM Report | [spec/ASSESSMENT_FLOW.md](spec/ASSESSMENT_FLOW.md) |
+| Run or grade a candidate's code | [spec/CODE_EXECUTION.md](spec/CODE_EXECUTION.md) |
+| Know what runs where on AWS | [operations/INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) |
 | Add, route or debug a background task | [spec/BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) |
 | Prove a change works end to end, or reproduce a failure | [spec/HARNESS.md](spec/HARNESS.md) |
 | Change code without breaking a rule | [../claude.md](../claude.md) |
 
-Current Tatva authority: Sutra proposes the initial assessment matrix; the
-authorized Hiring Manager decides its criteria; Save Matrix enriches and freezes
-the reviewed version for downstream assessment. Company Profile supplies relevant
-company context. Company DNA is a retired feature mentioned only in historical
-records and migration history.
+Current job setup (the Vivekium simplification release, 2026-09-25): Sutra
+drafts Skills from the JD, the saved SWOT and the Company Profile; the team
+edits and saves them; the skills and the grade lock at the first candidate's
+start, and that snapshot is what every candidate is assessed against. Company
+Profile supplies company context and Drishti is optional context text only.
+There is no matrix, no Save Matrix and no freeze. Company DNA is a retired
+feature mentioned only in historical records and migration history.
 
 ## Precedence, when two documents disagree
 
@@ -80,7 +85,9 @@ document.
 | [AI_RUNTIME_UPGRADE.md](spec/AI_RUNTIME_UPGRADE.md) | RPN-AI-UP-001, precedence rank 3a. The AI runtime, retrieval, evaluation and AI security. **Read it beside [verification/AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md)**, which records where its own section 2 audit turned out to be wrong |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
-| [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
+| [ASSESSMENT_FLOW.md](spec/ASSESSMENT_FLOW.md) | The Tatva Assessment end to end since the Vivekium release: invitation, the question budget and mix, the start and the contract lock, the server's turn clock, spoken answers, the four-stage scoring pipeline, and the Miti and Siddhi interfaces |
+| [CODE_EXECUTION.md](spec/CODE_EXECUTION.md) | Executed coding questions: the sandbox port, languages and limits, the private answer key, question writing proven in the sandbox, Run, Submit, review and score, the sweeps and the editor. Ships disabled on pilot, and says so |
+| [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths (including the Path P device pause), the one pause record, the audio rules, the report, retention |
 | [ASSESSMENT_QUESTION_FORMATS.md](spec/ASSESSMENT_QUESTION_FORMATS.md) | The six question formats and the evidence-dominance rule |
 | [BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) | How background work is dispatched, routed, retried and scheduled after Celery |
 | [RETRIEVAL.md](spec/RETRIEVAL.md) | Candidate Retrieval (Yukti) and Evidence RAG (Vaada, Miti, Siddhi): two use cases, the shared primitives and their one owner each, the tool-layer boundary, index provenance and repair |
@@ -94,11 +101,13 @@ document.
 |---|---|
 | [SETUP.md](operations/SETUP.md) | Local development from a clean clone |
 | [DEPLOY_AWS.md](operations/DEPLOY_AWS.md) | AWS deployment runbook |
+| [INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) | What runs where on pilot: compute, data, the object store's prefixes and backstop lifecycle, network, schedules, the alarms this release added, and the switches that are off |
 | [DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) | Restoring the database, and what Redis and S3 do not restore with it. Written, never rehearsed, and says so |
 | [DATABASE_CREDENTIAL_MIGRATION.md](operations/DATABASE_CREDENTIAL_MIGRATION.md) | Rotating database credentials |
 | [JUDGE0_RUNBOOK.md](operations/JUDGE0_RUNBOOK.md) | The code sandbox: topology, monthly cost, the staged rollout, and the outage runbook. Not yet provisioned, and says so |
 | [TEST_BASELINE.md](operations/TEST_BASELINE.md) | What the suite covers and the current numbers |
 | [SKIPS.md](operations/SKIPS.md) | The declared skip inventory, enforced by a test |
+| [LEGACY_TABLES.md](operations/LEGACY_TABLES.md) | Every table and column dropped behind an emptiness guard, and every one kept as history, with the pilot counts and the reason (owner ruling S4) |
 
 ### `reference/` — lookup material
 | File | What it holds |
