@@ -46,15 +46,19 @@ def test_the_seam_matches_the_retrieval_entry_points_signature() -> None:
 
 
 def test_the_orchestrator_hands_siddhi_the_retrieval_entry_point() -> None:
-    """Read from the source, because running `synthesis_node` needs a scored
-    application; what this pins is the ONE call and what it is bound to."""
-    source = (BACKEND / "app/services/functional_assessment.py").read_text(encoding="utf-8")
+    """Read from the source, because running the composition stage needs a
+    scored application; what this pins is the ONE call and what it is bound
+    to. The composer call moved with the grading split (WP5-D) into
+    `assessment_pipeline/composition.py`."""
+    source = (BACKEND / "app/services/assessment_pipeline/composition.py").read_text(
+        encoding="utf-8"
+    )
     calls = [
         node
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "build_gap_analysis"
+        and node.func.attr == "compose_prism"
     ]
     assert len(calls) == 1
     [seam] = [kw.value for kw in calls[0].keywords if kw.arg == "passage_source"]

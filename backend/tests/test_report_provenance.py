@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-import app.services.functional_assessment as fa
+from app.services.assessment_pipeline import persistence
 from app.config import llm_providers
 from app.prompts import registry
 
@@ -27,13 +27,47 @@ def test_the_prompt_versions_are_real_registry_labels() -> None:
     """Each label must resolve through the registry, in name@declared+digest
     form, so the stored value describes the prompt files in the running image
     rather than a string somebody typed once."""
-    value = fa._report_prompt_versions()
+    from app.services.assessment_pipeline.types import ProvenanceRecorder
+
+    recorder = ProvenanceRecorder()
+    recorder.model_call("report_synthesis", "report_gap_probes")
+    recorder.model_call("report_synthesis", "report_gap_probes")
+    value = recorder.prompt_version()
     parts = value.split("; ")
-    assert len(parts) == 2, value
+    assert len(parts) == 1, "a repeated call is recorded once"
     for part in parts:
         name, _, version = part.partition("@")
         assert version == registry.version(name), part
         assert re.fullmatch(r"\d+\+[0-9a-f]+", version), part
+
+
+def test_a_run_with_no_accepted_model_call_claims_no_model() -> None:
+    """THE FALLBACK DIRECTION. Templates are recorded as templates and name no
+    model and no prompt, so a report no model wrote stores NULL for both."""
+    from app.services.assessment_pipeline.types import ProvenanceRecorder
+
+    recorder = ProvenanceRecorder()
+    recorder.template("remark:Distributed Systems")
+    recorder.template("probes:Kafka")
+    assert recorder.model_id() is None
+    assert recorder.prompt_version() is None
+    assert recorder.as_json() == {
+        "models": [],
+        "prompts": [],
+        "templates": ["remark:Distributed Systems", "probes:Kafka"],
+    }
+
+
+def test_the_report_row_takes_its_provenance_from_the_recorder() -> None:
+    """Asserted over the source, the way this suite pins write-site rules. The
+    columns used to be stamped from the scoring mode, so a run whose every
+    remark fell back to a template still named the writing model."""
+    import inspect
+
+    source = inspect.getsource(persistence.write_report)
+    assert '"model_id": provenance.model_id()' in source
+    assert '"prompt_version": provenance.prompt_version()' in source
+    assert '"generation_provenance_json": provenance.as_json()' in source
 
 
 def test_the_model_id_comes_from_the_closed_mapping() -> None:
@@ -45,36 +79,12 @@ def test_the_model_id_comes_from_the_closed_mapping() -> None:
     )
 
 
-def test_provenance_is_gated_on_the_model_backed_mode_in_source() -> None:
-    """Asserted over the source, the way this suite pins write-site rules.
-
-    The condition that guards `model_id` must be the same comparison that
-    guards `needs_human_review`'s fallback arm: equality with the ONE
-    known-good mode, never inequality with a list of bad ones, so a future
-    third scoring mode defaults to honest NULL provenance rather than to a
-    claimed model.
-    """
-    import inspect
-
-    source = inspect.getsource(fa)
-    assert re.search(
-        r'"model_id":\s*\(\s*\n?\s*llm_providers\.model_for\("report_synthesis"\)'
-        r"\s*\n?\s*if scoring_mode == MODE_MITI",
-        source,
-    ), "model_id must be written only for a model-backed run"
-    assert re.search(
-        r'"prompt_version":\s*\(\s*\n?\s*_report_prompt_versions\(\)'
-        r"\s*if scoring_mode == MODE_MITI",
-        source,
-    ), "prompt_version must be written only for a model-backed run"
-
-
 def test_the_columns_exist_and_are_nullable() -> None:
     """Nullable is load-bearing: every pre-0094 row and every fallback run is
     an honest NULL, and a NOT NULL constraint would force a lie into both."""
     from app.models.assessment import FunctionalSkillsReport
 
     table = FunctionalSkillsReport.__table__
-    for name in ("model_id", "prompt_version"):
+    for name in ("model_id", "prompt_version", "generation_provenance_json"):
         assert name in table.columns, name
         assert table.columns[name].nullable, name

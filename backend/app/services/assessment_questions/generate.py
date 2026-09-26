@@ -55,7 +55,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -251,6 +251,7 @@ async def _write_prose(
     resume_excerpt: str,
     resume_text: str,
     project_evidence: str,
+    resume_passages: Mapping[uuid.UUID, str] | None = None,
 ) -> tuple[list[str], list[bool]]:
     """One question per slot. Returns (prompts, generated) in slot order.
 
@@ -269,6 +270,11 @@ async def _write_prose(
                 "bucket": slot.category,
                 "skill": slot.skill_name,
                 "what_good_evidence_looks_like": skills[slot.competency_id].evidence_line,
+                # The parts of THIS resume that bear on the skill (the Evidence
+                # RAG), redacted like every other resume text in the request.
+                "resume_passages_for_this_skill": compensation_guard.redact_text(
+                    (resume_passages or {}).get(slot.competency_id, "")
+                ),
             }
             for slot in slots
         ],
@@ -537,6 +543,37 @@ def _stamp(
 # ── The entry point ──────────────────────────────────────────────────────────
 
 
+async def _resume_passages(
+    session: AsyncSession,
+    *,
+    job: Job,
+    link: JobCandidateLink,
+    skills: Mapping[uuid.UUID, ContractSkill],
+) -> dict[uuid.UUID, str]:
+    """{skill id: the resume passages that bear on it}, through the tool layer.
+
+    Scoped to the one profile the application was submitted with. An
+    application with no profile has no resume to read, which is an empty map
+    rather than a retrieval over somebody else's.
+    """
+    from app.services import evidence_retrieval  # noqa: PLC0415
+
+    if link.profile_id is None:
+        return {}
+    passages: dict[uuid.UUID, str] = {}
+    for skill_id, skill in skills.items():
+        read = await evidence_retrieval.resume_passages_for_skill(
+            session,
+            tenant_id=job.tenant_id,
+            link_id=link.id,
+            profile_id=link.profile_id,
+            skill=skill,
+        )
+        if read.text:
+            passages[skill_id] = read.text
+    return passages
+
+
 async def generate_candidate_questions(
     session: AsyncSession, job: Job, link: JobCandidateLink
 ) -> QuestionSet:
@@ -578,14 +615,22 @@ async def generate_candidate_questions(
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None
     resume_text = (profile.resume_text or "") if profile is not None else ""
     resume_excerpt = _resume_excerpt(profile)
-    # Project Evidence Intelligence: context only. It moves no weight and no
-    # grade, and an empty block for a candidate with no projects changes
-    # nothing.
-    from app.services.projects import context as project_context  # noqa: PLC0415
+    # THE EVIDENCE RAG, THROUGH THE TYPED TOOL LAYER (PLAN-p5 C4, WP5-D).
+    # Project evidence and the resume passages per skill are read through
+    # `evidence_retrieval`, the one entry point, so the interviewer's capability
+    # and the tenant check run before any row is read. Context only: it moves
+    # no weight and no grade. A degraded read is logged by the entry point and
+    # costs the question its anchor, never the question.
+    from app.services import evidence_retrieval  # noqa: PLC0415
 
-    project_evidence = await project_context.candidate_project_context(
-        session, link.candidate_id
+    projects = await evidence_retrieval.project_evidence_for_candidate(
+        session,
+        tenant_id=job.tenant_id,
+        link_id=link.id,
+        candidate_id=link.candidate_id,
     )
+    project_evidence = projects.text
+    resume_passages = await _resume_passages(session, job=job, link=link, skills=skills)
 
     prose, generated = await _write_prose(
         session,
@@ -596,6 +641,7 @@ async def generate_candidate_questions(
         resume_excerpt=resume_excerpt,
         resume_text=resume_text,
         project_evidence=project_evidence,
+        resume_passages=resume_passages,
     )
     for slot in slots:
         slot.prompt = prose[slot.index]

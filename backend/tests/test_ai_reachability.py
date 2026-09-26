@@ -120,6 +120,22 @@ LIVE: dict[str, str] = {
         "replaced the retired matcher, hiring.prescreen and services.longevity, "
         "which are deleted rather than left unreachable."
     ),
+    "app.services.evidence_retrieval": (
+        "PLAN-p5 WP5-E built it; WP5-D wired all three agents (Vivekium "
+        "release). pickready.run_functional_assessment -> functional_assessment "
+        "-> assessment_pipeline.grading hands transcript_passages_for_skill to "
+        "Miti's item stage and assessment_pipeline.composition hands "
+        "support_passages_for_statement to Siddhi's support check; the "
+        "dispatched question generation (assessment_questions.generate) reads "
+        "resume_passages_for_skill per skill and project_evidence_for_candidate."
+    ),
+    "app.services.tools": (
+        "evidence_retrieval calls tools.executor.execute, so the capability "
+        "check, the stage policy and the tenant check run on the scoring and "
+        "question-writing paths before any row is read. Until the Vivekium "
+        "release the package was reachable only because rbac reads the agent "
+        "constants, and it guarded a path no route executed."
+    ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
@@ -139,21 +155,6 @@ LIVE: dict[str, str] = {
 #: release, and `test_unreachable_subsystems_removed.py` keeps them gone: a
 #: package that does not exist needs a removal sweep, not a reachability claim.
 NOT_LIVE: dict[str, str] = {
-    # AWAITING CALLERS, on purpose. PLAN-p5 WP5-E built the one Evidence RAG
-    # entry point ahead of the agents that read it; nothing on the live path
-    # imports it yet. When this fails, the wiring phase moves it to LIVE, and
-    # `app.services.tools` leaves IMPORTED_BUT_NOT_EXERCISED in the same
-    # change, because these calls are the first live `tools.execute` callers.
-    "app.services.evidence_retrieval": (
-        "PLAN-p5 WP5-E, awaiting callers. Phase 3 (Vaada, the dispatched "
-        "question generation in assessment_questions/generate.py) calls "
-        "resume_passages_for_skill per contract skill and "
-        "project_evidence_for_candidate once, replacing its direct "
-        "projects.context read; Phase 5 WP5-B/C (Miti items.evaluate_skill, "
-        "before the model call) calls transcript_passages_for_skill with the "
-        "skill's own answer ids excluded, and Siddhi's support check calls "
-        "support_passages_for_statement"
-    ),
     "app.evaluation": (
         "W7.4 requires this in the other direction too: nothing under "
         "app/services may import app/evaluation, and no route or worker may "
@@ -182,13 +183,13 @@ NOT_LIVE: dict[str, str] = {
 #: about the entry point that would prove execution rather than about the
 #: import graph. `ENTRY_POINTS_WITHOUT_CALLERS` below is the sharp version of
 #: the same claim, and it is the one W2 has to change.
-IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
-    "app.services.tools": (
-        "RPN-AI-UP-001 W3. Reachable only because rbac reads the agent "
-        "constants. The capability check runs before the handler, which is the "
-        "correct ordering, but it guards a path no route executes."
-    ),
-}
+#:
+#: EMPTY SINCE THE VIVEKIUM RELEASE: `tools` left it when the Evidence RAG
+#: reads became the first live `tools.execute` callers (see LIVE). Kept, like
+#: `ENTRY_POINTS_WITHOUT_CALLERS`, because it is the shape the next such
+#: finding needs, and its check iterates inside the body so an empty dict
+#: passes having checked everything there was rather than emitting a skip.
+IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {}
 
 #: The behavioural half: a function that is the ONLY writer of a table and has
 #: no caller. `(module, function)` -> the reason it currently has none.
@@ -224,15 +225,10 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
         "the only writer of coding_submissions, reached only through "
         "final_answer.accept_structured_answer inside its own package."
     ),
-    ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
-        "Phase 5's scoring entry waits on it while coding work is open."
-    ),
     ("app/services/coding_assessment/evidence.py", "evidence_for_answer"): (
-        "Phase 5's Miti coding sub-stage, the one grading authority."
-    ),
-    ("app/services/coding_assessment/evidence.py", "for_conversation"): (
-        "Phase 5's Miti coding sub-stage. The recruiter transcript (4C) reads "
-        "it through `coding_assessment.transcript`, inside the package."
+        "the per-answer reader. Miti reads the whole conversation once through "
+        "`for_conversation` (REQUIRED_CALLERS), so this one has no grader "
+        "caller; the recruiter view is the candidate for it."
     ),
     ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
         "Vaada (conversation start) and Miti (grading) both read the contract "
@@ -263,6 +259,38 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
 #: defect: `services/rag` was importable from `api/admin` for its whole life
 #: while `context_chunks` stayed empty in every environment.
 REQUIRED_CALLERS: dict[tuple[str, str], str] = {
+    # The grading split (PLAN-p5 WP5-D). Each of these guards a path that
+    # fails SILENTLY without its caller: scoring would run over an executing
+    # coding answer, Miti would grade coding by reading the code, and the
+    # support check would never look past the cited answer. The four
+    # `evidence_retrieval` entry points live at the `app/services` root, so
+    # their callers are "inside the package" to this check by construction;
+    # `tests/test_evidence_rag_wiring.py` pins each of those call sites
+    # instead.
+    ("app/services/coding_assessment/submissions.py", "scoring_hold"): (
+        "app/workers/tasks.py, pickready.run_functional_assessment, before the "
+        "credit check and before anything is spent."
+    ),
+    ("app/services/coding_assessment/evidence.py", "for_conversation"): (
+        "app/services/assessment_pipeline/evidence.py load_inputs, handed to "
+        "Miti's item stage as the 70 / 30 sandbox result per coding answer."
+    ),
+    ("app/services/siddhi/support.py", "statement_passage_source"): (
+        "app/services/assessment_pipeline/composition.py compose. Without it "
+        "the support check never looks in the candidate's other answers, so a "
+        "true statement pinned to the wrong answer goes to review as "
+        "unsupported and nobody is told where the candidate actually said it."
+    ),
+    ("app/services/siddhi/delivery.py", "gate_delivery"): (
+        "app/api/assessments.py download_report_pdf. For its whole life before "
+        "the Vivekium release G4 had no production caller, so every flagged "
+        "report was downloadable while the gate read as enforced."
+    ),
+    ("app/services/siddhi/delivery.py", "prism_pdf"): (
+        "the same PDF route, with the clearance gate_delivery minted. A route "
+        "that called report_pdf.render_report_pdf directly would render a "
+        "flagged report with G4 never having run."
+    ),
     # The one line that hands a final v2 coding answer to execution (p4-4c
     # hunk 1, wired at the stage 2 integration). Without a caller a final
     # coding answer is stored and never executed, and nothing fails.
@@ -552,20 +580,23 @@ def test_a_package_recorded_as_dead_has_not_quietly_become_live(
     )
 
 
-@pytest.mark.parametrize("package", sorted(IMPORTED_BUT_NOT_EXERCISED))
 def test_a_package_recorded_as_importable_but_unexercised_is_still_importable(
-    package: str, reachable: dict[str, list[str]]
+    reachable: dict[str, list[str]]
 ) -> None:
     """The weaker claim, asserted so the stronger one below stays meaningful.
 
     If one of these loses its import path entirely it has become genuinely
     dead, which is a different fact from the one recorded here and belongs in
-    NOT_LIVE. Asserting it keeps the two lists from silently swapping."""
-    assert _hits(reachable, package), (
-        f"{package} is no longer reachable at all. It was recorded as "
-        f"importable but unexercised: {IMPORTED_BUT_NOT_EXERCISED[package]}\n"
-        "Move it to NOT_LIVE, or restore the import."
-    )
+    NOT_LIVE. Asserting it keeps the two lists from silently swapping.
+
+    Iterated inside the body, not parametrised: the dict is empty today, and a
+    parametrised test over an empty collection is a SKIPPED placeholder."""
+    for package, reason in sorted(IMPORTED_BUT_NOT_EXERCISED.items()):
+        assert _hits(reachable, package), (
+            f"{package} is no longer reachable at all. It was recorded as "
+            f"importable but unexercised: {reason}\n"
+            "Move it to NOT_LIVE, or restore the import."
+        )
 
 
 def _callers_of(relative: str, function: str) -> list[str]:
