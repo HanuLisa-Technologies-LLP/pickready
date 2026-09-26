@@ -454,7 +454,11 @@ def _body(control: str) -> dict | None:
     if control == "team_review":
         return {"verdict": "pass", "remarks": "Spoke to them; strong on the migration."}
     if control == "stage_move":
-        return {"status": "assessment_invited"}
+        # A plain move. "Assessment invitation sent" is an INVITATION since
+        # the stage 3 final sweeps (it needs saved skills and a credit and
+        # has its own test in `test_dashboard_workflows`); this matrix is
+        # about who may move a stage at all.
+        return {"status": "hold"}
     if control == "integrity_disposition":
         return {"disposition": "cleared", "note": "Checked with the candidate."}
     return None
