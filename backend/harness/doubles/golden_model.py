@@ -132,39 +132,47 @@ def _extraction(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -> 
 # ── Yukti (AI Match) ─────────────────────────────────────────────────────────
 
 
+#: The phrase that opens the rival's resume. The Yukti reading keys on it, so
+#: the journey's two applicants are read differently from what they sent.
+RIVAL_MARKER = "Payments operations analyst"
+
+
 def _yukti(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -> Any:
     """One reading per candidate, every quote lifted verbatim from the resume
-    the request carried, so grounding keeps it rather than refusing it."""
+    the request carried, so grounding keeps it rather than refusing it.
+
+    THE RESUMES ARE READ SO THAT THE ASSESSMENT MUST MOVE THE ORDER. The rival
+    reads as a partial match on everything; the candidate who is later
+    assessed reads as a partial match on the skills and nothing else. So the
+    rival ranks first on the resume alone, and only the assessment's overall,
+    blended in by `yukti.ranking`, can put the assessed candidate above them.
+    """
     request = _user_payload(messages)
     if not isinstance(request, Mapping):
         raise UnscriptedTask("yukti_matching was asked without a JSON payload")
     results = []
     for candidate in request.get("candidates") or []:
-        quote = _first_sentence(str(candidate.get("resume") or ""))
+        resume = str(candidate.get("resume") or "")
+        quote = _first_sentence(resume)
+        rival = RIVAL_MARKER.casefold() in resume.casefold()
+        wider = "some" if rival else "none"
+
+        def _judged(verdict: str, tag: str) -> dict[str, Any]:
+            if verdict == "none":
+                return {"verdict": "none"}
+            return {"verdict": verdict, "quote": quote, "tag": tag}
+
         results.append(
             {
                 "candidate": candidate["ref"],
                 "skills": [
-                    {"skill": skill["ref"], "verdict": "strong", "quote": quote}
+                    {"skill": skill["ref"], "verdict": "some", "quote": quote}
                     for skill in request.get("skills") or []
                 ],
-                "experience_level": {
-                    "verdict": "strong",
-                    "quote": quote,
-                    "tag": "Seasoned settlement engineer",
-                },
-                "role_fit": {
-                    "verdict": "strong",
-                    "quote": quote,
-                    "tag": "Payments platform ownership",
-                },
+                "experience_level": _judged(wider, "Settlement operations"),
+                "role_fit": _judged(wider, "Reconciliation reporting"),
                 "company_needs": [
-                    {
-                        "need": need["ref"],
-                        "verdict": "some",
-                        "quote": quote,
-                        "tag": "Reconciliation ownership",
-                    }
+                    {"need": need["ref"], **_judged(wider, "Reconciliation ownership")}
                     for need in request.get("needs") or []
                 ],
             }

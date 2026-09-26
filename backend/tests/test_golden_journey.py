@@ -92,19 +92,21 @@ class _RealClient:
     """One TestClient for the whole journey (one lifespan), the principal
     switched by swapping the cookie jar, never by an override."""
 
-    def __init__(self, http: TestClient, staff: dict[str, str], candidate: dict[str, str]):
+    def __init__(
+        self, http: TestClient, staff: dict[str, str], candidates: dict[str, dict[str, str]]
+    ):
         self._http = http
         self._staff = staff
-        self._candidate = candidate
+        self._candidates = candidates
         self.bodies: list[tuple[str, str, Any]] = []
 
     def as_staff(self) -> None:
         self._http.cookies.clear()
         self._http.cookies.update(self._staff)
 
-    def as_candidate(self) -> None:
+    def as_candidate(self, who: str = "candidate") -> None:
         self._http.cookies.clear()
-        self._http.cookies.update(self._candidate)
+        self._http.cookies.update(self._candidates[who])
 
     def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
         response = self._http.request(method, path, **kwargs)
@@ -117,6 +119,11 @@ class _RealClient:
 
 
 # ── The gates, each judged from a second connection ─────────────────────────
+
+
+def _order(page: dict[str, Any]) -> list[uuid.UUID]:
+    return [uuid.UUID(str(row["link_id"])) for row in page["results"]]
+
 
 
 async def _rows(sql: str, **params: Any) -> list[Any]:
@@ -174,10 +181,16 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         ), "applying created an assessment"
     elif name == "matched":
         rows = await _rows(
-            "SELECT yukti_status, yukti_pre_score FROM job_candidate_links WHERE id = :l",
-            l=str(state.link),
+            "SELECT id, yukti_status, yukti_pre_score FROM job_candidate_links WHERE job_id = :j",
+            j=job,
         )
-        assert rows[0].yukti_status == "scored" and rows[0].yukti_pre_score is not None
+        scored = {row.id: row for row in rows}
+        assert set(scored) == {state.link, state.rival_link}
+        assert all(row.yukti_status == "scored" for row in rows), rows
+        # The rival reads better on the resume alone, so they are listed first
+        # and the assessment has something to overturn.
+        assert scored[state.rival_link].yukti_pre_score > scored[state.link].yukti_pre_score
+        assert _order(state.responses["ranked_before"]) == [state.rival_link, state.link]
     elif name == "invited":
         rows = await _rows(
             "SELECT id, status FROM assessment_conversations WHERE job_candidate_link_id = :l",
@@ -311,7 +324,15 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
     elif name == "reranked":
         before = state.responses["ranked_before"]
         after = state.responses["ranked_after"]
-        assert before["ranking_header"] != after["ranking_header"], (before["ranking_header"], after["ranking_header"])
+        # YUKTI RE-RANKS ON THE ASSESSMENT: the assessed candidate's overall is
+        # blended over their resume reading and now lists them above the rival,
+        # who still ranks on the resume alone. Nothing was stored to do it.
+        assert _order(after) == [state.link, state.rival_link], after["results"]
+        assert before["ranking_header"] != after["ranking_header"]
+        rival = await _rows(
+            "SELECT status FROM job_candidate_links WHERE id = :l", l=str(state.rival_link)
+        )
+        assert rival[0].status == "applied", "the rival was never invited"
     elif name == "profile_read":
         profile = state.responses["executive_profile"]
         assert profile.get("proctoring"), "the executive profile carries no proctoring section"
@@ -342,9 +363,15 @@ def test_the_golden_journey() -> None:
 
     try:
         staff = asyncio.run(_signed_in(world.id("staff"), AUDIENCE_ORG))
-        candidate = asyncio.run(_signed_in(world.id("candidate_user"), AUDIENCE_CANDIDATE))
+        candidates = {
+            who: asyncio.run(_signed_in(world.id(f"{who}_user"), AUDIENCE_CANDIDATE))
+            for who in ("candidate", "rival")
+        }
         state = journey.JourneyState(
-            tenant=world.id("tenant"), staff=world.id("staff"), candidate=world.id("candidate")
+            tenant=world.id("tenant"),
+            staff=world.id("staff"),
+            candidate=world.id("candidate"),
+            rival=world.id("rival"),
         )
         with (
             TestClient(app) as http,
@@ -352,7 +379,7 @@ def test_the_golden_journey() -> None:
             journey.deployment(),
             journey.digest_lines() as digests,
         ):
-            client = _RealClient(http, staff, candidate)
+            client = _RealClient(http, staff, candidates)
             journey.drive(client, state, gate)
         assert reached == list(journey.GATES)
         assert model.unscripted == [], f"a model call nobody scripted: {model.unscripted}"

@@ -934,8 +934,9 @@ async def _job_with_unapplied_candidate(
 async def _golden_journey_ready(
     session: AsyncSession, world: World, overrides: Mapping[str, Any]
 ) -> None:
-    """A funded customer with a Company Profile and one registered candidate
-    holding a main resume, and NOTHING else.
+    """A funded customer with a Company Profile and two registered candidates
+    holding a main resume (the one assessed, and a rival who only applies),
+    and NOTHING else.
 
     The golden journey (`harness.golden_journey`) creates the job, the SWOT,
     the skills, the application and the assessment through the routes, so a
@@ -956,6 +957,22 @@ async def _golden_journey_ready(
                 "service for a multi-bank payments switch and tuned its "
                 "PostgreSQL ledger; owned the rollback when a settlement file "
                 "broke in production.",
+            )
+        ),
+    )
+    # A SECOND APPLICANT, so the re-rank after the assessment is a change of
+    # ORDER rather than a change of header over a table of one. They apply and
+    # are never invited.
+    await _seed_candidate(
+        session,
+        world,
+        key="rival",
+        resume_text=str(
+            _override(
+                overrides,
+                "rival.resume_text",
+                "Payments operations analyst. Ran the daily reconciliation "
+                "reports for a card issuer.",
             )
         ),
     )
@@ -1424,7 +1441,7 @@ _BUILDERS: dict[str, Builder] = {
         "golden_journey_ready",
         _APPLIED,
         _golden_journey_ready,
-        "a funded customer with a Company Profile and a registered candidate "
+        "a funded customer with a Company Profile and two registered candidates "
         "with a main resume; the golden journey creates everything else",
     ),
     "job_with_invited_candidate": Builder(

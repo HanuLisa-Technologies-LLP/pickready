@@ -139,6 +139,17 @@ RESUME_LINES = (
 )
 RESUME_FILENAME = "meera-iyer-resume.docx"
 
+#: The rival applicant's resume. It opens with `golden_model.RIVAL_MARKER`,
+#: which is what the scripted Yukti reading keys on.
+RIVAL_RESUME_LINES = (
+    "Arjun Rao",
+    "Payments operations analyst with five years at a card issuer.",
+    "Ran the daily reconciliation reports in Python and escalated breaks to the "
+    "settlement team.",
+    "Maintained the PostgreSQL queries behind the finance dashboards.",
+)
+RIVAL_RESUME_FILENAME = "arjun-rao-resume.docx"
+
 #: What the candidate says aloud on the spoken turn, as Transcribe returns it.
 SPOKEN_ANSWER = (
     "When the partner bank sent the settlement file twice I stopped the posting "
@@ -226,13 +237,13 @@ MAX_TURNS = 40
 QUESTION_SHARES = {"prose": 0.7, "coding": 0.1, "objective": 0.2}
 
 
-def resume_docx() -> bytes:
+def resume_docx(lines: tuple[str, ...] = RESUME_LINES) -> bytes:
     """A real DOCX, so the upload validator and the text extractor both run
     on the bytes a candidate's browser would send."""
     import docx  # noqa: PLC0415
 
     document = docx.Document()
-    for line in RESUME_LINES:
+    for line in lines:
         document.add_paragraph(line)
     buffer = io.BytesIO()
     document.save(buffer)
@@ -336,7 +347,9 @@ class JourneyError(AssertionError):
 class Client(Protocol):
     def as_staff(self) -> None: ...
 
-    def as_candidate(self) -> None: ...
+    def as_candidate(self, who: str = "candidate") -> None:
+        """Act as a candidate the world seeded: `candidate` (assessed) or
+        `rival` (applies and is never invited)."""
 
     def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]: ...
 
@@ -348,8 +361,10 @@ class JourneyState:
     tenant: uuid.UUID
     staff: uuid.UUID
     candidate: uuid.UUID
+    rival: uuid.UUID
     job: uuid.UUID | None = None
     link: uuid.UUID | None = None
+    rival_link: uuid.UUID | None = None
     conversation: uuid.UUID | None = None
     proctoring_session: uuid.UUID | None = None
     responses: dict[str, Any] = field(default_factory=dict)
@@ -392,6 +407,42 @@ def _run_dispatched(state: JourneyState, name: str, *, at_least: int = 1) -> int
         runtime.run_task(dispatch_mod.payload_for(item.id, spec, item.args, item.kwargs))
         state.tasks_run.append(name)
     return len(pending)
+
+
+def _apply(
+    client: Client, state: JourneyState, who: str, lines: tuple[str, ...], filename: str
+) -> uuid.UUID:
+    """One candidate replaces their main resume with a real DOCX and applies
+    with it. The application's own profile is a snapshot of the main resume,
+    parsed on its own: an application is an immutable copy of what was sent."""
+    client.as_candidate(who)
+    status, body = client.call(
+        f"upload_resume_{who}",
+        "PUT",
+        f"{V1}/portal/me/resume",
+        files={
+            "resume": (
+                filename,
+                resume_docx(lines),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    _expect(f"upload_resume_{who}", status, body, 200)
+    _run_dispatched(state, "pickready.parse_resume")
+    status, body = client.call(
+        f"apply_{who}",
+        "POST",
+        f"{V1}/portal/jobs/{state.job}/apply",
+        data={
+            "reuse_previous": "true",
+            "validation": json.dumps(VALIDATION),
+            "application_source": "direct",
+        },
+    )
+    _expect(f"apply_{who}", status, body, 201)
+    _run_dispatched(state, "pickready.parse_resume")
+    return uuid.UUID(str(body["link_id"]))
 
 
 # ── The assessment, one turn at a time ──────────────────────────────────────
@@ -556,37 +607,9 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
     state.responses["published"] = body
     gate("job_published", state)
 
-    # ── The candidate uploads a resume and applies ────────────────────────
-    client.as_candidate()
-    status, body = client.call(
-        "upload_resume",
-        "PUT",
-        f"{V1}/portal/me/resume",
-        files={
-            "resume": (
-                RESUME_FILENAME,
-                resume_docx(),
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-        },
-    )
-    _expect("upload_resume", status, body, 200)
-    _run_dispatched(state, "pickready.parse_resume")
-    status, body = client.call(
-        "apply",
-        "POST",
-        f"{V1}/portal/jobs/{state.job}/apply",
-        data={
-            "reuse_previous": "true",
-            "validation": json.dumps(VALIDATION),
-            "application_source": "direct",
-        },
-    )
-    _expect("apply", status, body, 201)
-    state.link = uuid.UUID(str(body["link_id"]))
-    # The application's own profile is a snapshot of the main resume, parsed
-    # on its own: an application is an immutable copy of what was sent.
-    _run_dispatched(state, "pickready.parse_resume")
+    # ── Two candidates upload a resume and apply ──────────────────────────
+    state.link = _apply(client, state, "candidate", RESUME_LINES, RESUME_FILENAME)
+    state.rival_link = _apply(client, state, "rival", RIVAL_RESUME_LINES, RIVAL_RESUME_FILENAME)
     gate("applied", state)
 
     # ── AI Matching (Yukti, the resume stage) ─────────────────────────────
