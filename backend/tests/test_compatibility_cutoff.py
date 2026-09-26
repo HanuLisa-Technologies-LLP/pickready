@@ -55,3 +55,29 @@ def test_nothing_reads_a_permission_flag_nothing_can_set() -> None:
             elif isinstance(node, ast.keyword) and node.arg == "hm_access_granted":
                 readers.append(f"{path.relative_to(BACKEND)}:{node.lineno}")
     assert readers == []
+
+
+def test_no_code_reads_the_pre_aws_object_store() -> None:
+    """Pilot holds no `gs://` row (CONTRACT v3), so the readers that named the
+    old store went. Swept over CODE (string literals and identifiers), not
+    comments, which may still record the history."""
+    hits: list[str] = []
+    for path in (BACKEND / "app").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            value = None
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                value = node.value
+            elif isinstance(node, ast.Name):
+                value = node.id
+            elif isinstance(node, ast.Attribute):
+                value = node.attr
+            if value is None:
+                continue
+            if (
+                "gs://" in value
+                or value.lower() == "gcs"
+                or value in {"LEGACY_STORAGE_PROVIDER", "LEGACY_GCS_SCHEME", "is_legacy_uri"}
+            ):
+                hits.append(f"{path.relative_to(BACKEND)}:{node.lineno}")
+    assert hits == []

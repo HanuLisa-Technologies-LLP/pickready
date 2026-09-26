@@ -60,12 +60,12 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-#: The URI scheme durable database values use. `gs://` for rows written before
-#: the AWS migration; both are recognised on READ so a pre-migration row can be
-#: identified and reported rather than silently 404ing, and only `s3://` is ever
-#: WRITTEN.
+#: The URI scheme durable database values use. The pre-AWS `gs://` scheme and
+#: its reader were deleted in the 2026-09 final sweeps: pilot holds no such
+#: row (CONTRACT v3), and a reader for rows that do not exist is a code path
+#: nothing exercises. A value in any other scheme is refused as un-migrated by
+#: `resume_storage.fetch_resume_bytes`, without naming a store.
 S3_SCHEME = "s3://"
-LEGACY_GCS_SCHEME = "gs://"
 
 
 class ObjectStorageError(RuntimeError):
@@ -163,17 +163,6 @@ def reset_client() -> None:
 
 def uri_for(key: str) -> str:
     return f"{S3_SCHEME}{_bucket_name()}/{key}"
-
-
-def is_legacy_uri(uri: str | None) -> bool:
-    """True for an object written before the AWS migration.
-
-    Callers use this to raise a NAMED error rather than a 404. A row pointing at
-    `gs://` is not corrupt, it is un-migrated, and those are different problems
-    with different fixes -- `scripts/migrate_resumes_to_s3.py` is the fix for
-    one and nothing is the fix for the other.
-    """
-    return bool(uri) and str(uri).startswith(LEGACY_GCS_SCHEME)
 
 
 # ── Operations ───────────────────────────────────────────────────────────────

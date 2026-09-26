@@ -288,18 +288,6 @@ def test_delete_removes_an_object(s3) -> None:
         object_storage.get_bytes(stored.key)
 
 
-# ── URI provenance ───────────────────────────────────────────────────────────
-
-
-def test_a_pre_migration_uri_is_recognised_rather_than_treated_as_missing() -> None:
-    """A row pointing at `gs://` is not corrupt, it is un-migrated.
-
-    Reporting it as missing would send somebody looking for a lost file.
-    """
-    assert object_storage.is_legacy_uri("gs://old-bucket/resumes/abc")
-    assert not object_storage.is_legacy_uri("s3://new-bucket/resumes/abc")
-    assert not object_storage.is_legacy_uri(None)
-
 
 def test_a_presigned_url_requires_an_explicit_ttl(s3) -> None:
     """No default. A caller must not be able to mint a long-lived bearer token

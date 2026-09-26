@@ -547,7 +547,11 @@ async def test_a_pre_migration_resume_is_refused_rather_than_reported_deleted(
                         "WHERE candidate_id = :c"
                     ),
                     {
-                        "legacy": erasure.legacy_storage_provider(),
+                        # Any provider but the current one. The CHECK still
+                        # admits the pre-AWS value until a migration narrows
+                        # it, which is exactly why the refusal is keyed on
+                        # "not current" rather than on that name.
+                        "legacy": "gcs",
                         "c": str(world.subject),
                     },
                 )
