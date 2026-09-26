@@ -14,10 +14,10 @@ from app.services import rating
 from app.services.assessment_pipeline.evidence import answers_by_key
 from app.services.assessment_pipeline.validation import validation_section
 from app.services.functional_assessment import (
-    build_radar_charts,
     rating_label,
     word_count,
 )
+from app.services.prism_view import build_radar_charts
 from app.services.siddhi import remarks as siddhi_remarks
 
 GRADES = ("non_managerial", "managerial", "leadership", "cxo")

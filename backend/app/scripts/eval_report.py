@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.services import functional_assessment as fa
+from app.services import prism_view
 from app.services.assessment_questions import budget as question_budget
 from app.services import matching, ppi
 from app.services.yukti import ranking
@@ -346,12 +347,12 @@ def _measure_radar_carries_no_numbers() -> Result:
     rows the sections render, so a chart cannot disagree with the text."""
     result = Result("radar_has_no_visible_numbers")
     rows = [
-        (fa.CATEGORY_MATCHING, "Skills", 88, 82),
+        (prism_view.CATEGORY_MATCHING, "Skills", 88, 82),
         ("primary", "Distributed systems", 91, 82),
         ("primary", "Data modelling", 72, 82),
         ("secondary", "Documentation", 64, 70),
         ("behavioural", "Coaching", 80, 75),
-        (fa.CATEGORY_TECHNICAL, "Kafka", 77, None),
+        (prism_view.CATEGORY_TECHNICAL, "Kafka", 77, None),
     ]
     dimensions = [
         {
@@ -366,7 +367,7 @@ def _measure_radar_carries_no_numbers() -> Result:
         }
         for index, (category, name, score, required) in enumerate(rows)
     ]
-    charts = fa.build_radar_charts(dimensions)
+    charts = prism_view.build_radar_charts(dimensions)
     result.record(len(charts) == 4, f"{len(charts)} charts, expected 4")
     for chart in charts:
         for axis in chart.get("axes", []):
@@ -480,15 +481,15 @@ def _measure_probe_selection() -> Result:
 
 
 def _measure_report_reuse_is_retired() -> Result:
-    """Nothing travels between applications. Under PPI both halves come from
-    each job's own JD, so carrying a section across would state a grade against
-    criteria the candidate was never assessed on."""
-    result = Result("no_report_reuse")
-    from app.services import retake
+    """Nothing travels between applications, and the module that once decided
+    whether it could is gone: every application is assessed against its own
+    job's contract, so there is no reuse or waiting period to decide."""
+    import importlib.util  # noqa: PLC0415
 
+    result = Result("no_report_reuse")
     result.record(
-        len(retake.PORTABLE_CATEGORIES) == 0,
-        f"PORTABLE_CATEGORIES has {len(retake.PORTABLE_CATEGORIES)} entries",
+        importlib.util.find_spec("app.services.retake") is None,
+        "app.services.retake still exists",
     )
     return result
 

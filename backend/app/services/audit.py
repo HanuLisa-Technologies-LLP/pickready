@@ -240,6 +240,15 @@ ACTIVITY_ACTIONS: tuple[str, ...] = (
     AUTHORIZATION_REFUSED,
 )
 
+#: READS of a candidate's assessment record by a hiring team member (PLAN-p5
+#: WP5-F). The PRISM PDF is the copy that leaves the product, the transcript is
+#: the candidate's raw answers, and the citation view resolves report
+#: statements back to those answers; each read is a row, written in the ONE
+#: insert `record_action` makes, in the request's own transaction.
+PRISM_PDF_DOWNLOADED = "prism_report.pdf_downloaded"
+ASSESSMENT_TRANSCRIPT_VIEWED = "assessment_transcript.viewed"
+PRISM_CITATIONS_VIEWED = "prism_report.citations_viewed"
+
 #: Actions that record a candidate leaving the process. RBAC 39 and this
 #: project's own rule say no flag ever auto-rejects, so every one of these
 #: must be traceable to a recorded human disposition. Asserted by

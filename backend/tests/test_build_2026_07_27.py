@@ -316,12 +316,12 @@ def test_sections_are_none_when_neither_layer_has_text() -> None:
 
 # ── Radar geometry (spec §10.4) ──────────────────────────────────────────────
 
-from app.services.functional_assessment import (
+from app.services.prism_view import (
     RADAR_BANDS,
     RADAR_SERIES,
-    band_index_for,
     build_radar_charts,
 )
+from app.services.rating import band_index_for
 from app.services import ppi as ppi_service
 
 

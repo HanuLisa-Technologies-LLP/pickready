@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -141,18 +141,31 @@ class JobSetupOut(BaseModel):
     publish_blocked_reason: str | None = None
 
 
-# ── The PPI Assessment Report (spec §10) ─────────────────────────────────────
+# ── The PRISM Report (spec §10) ──────────────────────────────────────────────
 
 
 class DimensionOut(BaseModel):
     name: str
     description: str | None
     #: One of the four grades. Never a number, a percentage, or a letter grade.
-    grade: str
+    #: None exactly when `status` is `not_assessed`: the evaluation could not
+    #: be completed, and no grade is stated for it (migration 0130).
+    grade: str | None
+    #: `graded`, `unanswered` or `not_assessed`, the row's stored status.
+    status: Literal["graded", "unanswered", "not_assessed"] = "graded"
+    #: The sentence beside a `not_assessed` row. Words only.
+    status_note: str | None = None
     #: What the job requires of this item, as a word. Null on AI Score
     #: parameters and technical items, which have no job-requirement shape.
     required_level: str | None = None
     remark: str
+    #: The server's marker for a remark a fixed template wrote because the
+    #: writing model was unavailable. None for a model remark and for a row
+    #: written before remark provenance existed.
+    remark_note: str | None = None
+    #: The citation trail's marker for a remark its cited evidence did not
+    #: clearly support. None when it is supported or no trail exists.
+    support_note: str | None = None
     #: EVIDENCE CONFIDENCE (0107): High, Moderate, Low, or "Insufficient
     #: evidence". How well corroborated the evidence behind the grade is, and
     #: never a statement about the candidate: it is derived after scoring, from
@@ -181,8 +194,11 @@ class RadarAxisOut(BaseModel):
     """
 
     axis: str
-    requirement_band: str
-    requirement_index: int
+    #: None when the report recorded no requirement for this spoke. The chart
+    #: then draws the candidate's shape only, rather than a requirement nobody
+    #: stated.
+    requirement_band: str | None = None
+    requirement_index: int | None = None
     candidate_band: str
     candidate_index: int
 
@@ -298,6 +314,53 @@ class ClaimEvidenceOut(BaseModel):
     no_claims_statement: str | None = None
 
 
+class AiScoreTagOut(BaseModel):
+    """One evidence tag on the AI Score snapshot: a phrase, for or against."""
+
+    text: str
+    polarity: Literal["positive", "negative"]
+
+
+class AiScoreSnapshotOut(BaseModel):
+    """Yukti's frozen pre-assessment snapshot (the AI Score of a report written
+    from the Vivekium release on). A grade word, a header sentence and evidence
+    tags; no radar, no remark, no number."""
+
+    status: Literal["scored", "not_assessed", "pending"]
+    grade: str | None = None
+    header: str = ""
+    tags: list[AiScoreTagOut] = []
+
+
+class CitationEvidenceOut(BaseModel):
+    """One piece of evidence a report statement rests on, resolved at read
+    time. Words and the candidate's own text only: no id, no locator, no
+    position."""
+
+    kind: str
+    question: str | None = None
+    excerpt: str | None = None
+
+
+class CitationStatementOut(BaseModel):
+    section: str
+    item: str
+    kind: str
+    text: str
+    #: The trail's words-only marker when the statement's support is weak.
+    support: str | None = None
+    evidence: list[CitationEvidenceOut] = []
+
+
+class ReportCitationsOut(BaseModel):
+    """What each statement of a PRISM Report rests on. `trail_available` is
+    False for a report written before the citation trail existed, which is a
+    different answer from an empty trail."""
+
+    trail_available: bool
+    statements: list[CitationStatementOut] = []
+
+
 class FunctionalReportOut(NumberFreeDelivery):
     # THE SERIALISER-LEVEL NUMBER BAN (spec-doc6 D8). Inherited rather than
     # asserted in the route: this model is the last shape a delivered PRISM
@@ -311,9 +374,15 @@ class FunctionalReportOut(NumberFreeDelivery):
     reference_code: str = ""
     grade: str
     # ── AI Score: the pre-assessment resume snapshot (9.1) ──────────────
+    #: LEGACY rows: the four matching parameters of a report written before
+    #: the Vivekium release. Empty on a newer report, which carries
+    #: `ai_score_snapshot` instead.
     ai_score: list[DimensionOut]
-    # ── PPI Assessment (9.3) ────────────────────────────────────
-    overall_grade: str
+    ai_score_snapshot: AiScoreSnapshotOut | None = None
+    # ── Tatva Assessment (9.3) ──────────────────────────────────
+    #: None exactly when `overall_status` is `not_assessed`.
+    overall_grade: str | None
+    overall_status: Literal["graded", "not_assessed"] = "graded"
     overall_summary: str
     must_have: list[DimensionOut]
     nice_to_have: list[DimensionOut]
@@ -340,7 +409,8 @@ class FunctionalReportOut(NumberFreeDelivery):
     #: before Draft v4, so an old report opened today still renders what it was
     #: actually written with rather than an empty section.
     suggested_interview_questions: list[str] = []
-    #: Four charts: Overall, Must-have, Nice-to-have, Behavioural.
+    #: Four charts are built (Overall, Must-have, Nice-to-have, Behavioural);
+    #: the renderers draw three.
     radar_charts: list[RadarChartOut] = []
     #: Ordered best-to-worst grade labels, for the chart legend and colour ramp.
     radar_bands: list[str] = []
@@ -356,6 +426,12 @@ class FunctionalReportOut(NumberFreeDelivery):
     #: the Download control instead of offering a button the PDF route will
     #: refuse with 403. Viewing is not gated by this flag.
     report_download_allowed: bool = False
+    #: Whether gate G4 would release the PDF now (`siddhi.delivery`, the same
+    #: gate the PDF route runs). False with `pdf_blocked_reason` set while a
+    #: report routed to a person has no recorded decision, so the screen says
+    #: why instead of offering a button the route would refuse with 409.
+    pdf_available: bool = True
+    pdf_blocked_reason: str | None = None
 
 
 class AnswerBehaviourIn(BaseModel):

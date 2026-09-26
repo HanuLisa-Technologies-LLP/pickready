@@ -37,6 +37,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.services.siddhi.synthesis import NOT_ASSESSED_WORD
+
 # A full stop, not a dash. The no-em-dash rule covers every string a client
 # reads, and a PDF footer is read by the client more often than most of the UI.
 # The repo-wide sweep never caught this one because the character was assembled
@@ -111,7 +113,7 @@ PROCTORING_ABSENT = "No proctoring report exists for this assessment."
 #: same three charts as a reader opening a new one.
 RENDERED_CHART_KEYS: tuple[str, ...] = ("overall", "must_have", "nice_to_have")
 
-#: Titles as `functional_assessment.RADAR_CHART_TITLES` writes them, duplicated
+#: Titles as `prism_view.RADAR_CHART_TITLES` writes them, duplicated
 #: here ONLY to identify a chart in a payload that predates the `key` field.
 #: Copied rather than imported: this is a frozen historical shape, and following
 #: a live label would make an old report's charts vanish the day somebody
@@ -165,6 +167,12 @@ def radar_png(chart: Any, *, size: int = 720) -> bytes:
 
     requirement: list[tuple[float, float]] = []
     candidate: list[tuple[float, float]] = []
+    # A spoke with no recorded requirement draws no requirement shape at all:
+    # a default level would plot a requirement nobody stated. The shape is
+    # drawn only when EVERY spoke carries one.
+    draws_requirement = all(
+        _value(axis, "requirement_index") is not None for axis in axes
+    )
     for index, axis in enumerate(axes):
         angle = -math.pi / 2 + 2 * math.pi * index / count
         edge = (
@@ -172,14 +180,15 @@ def radar_png(chart: Any, *, size: int = 720) -> bytes:
             center + radius * math.sin(angle),
         )
         draw.line((center, center, *edge), fill="#E2E8F0", width=2)
-        requirement_index = int(_value(axis, "requirement_index", 1))
         candidate_index = int(_value(axis, "candidate_index", 1))
-        requirement.append(
-            (
-                center + radius * requirement_index / 4 * math.cos(angle),
-                center + radius * requirement_index / 4 * math.sin(angle),
+        if draws_requirement:
+            requirement_index = int(_value(axis, "requirement_index"))
+            requirement.append(
+                (
+                    center + radius * requirement_index / 4 * math.cos(angle),
+                    center + radius * requirement_index / 4 * math.sin(angle),
+                )
             )
-        )
         candidate.append(
             (
                 center + radius * candidate_index / 4 * math.cos(angle),
@@ -194,9 +203,11 @@ def radar_png(chart: Any, *, size: int = 720) -> bytes:
 
     if len(requirement) >= 3:
         draw.polygon(requirement, outline="#64748B", width=5)
+    if len(candidate) >= 3:
         draw.polygon(candidate, outline="#5028E0", width=6)
-    draw.rectangle((32, size - 52, 72, size - 42), fill="#64748B")
-    draw.text((82, size - 58), "Job Requirement", fill="#172033")
+    if draws_requirement:
+        draw.rectangle((32, size - 52, 72, size - 42), fill="#64748B")
+        draw.text((82, size - 58), "Job Requirement", fill="#172033")
     draw.rectangle((300, size - 52, 340, size - 42), fill="#5028E0")
     draw.text((350, size - 58), "Candidate Assessment", fill="#172033")
     output = io.BytesIO()
@@ -316,7 +327,7 @@ def _overall(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
         Paragraph("Overall Assessment", styles["Section"]),
         Spacer(1, 2 * mm),
         Paragraph(
-            f"<b>{_text(_value(report, 'overall_grade'))}</b><br/>"
+            f"<b>{_text(_value(report, 'overall_grade') or NOT_ASSESSED_WORD)}</b><br/>"
             f"{_text(_value(report, 'overall_summary'))}",
             styles["Body"],
         ),
@@ -517,6 +528,41 @@ def _validation_points(report: Any, styles: dict[str, ParagraphStyle]) -> list[A
     return story
 
 
+def _remark_cell(row: Any) -> str:
+    """The remark, then the server's own markers beside it: a remark a fixed
+    template wrote, and a remark its cited evidence did not clearly support."""
+    cell = _text(_value(row, "remark"))
+    for key in ("remark_note", "support_note"):
+        note = _value(row, key)
+        if note:
+            cell += f"<br/><font color='#64748B'>{_text(note)}</font>"
+    return cell
+
+
+def _ai_score(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """The AI Score: Yukti's frozen snapshot on a report written from the
+    Vivekium release on (a grade word, a header, evidence tags), or the four
+    legacy matching rows an older report was written with."""
+    snapshot = _value(report, "ai_score_snapshot")
+    if not snapshot:
+        return _dimension_cards("AI Score", _value(report, "ai_score", []), styles)
+    grade = _value(snapshot, "grade") or NOT_ASSESSED_WORD
+    story: list[Any] = [
+        Paragraph("AI Score", styles["Section"]),
+        Spacer(1, 2 * mm),
+        Paragraph(f"<b>{_text(grade)}</b>", styles["Body"]),
+    ]
+    header = _value(snapshot, "header")
+    if header:
+        story.append(Paragraph(_text(header), styles["Body"]))
+    for tag in _value(snapshot, "tags", []) or []:
+        mark = "Supports" if _value(tag, "polarity") == "positive" else "Against"
+        story.append(
+            Paragraph(f"&bull; {mark}: {_text(_value(tag, 'text'))}", styles["Body"])
+        )
+    return story
+
+
 def _dimension_cards(
     title: str,
     rows: Iterable[Any],
@@ -528,7 +574,13 @@ def _dimension_cards(
     cards: list[list[Any]] = []
     for row in items:
         required = _value(row, "required_level")
-        label = f"<b>{_text(_value(row, 'name'))}</b> - {_text(_value(row, 'grade'))}"
+        # A skill the evaluation could not complete carries NO grade and says
+        # so in the server's own sentence; it is never printed as a grade.
+        grade = _value(row, "grade") or NOT_ASSESSED_WORD
+        label = f"<b>{_text(_value(row, 'name'))}</b> - {_text(grade)}"
+        status_note = _value(row, "status_note")
+        if status_note:
+            label += f"<br/><font color='#64748B'>{_text(status_note)}</font>"
         if required:
             label += (
                 "<br/><font color='#64748B'>Role requires: "
@@ -560,7 +612,7 @@ def _dimension_cards(
                 Table(
                     [[
                         Paragraph(label, styles["Body"]),
-                        Paragraph(_text(_value(row, "remark")), styles["Body"]),
+                        Paragraph(_remark_cell(row), styles["Body"]),
                     ]],
                     colWidths=[52 * mm, 116 * mm],
                     style=TableStyle(
@@ -682,9 +734,7 @@ def render_report_pdf(
     # no builder here would raise at render rather than silently vanish from a
     # permanent record.
     builders = {
-        "ai_score": lambda: _dimension_cards(
-            "AI Score", _value(report, "ai_score", []), styles
-        ),
+        "ai_score": lambda: _ai_score(report, styles),
         "overall": lambda: _overall(report, styles),
         "must_have": lambda: _dimension_cards(
             "Must-have", _value(report, "must_have", []), styles

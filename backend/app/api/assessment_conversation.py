@@ -33,7 +33,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.api.assessments import READY_FOR_CANDIDATES
 from app.api.deps import (
     CurrentUser,
     get_candidate_db,
@@ -96,6 +95,7 @@ from app.services.rate_limit import rate_limit
 # The sanctioned media package: a spoken answer is stored and transcribed
 # there, and nothing here reads media back.
 from app.services.video import transcribe, voice
+from app.services.skills import READY_FOR_CANDIDATES
 from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)

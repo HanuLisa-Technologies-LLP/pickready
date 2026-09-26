@@ -18,7 +18,7 @@ from app.api import (
     assessment_coding,
     assessment_conversation,
     assessment_recording,
-    assessments,
+    assessment_reports,
     admin,
     auth,
     bd,
@@ -285,7 +285,12 @@ app.include_router(
 # spec, sections 15-19): metadata plus the audited preview/download URLs.
 # Mounted at one path only, new in this release with no v1/v2 split to honour.
 app.include_router(videos.router, prefix=f"{API_PREFIX}/videos", tags=["videos"])
-app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
+# The PRISM Report, its PDF, its citations and the recruiter's transcript
+# (PLAN-p5 WP5-F). Moved out of `api/assessments.py`, which is gone, under the
+# SAME prefix, so every URL a report link in an inbox carries is unchanged.
+app.include_router(
+    assessment_reports.router, prefix="/api/v2/assessments", tags=["assessments-v2"]
+)
 # Job setup (Vivekium release): the setup checklist, the Skills step and the
 # Job SWOT routes, moved out of `assessments` under the same prefix so every
 # URL is unchanged.

@@ -24,6 +24,16 @@ import pytest
 from sqlalchemy import text
 
 
+def _http_request(path: str = "/api/v2/assessments/reports", method: str = "GET"):
+    """A real Starlette Request: the report routes read its method and path
+    for the audit row they write."""
+    from starlette.requests import Request
+
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": [], "query_string": b""}
+    )
+
+
 async def _factory_or_skip():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -126,13 +136,13 @@ def _user(fx: _Fx):
 
 
 async def _fetch(fx: _Fx, factory, **kwargs):
-    from app.api import assessments as mod
+    from app.api import assessment_reports as mod
     from app.core.db import superadmin_scope
 
     async with factory() as s:
         async with superadmin_scope(s):
             return await mod.get_transcript(
-                fx.link_id, user=_user(fx), session=s, **kwargs
+                fx.link_id, request=_http_request(), user=_user(fx), session=s, **kwargs
             )
 
 
@@ -303,7 +313,7 @@ async def test_pagination_is_bounded_and_cannot_be_argued_out_of() -> None:
         assert page.exchanges[0].answer == "A2."
 
         # A caller asking for more than the ceiling gets the ceiling, not more.
-        from app.api import assessments as mod
+        from app.api import assessment_reports as mod
 
         clamped = await _fetch(fx, factory, limit=10_000)
         assert clamped.limit == mod.TRANSCRIPT_MAX_LIMIT

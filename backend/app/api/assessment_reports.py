@@ -1,10 +1,29 @@
-"""The PPI Assessment Report and the recruiter's transcript view."""
+"""The PRISM Report's read routes: the report, its PDF, its citations and the
+recruiter's transcript (PLAN-p5 WP5-F, the Vivekium release).
+
+Moved here from `api/assessments.py` with every URL byte-identical: this
+router is mounted under the same `/api/v2/assessments` prefix, so a report link
+already sitting in somebody's inbox still resolves. The payload is built by
+ONE serializer, `services/prism_view.report_out`, which the PDF route shares,
+so the screen and the downloaded document cannot state different grades.
+
+THREE READS ARE AUDITED, each in the ONE insert `record_action` makes inside
+the request's transaction: the PDF download (the copy that leaves the
+product), the transcript (the candidate's raw answers) and the citation view
+(which resolves report statements back to those answers). The on-screen
+report is not audited per open; it is the reading surface a reviewer works
+from.
+
+The route paths still say `assessments` and `reports`; the user-visible names
+are Tatva Assessment and PRISM Report, and a route is quoted in already-issued
+links, so the path is not renamed.
+"""
 import logging
 import re
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,73 +39,37 @@ from app.models.assessment import (
     CandidateQuestion,
     FunctionalSkillsReport,
     JobCompetency,
-    ReportDimension,
 )
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.assessments import (
-    ClaimEvidenceOut,
-    DimensionOut,
     FunctionalReportOut,
-    GapAnalysisOut,
-    RadarChartOut,
+    ReportCitationsOut,
     TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
-    ValidationPointsOut,
 )
+from app.services import audit
 from app.services import capabilities as caps
 from app.services import (
-    evidence_confidence,
     job_assessment_retention,
-    ppi,
     ppi_interview,
-    reference_code,
+    prism_view,
     retention_consent,
-    skills,
 )
-# DUAL-MODE ASSESSMENT (2026-09-05 spec). The video package is reached ONLY by
-# these routes and the processing task, never by a scorer; the models carry the
-# consent audit and the recording lifecycle.
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
 from app.services.coding_assessment import payload as coding_payload
 from app.services.coding_assessment import transcript as coding_transcript
-# PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
-# this module's only import-time dependency on the proctoring package; the
-# behaviour recorder and the report loader are reached inside the handlers
-# that need them, so the scoring isolation the package promises stays
-# visible in the import graph as gate-plus-report-join and nothing else.
-from app.services.functional_assessment import (
-    CATEGORY_MATCHING,
-    CATEGORY_TECHNICAL,
-    RADAR_BANDS,
-    RADAR_SERIES,
-    build_radar_charts,
-    rating_label,
-)
-from app.services.rating import GRADES, grade_for_percent
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-READY_FOR_CANDIDATES = skills.READY_FOR_CANDIDATES
-PENDING_REVIEW = skills.PENDING_REVIEW
 
-
-# ── Job setup lives in `api/job_setup.py` (Vivekium release) ────────────────
-#
-# The setup checklist, the Skills step and the four Job SWOT routes moved to
-# `api/job_setup.py` under the same prefix, so every URL is unchanged. The
-# Tatva matrix editor (`/framework` and its siblings) that lived here is
-# DELETED; `READY_FOR_CANDIDATES` above stays re-exported for the assessment
-# conversation until the assessment phase imports it from `services/skills`.
-
-
-# ── The PPI Assessment Report (spec §9) ──────────────────────────────────────
+# ── The job-closure gate ─────────────────────────────────────────────────────
 
 
 async def _require_assessment_records_readable(
@@ -114,235 +97,184 @@ async def _require_assessment_records_readable(
     await job_assessment_retention.require_readable(session, user, job)
 
 
+async def _application_in_tenant(
+    session: AsyncSession, user: CurrentUser, link_id: uuid.UUID, *, not_found: str
+) -> JobCandidateLink:
+    """The application, or 404, then the closure gate (410). Cross-tenant reads
+    answer 404, never 403."""
+    link = await session.get(JobCandidateLink, link_id)
+    if link is None or link.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail=not_found)
+    await _require_assessment_records_readable(session, user, link)
+    return link
+
+
+async def _report_for(
+    session: AsyncSession, link: JobCandidateLink
+) -> FunctionalSkillsReport:
+    report = await prism_view.load_report(session, link.id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=prism_view.REPORT_NOT_READY)
+    return report
+
+
+def _actor_role(user: CurrentUser) -> str | None:
+    return getattr(user.role, "value", user.role)
+
+
+# ── The PRISM Report ─────────────────────────────────────────────────────────
+
+
 @router.get("/reports/links/{link_id}", response_model=FunctionalReportOut)
 async def get_report(
     link_id: uuid.UUID,
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> FunctionalReportOut:
-    link = await session.get(JobCandidateLink, link_id)
-    if link is None or link.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Report not found")
-    await _require_assessment_records_readable(session, user, link)
-    report = (
-        await session.execute(select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == link.id))
-    ).scalars().first()
-    if report is None:
-        raise HTTPException(status_code=404, detail="The PPI Assessment Report is not ready")
-    rows = (
-        await session.execute(
-            select(ReportDimension)
-            .where(ReportDimension.report_id == report.id)
-            .order_by(ReportDimension.ordinal)
-        )
-    ).scalars().all()
-
-    def _out(row: ReportDimension) -> DimensionOut:
-        return DimensionOut(
-            name=row.name,
-            description=row.description,
-            grade=rating_label(row.score) or GRADES[-1],
-            required_level=grade_for_percent(row.required_level),
-            remark=row.remark,
-            # EVIDENCE CONFIDENCE (0107). The stored code becomes a word HERE,
-            # server side, for the same reason `score` becomes a grade here: a
-            # code that crossed the boundary is a code somebody eventually
-            # renders directly. A row written before 0107 carries None and
-            # `display_word` returns None for it rather than inventing one.
-            evidence_confidence=evidence_confidence.display_word(
-                row.evidence_confidence
-            ),
-            evidence_sources=list(
-                evidence_confidence.source_labels(row.evidence_sources)
-            ),
-        )
-
-    grouped: dict[str, list[DimensionOut]] = {}
-    for row in rows:
-        grouped.setdefault(row.category, []).append(_out(row))
-
-    # Charts are built from the SAME rows the sections render, so a chart can
-    # never disagree with the text beside it.
-    charts = build_radar_charts(
-        [
-            {
-                "category": row.category,
-                "name": row.name,
-                "score": row.score,
-                "required_level": row.required_level,
-                "ordinal": row.ordinal,
-            }
-            for row in rows
-        ]
-    )
-
-    overall = report.overall_score
-    if overall is None:
-        # Written before migration 0030. Recompute rather than showing nothing.
-        assessed = [row.score for row in rows if row.category != CATEGORY_MATCHING]
-        overall = round(sum(assessed) / len(assessed)) if assessed else 0
-
-    # The Proctoring Report, appended as the final, informational section.
-    # It moves nothing above it: no grade in this payload is read from it.
-    from app.services.proctoring import report as proctoring_report  # noqa: PLC0415
-
-    proctoring = await proctoring_report.load_report_out(session, link.id)
-
-    # Data-retention consent (Consent & Privacy spec, 2026-09-05): whether the
-    # Download control may be offered at all. Read here so the UI and the PDF
-    # route agree, and a refused download is never a dead button.
-    report_candidate = await session.get(Candidate, link.candidate_id)
-
-    return FunctionalReportOut(
-        id=report.id,
-        job_candidate_link_id=link.id,
-        # The same COMPANY-JOB-CANDIDATE code the candidate table shows under
-        # the name, so a report and a table row can be matched up by eye.
-        # Recomputed rather than joined: it is a pure function of three ids that
-        # never change, so there is no stored value to disagree with.
-        reference_code=reference_code.reference_code(
-            link.tenant_id, link.job_id, link.candidate_id
-        ),
-        grade=report.grade,
-        ai_score=grouped.get(CATEGORY_MATCHING, []),
-        overall_grade=grade_for_percent(overall) or GRADES[-1],
-        overall_summary=report.overall_summary,
-        must_have=grouped.get(ppi.CATEGORY_MUST_HAVE, []),
-        nice_to_have=grouped.get(ppi.CATEGORY_NICE_TO_HAVE, []),
-        behavioural=grouped.get(ppi.CATEGORY_BEHAVIOURAL, []),
-        # Empty on every report written from Draft v4 onward. A report written
-        # before it still carries rows here and still renders them.
-        technical=grouped.get(CATEGORY_TECHNICAL, []),
-        validation=report.validation_json,
-        proctoring=proctoring,
-        gap_analysis=GapAnalysisOut.model_validate(report.gap_analysis_json or {}),
-        # An EMPTY model, not None, when the column is NULL. The two sections
-        # were added in 0107 and every report written before it has neither;
-        # a client walking the section order must find an empty section it can
-        # skip rather than a missing key it has to guard.
-        claim_evidence=ClaimEvidenceOut.model_validate(
-            report.claim_evidence_json or {}
-        ),
-        validation_points=ValidationPointsOut.model_validate(
-            report.validation_points_json or {}
-        ),
-        # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
-        # what it was actually written with rather than an empty section.
-        suggested_interview_questions=(
-            list(report.suggested_probes_json or [])
-            if not (report.gap_analysis_json or {})
-            else []
-        ),
-        radar_charts=[RadarChartOut(**chart) for chart in charts],
-        radar_bands=list(RADAR_BANDS),
-        radar_series=list(RADAR_SERIES),
-        synthesized_at=report.synthesized_at,
-        immutable=True,
-        report_download_allowed=retention_consent.assessment_download_allowed(
-            report_candidate
-        ),
-    )
+    link = await _application_in_tenant(session, user, link_id, not_found="Report not found")
+    report = await _report_for(session, link)
+    return await prism_view.report_out(session, link, report)
 
 
 @router.get("/reports/links/{link_id}/pdf")
 async def download_report_pdf(
     link_id: uuid.UUID,
+    request: Request,
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
-    """Download the immutable report with tenant-scoped authorization."""
-    report_out = await get_report(link_id=link_id, user=user, session=session)
-    link = await session.get(JobCandidateLink, link_id)
-    if link is None or link.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Report not found")
-    # Asked again rather than relied on through `get_report` above, the same
-    # defensiveness the tenant check two lines up already applies: a gate that
-    # only holds because of the order two calls happen in is a gate the next
-    # reordering deletes without a diff that looks like a deletion. The Job is
-    # in the session identity map by now, so the second ask is free.
-    await _require_assessment_records_readable(session, user, link)
+    """Download the immutable report: consent, then G4, then the number ban.
+
+    GATE G4, THEN THE PDF (P5-D7). A report routed to a person is not
+    downloaded until somebody has recorded a decision on it. The on-screen
+    report above is deliberately NOT gated: it is where that person reads the
+    report. `prism_pdf` takes the clearance G4 mints and runs the number ban on
+    its own input, so neither can be skipped from here.
+    """
+    from app.services.siddhi import delivery  # noqa: PLC0415
+
+    link = await _application_in_tenant(session, user, link_id, not_found="Report not found")
+    report = await _report_for(session, link)
     candidate = await session.get(Candidate, link.candidate_id)
     # The candidate decides whether their assessment is retained beyond this
     # job (Consent & Privacy spec, 2026-09-05): Download enabled only on an
-    # explicit Yes; No and never-asked both stay view-only. The on-screen
-    # report route above is deliberately not gated.
+    # explicit Yes; No and never-asked both stay view-only.
     if not retention_consent.assessment_download_allowed(candidate):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The candidate consented to view-only access for this assessment.",
         )
-    job = await session.get(Job, link.job_id)
-    tenant = await session.get(Tenant, link.tenant_id)
-    candidate_name = (candidate.full_name if candidate else None) or "Candidate"
-    job_title = (job.title if job else None) or "Role"
-    tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
-    # GATE G4, THEN THE PDF (Vivekium release, P5-D7). A report flagged for
-    # human review is not downloaded until a person has recorded a decision on
-    # it. The on-screen report above is deliberately NOT gated: it is where
-    # that person reads the report. `prism_pdf` takes the clearance G4 mints,
-    # so the renderer is unreachable from here without the gate having run.
-    from app.services.siddhi import delivery
-
-    report_row = (
-        await session.execute(
-            select(FunctionalSkillsReport).where(
-                FunctionalSkillsReport.job_candidate_link_id == link_id
-            )
-        )
-    ).scalars().first()
     try:
-        clearance = await delivery.gate_delivery(session, report_row)
+        clearance = await delivery.gate_delivery(session, report)
     except delivery.DeliveryBlocked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=delivery.PDF_BLOCKED_REASON,
         ) from None
+    report_out = await prism_view.report_out(session, link, report)
+    job = await session.get(Job, link.job_id)
+    tenant = await session.get(Tenant, link.tenant_id)
+    candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     payload = delivery.prism_pdf(
         clearance,
         report_out,
         candidate_name=candidate_name,
-        job_title=job_title,
-        tenant_name=tenant_name,
+        job_title=(job.title if job else None) or "Role",
+        tenant_name=(tenant.name if tenant else None) or "Vivekium customer",
         generated_at=report_out.synthesized_at,
     )
-    safe_name = (
-        re.sub(r"[^A-Za-z0-9_-]+", "-", candidate_name).strip("-")
-        or "candidate"
+    # Written only once the bytes exist: a refused or failed render downloaded
+    # nothing, and a row saying otherwise would be a false record.
+    await audit.record_action(
+        session,
+        action=audit.PRISM_PDF_DOWNLOADED,
+        actor_user_id=user.user_id,
+        actor_role=_actor_role(user),
+        tenant_id=user.tenant_id,
+        resource_type="functional_skills_report",
+        resource_id=report.id,
+        job_id=link.job_id,
+        application_id=link.id,
+        candidate_id=link.candidate_id,
+        request_method=request.method,
+        request_path=request.url.path,
+        metadata={"gate": clearance.as_dict()},
     )
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", candidate_name).strip("-") or "candidate"
     return Response(
         content=payload,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": (
-                # USER-VISIBLE, so it follows the copy rename rather than the
-                # code names. Everything else in this file still says `ppi`
-                # deliberately (a route is quoted in links already sitting in
-                # inboxes), but a downloaded file lands on somebody's desktop
-                # under whatever we call it, and that name should match the
-                # header printed inside it.
-                f'attachment; filename="prism-report-{safe_name}.pdf"'
-            ),
+            # USER-VISIBLE, so it follows the copy name, not the code name.
+            "Content-Disposition": f'attachment; filename="prism-report-{safe_name}.pdf"',
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )
 
 
+@router.get("/reports/links/{link_id}/citations", response_model=ReportCitationsOut)
+async def get_report_citations(
+    link_id: uuid.UUID,
+    request: Request,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> ReportCitationsOut:
+    """What each statement of the PRISM Report rests on: the question asked,
+    the answer given, the passage read, resolved at READ time from the stored
+    trail's locators and scoped to this application alone.
+
+    The same capability as the report and the transcript: someone who may
+    read the grade may read the evidence for it. Words and the candidate's own
+    text only; no id, no locator and no position crosses this boundary. A
+    report written before the trail existed answers `trail_available: false`.
+    """
+    from app.services.siddhi import trail as siddhi_trail  # noqa: PLC0415
+
+    link = await _application_in_tenant(session, user, link_id, not_found="Report not found")
+    report = await _report_for(session, link)
+    # A cited passage may come from this application's own transcript chunks
+    # or from the resume it was sent with, and from nowhere else.
+    sources = {
+        source
+        for source in (link.id, link.profile_id, link.yukti_profile_id)
+        if source is not None
+    }
+    view = await siddhi_trail.citation_view(
+        session,
+        report.gap_analysis_json,
+        link_id=link.id,
+        chunk_source_ids=sources,
+    )
+    await audit.record_action(
+        session,
+        action=audit.PRISM_CITATIONS_VIEWED,
+        actor_user_id=user.user_id,
+        actor_role=_actor_role(user),
+        tenant_id=user.tenant_id,
+        resource_type="functional_skills_report",
+        resource_id=report.id,
+        job_id=link.job_id,
+        application_id=link.id,
+        candidate_id=link.candidate_id,
+        request_method=request.method,
+        request_path=request.url.path,
+    )
+    return ReportCitationsOut.model_validate(view)
+
+
 # ── Report immutability ──────────────────────────────────────────────────────
 # A generated report is a permanent record: it is what a hiring decision was
-# made from, and a retake produces a NEW report ALONGSIDE the old one rather
-# than overwriting it. There is no edit or delete affordance in the UI, and
-# these handlers make the backend say so explicitly.
+# made from. There is no edit or delete affordance in the UI, the database
+# refuses an UPDATE (migration 0130), and these handlers make the API say so.
 #
 # Declaring them is deliberate. Without a registered handler, FastAPI answers a
-# DELETE on this path with 405 Method Not Allowed -- which reads as "the route
-# doesn't do that yet" rather than "this is forbidden by design", and would
-# leave a future edit free to add one without anyone noticing the rule.
+# DELETE on this path with 405 Method Not Allowed, which reads as "the route
+# does not do that yet" rather than "this is forbidden by design".
 
 _IMMUTABLE_DETAIL = (
-    "PPI Assessment Reports are immutable. A report records the assessment a "
-    "hiring decision was made from, so it is never edited or deleted; a retake "
-    "after six months generates a new report alongside this one."
+    "PRISM Reports are immutable. A report records the assessment a hiring "
+    "decision was made from, so it is never edited or deleted."
 )
 
 
@@ -505,6 +437,7 @@ def _answer_detail(
 @router.get("/transcripts/links/{link_id}", response_model=TranscriptOut)
 async def get_transcript(
     link_id: uuid.UUID,
+    request: Request,
     limit: int = TRANSCRIPT_DEFAULT_LIMIT,
     offset: int = 0,
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
@@ -519,10 +452,26 @@ async def get_transcript(
     limit = max(1, min(TRANSCRIPT_MAX_LIMIT, limit))
     offset = max(0, offset)
 
-    link = await session.get(JobCandidateLink, link_id)
-    if link is None or link.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Application not found")
-    await _require_assessment_records_readable(session, user, link)
+    link = await _application_in_tenant(
+        session, user, link_id, not_found="Application not found"
+    )
+    # AUDITED after the gates and before anything is read: a refused request
+    # read nothing, and every request that reaches here reads the answers.
+    await audit.record_action(
+        session,
+        action=audit.ASSESSMENT_TRANSCRIPT_VIEWED,
+        actor_user_id=user.user_id,
+        actor_role=_actor_role(user),
+        tenant_id=user.tenant_id,
+        resource_type="job_candidate_link",
+        resource_id=link.id,
+        job_id=link.job_id,
+        application_id=link.id,
+        candidate_id=link.candidate_id,
+        request_method=request.method,
+        request_path=request.url.path,
+        metadata={"offset": offset, "limit": limit},
+    )
     conversation = (
         await session.execute(
             select(AssessmentConversation).where(

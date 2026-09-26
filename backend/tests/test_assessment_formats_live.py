@@ -36,6 +36,16 @@ from app.services.assessment_formats import types
 from app.workers import dispatch as dispatch_mod
 
 
+def _http_request(path: str = "/api/v2/assessments/reports", method: str = "GET"):
+    """A real Starlette Request: the report routes read its method and path
+    for the audit row they write."""
+    from starlette.requests import Request
+
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": [], "query_string": b""}
+    )
+
+
 async def _factory_or_skip():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -735,7 +745,7 @@ async def test_the_transcript_renders_every_format_for_a_recruiter(monkeypatch, 
     marked clearly ... their input against accepted answers ... the resume
     anchor that prompted the question ... time spent"."""
     from app.api import assessment_conversation as mod
-    from app.api import assessments as staff_mod
+    from app.api import assessment_reports as staff_mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer
     from app.services.siddhi import numbers
@@ -769,7 +779,7 @@ async def test_the_transcript_renders_every_format_for_a_recruiter(monkeypatch, 
 
         async with factory() as s:
             async with superadmin_scope(s):
-                out = await staff_mod.get_transcript(fx.link_id, user=_staff(fx), session=s)
+                out = await staff_mod.get_transcript(fx.link_id, request=_http_request(), user=_staff(fx), session=s)
 
         by_type = {
             exchange.question_type: exchange
