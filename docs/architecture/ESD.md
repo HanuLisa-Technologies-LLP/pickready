@@ -1,5 +1,22 @@
-> **CORRECTIONS IN FORCE (last updated 2026-09-01).** Read these before
+> **CORRECTIONS IN FORCE (last updated 2026-09-25).** Read these before
 > trusting a section that contradicts them.
+>
+> **The Vivekium simplification release (2026-09-25).** `claude.md`'s top
+> section is the authority wherever this document disagrees. In short: there
+> is no Celery (background work is `dispatch` to Lambda and on-demand Fargate,
+> `dispatch_after_commit` from requests, and every task declares its RLS
+> scope; see [spec/BACKGROUND_WORK.md](../spec/BACKGROUND_WORK.md)); there is
+> no SMS path, no MSG91 and no login OTP; phone sign-in is removed; job setup
+> is the Skills step and a locked contract snapshot, not a matrix
+> ([spec/JOB_SETUP_FLOW.md](../spec/JOB_SETUP_FLOW.md)); the assessment is
+> one proctored, server-timed mode graded by Miti alone into an insert-only
+> PRISM Report ([spec/ASSESSMENT_FLOW.md](../spec/ASSESSMENT_FLOW.md));
+> candidate code runs only in the Judge0 sandbox
+> ([spec/CODE_EXECUTION.md](../spec/CODE_EXECUTION.md)); the approval chain,
+> the question bank and the legacy tables are gone
+> ([operations/LEGACY_TABLES.md](../operations/LEGACY_TABLES.md)); what runs
+> where is [operations/INFRA_TOPOLOGY.md](../operations/INFRA_TOPOLOGY.md).
+> Pilot HAS been deployed since the note below was written.
 >
 > **Deployment.** Sections 25 and 26 were rewritten on 2026-09-01 and now
 > describe the AWS target. ReadyPick runs on AWS ECS Fargate, RDS PostgreSQL,
@@ -45,7 +62,7 @@ ReadyPick is a web application with four authenticated workspaces and several pu
 flowchart TB
     Browser["Next.js web application"]
     API["FastAPI application"]
-    Worker["Celery workers and beat"]
+    Worker["Dispatched tasks: Lambda task worker and on-demand Fargate agent"]
     DB[("PostgreSQL 16 + pgvector")]
     Cache[("Redis 7")]
     S3[("Private S3 bucket")]
@@ -54,7 +71,6 @@ flowchart TB
     Tavily["Tavily search"]
     Razorpay["Razorpay"]
     Mail["Gmail SMTP"]
-    SMS["MSG91"]
 
     Browser -->|HTTPS / JSON + secure cookies| API
     Browser -->|sign-in| Firebase
@@ -69,7 +85,6 @@ flowchart TB
     Worker --> AI
     Worker --> Tavily
     Worker --> Mail
-    Worker --> SMS
 ```
 
 The frontend exposes a public site (including `/docs`) plus Provider, Company, Candidate, and Business Development route groups. The API contains shared v1 routes, current v2 workflow routes, and a small amount of backward-compatible surface.
@@ -84,12 +99,12 @@ The frontend exposes a public site (including `/docs`) plus Provider, Company, C
 | API | Python 3.12, FastAPI, Pydantic |
 | Persistence | SQLAlchemy async ORM, asyncpg, Alembic |
 | Database | PostgreSQL 16 with pgvector |
-| Queue/cache | Redis 7, Celery worker and beat |
+| Background work / cache | `app/workers/dispatch` to AWS Lambda and on-demand ECS Fargate (no Celery); Redis 7 for rate limits, caches, run status, sessions and the proctoring counter |
 | AI orchestration | Single-vendor router (`services/llm_router`) with per-task timeouts, wall-clock budgets, bounded retries and a circuit breaker; LangGraph drives the retry state machine |
 | Identity | Firebase Authentication plus application-issued JWT sessions |
 | Files | Private S3 bucket, content-addressed by sha256 |
 | Payments | Razorpay Subscriptions and webhooks |
-| Email/SMS | Gmail SMTP with STARTTLS, MSG91 |
+| Email | Gmail SMTP with STARTTLS or Amazon SES, one per deployment (no SMS path) |
 | Web research | Tavily |
 | Containers | Docker; local composition through Docker Compose |
 | API serving | Gunicorn with Uvicorn workers |
@@ -111,7 +126,7 @@ pickready/
 │   ├── app/prompts/           # Versioned AI prompt material
 │   ├── app/schemas/           # API request/response contracts
 │   ├── app/services/          # Domain and integration services
-│   ├── app/workers/           # Celery configuration and tasks
+│   ├── app/workers/           # dispatch, the task registry, tasks and entrypoints
 │   └── tests/                 # Backend unit and integration tests
 ├── frontend/
 │   ├── app/                   # Next.js route groups and pages

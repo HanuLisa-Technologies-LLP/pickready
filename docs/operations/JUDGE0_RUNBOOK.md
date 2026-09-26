@@ -179,6 +179,30 @@ Set `CODE_EXECUTION_BACKEND=disabled` on the API, the task worker and the agent
 and redeploy. Coding surfaces then say code execution is unavailable; nothing
 waits on the sandbox. Infrastructure is untouched.
 
+### What an outage does to assessments in flight (the application side)
+Nothing is lost and nothing is graded from an outage; `docs/spec/CODE_EXECUTION.md`
+is the full contract.
+- **Run** answers 503 with the server's sentence, and the `coding_runs` row
+  is committed as `unavailable` with the exception class. It does NOT count
+  against the candidate's per-question cap.
+- **A final answer** is stored as a `coding_submissions` row regardless; the
+  execution task re-raises `ExecutionUnavailable` for its retry, and
+  `pickready.reconcile_coding_submissions` (every fifteen minutes)
+  re-dispatches it and never gives up, logging `coding.submission_stuck` at
+  ERROR past `ATTEMPTS_BEFORE_ALARM`. A host replaced mid-run surfaces as
+  `ExecutionTicketLost`, which resubmits the same code once.
+- **Scoring holds** (`submissions.scoring_hold`) while owed coding work is
+  younger than `coding_execution_max_wait_hours` (24). Past it, the answer is
+  "Not assessed" with `needs_human_review`, and the report states "The code
+  runner was unavailable, so this answer was not assessed." Recovery inside
+  the window grades normally with no intervention.
+- **New assessments** written while `CODE_EXECUTION_BACKEND=disabled` carry no
+  coding question: the slot is prose and the reason `code_execution_disabled`
+  is recorded. Questions already issued keep their frozen limits.
+- **The application probe** `pickready.probe_code_execution` logs
+  `status=failed` lines every five minutes while the host is down; count them
+  on the task worker log group.
+
 ### Alarm `*-judge0-down` (liveness failing for three minutes)
 1. Log group `/readypick/<env>/judge0-host`: the last `judge0-stack`,
    `judge0-preflight` and `judge0-health` lines.
