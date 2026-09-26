@@ -366,12 +366,9 @@ async def send_outreach(
         # warning cancel the very clock it exists to announce.
         await engagement.record_engagement_by_id(session, rec.candidate_id)
 
-    if not queued:
-        raise HTTPException(
-            status_code=503,
-            detail="Could not queue any emails right now. Please try again in a moment.",
-        )
-
+    # No "nothing could be queued" 503 any more: `_resolve` already refuses an
+    # empty recipient list with a 422, and a send can no longer fail to
+    # enqueue inside the request, so every recipient here is queued.
     await audit(
         session,
         tenant_id=user.tenant_id,
