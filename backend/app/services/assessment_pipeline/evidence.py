@@ -337,6 +337,53 @@ async def structured_answers(
     return {str(row.question_id): row for row in rows}
 
 
+async def ensure_transcript_indexed(session: AsyncSession, link_id: uuid.UUID) -> Any:
+    """Index this application's transcript INLINE, before Miti reads passages.
+
+    Completing a conversation dispatches `pickready.index_document` after the
+    commit, and scoring is dispatched by the same commit, so the two race:
+    Miti's `transcript_passages_for_skill` read would find an empty index and
+    look like a transcript with nothing related in it, with nothing recording
+    why (PLAN-p5 3.6). Scoring is already a background task, so it indexes the
+    one transcript itself first.
+
+    IDEMPOTENT: `index_document` re-embeds only a chunk whose content changed,
+    so when the dispatched indexing already ran this costs one SELECT and
+    writes nothing. An embedding or prefix outage DEGRADES inside the indexer
+    (text indexed, no vector, recorded on the result and logged here), which
+    leaves lexical retrieval working and never fails the scoring run. A
+    database failure raises: it has aborted the transaction the report would
+    be written in.
+
+    Returns the `rag.index.IndexResult`, or None when the application has no
+    answered exchange to index (a legitimate state, logged).
+    """
+    from app.services.rag import chunking
+    from app.services.rag import index as rag_index
+    from app.services.rag import sources as rag_sources
+
+    document = await rag_sources.load(
+        session, source_type=chunking.SOURCE_ASSESSMENT, source_id=link_id
+    )
+    if document is None:
+        logger.info("assessment_pipeline.transcript_not_indexable link_id=%s", link_id)
+        return None
+    result = await rag_index.index_document(
+        session,
+        tenant_id=document.tenant_id,
+        source_type=document.source_type,
+        source_id=document.source_id,
+        document=document.text,
+        chunks=document.chunks,
+    )
+    logger.log(
+        logging.WARNING if result.degraded else logging.INFO,
+        "assessment_pipeline.transcript_indexed link_id=%s written=%d unchanged=%d degraded=%s",
+        link_id, result.written, result.unchanged, result.degraded,
+    )
+    return result
+
+
 async def load_inputs(
     session: AsyncSession,
     *,

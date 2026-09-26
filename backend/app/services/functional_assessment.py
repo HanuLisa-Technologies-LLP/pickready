@@ -285,6 +285,8 @@ async def run_assessment(
     async with cost_telemetry.record_for(
         session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
     ):
+        # The transcript is indexed before Miti reads related passages from it.
+        await stage_evidence.ensure_transcript_indexed(session, link.id)
         inputs = await stage_evidence.load_inputs(
             session,
             job=job,

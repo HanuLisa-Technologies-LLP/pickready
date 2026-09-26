@@ -110,6 +110,17 @@ async def test_the_report_carries_mitis_grades_and_nothing_else(monkeypatch) -> 
         report_id = str(result.report_id)
         assert (result.status, result.attempts) == ("written", 1)
 
+        # The transcript was indexed INLINE by the scoring run, before Miti
+        # read related passages from it (PLAN-p5 3.6): nothing else in this
+        # test indexes it, and the dispatched indexer never runs under record.
+        chunks = await _second_read(
+            factory,
+            "SELECT count(*) FROM context_chunks WHERE source_type = 'assessment' "
+            "AND source_id = :l",
+            l=w.links[0],
+        )
+        assert chunks[0][0] > 0, "the scoring run indexed the transcript it grades"
+
         # 0. No AI Score row is written any more: that section is Yukti's
         # frozen snapshot on the report row (WP5-D).
         matching = await _second_read(
