@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.services import functional_assessment as fa
+from app.services.siddhi import remarks as siddhi_remarks
 from app.services.assessment_questions import budget as question_budget
 from app.services import matching, ppi
 from app.services.yukti import ranking
@@ -259,30 +260,31 @@ def _measure_no_weightage_table() -> Result:
 # ── Measurements: the report ─────────────────────────────────────────────────
 
 def _measure_ppi_remark_word_range() -> Result:
-    """PPI items and the overall remark are 45-50 words, in every branch.
+    """Skill and Overall remarks are 45-50 words, in every branch.
 
-    Including the fallbacks, which is the point: the fallback is what a client
-    reads when a provider is down, and a 12-word apology in the Behavioural
-    Competencies section is the most visible possible failure.
+    Including the fixed sentences, which is the point: a template or a
+    catalogue sentence is what a client reads when a provider is down, and a
+    12-word apology in the Behavioural section is the most visible possible
+    failure. The writer is `siddhi.remarks` since the grading split (WP5-D);
+    the 25-30 word AI Score remarks are gone with the matching rows.
     """
     result = Result("ppi_remark_words")
     low, high = fa.PPI_REMARK_WORDS
     names = ["Distributed systems", "Stakeholder influence", "this area", "Data modelling"]
     for name in names:
-        text = fa._fallback_remark_45(name)
+        text = siddhi_remarks.template_remark(name)
         count = fa.word_count(text)
-        result.record(low <= count <= high, f"fallback_45({name!r}) = {count} words")
+        result.record(low <= count <= high, f"template({name!r}) = {count} words")
     for name in names:
-        text = fa._unanswered_remark(name, 45)
+        text = siddhi_remarks.unanswered_remark(name).text
         count = fa.word_count(text)
-        result.record(low <= count <= high, f"unanswered({name!r}, 45) = {count} words")
-    for name in names:
-        text = fa._fallback_remark_25(name)
+        result.record(low <= count <= high, f"unanswered({name!r}) = {count} words")
+    for text in (
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
+    ):
         count = fa.word_count(text)
-        result.record(
-            fa.MATCHING_REMARK_WORDS[0] <= count <= fa.MATCHING_REMARK_WORDS[1],
-            f"fallback_25({name!r}) = {count} words",
-        )
+        result.record(low <= count <= high, f"not assessed = {count} words")
     return result
 
 
@@ -291,10 +293,10 @@ def _measure_no_banned_instrument() -> Result:
     instrument, and the detector must not fire on ordinary English."""
     result = Result("no_third_party_instrument")
     generated = [
-        fa._fallback_remark_45("Stakeholder influence"),
-        fa._fallback_remark_25("Distributed systems"),
-        fa._unanswered_remark("Coaching", 45),
-        fa._unanswered_remark("Coaching", 25),
+        siddhi_remarks.template_remark("Stakeholder influence"),
+        siddhi_remarks.unanswered_remark("Coaching").text,
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ]
     for text in generated:
         leak = _banned_in(text)
@@ -320,9 +322,9 @@ def _measure_no_numbers_reach_a_client() -> Result:
     0-100 score never appears in anything a client reads."""
     result = Result("no_numbers_to_a_client")
     texts = [
-        fa._fallback_remark_45("Distributed systems"),
-        fa._fallback_remark_25("Data modelling"),
-        fa._unanswered_remark("Stakeholder influence", 45),
+        siddhi_remarks.template_remark("Distributed systems"),
+        siddhi_remarks.unanswered_remark("Stakeholder influence").text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ]
     for text in texts:
         hit = SCORE_SHAPED.search(text)
