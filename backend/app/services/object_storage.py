@@ -194,6 +194,32 @@ def _head(key: str) -> dict[str, Any] | None:
         raise ObjectStorageError(f"Object store HEAD failed: {code}") from exc
 
 
+def sse_arguments() -> dict[str, str]:
+    """The server-side encryption arguments EVERY write to the bucket carries.
+
+    `aws:kms` under this environment's own key, named explicitly: the bucket
+    policy (`infra/modules/s3`) refuses a PutObject that names any other
+    encryption, another key, or `aws:kms` with no key id (which S3 would
+    encrypt under the AWS-managed `aws/s3` key instead). This module sent
+    `AES256` until the stage 3 final sweeps, so on pilot every resume,
+    compliance, project and attachment upload was refused by the first of
+    those statements; the media transport (`services/video/storage`) had
+    already moved and now reads this function rather than its own copy.
+
+    REFUSES when `s3_kms_key_id` is empty rather than writing under the wrong
+    key, the same refusal an absent bucket gets.
+    """
+    key_id = (get_settings().s3_kms_key_id or "").strip()
+    if not key_id:
+        raise ObjectStorageNotConfigured(
+            "S3_KMS_KEY_ID is not set. The bucket policy accepts only "
+            "aws:kms uploads, and without the key id the object would be "
+            "encrypted under the AWS-managed key instead of this "
+            "environment's own."
+        )
+    return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_id}
+
+
 def put_if_absent(
     *, key: str, data: bytes, content_type: str, metadata: dict[str, str]
 ) -> StoredObject:
@@ -209,6 +235,9 @@ def put_if_absent(
     from botocore.exceptions import ClientError  # noqa: PLC0415
 
     bucket = _bucket_name()
+    # Before any network call, so an unconfigured key refuses the write
+    # instead of spending a HEAD first.
+    sse = sse_arguments()
     existing = _head(key)
     if existing is None:
         try:
@@ -218,12 +247,12 @@ def put_if_absent(
                 Body=data,
                 ContentType=content_type,
                 Metadata=metadata,
-                # Server-side encryption is also enforced by the bucket policy
-                # in Terraform. Stated here too, because a caller reading this
-                # module should not have to open the IaC to learn whether the
-                # bytes are encrypted, and belt-and-braces on encryption is not
-                # a redundancy worth trimming.
-                ServerSideEncryption="AES256",
+                # REQUIRED, not belt-and-braces: the bucket policy denies any
+                # other encryption header (`sse_arguments`). Written as two
+                # keywords rather than a splat, because
+                # `test_proctoring_no_media` reads them off the call.
+                ServerSideEncryption=sse["ServerSideEncryption"],
+                SSEKMSKeyId=sse["SSEKMSKeyId"],
                 # The precondition. Without it two concurrent uploads of
                 # identical bytes both write, which is harmless for the DATA
                 # (same bytes, same key) and wasteful for the transfer.
@@ -245,7 +274,8 @@ def put_if_absent(
                 Body=data,
                 ContentType=content_type,
                 Metadata=metadata,
-                ServerSideEncryption="AES256",
+                ServerSideEncryption=sse["ServerSideEncryption"],
+                SSEKMSKeyId=sse["SSEKMSKeyId"],
             )
         existing = _head(key)
 

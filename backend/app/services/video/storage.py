@@ -13,11 +13,13 @@ ENCRYPTION IS `aws:kms` UNDER THIS ENVIRONMENT'S KEY, AND NOTHING ELSE
 `infra/modules/s3` denies any PutObject whose `x-amz-server-side-encryption`
 header is not `aws:kms`. This module sent `AES256` until 2026-09-24, so on a
 bucket built from that module every recording upload would have been refused
-(pilot held zero recordings when this was found, CONTRACT v3). `_sse()` is the
-one place the header is built, it names the key explicitly because `aws:kms`
-alone selects the AWS-managed `aws/s3` key rather than the bucket's own, and
-it REFUSES when `s3_kms_key_id` is empty rather than writing under the wrong
-key or letting the store deny each part.
+(pilot held zero recordings when this was found, CONTRACT v3).
+`object_storage.sse_arguments` is the one place the header is built (this
+module's `_sse()` reads it, and so does every other bucket write). It names
+the key explicitly because `aws:kms` alone selects the AWS-managed `aws/s3`
+key rather than the bucket's own, and it REFUSES when `s3_kms_key_id` is
+empty rather than writing under the wrong key or letting the store deny each
+part.
 
 NO WHOLE RECORDING IS EVER HELD IN MEMORY
 ------------------------------------------
@@ -67,17 +69,10 @@ def _bucket() -> str:
 
 
 def _sse() -> dict[str, str]:
-    """The encryption arguments every media write carries. See the module
-    docstring: `aws:kms` under this environment's key, or a refusal."""
-    key_id = (get_settings().s3_kms_key_id or "").strip()
-    if not key_id:
-        raise object_storage.ObjectStorageNotConfigured(
-            "S3_KMS_KEY_ID is not set. The bucket policy accepts only "
-            "aws:kms uploads, and without the key id the object would be "
-            "encrypted under the AWS-managed key instead of this "
-            "environment's own."
-        )
-    return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_id}
+    """The encryption arguments every media write carries: `aws:kms` under
+    this environment's key, or a refusal. ONE implementation, in
+    `object_storage.sse_arguments`, shared with every other bucket write."""
+    return object_storage.sse_arguments()
 
 
 class UploadNotFound(object_storage.ObjectStorageError):
