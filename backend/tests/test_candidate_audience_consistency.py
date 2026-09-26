@@ -27,7 +27,6 @@ from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.models import Dependant
-from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from app.api.deps import (
     get_candidate_db,
@@ -38,6 +37,7 @@ from app.api.deps import (
     get_tenant_db,
 )
 from app.main import app
+from tests.route_tree import mounted_routes
 
 #: Dependencies that only a CANDIDATE-audience token satisfies.
 CANDIDATE_SIDE: frozenset[Callable] = frozenset(
@@ -66,29 +66,25 @@ def _calls(dependant: Dependant) -> Iterator[Callable]:
 
 def _mixed_routes(application: FastAPI) -> list[str]:
     mixed: list[str] = []
-    for route in application.routes:
-        if not isinstance(route, (APIRoute, APIWebSocketRoute)):
-            continue
-        calls = set(_calls(route.dependant))
+    for path, route, inherited in mounted_routes(application.routes):
+        calls = set(_calls(route.dependant)) | set(inherited)
         candidate = sorted(call.__name__ for call in calls & CANDIDATE_SIDE)
         staff = sorted(call.__name__ for call in calls & STAFF_SIDE)
         if candidate and staff:
             methods = ",".join(sorted(getattr(route, "methods", None) or {"WS"}))
-            mixed.append(f"{methods} {route.path}: {candidate} with {staff}")
+            mixed.append(f"{methods} {path}: {candidate} with {staff}")
     return sorted(mixed)
 
 
 def _audiences(application: FastAPI) -> tuple[set[str], set[str]]:
     candidate_paths: set[str] = set()
     staff_paths: set[str] = set()
-    for route in application.routes:
-        if not isinstance(route, (APIRoute, APIWebSocketRoute)):
-            continue
-        calls = set(_calls(route.dependant))
+    for path, route, inherited in mounted_routes(application.routes):
+        calls = set(_calls(route.dependant)) | set(inherited)
         if calls & CANDIDATE_SIDE:
-            candidate_paths.add(route.path)
+            candidate_paths.add(path)
         if calls & STAFF_SIDE:
-            staff_paths.add(route.path)
+            staff_paths.add(path)
     return candidate_paths, staff_paths
 
 

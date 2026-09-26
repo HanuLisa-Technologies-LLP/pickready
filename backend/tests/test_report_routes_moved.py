@@ -12,6 +12,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from tests.route_tree import mounted_routes
 
 PREFIX = "/api/v2/assessments"
 
@@ -32,8 +33,7 @@ def _mounted() -> dict[tuple[str, str], object]:
     from app.main import app
 
     found: dict[tuple[str, str], object] = {}
-    for route in app.routes:
-        path = getattr(route, "path", "")
+    for path, route, _ in mounted_routes(app.routes):
         if not (
             path.startswith(f"{PREFIX}/reports") or path.startswith(f"{PREFIX}/transcripts")
         ):

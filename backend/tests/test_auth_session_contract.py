@@ -13,6 +13,7 @@ import pytest
 from fastapi.routing import APIRoute
 
 from app.schemas.auth import ContextOut, SessionOut, UserOut
+from tests.route_tree import mounted_routes
 
 #: The captured shape, minus `pending_channels`. Order-free.
 SESSION_OUT_FIELDS = {"user", "capabilities", "contexts", "context_token"}
@@ -40,25 +41,29 @@ def test_an_empty_session_serialises_to_the_same_keys() -> None:
 
 
 @pytest.fixture(scope="module")
-def routes() -> list[APIRoute]:
+def routes() -> list[tuple[str, APIRoute]]:
     from app.main import app
 
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+    return [
+        (path, route)
+        for path, route, _ in mounted_routes(app.routes)
+        if isinstance(route, APIRoute)
+    ]
 
 
 def test_the_three_live_routes_answer_session_out(routes) -> None:
     found = {
-        (method, route.path): route.response_model
-        for route in routes
+        (method, path): route.response_model
+        for path, route in routes
         for method in route.methods
-        if (method, route.path) in LIVE_SESSION_ROUTES
+        if (method, path) in LIVE_SESSION_ROUTES
     }
     assert set(found) == LIVE_SESSION_ROUTES
     assert all(model is SessionOut for model in found.values()), found
 
 
 def test_no_code_login_route_is_mounted(routes) -> None:
-    paths = {route.path for route in routes}
+    paths = {path for path, _ in routes}
     for retired in (
         "/api/v1/auth/otp/request",
         "/api/v1/auth/otp/verify",
