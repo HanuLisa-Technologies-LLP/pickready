@@ -160,13 +160,14 @@ PROMPT_BUILDERS: dict[str, Builder] = {
         "Phase 5", "a document and one of its chunks (resumes and JDs are indexed)", PENDING,
         "Phase 5 redacts documents before indexing or before the prefix call",
     ),
-    "app/services/functional_assessment.py::infer_grade": Builder(
-        "Phase 5", "the job title for a grade, legacy rows only", REVIEWED
+    # The grading split (WP5-D): the item judge is Miti's, the remark writer
+    # Siddhi's. `functional_assessment` calls no model any more.
+    "app/services/miti/live.py::_item_invoke": Builder(
+        "Phase 5",
+        "a question, the rubric stored with it and the answer; related passages through the tool layer",
+        REVIEWED,
     ),
-    "app/services/functional_assessment.py::_llm_score": Builder(
-        "Phase 5", "a question, its rubric and the answer", REVIEWED
-    ),
-    "app/services/functional_assessment.py::bounded_remark.execute": Builder(
+    "app/services/siddhi/remarks.py::bounded_remark.execute": Builder(
         "Phase 5", "grades and evidence already written for the report", REVIEWED
     ),
     "app/services/gap_analysis.py::_write_probes.execute": Builder(

@@ -1,176 +1,104 @@
-"""LangGraph orchestration for the Vivekium PPI Assessment Report.
+"""The grading ORCHESTRATOR, and the PRISM Report's read shape.
 
-ONE scoring agent, TWO methods (spec §8). The PPI Scoring Agent consumes the
-actual candidate answers, keyed by the `question_key` stamped on every message,
-and the method varies by the ITEM the question probed:
+THE ONE-WAY PIPELINE (PLAN-p5 WP5-D, the Vivekium release)
+-----------------------------------------------------------
+This module used to be a 2,700 line LangGraph whose nodes scored, wrote
+prose, ran the gate and UPDATEd the report in place. It is now ONLY the
+orchestrator, and every step is a stage module under
+`services/assessment_pipeline`:
 
-  must_have / nice_to_have  graded against THAT question's own stored rubric,
-                            one question at a time
-  behavioural               graded by judgement across everything said about the
-                            competency, because there is no single correct
-                            answer to weigh a behavioural account against
+    1 evidence.load_inputs        what the grading and the report are written from
+    2 grading.grade               MITI: every per-skill grade and the overall
+    3 composition.compose         SIDDHI: remarks, citations, gaps, the gate
+    4 persistence.write_report    insert-only report + rows, evaluation upsert
 
-Draft v4 removed a node from this graph. There used to be a `technical_scoring`
-node beside `ppi_scoring`, because there were two question banks; technical
-depth is now assessed by the matrix's Must-have items, so there is one bank, one
-scorer, and no seam for a candidate to notice.
+A stage imports the stages before it and never a later one, and none imports
+this module. `tests/test_assessment_pipeline_direction.py` walks module-level
+AND function-level imports, so a lazy import cannot hide a back edge.
 
-Validation is not a scorer and has not been one since 2026-07-30: it is
-mandatory fields on the application form, flowing from
-`job_candidate_links.validation_json` straight into the report with nothing
-scoring, interpreting or judging it (spec §6, §19).
+`run_assessment` keeps its name because `pickready.run_functional_assessment`
+and `locks.SCORING = "functional_assessment.scoring"` are persisted names.
 
-What the client sees, in order (spec §9.3):
+THE BOUNDED RETRY OF A NOT-ASSESSED RUN (P5-D4)
+------------------------------------------------
+A skill Miti could not assess (every substantive answer's evaluation failed,
+a coding result the sandbox never produced) is a fact about the PLATFORM, not
+the candidate. Before the final attempt the run writes NO report: the live
+evaluation row records `not_assessed` and the attempt count, the task
+returns, and the hourly `release_held_assessments` sweep re-dispatches it. On
+attempt `settings.miti_not_assessed_attempts` the report IS written, those
+skills stated "Not assessed", the report routed to a person, and
+`miti.not_assessed_final_report` logged at ERROR, which a CloudWatch alarm
+watches. A report is permanent, so a two-minute outage must not become a
+permanent "Not assessed"; the bound stops a permanent state from re-paying
+the other skills' evaluations every hour for ever.
 
-  AI Score            the pre-assessment resume snapshot, the job's matching
-                      categories, 25-30 word remarks
-  Overall Assessment  grade + 45-50 word remark + overall radar
-  Must-have           grade + 45-50 word remark each + radar
-  Nice-to-have        same
-  Behavioural         same
-  Validation          the application fields, verbatim, unrated
-  Gap Analysis        grouped by aspect, every gap paired with probes grounded
-                      in what the candidate actually said
-
-Two rules that live in this module and nowhere else:
-
-  * the Must-have HARD CAP (spec §5.5) -- one Not Matching Must-have item holds
-    the Overall Grade to Moderately Matching whatever else the candidate scored;
-  * report synthesis does not finalise until scoring completes (spec §19),
-    which the graph's join edge enforces rather than a convention.
-
-Every grade is one of four WORDS (services/rating). No number reaches a client
-from this module.
+THE READ SHAPE
+--------------
+The category names, the radar builder and `rating_label` below are read by
+the report route and the PDF. They are the report's SHAPE, not grading, and
+none of them imports a stage. They move to the report read model with WP5-F.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import re
-from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence, TypedDict
+import uuid
+from dataclasses import dataclass
+from typing import Any
 
-from langgraph.graph import END, START, StateGraph
-from sqlalchemy import delete, select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import (
-    AssessmentAnswer,
-    AssessmentConversation,
-    AssessmentMessage,
-    CandidateQuestion,
-    FunctionalSkillsReport,
-    JobCompetency,
-    ReportDimension,
-)
-from app.models.candidate import Candidate, JobCandidateLink, Profile
+from app.core.config import get_settings
+from app.models.assessment import AssessmentConversation
+from app.models.candidate import JobCandidateLink
 from app.models.job import Job
-from app.services import (
-    agent_loop,
-    answer_quality,
-    conversation_guardrails,
-    cost_telemetry,
-    gap_analysis,
-    llm_router,
-    matching_categories,
-    ppi,
-    ppi_interview,
+from app.services import cost_telemetry, ppi, ppi_interview
+from app.services.assessment_pipeline import composition, grading, persistence
+from app.services.assessment_pipeline import evidence as stage_evidence
+from app.services.assessment_pipeline.types import (
+    MODE_MITI,
+    RUN_NOT_ASSESSED,
+    RUN_WRITTEN,
+    ProvenanceRecorder,
 )
-from app.services.assessment_pipeline import evidence as answer_evidence
-from app.services.assessment_pipeline.types import AnswerRecord
-from app.services.assessment_questions import budget as question_budget
-from app.services.assessment_questions import generate as question_generation
-from app.services import evidence_confidence
-from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
-from app.services.miti import claims as miti_claims
-from app.services.siddhi import claim_evidence, validation_points
-from app.services.assessment_formats import evaluation as format_evaluation
-from app.services.assessment_formats import rendering as format_rendering
-from app.services.assessment_formats import types as question_types
-from app.config import llm_providers
-from app.prompts import registry
-from app.services.rating import (
-    GRADES,
-    MODERATE_OR_BELOW,
-    PROBE_THRESHOLD,
-    band_index_for,
-    grade_for_percent,
-)
+from app.services.miti.items import UNANSWERED_SCORE
+from app.services.rating import GRADES, band_index_for, grade_for_percent
+from app.services.siddhi import remarks as siddhi_remarks
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CATEGORY_MATCHING",
     "CATEGORY_TECHNICAL",
     "GRADES",
-    "MATCHING_DIMENSIONS",
+    "MODE_MITI",
+    "PPI_REMARK_WORDS",
     "PROBE_REMARK_WORDS",
     "RADAR_BANDS",
+    "RADAR_SERIES",
     "REPORT_CATEGORIES",
-    "assessment_graph",
+    "RunResult",
+    "UNANSWERED_SCORE",
     "band_index_for",
-    "build_gap_analysis",
     "build_radar_charts",
-    "infer_grade",
-    "infer_grade_fallback",
-    "must_have_cap_applies",
     "rating_label",
     "run_assessment",
     "word_count",
 ]
 
-#: The four grades. How many questions a grade is asked is
-#: `assessment_questions.budget` (one per skill above the grade's floor); the
-#: per-grade ranges this module re-exported were deleted on 2026-09-25.
-GRADE_NAMES: tuple[str, ...] = question_budget.GRADES
-
-# ── The AI Score's matching categories (spec §3.2) ───────────────────────────
-# NO WEIGHTS. The spec is explicit: "make sure there are no mathematical
-# weightage for giving these AI comments". The parameters were previously
-# described to the client as "35% role-fit weighting" and similar, which both
-# leaked a number and implied an arithmetic the comments do not perform. Each
-# category is judged and reported on its own terms.
-#
-# THE LIST IS NOW PER JOB. `services/matching.DEFAULT_CATEGORIES` is the AI's
-# proposed default five and `job_matching_categories` holds what the recruiter
-# finalised, so the tuple below is no longer the product's fixed set -- it is
-# the fallback shape for a job whose categories predate the change, and the
-# report reads the job's own list when it has one.
+#: LEGACY. Reports written before the Vivekium release carry AI Score rows
+#: under this category (four matching parameters, 25 to 30 word remarks). The
+#: AI Score is now Yukti's frozen snapshot on `ai_score_json`; nothing writes
+#: this category any more, and it is read so a historic report still renders.
 CATEGORY_MATCHING = "matching"
 
-#: LEGACY. Reports written before Draft v4 carry rows under this category,
-#: scored against the standalone technical bank that no longer exists. Nothing
-#: writes it any more; it is read so a historic report still renders.
+#: LEGACY. Reports written before Draft v4 carry rows scored against the
+#: standalone technical bank that no longer exists; read, never written.
 CATEGORY_TECHNICAL = "technical"
 
-MATCHING_DIMENSIONS: tuple[tuple[str, str, str], ...] = (
-    (
-        "Skills match",
-        "skills_match",
-        "Semantic comparison between the job's required skills and the candidate's "
-        "experience, education and certifications.",
-    ),
-    (
-        "Experience relevance",
-        "experience_relevance",
-        "Whether the experience is in the same function and at a comparable level, "
-        "not a numeric count of years.",
-    ),
-    (
-        "Role & responsibility alignment",
-        "role_alignment",
-        "The candidate's actual designation and duties against the job's role and "
-        "responsibilities.",
-    ),
-    (
-        "Education & qualification fit",
-        "education_fit",
-        "Degree level and specialisation against the job's education requirement.",
-    ),
-)
-
-#: Report section order, exactly as §9.3 lists it. `technical` trails the list
-#: because a historic report may still carry rows under it; nothing new does.
+#: Report section order. The two legacy categories trail it because only a
+#: historic report carries them.
 REPORT_CATEGORIES: tuple[str, ...] = (
     CATEGORY_MATCHING,
     ppi.CATEGORY_MUST_HAVE,
@@ -179,50 +107,33 @@ REPORT_CATEGORIES: tuple[str, ...] = (
     CATEGORY_TECHNICAL,
 )
 
-#: Word contracts (spec §9.5).
-MATCHING_REMARK_WORDS = (25, 30)
-PPI_REMARK_WORDS = (45, 50)
-#: A Gap Analysis probe is a prompt for the interviewer, not a written
-#: assessment, and is capped shorter than an item remark for exactly that
-#: reason (spec §9.5).
-PROBE_REMARK_WORDS = (25, 30)
-
-# Score assigned when a question was never answered -- factual, not punitive.
-UNANSWERED_SCORE = 25
+#: Word contracts, owned by Siddhi's writer and re-exported for the readers
+#: that still import them from here.
+PPI_REMARK_WORDS = siddhi_remarks.SKILL_REMARK_WORDS
+PROBE_REMARK_WORDS = siddhi_remarks.PROBE_REMARK_WORDS
 
 #: Ordered best-to-worst grade labels, for the radar legend and colour ramp.
 RADAR_BANDS: tuple[str, ...] = GRADES
 
 
-#: Re-exported from the module that owns the Gap Analysis section, so a caller
-#: has one import for the whole report contract and the two cannot drift.
-build_gap_analysis = gap_analysis.build_gap_analysis
-must_have_cap_applies = gap_analysis.must_have_cap_applies
-
-
 def rating_label(score: int | float | None) -> str | None:
     """The client-facing grade for an internal 0-100 score.
 
-    Thin alias over `services.rating.grade_for_percent`, kept because a good
-    deal of the codebase already imports it from here. The scale itself lives
-    in one module so the assessment and the AI Score cannot drift apart.
+    Thin alias over `services.rating.grade_for_percent`: the scale lives in
+    one module so the assessment and the ranking cannot drift apart.
     """
     return grade_for_percent(score)
 
 
 def word_count(value: str) -> int:
-    return len(re.findall(r"\b[\w&'-]+\b", value))
+    return siddhi_remarks.word_count(value)
 
 
-# ── Radar charts (spec §9.4) ─────────────────────────────────────────────────
-# FOUR charts per candidate: Overall, Must-have, Nice-to-have, Behavioural
-# Competencies. Each plots TWO shapes on the same axes -- what the job requires
-# and what the candidate demonstrated -- so a reader sees at a glance where the
-# candidate exceeds, meets, or falls short.
-#
-# No number appears on an axis, a data label, or a tooltip. `*_index` is a
-# RENDERING COORDINATE (1..4): a radar has no geometry without a radius, and the
-# four grades ARE the radial axis. The underlying 0-100 score stays internal.
+# ── Radar charts (spec 9.4) ──────────────────────────────────────────────────
+# Each chart plots TWO shapes on the same axes (what the job requires, what
+# the candidate demonstrated). No number appears on an axis, a data label or a
+# tooltip: `*_index` is a RENDERING COORDINATE (1..4), because a radar has no
+# geometry without a radius and the four grades ARE the radial axis.
 
 RADAR_CHART_KEYS: tuple[str, ...] = ("overall", *ppi.CATEGORIES)
 
@@ -231,19 +142,11 @@ RADAR_CHART_TITLES: dict[str, str] = {
     **{category: ppi.CATEGORY_LABELS[category] for category in ppi.CATEGORIES},
 }
 
-#: The legend below every chart, by word only (spec §9.4).
+#: The legend below every chart, by word only (spec 9.4).
 RADAR_SERIES: tuple[str, ...] = ("Job Requirement", "Candidate Assessment")
 
-#: ASSUMPTION (2026-07-30, still open with the client): §9.4 asks for an
-#: "Overall" radar without saying what its axes are. It plots the three PPI
-#: aspect aggregates -- one axis per aspect, both shapes derived from the same
-#: rows the sections render, so a chart can never disagree with the text beside
-#: it.
-#:
-#: Under Draft v4 this is a cleaner three-spoke chart than it was: technical is
-#: no longer a separate category that would have needed a fabricated job
-#: requirement to become a fourth spoke. It is inside Must-have, with a real
-#: required level like every other item.
+#: One Overall spoke per aspect, both shapes derived from the same rows the
+#: sections render, so a chart can never disagree with the text beside it.
 OVERALL_AXES: tuple[tuple[str, str], ...] = tuple(
     (category, ppi.CATEGORY_LABELS[category]) for category in ppi.CATEGORIES
 )
@@ -251,35 +154,6 @@ OVERALL_AXES: tuple[tuple[str, str], ...] = tuple(
 
 def _mean(values: list[int]) -> int:
     return round(sum(values) / len(values)) if values else UNANSWERED_SCORE
-
-
-#: The weight of a question row written before migration 0076, which is the
-#: column's own default: every question on an item counted the same.
-_NEUTRAL_WEIGHT = 1.0
-
-
-def _weighted_mean(pairs: list[tuple[int, float]]) -> int:
-    """The item score from (score, weight) pairs (assessment-spec-doc 4).
-
-    This is what makes evidence dominance STRUCTURAL inside a matrix item: a
-    supporting-format question carries less of the item than an evidence
-    question does, by the weight the composer stored on the row. A weight of
-    zero is refused by the database CHECK, so the denominator is never zero
-    for a non-empty list.
-    """
-    if not pairs:
-        return UNANSWERED_SCORE
-    total = sum(weight for _score, weight in pairs)
-    return round(sum(score * weight for score, weight in pairs) / total)
-
-
-def _question_type(question: Any) -> str:
-    """Rows written before 0076 carry no format column and were text."""
-    return str(getattr(question, "question_type", None) or question_types.SHORT_ANSWER)
-
-
-def _question_weight(question: Any) -> float:
-    return float(getattr(question, "weight", None) or _NEUTRAL_WEIGHT)
 
 
 def _axis(name: str, candidate_score: int, required: int | None) -> dict[str, Any]:
@@ -297,13 +171,15 @@ def _axis(name: str, candidate_score: int, required: int | None) -> dict[str, An
 
 
 def build_radar_charts(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The four radar charts, built from the SAME dimension rows the sections
-    render, so a chart can never disagree with the text beside it.
+    """The radar charts, built from the SAME dimension rows the sections render.
 
-    Pure and side-effect free; unit-tested in tests/test_assessments.py.
+    A row with no score (a skill stated "Not assessed", 0130) has NO axis: a
+    candidate shape drawn for it would plot a grade nobody made, and drawing
+    it at the bottom band would state Not Matching. Pure; unit-tested.
     """
+    scored = [row for row in dimensions if row.get("score") is not None]
     by_category: dict[str, list[dict[str, Any]]] = {}
-    for row in dimensions:
+    for row in scored:
         by_category.setdefault(row["category"], []).append(row)
 
     charts: list[dict[str, Any]] = []
@@ -337,2165 +213,142 @@ def build_radar_charts(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]
     return charts
 
 
-def infer_grade_fallback(job: Job) -> str:
-    """Keyword grade inference. Mirrored exactly by migration 0014's SQL CASE."""
-    text = f"{job.title} {job.level or ''}".lower()
-    if any(term in text for term in ("chief", "cxo", "ceo", "cto", "cfo", "coo")):
-        return "cxo"
-    if any(term in text for term in ("director", "head", "vice president", "vp", "leader")):
-        return "leadership"
-    if any(term in text for term in ("manager", "lead", "supervisor")):
-        return "managerial"
-    return "non_managerial"
+# ── The orchestrator ─────────────────────────────────────────────────────────
 
 
-async def infer_grade(job: Job, session: AsyncSession) -> str:
-    """LEGACY FALLBACK ONLY. Grade is a required field on the Create Job form and
-    is stored on jobs.assessment_grade; this path exists for pre-0014 rows that
-    somehow still carry no grade."""
-    if job.assessment_grade in GRADE_NAMES:
-        return job.assessment_grade
-    try:
-        raw = await llm_router.chat_completion(
-            "extraction",
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify this job into exactly one value: non_managerial, "
-                        "managerial, leadership, cxo. Return JSON {\"grade\":\"...\"}."
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"title": job.title, "level": job.level, "jd": job.jd_json})},
-            ],
-            response_format_json=True,
-            session=session,
-        )
-        grade = json.loads(raw).get("grade")
-        return grade if grade in GRADE_NAMES else infer_grade_fallback(job)
-    except Exception:
-        return infer_grade_fallback(job)
+@dataclass(frozen=True)
+class RunResult:
+    """What one scoring run did. `report_id` is set exactly when it wrote one."""
 
+    status: str
+    attempts: int
+    report_id: uuid.UUID | None = None
 
-# ── The technical half no longer exists as a half ─────────────────────────
-# There was a standalone technical track here: its own question bank, its own
-# scorer, its own report category with no place in the rendered report. Draft v4
-# folded it into the PPI matrix's Must-have items, where it is scored on the
-# same footing as every other item and surfaces in a section the client actually
-# reads.
-#
-# What survived is the RULE, not the track: a Must-have or Nice-to-have answer
-# is graded against the rubric belonging to the question that produced it. See
-# `services/ppi_interview.write_question`, which writes question and rubric in
-# one call, and `_score_item` below, which is the only place either is read.
 
+_NOTE_PATH = ("siddhi", "ready_pick_note", "sentence")
 
-# ── Scoring primitives ──────────────────────────────────────────────────────
 
-#: The one scoring mode that does NOT force human review: a real rubric, scored
-#: by a model, against the candidate's real answers. Named rather than spelled
-#: at each site because `needs_human_review` compares against it, and a typo in
-#: a string literal there would silently stop flagging every fallback report.
-MODE_LLM_RUBRIC = "llm_rubric"
-
-
-def _stable_score(seed: str, low: int = 45, high: int = 94) -> int:
-    """DETERMINISTIC LAST-RESORT ONLY (claude.md rule 9: degrade, never crash).
-
-    Used when the LLM chain is unavailable. Any report produced this way is
-    marked with scoring_mode='deterministic_fallback'.
-    """
-    number = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
-    return low + number % (high - low + 1)
-
-
-def answers_by_key(transcript: list[dict[str, Any]] | None) -> dict[str, list[str]]:
-    """Candidate answers grouped by the question_key stamped on each message."""
-    grouped: dict[str, list[str]] = {}
-    for message in transcript or []:
-        if str(message.get("speaker")) != "candidate":
-            continue
-        key = message.get("question_key")
-        content = str(message.get("content") or "").strip()
-        if not key or not content:
-            continue
-        grouped.setdefault(str(key), []).append(content)
-    return grouped
-
-
-# ── Miti's evidence ledger, at scoring time (spec 13, 47) ────────────────────
-#
-# Every substantive answer Miti grades is filed as one addressable piece of
-# evidence on a claim for the skill it was probing. The WRITER is
-# `assessment_pipeline.evidence.record_answer_evidence`, the only one in the
-# product; the conversation calls it per answer, and this pass calls it again
-# as a BACKFILL for every located answer. The writer is idempotent, so an
-# answer already filed during the conversation is a no-op here.
-
-
-async def _record_answer_evidence(
-    state: "AssessmentState",
-    competency: JobCompetency,
-    question: CandidateQuestion | None,
-    refs: list[AnswerRecord],
-) -> None:
-    """Backfill the ledger for one item's answers through THE writer.
-
-    A LEDGER FAILURE NEVER FAILS SCORING: the writer runs each answer in a
-    savepoint and absorbs a database failure (logged with its traceback), so
-    the report for work a candidate has already done cannot be lost to it.
-    """
-    session = state.get("session")
-    link = state.get("link")
-    job = state.get("job")
-    if session is None or link is None or job is None:
-        return
-    await answer_evidence.backfill_answer_evidence(
-        session,
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        link_id=link.id,
-        candidate_id=link.candidate_id,
-        skill_id=competency.id,
-        skill_name=competency.name,
-        skill_bucket=competency.category,
-        question_id=question.id if question is not None else None,
-        records=refs,
-    )
-
-
-async def _uncertainty_from_evidence(
-    state: "AssessmentState",
-) -> tuple[bool, list[dict[str, Any]]]:
-    """Whether the ledger holds a contradiction that must not be averaged away.
-
-    THE RULE WITH THE TEETH (spec 14). A MATERIAL or CRITICAL contradiction
-    obliges work; what it must never do is collapse into the mean of two
-    disagreeing readings and ship as a grade with nothing anywhere recording
-    that two sources disagreed. `ContradictionReport.settle()` refuses to hand
-    back a single concluded answer while one stands, and it takes no `force`
-    argument precisely so that a caller which proceeds anyway has to say so in a
-    line a reviewer can see.
-
-    This is that line. The conversation is over, so `ask_follow_up` is not
-    available; the obliged action is `preserve_uncertainty`, and the honest way
-    to preserve it in a scoring pass is to leave every grade exactly as scoring
-    produced it and hand the report to a person. `needs_human_review` already
-    exists on the report row for exactly this, so nothing new is invented.
-
-    AN EMPTY LEDGER IS NOT A CONTRADICTION. If the ledger is unavailable, or
-    nothing was recorded, this returns False -- otherwise a ledger outage would
-    flag every report in the product for human review, which is a louder failure
-    than the one it was guarding against.
-    """
-    from app.services.evidence import contradictions, ledger
-
-    session = state.get("session")
-    link = state.get("link")
-    job = state.get("job")
-    if session is None or link is None or job is None:
-        return False, []
-    try:
-        claims = await ledger.load_claims(
-            session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "functional_assessment.evidence_not_readable link_id=%s",
-            link.id, exc_info=True,
-        )
-        return False, []
-    if not claims:
-        return False, []
-
-    report = contradictions.detect(
-        claims=claims, phase=contradictions.PHASE_POST_CONVERSATION
-    )
-    if not contradictions.at_least(report.severity, contradictions.MATERIAL):
-        return False, []
-
-    logger.warning(
-        "functional_assessment.evidence_contradiction link_id=%s severity=%s actions=%s",
-        link.id, report.severity, list(report.actions),
-    )
-    # Mapped back onto the VERIFIER's severity scale before it is stored.
-    # `review_findings_json` already holds gate findings on that scale, and two
-    # vocabularies in one column is exactly the confusion the contradiction
-    # module warns about: nobody reading a stored severity should have to work
-    # out which scale it came from.
-    return True, [
-        {
-            "severity": item.as_finding().severity,
-            "issue": item.as_finding().issue,
-            "location": item.as_finding().location,
-            "recommendation": item.as_finding().recommendation,
-        }
-        for item in report.contradictions
-        if contradictions.at_least(item.severity, contradictions.MATERIAL)
-    ]
-
-
-def _rubric_text(rubric: dict | None) -> str:
-    if not rubric:
-        rubric = ppi_interview.DEFAULT_RUBRIC
-    return "; ".join(f"{band.replace('_', '-')}: {text}" for band, text in rubric.items())
-
-
-async def _structured_answers(
-    session: AsyncSession | None, link: JobCandidateLink | None
-) -> dict[str, AssessmentAnswer]:
-    """Every `assessment_answers` row on this application, keyed exactly as
-    the scorer keys answers: by the question's own id.
-
-    This is where an objective format's deterministic score and a subjective
-    format's evaluation record live. Read once per assessment, like the
-    locators, because the answer to "what did this candidate submit for
-    question N" cannot change mid-pass.
-    """
-    if session is None or link is None:
-        return {}
-    rows = (
-        await session.execute(
-            select(AssessmentAnswer)
-            .join(
-                AssessmentConversation,
-                AssessmentConversation.id == AssessmentAnswer.conversation_id,
-            )
-            .where(AssessmentConversation.job_candidate_link_id == link.id)
-        )
-    ).scalars().all()
-    return {str(row.question_id): row for row in rows}
-
-
-async def _evaluate_subjective(
-    state: "AssessmentState",
-    competency: JobCompetency,
-    question: CandidateQuestion,
-    answer: str,
-    record: AssessmentAnswer | None,
-) -> int | None:
-    """The AI evaluation with reasoning for an evidence or coding answer
-    (assessment-spec-doc 6.2), persisted on the answer row.
-
-    Returns the score, or None when the evaluation degraded so the caller
-    can score the answer the way every rubric-scored answer was scored before
-    this format existed. A degraded evaluation is never stored: a record with
-    no reasoning would read as an evaluation that found nothing to say.
-    """
-    question_type = _question_type(question)
-    payload = dict(getattr(question, "payload_json", None) or {})
-    submitted = dict(getattr(record, "answer_json", None) or {})
-    result = await format_evaluation.evaluate(
-        state.get("session"),
-        question_type=question_type,
-        prompt=question.prompt,
-        answer_text=answer,
-        item_name=competency.name,
-        resume_anchor=getattr(question, "resume_anchor", None),
-        question_rubric=question.rubric_json if question_type == question_types.EVIDENCE_BASED else None,
-        payload=payload,
-        language=submitted.get("language"),
-    )
-    if result.degraded or result.value is None:
-        return None
-    if record is not None:
-        record.ai_evaluation_json = result.value
-    return int(result.value["score"])
-
-
-async def _llm_score(session: AsyncSession | None, question: str, rubric: dict | None, answer: str) -> int | None:
-    """Score one answer 0-100 strictly against the supplied rubric bands."""
-    try:
-        raw = await llm_router.chat_completion(
-            "behavioral_assessment",
-            [
-                {
-                    "role": "system",
-                    "content": registry.render(
-                        "assessment_answer_scoring",
-                        rubric_bands=_rubric_text(rubric),
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"question": question, "answer": answer})},
-            ],
-            response_format_json=True,
-            session=None,
-        )
-        score = int(round(float(json.loads(raw)["score"])))
-        return max(0, min(100, score))
-    except Exception:
-        return None
-
-
-# ── Remark generation ───────────────────────────────────────────────────────
-# Remarks are generated COMPLETE inside their word contract and never truncated
-# (CLAUDE.md hard rule). Out-of-range output is regenerated in full.
-
-REPORT_BANNED_PHRASES: tuple[str, ...] = (
-    "produced usable evidence for",
-    "credible but not exhaustive",
-    "approaches this work in practice",
-    "describe one recent situation in detail",
-)
-
-#: Was read from `backend/prompts/`, a SECOND prompt directory holding this one
-#: file while `app/prompts/` held fourteen. Both reached the image only because
-#: the Dockerfile does `COPY . .`; the next one added would not have. One
-#: directory now, one loader.
-
-def _fallback_remark_25(name: str) -> str:
-    candidates = [
-        (
-            f"Available evidence demonstrates dependable capability in {name}, with relevant practical examples. "
-            "Interview discussion should confirm depth, decision quality, independent ownership, and consistency across comparable work situations."
-        ),
-        (
-            "Available evidence demonstrates dependable capability in this dimension, with relevant practical examples. "
-            "Interview discussion should confirm depth, decision quality, independent ownership, and consistency across comparable work situations."
-        ),
-    ]
-    return next(value for value in candidates if 25 <= word_count(value) <= 30)
-
-
-def _fallback_remark_45(name: str) -> str:
-    """45-50 word fallback for a PPI item or the overall remark.
-
-    Two candidates, the second dropping the item name: a long competency name
-    ("Stakeholder & board management") pushes the first variant over the
-    ceiling, and the contract is a COMPLETE remark inside the range, never a
-    truncated one (CLAUDE.md hard rule).
-    """
-    candidates = [
-        (
-            f"The available answer record links {name} to actions the candidate described and outcomes they reported. "
-            "One conversation cannot establish consistency across situations, so an interviewer should request another "
-            "example, examine the decision trade-offs, and confirm which result the candidate personally owned from "
-            "start to finish."
-        ),
-        (
-            "The available answer record links this area to actions the candidate described and outcomes they reported. "
-            "One conversation cannot establish consistency across situations, so an interviewer should request another "
-            "example, examine the decision trade-offs, and confirm which result the candidate personally owned from "
-            "start to finish."
-        ),
-    ]
-    return next(value for value in candidates if 45 <= word_count(value) <= 50)
-
-
-def _evidence_anchor(evidence: str) -> str:
-    """A short, candidate-specific phrase safe to embed in a fallback."""
-    ignored = {
-        "answer",
-        "answers",
-        "candidate",
-        "candidates",
-        "evidence",
-        "item",
-        "question",
-        "questions",
-        "skill",
-        "their",
-        "this",
-    }
-    words = [
-        token
-        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9+'-]*", evidence)
-        if token.casefold() not in ignored
-    ]
-    return " ".join(words[:4]) or "the available account"
-
-
-def rating_differentiated_fallback(
-    evidence: str,
-    rating: str,
-    minimum: int,
-    maximum: int,
-) -> str:
-    """A safe evidence-anchored fallback with a distinct contract per rating."""
-    anchor = _evidence_anchor(evidence)
-    if minimum < 40:
-        templates = {
-            "Highly Matching": (
-                "The candidate gave a specific example involving {anchor}, connecting personal action to an outcome. "
-                "Interview verification should test whether the demonstrated strength holds under comparable role constraints."
-            ),
-            "Matching": (
-                "The answer connects {anchor} to relevant work and supports dependable capability. "
-                "A focused interview probe should confirm independent ownership, decision trade-offs, and consistency."
-            ),
-            "Moderately Matching": (
-                "The answer mentions {anchor} but leaves the candidate's personal decision, technical depth, or outcome unclear. "
-                "Interviewers should probe the missing detail before relying on this evidence."
-            ),
-            "Not Matching": (
-                "The conversation did not establish capability beyond {anchor}; no clear owned action or outcome was demonstrated. "
-                "A direct probe should distinguish missing knowledge from an unexpressed example."
-            ),
-        }
-    else:
-        templates = {
-            "Highly Matching": (
-                "The candidate tied {anchor} to a specific situation, explained the action personally taken, and identified the resulting outcome. "
-                "That detail demonstrates highly matching capability in this area. Interview verification should now test whether the same judgement "
-                "and depth remain consistent when constraints, scale, or stakeholders change."
-            ),
-            "Matching": (
-                "The candidate connected {anchor} to relevant work, with enough detail to confirm matching capability and a credible personal contribution. "
-                "The account leaves one useful verification area: interviewers should probe the hardest trade-off, how the result was checked, and whether "
-                "the candidate could repeat the approach independently."
-            ),
-            "Moderately Matching": (
-                "The answer referred to {anchor}, but only partly connected the situation to a personal decision, precise action, or verified outcome. "
-                "This is incomplete evidence. Interviewers should probe the gap directly, asking what the candidate personally changed, how they measured "
-                "the result, and what they learned."
-            ),
-            "Not Matching": (
-                "The conversation did not establish capability beyond {anchor}; it contained no sufficiently clear owned action, technical reasoning, or outcome "
-                "for this area. Interviewers should treat the criterion as unresolved and use a direct role-specific probe to distinguish missing knowledge "
-                "from capability the candidate simply did not express."
-            ),
-        }
-    value = templates.get(rating, templates["Matching"]).format(anchor=anchor)
-    if minimum <= word_count(value) <= maximum:
-        return value
-    # Long names and unusual evidence cannot affect these templates; this is a
-    # last-resort guard if their wording is edited without updating the tests.
-    return _fallback_remark_45("this area") if minimum >= 40 else _fallback_remark_25("this area")
-
-
-def _unanswered_remark(name: str, minimum: int) -> str:
-    """Factual remark for an item the candidate produced no evidence for."""
-    if minimum >= 45:
-        candidates = [
-            (
-                f"No substantive answer addressed {name} during the completed assessment conversation. The candidate did not describe a situation that "
-                "shows this capability, so nothing here can be graded on demonstrated behaviour. An interviewer should treat "
-                "it as an open question and probe it directly before drawing a conclusion."
-            ),
-            (
-                "No substantive answer addressed this item during the completed assessment conversation. The candidate did not describe a situation that "
-                "shows the capability, so nothing here can be graded on demonstrated behaviour. An interviewer should treat "
-                "it as an open question and probe it directly before drawing a conclusion."
-            ),
-        ]
-        return next(value for value in candidates if 45 <= word_count(value) <= 50)
-    candidates = [
-        (
-            f"The candidate did not provide an answer covering {name} during the conversation, so no evidence exists here. "
-            "Interviewers should probe this area directly before drawing any firm conclusion."
-        ),
-        (
-            "The candidate did not provide an answer covering this dimension during the conversation, so no evidence exists here at all. "
-            "Interviewers should probe this area directly before drawing any conclusion."
-        ),
-    ]
-    return next(value for value in candidates if 25 <= word_count(value) <= 30)
-
-
-#: Capitalised words that are ordinary English rather than a named technology,
-#: employer or product. Without this the check would flag every sentence that
-#: begins with "Interview" or "Evidence", which is most of them.
-_ORDINARY_CAPITALISED: frozenset[str] = frozenset({
-    "a", "an", "the", "this", "that", "these", "those", "they", "their",
-    "he", "she", "his", "her", "it", "its", "we", "our", "you", "your",
-    "and", "but", "for", "with", "without", "while", "when", "where", "which",
-    "who", "whose", "what", "how", "why", "if", "then", "than", "there",
-    "here", "both", "each", "either", "neither", "all", "any", "some", "no",
-    "not", "only", "also", "however", "although", "though", "because",
-    "candidate", "candidates", "interview", "interviews", "interviewer",
-    "evidence", "experience", "answers", "answer", "discussion", "discussions",
-    "role", "roles", "work", "team", "teams", "delivery", "design", "designs",
-    "further", "strong", "clear", "limited", "little", "more", "most",
-    "recent", "recently", "across", "during", "given", "described",
-    "demonstrated", "confirmed", "probing", "probe", "probes", "should",
-    "would", "could", "may", "can", "will", "must", "one", "two", "three",
-    "several", "many", "few", "at", "in", "on", "of", "to", "from", "by",
-    "as", "is", "was", "were", "are", "be", "been", "has", "had", "have",
-    "do", "does", "did", "so", "such", "under", "over", "into", "about",
-})
-
-
-def invented_terms(value: str, *, evidence: str, name: str) -> list[str]:
-    """Proper nouns in a remark that appear NOWHERE in its source.
-
-    The loop already checks the other direction -- a remark must quote at least
-    one concrete term from the evidence. That catches a remark that says
-    nothing; it does not catch one that says too much. "Demonstrates strong
-    Kubernetes experience" for a candidate who never mentioned Kubernetes is
-    the failure mode a client would actually notice, and it passed every
-    existing check: right length, no number, anchored on some other term.
-
-    Deliberately CONSERVATIVE, in the direction that matters. A guard that
-    rejects a good remark costs a round of latency every time and, worse,
-    teaches the next reader to loosen it. So a token is only reported when all
-    of these hold:
-
-      * it is capitalised and NOT at the start of a sentence (a sentence-
-        initial capital carries no information about proper-noun-ness);
-      * it is not an ordinary English word;
-      * it does not appear in the evidence or in the dimension's own name --
-        the name comes from the job's framework, so naming the skill being
-        assessed is always legitimate;
-      * it is not a plain morphological variant of something that does (so
-        "Kafka" in the evidence permits "Kafka's").
-
-    Returns the offending tokens, so the rejection fed back to the model can
-    name them. `agent_loop`'s whole contract is that a rejection is an
-    instruction.
-    """
-    haystack = f"{evidence} {name}".casefold()
-    known = set(re.findall(r"[a-z0-9+#.]+", haystack))
-
-    invented: list[str] = []
-    # Split into sentences so the first word of each can be exempted.
-    for sentence in re.split(r"(?<=[.!?])\s+", value or ""):
-        tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#.\-]*", sentence)
-        for position, token in enumerate(tokens):
-            if position == 0:
-                continue  # sentence-initial capitalisation means nothing
-            if not token[:1].isupper():
-                continue
-            folded = token.casefold().strip(".")
-            if folded in _ORDINARY_CAPITALISED or len(folded) < 3:
-                continue
-            stem = folded.rstrip("s").rstrip("'")
-            if folded in known or stem in known:
-                continue
-            if any(stem and stem in candidate for candidate in known):
-                continue
-            invented.append(token)
-    # Stable, de-duplicated, so the same defect reads the same way twice.
-    return sorted(set(invented))
-
-
-def _report_prompt_versions() -> str:
-    """The registry labels of the versioned prompts a model-backed run uses.
-
-    `name@declared+digest`, semicolon separated, resolved at WRITE time so the
-    stored value describes the prompt files in the running image rather than
-    whatever is on disk when somebody later asks. The remark system prompt is
-    inline in `bounded_remark` and therefore versioned by the image, not here;
-    the column's own docstring says so, because a provenance field that
-    silently claimed completeness would be worse than one that states its
-    limit.
-    """
-    names = ("assessment_answer_scoring", "report_gap_probes")
-    return "; ".join(f"{name}@{registry.version(name)}" for name in names)
-
-
-async def bounded_remark(
-    session: AsyncSession | None,
-    name: str,
-    evidence: str,
-    minimum: int = 25,
-    maximum: int = 30,
-    *,
-    rating: str | None = None,
-) -> str:
-    """A COMPLETE remark inside the word contract, never truncated.
-
-    The `highly dynamic` instruction is not decoration (spec §10.5): a templated
-    remark with the competency name swapped in is exactly what the client
-    rejected, so the prompt names the evidence and forbids generic phrasing.
-
-    RUN THROUGH `agent_loop` SINCE 2026-08-06, AND IT FIXED THREE REAL DEFECTS
-    -------------------------------------------------------------------------
-    The hand-rolled loop this replaced did retry, so the change looks cosmetic.
-    It is not:
-
-      1. It APPENDED each correction to the same prompt string, so a second
-         miss left the model reading two contradictory instructions ("...had 38
-         words, regenerate... ...had 52 words, regenerate..."). `run_loop`
-         passes the current reflection as a fresh turn and never accumulates.
-
-      2. It did `except: break`. One transient provider error abandoned every
-         remaining attempt and shipped the canned fallback -- on the single most
-         client-visible string in the product. A raised attempt is now just a
-         failed attempt, and the next one still runs.
-
-      3. NOTHING CHECKED THE NO-NUMBERS RULE. The prompt asked for no score,
-         percentage or grade, and a prompt instruction is a request rather than
-         a guarantee (the same reasoning that puts a Postgres CHECK behind the
-         "Culture" ban). A remark is prose written by a model that has just been
-         shown a candidate's answers and is being asked to assess them, which is
-         precisely where "demonstrates strong 8/10 capability" comes from. It is
-         now a rejection reason, so the model is told and writes it again.
-    """
-    fallback = (
-        rating_differentiated_fallback(evidence, rating, minimum, maximum)
-        if rating
-        else (_fallback_remark_45(name) if minimum >= 45 else _fallback_remark_25(name))
-    )
-
-    system = (
-        f"Write one complete, evidence-based assessment remark of exactly {minimum}-{maximum} words "
-        f"for '{name}'. Ground every clause in the specific evidence supplied: quote or paraphrase what "
-        "this candidate actually said. Do not use templated phrasing that would fit any candidate, and "
-        "do not include a score, percentage, grade, recommendation, or heading. "
-        + (
-            {
-                "Highly Matching": "Cite the specific example, personal action, and outcome. ",
-                "Matching": "Confirm the demonstrated evidence and name exactly one useful probe area. ",
-                "Moderately Matching": "Diagnose the precise partial gap and name what needs probing. ",
-                "Not Matching": "State what was absent and propose a probe that distinguishes missing knowledge from unexpressed capability. ",
-            }.get(rating or "", "")
-        )
-        + f"Evidence: {evidence}"
-    )
-
-    async def execute(reflection: str) -> str:
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": "Return only the remark."},
-        ]
-        if reflection:
-            messages.append({"role": "user", "content": reflection})
-        return (
-            await llm_router.chat_completion(
-                "report_synthesis", messages, session=None
-            )
-        ).strip()
-
-    def evaluate(value: str) -> agent_loop.Critique:
-        defects: list[agent_loop.Defect] = []
-        if not value:
-            defects.append(
-                agent_loop.Defect(
-                    "empty",
-                    f"remark.{name}",
-                    "return the remark itself, not an empty response",
-                )
-            )
-        words = word_count(value)
-        if not (minimum <= words <= maximum):
-            defects.append(
-                agent_loop.Defect(
-                    "length",
-                    f"remark.{name}",
-                    (
-                        f"write between {minimum} and {maximum} words; the previous "
-                        f"attempt was {words}"
-                    ),
-                )
-            )
-        # THE DELIVERED-REPORT RULE, WHICH IS STRICTER THAN THE CONVERSATION'S.
-        #
-        # `conversation_guardrails.contains_forbidden_number` DELIBERATELY
-        # PERMITS A BARE PERCENTAGE. It exists to keep interviewer speech
-        # natural, and "how did you bring p99 latency under 200ms?" is an
-        # ordinary interview question. A DELIVERED REPORT IS A DIFFERENT
-        # CONTEXT: the JSON serialiser and the PDF both RAISE on a bare
-        # percentage (D8, "technically impossible" rather than redacted), so a
-        # remark reading "cut cost by 30%" would pass a conversation-grade check
-        # here and then fail at delivery, after the report row was written.
-        #
-        # `siddhi.numbers.scan_text` is the delivered-document rule and it
-        # SUBSUMES the conversation one -- it calls
-        # `contains_forbidden_number` itself and adds the grade-then-digit and
-        # bare-percentage shapes. So it is called instead of, not beside, the
-        # weaker check: two overlapping guards would report one defect twice and
-        # give the model two instructions for one fix.
-        #
-        # Rejected, never redacted. A redacted remark is a sentence with a hole
-        # in it and the client reads the hole; a rejection is fed back verbatim
-        # and the model writes the sentence again. And the conversation guard is
-        # left alone: weakening it to satisfy the report would mangle real
-        # interview questions.
-        from app.services.siddhi import numbers as report_numbers
-
-        for violation in report_numbers.scan_text(value, path=f"remark.{name}"):
-            defects.append(
-                agent_loop.Defect(
-                    "numeric_score",
-                    f"remark.{name}",
-                    (
-                        "a delivered report carries no figure at all, not a "
-                        "score, a rating out of a total, a percentile, or a "
-                        f"percentage quoted from the candidate: {violation.detail}. "
-                        "Describe the evidence in words only."
-                    ),
-                )
-            )
-        defects.extend(
-            agent_loop.banned_phrase_gate(
-                value,
-                REPORT_BANNED_PHRASES,
-                location=f"remark.{name}",
-            ).defects
-        )
-        evidence_terms = {
-            token
-            for token in re.findall(r"[a-z0-9]+", evidence.casefold())
-            if len(token) >= 5
-        }
-        output_terms = set(re.findall(r"[a-z0-9]+", value.casefold()))
-        if evidence_terms and not evidence_terms.intersection(output_terms):
-            defects.append(
-                agent_loop.Defect(
-                    "evidence_anchor",
-                    f"remark.{name}",
-                    "quote or paraphrase at least one concrete term from the supplied evidence",
-                )
-            )
-        # The other direction. The anchor check above catches a remark that
-        # references nothing; this catches one that references something that
-        # was never there.
-        fabricated = invented_terms(value, evidence=evidence, name=name)
-        if fabricated:
-            defects.append(
-                agent_loop.Defect(
-                    "invented_term",
-                    f"remark.{name}",
-                    (
-                        "do not name anything the candidate did not mention: "
-                        + ", ".join(fabricated[:3])
-                        + ". Write only about what is in the evidence supplied."
-                    ),
-                )
-            )
-        return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()
-
-    result = await agent_loop.run_loop(
-        name="report_remark",
-        execute=execute,
-        evaluate=evaluate,
-        fallback=fallback,
-        # Background: this runs inside the scoring task, nobody is
-        # watching, and the alternative to one more attempt is a canned string
-        # in a report a client reads.
-        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
-        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
-        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
-    )
-    return result.value
-
-
-class AssessmentState(TypedDict, total=False):
-    session: AsyncSession
-    job: Job
-    link: JobCandidateLink
-    profile: Profile | None
-    transcript: list[dict[str, Any]]
-    answers: dict[str, list[str]]
-    competencies: list[JobCompetency]
-    candidate_questions: list[CandidateQuestion]
-    grade: str
-    matching: list[dict[str, Any]]
-    ppi: list[dict[str, Any]]
-    ppi_mode: str
-    #: {question_key: [AnswerRecord]}. Where each answer LIVES, never what it says.
-    answer_refs: dict[str, list[AnswerRecord]]
-    #: {question id: AssessmentAnswer}. The structured record behind each
-    #: answer: the objective score written on submission, the evaluation
-    #: written here.
-    structured_answers: dict[str, AssessmentAnswer]
-    #: Set when the evidence ledger holds a MATERIAL or CRITICAL contradiction.
-    #: It flags the report for a person; it never moves a grade.
-    evidence_review: bool
-    evidence_findings: list[dict[str, Any]]
-    #: G4's inputs. Both absent on a first pass, which is correct: a human
-    #: disposition cannot exist before the flags that need one. A rescore after
-    #: a person has looked carries them, and G4 then passes.
-    review_disposition: str
-    review_decided_by: Any
-    validation: dict[str, Any]
-    report_id: str
-
-
-async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
-    """The AI Score: the four matching parameters, 25-30 word remarks (§10.5).
-
-    This is the PRE-assessment snapshot. It is generated from the resume by the
-    matching pipeline and is deliberately kept separate from the PPI Assessment
-    rather than merged with it: a close agreement between the two confirms the
-    resume was accurate, and a gap between them is itself useful signal (§10.1).
-    """
-    breakdown = state["link"].match_breakdown_json or {}
-    # THE JOB'S OWN CATEGORIES, not the product's (spec §3.2). Read from the
-    # job rather than from `MATCHING_DIMENSIONS` so a report renders the same
-    # categories the candidate was actually ranked against; the module constant
-    # is the fallback for a job whose list predates the change.
-    categories = await matching_categories.resolved_categories(
-        state["session"], state["job"].id
-    )
-    result = []
-    for ordinal, (key, name, description) in enumerate(categories, 1):
-        item = breakdown.get(key) or {}
-        score = int(float(item.get("score", 5)) * 10)
-        evidence = str(item.get("comment") or "resume and application evidence")
-        result.append(
-            {
-                "category": CATEGORY_MATCHING,
-                "name": name,
-                "description": description,
-                "score": max(0, min(100, score)),
-                "required_level": None,
-                "remark": await bounded_remark(
-                    state["session"],
-                    name,
-                    evidence,
-                    *MATCHING_REMARK_WORDS,
-                    rating=grade_for_percent(max(0, min(100, score))),
-                ),
-                "ordinal": ordinal,
-            }
-        )
-    return result
-
-
-#: The judgement standard for a Behavioural item. It is NOT a per-question
-#: rubric and must not be mistaken for one: it describes what a credible
-#: account of a behaviour looks like in general, because there is no single
-#: correct answer to a behavioural question to weigh a specific rubric against
-#: (spec §8). Every Behavioural item in the product is judged against this same
-#: standard, which is what makes two candidates' behavioural grades comparable.
-_BEHAVIOURAL_STANDARD = {
-    "0_39": "No relevant situation described, or the account contradicts the competency.",
-    "40_59": "A thin or generic account with little personal action or outcome.",
-    "60_74": "A credible situation with clear personal action and a stated outcome.",
-    "75_89": "Several strong situations with judgement, trade-offs, and measurable results.",
-    "90_100": "Consistently exceptional accounts showing judgement, impact, and transferable insight.",
-}
-
-
-async def _score_item(
-    state: AssessmentState,
-    competency: JobCompetency,
-    questions: list[CandidateQuestion],
-    answers: dict[str, list[str]],
-    locators: dict[str, list[AnswerRecord]] | None = None,
-    structured: dict[str, AssessmentAnswer] | None = None,
-) -> tuple[int, list[str], bool]:
-    """Score one matrix item. Returns (score, the answers used, degraded).
-
-    THE FORMAT DECIDES WHERE THE SCORE COMES FROM (assessment-spec-doc 6):
-    an objective question's score is its deterministic `auto_score`, written
-    on submission; an evidence or coding question's is the AI evaluation with
-    reasoning, written here; a short-answer question's is the existing rubric
-    path. The item's score is the WEIGHTED mean by each row's stored weight,
-    which is what makes a supporting question carry less of the item than an
-    evidence question does.
-
-    THE DUAL METHOD, AND IT IS THE WHOLE POINT OF THIS FUNCTION
-    -----------------------------------------------------------
-    Must-have and Nice-to-have answers are graded against the rubric written for
-    the specific question that produced them, one question at a time, and the
-    item's score is the mean of those. That is what makes a grade defensible
-    when a client asks why a candidate was rated as they were: the answer is a
-    rubric written for the exact question they were asked.
-
-    Behavioural answers are graded together, once, against
-    `_BEHAVIOURAL_STANDARD`. Splitting them per question would be worse, not
-    better: a competency is demonstrated across a conversation, and three
-    separate judgements of three fragments average out exactly the pattern the
-    aspect exists to see.
-
-    A question with no rubric on a rubric-scored item falls back to the general
-    standard rather than being skipped. That happens when generation degraded
-    and the candidate read the pre-generated question, and dropping the answer
-    would silently narrow the evidence rather than visibly degrade the score.
-    """
-    rubric_scored = ppi_interview.is_rubric_scored(competency.category)
-    degraded = False
-    # WHERE each of those answers lives, so the grade below can be traced back
-    # to it. Empty when the ledger read failed or the caller supplied none, and
-    # the scoring path below reads it for nothing else -- recording evidence is
-    # a side effect of scoring and never an input to it.
-    located = locators or {}
-    recorded = structured or {}
-
-    if rubric_scored:
-        scores: list[tuple[int, float]] = []
-        used: list[str] = []
-        for question in questions:
-            answer = " ".join(answers.get(str(question.id), []))
-            question_type = _question_type(question)
-            weight = _question_weight(question)
-            record = recorded.get(str(question.id))
-            if question_type in question_types.OBJECTIVE_TYPES:
-                # Scored deterministically on submission (spec 6.1). No row,
-                # or a row with no score, is an unanswered question; the
-                # transcript line is kept as the evidence the remark reads.
-                if record is None or record.auto_score is None:
-                    scores.append((UNANSWERED_SCORE, weight))
-                    continue
-                line = answer or format_rendering.transcript_line(
-                    question_type, dict(getattr(question, "payload_json", None) or {}), dict(record.answer_json or {})
-                )
-                used.append(line)
-                scores.append((int(round(float(record.auto_score) * 100)), weight))
-                continue
-            if question_type == question_types.CODING:
-                code = str((record.answer_json or {}).get("code") or "") if record is not None else ""
-                if not code.strip():
-                    scores.append((UNANSWERED_SCORE, weight))
-                    continue
-                used.append(answer or code)
-                await _record_answer_evidence(
-                    state, competency, question, located.get(str(question.id), [])
-                )
-                score = await _evaluate_subjective(state, competency, question, answer or code, record)
-                if score is None:
-                    score = await _llm_score(
-                        state["session"], question.prompt,
-                        question.rubric_json or _BEHAVIOURAL_STANDARD, answer or code,
-                    )
-                if score is None:
-                    degraded = True
-                    score = _stable_score(f"{state['link'].id}:{question.id}:{answer or code}")
-                scores.append((score, weight))
-                continue
-            # An answer with nothing in it to grade is treated exactly as an
-            # unanswered one, and deliberately never reaches `_llm_score`.
-            # Letting it through is what produced a passing grade for
-            # `ewidjverip`: on an LLM failure the caller falls back to
-            # `_stable_score`, which hashes into 45..94.
-            #
-            # THIS COMMENT USED TO SAY THAT RANGE "cannot express Not
-            # Matching", AND THAT IS FALSE on the current four-grade scale.
-            # Measured over 20,000 seeds against `rating.grade_for_percent`
-            # (90 / 75 / 60): Not Matching 30.0%, Moderately Matching 30.4%,
-            # Matching 29.6%, Highly Matching 10.1%. It was true of an earlier
-            # scale and survived the 2026-07-30 consolidation unread.
-            #
-            # The defect it was describing is real and unchanged, and the
-            # measured numbers state it better than the wrong claim did:
-            # 70.0% of hashed inputs grade Moderately Matching or better, so
-            # keyboard mash reaching this path is far more likely to pass than
-            # to fail. What is wrong is not that the hash cannot fail somebody,
-            # it is that a HASH decides. See services/answer_quality.
-            verdict = answer_quality.assess(answer)
-            if not verdict.substantive:
-                if answer:
-                    logger.info(
-                        "functional_assessment.insufficient_answer "
-                        "link_id=%s question_id=%s reason=%s",
-                        state["link"].id, question.id, verdict.reason,
-                    )
-                scores.append((UNANSWERED_SCORE, weight))
-                continue
-            used.append(answer)
-            # Recorded BEFORE the grade is asked for, and deliberately not
-            # conditioned on it. Evidence is what was read; a grade is what was
-            # concluded from it, and writing the trail only for answers that
-            # scored well would produce a ledger that agreed with every grade in
-            # it by construction.
-            await _record_answer_evidence(
-                state, competency, question, located.get(str(question.id), [])
-            )
-            score: int | None = None
-            if question_type == question_types.EVIDENCE_BASED:
-                # The evaluation with reasoning (spec 6.2). None means it
-                # degraded, and the rubric path below is the product's
-                # previous scorer for exactly this answer.
-                score = await _evaluate_subjective(state, competency, question, answer, record)
-            if score is None:
-                score = await _llm_score(
-                    state["session"],
-                    question.prompt,
-                    question.rubric_json or _BEHAVIOURAL_STANDARD,
-                    answer,
-                )
-            if score is None:
-                degraded = True
-                score = _stable_score(f"{state['link'].id}:{question.id}:{answer}")
-            scores.append((score, weight))
-        if not used:
-            return UNANSWERED_SCORE, [], degraded
-        return _weighted_mean(scores), used, degraded
-
-    # Behavioural: one judgement across everything said about the competency.
-    collected: list[str] = []
-    for question in questions:
-        answered = [
-            answer
-            for answer in answers.get(str(question.id), [])
-            if answer_quality.is_substantive(answer)
-        ]
-        if not answered:
-            continue
-        collected.extend(answered)
-        # One judgement is made across every answer about this competency, so
-        # every one of those answers is evidence for the same claim. Filing them
-        # individually rather than as one blob is what lets a recruiter be shown
-        # the specific turn a behavioural grade rests on.
-        await _record_answer_evidence(
-            state, competency, question, located.get(str(question.id), [])
-        )
-    if not collected:
-        return UNANSWERED_SCORE, [], degraded
-    combined = "\n".join(f"- {item}" for item in collected)
-    framing = (
-        f"Behavioural competency '{competency.name}'"
-        f"{': ' + competency.description if competency.description else ''} "
-        f"The candidate answered {len(collected)} question(s) probing it."
-    )
-    score = await _llm_score(state["session"], framing, _BEHAVIOURAL_STANDARD, combined)
-    if score is None:
-        degraded = True
-        score = _stable_score(f"{state['link'].id}:{competency.id}:{combined}")
-    return score, collected, degraded
-
-
-async def ppi_scoring_node(state: AssessmentState) -> dict:
-    """THE PPI Scoring Agent -- one agent, two methods (spec §8).
-
-    This replaced two nodes that ran side by side, a technical scorer and a PPI
-    scorer. They were two agents because there were two question banks; there is
-    one matrix now, so there is one scorer, and the method varies by ITEM TYPE
-    rather than by agent.
-
-    One report row per matrix item, in report order, each with a 45-50 word
-    remark (§9.5). The item's `required_level` travels ONTO the report row so
-    the radar can plot the job's shape even after the job's matrix is later
-    edited -- a written report is a permanent record of the criteria it was
-    written against.
-    """
-    answers = state.get("answers") or answers_by_key(state.get("transcript"))
-    mode = "no_transcript" if not answers else "llm_rubric"
-
-    # Read once per assessment rather than once per item: the alternative is one
-    # query per matrix item on a job with twenty of them, to answer a question
-    # whose answer cannot change mid-pass.
-    #
-    # NEVER FAILS THE PASS. A locator read that raises leaves the map empty, so
-    # the assessment scores exactly as it did before the ledger existed.
-    locators = state.get("answer_refs")
-    if locators is None:
-        try:
-            session, link = state.get("session"), state.get("link")
-            locators = (
-                await answer_evidence.answer_records(session, link.id)
-                if session is not None and link is not None
-                else {}
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "functional_assessment.locators_unavailable link_id=%s",
-                state["link"].id, exc_info=True,
-            )
-            locators = {}
-
-    # The structured answer rows, read once for the same reason as the
-    # locators. An unreadable table is logged and scores every structured
-    # question as unanswered, which is visible in the report; it never fails
-    # the pass for work a candidate has already done.
-    structured = state.get("structured_answers")
-    if structured is None:
-        try:
-            structured = await _structured_answers(state.get("session"), state.get("link"))
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "functional_assessment.structured_answers_unavailable link_id=%s",
-                state["link"].id, exc_info=True,
-            )
-            structured = {}
-
-    questions_by_item: dict[str, list[CandidateQuestion]] = {}
-    for question in state.get("candidate_questions") or []:
-        questions_by_item.setdefault(str(question.competency_id), []).append(question)
-
-    rows: list[dict[str, Any]] = []
-    ordinal_by_category: dict[str, int] = {}
-    for competency in state.get("competencies") or []:
-        ordinal_by_category[competency.category] = (
-            ordinal_by_category.get(competency.category, 0) + 1
-        )
-        questions = questions_by_item.get(str(competency.id), [])
-        score, used, degraded = await _score_item(
-            state, competency, questions, answers, locators, structured
-        )
-        if degraded:
-            mode = "deterministic_fallback"
-        base = {
-            "category": competency.category,
-            "name": competency.name,
-            "description": competency.description,
-            "required_level": competency.required_level,
-            "ordinal": ordinal_by_category[competency.category],
-        }
-        if not used:
-            rows.append(
-                {
-                    **base,
-                    "score": UNANSWERED_SCORE,
-                    "remark": _unanswered_remark(competency.name, PPI_REMARK_WORDS[0]),
-                }
-            )
-            continue
-        combined = "\n".join(f"- {item}" for item in used)
-        evidence_prefix = (
-            "the candidate's own answers, each graded against the rubric written "
-            "for the question that produced it: "
-            if ppi_interview.is_rubric_scored(competency.category)
-            else "the candidate's own answers probing this competency: "
-        )
-        rows.append(
-            {
-                **base,
-                "score": score,
-                "remark": await bounded_remark(
-                    state["session"],
-                    competency.name,
-                    f"{evidence_prefix}{combined[:800]}",
-                    *PPI_REMARK_WORDS,
-                    rating=grade_for_percent(score),
-                ),
-            }
-        )
-
-    # Read AFTER every item is scored, so the pass sees the whole ledger it just
-    # wrote rather than a prefix of it. Nothing in `rows` is touched by the
-    # answer: a contradiction is carried forward as uncertainty, never used to
-    # move a grade, because a grade that quietly changed because two sources
-    # disagreed is the silent averaging spec 14 forbids.
-    review, findings = await _uncertainty_from_evidence(state)
-    return {
-        "ppi": rows,
-        "ppi_mode": mode,
-        "evidence_review": review,
-        "evidence_findings": findings,
-    }
-
-
-async def validation_node(state: AssessmentState) -> dict:
-    """Carry the application's mandatory fields, and the candidate's full
-    profile questionnaire, into the report, UNCHANGED.
-
-    Nothing here is scored, interpreted or judged (spec §7). The candidate's
-    answer to "Why does this role interest you?" reaches the recruiter exactly
-    as written -- the recruiter, not any agent, decides whether the stated
-    interest is genuine.
-
-    The profile's 38 items were missing from this report section entirely
-    (2026-08-16 report) -- only the six application-level fields ever reached
-    it. Appended after the application fields under the same "fields" list the
-    frontend already renders, so no rendering change was needed, only the
-    fuller data reaching it.
-    """
-    from app.services.candidate_profile_form import profile_form_answers
-
-    submitted = state["link"].validation_json or {}
-    captured = {key: submitted.get(key) for key in MANDATORY_KEYS}
-    candidate = await state["session"].get(Candidate, state["link"].candidate_id)
-    profile_fields = [
-        {
-            "key": item["key"],
-            "label": item["question"],
-            "value": item["answer"],
-            "group": item["group"],
-        }
-        for item in profile_form_answers(
-            candidate.profile_form_json if candidate else None
-        )
-    ]
-    return {
-        "validation": {
-            # "captured" = this application carried the mandatory fields at all.
-            # Applications submitted before 2026-07-30 predate them and render
-            # as an explicit "not collected" rather than a blank panel.
-            "captured": bool(submitted),
-            **captured,
-            "fields": [
-                {
-                    "key": field["key"],
-                    "label": field["label"],
-                    "value": submitted.get(field["key"]),
-                    "group": "Application",
-                }
-                for field in VALIDATION_FIELDS
-            ]
-            + profile_fields,
-        }
-    }
-
-
-def _dedupe_dimensions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse rows sharing a (category, name) key, keeping the first and
-    re-numbering ordinals within each category.
-
-    `report_dimensions` is UNIQUE on (report_id, category, name). A duplicate
-    used to surface as an IntegrityError that failed the whole task
-    *after* matching had already committed, so a run looked failed when it had
-    largely succeeded. The scoring nodes are the real fix; this is the belt-and-
-    braces guarantee that no future framework shape can ever 500 synthesis.
-    """
-    seen: set[tuple[str, str]] = set()
-    kept: list[dict[str, Any]] = []
-    for row in rows:
-        key = (row["category"], row["name"])
-        if key in seen:
-            logger.warning(
-                "functional_assessment.duplicate_dimension category=%s name=%s, collapsed",
-                row["category"], row["name"],
-            )
-            continue
-        seen.add(key)
-        kept.append(row)
-    per_category: dict[str, int] = {}
-    for row in kept:
-        per_category[row["category"]] = per_category.get(row["category"], 0) + 1
-        row["ordinal"] = per_category[row["category"]]
-    return kept
-
-
-# The Gap Analysis & Action Plan replaced the suggested-questions section
-# entirely (spec 9.6). `_suggested_questions` and `generate_suggested_questions`
-# lived here and are DELETED, not deprecated: they generated a flat list of
-# eight to ten probes from the item REMARKS, which is a summary, so a probe
-# could only ever restate the assessment back at the interviewer. The section
-# that replaced them is in `services/gap_analysis`, is grouped by aspect, and
-# grounds every probe in what the candidate actually said.
-
-
-def _evidence_by_item(state: AssessmentState) -> dict[str, list[dict[str, str]]]:
-    """What each matrix item was actually asked, and what was actually answered.
-
-    The Gap Analysis agent's grounding input (spec §9.6): a probe has to
-    reference the candidate's own claim, and it cannot do that from a remark,
-    which is already a summary. Keyed by item NAME because that is what survives
-    onto the immutable report row.
-    """
-    answers = state.get("answers") or answers_by_key(state.get("transcript"))
-    by_id = {
-        str(competency.id): competency.name
-        for competency in state.get("competencies") or []
-    }
-    evidence: dict[str, list[dict[str, str]]] = {}
-    for question in state.get("candidate_questions") or []:
-        name = by_id.get(str(question.competency_id))
-        if not name:
-            continue
-        answer = " ".join(answers.get(str(question.id), [])).strip()
-        if not answer:
-            continue
-        evidence.setdefault(name, []).append(
-            {"question": question.prompt, "answer": answer[:1500]}
-        )
-    return evidence
-
-
-# -- Evidence Confidence, and the two sections derived from it (0107) --------
-
-
-#: The AI Score's four parameters are computed from the candidate's resume and
-#: profile before the assessment runs. That is their ONE source, and naming it
-#: is the honest answer: an AI Score line resting on a resume is the candidate's
-#: own unprompted account, which is what Low means.
-_AI_SCORE_SOURCES: tuple[str, ...] = (evidence_confidence.SOURCE_RESUME,)
-
-
-def _confidence_sources(
-    row: Mapping[str, Any],
-    competency_sources: Mapping[str, Sequence[str]],
-    evidence_by_item: Mapping[str, Sequence[Any]],
-) -> set[str]:
-    """Which kinds of source actually stand behind one rated line.
-
-    THREE CONTRIBUTIONS, AND EACH ONE IS A FACT ABOUT THIS RUN rather than an
-    assumption about how the product usually works:
-
-      * what the five evaluators were handed for this competency, by source
-        type, carried out of the Miti run that handed it to them;
-      * `answer`, when this item has at least one recorded exchange. That is
-        read from the transcript rather than from the ledger because the
-        transcript is what the item was actually scored from, and an answer the
-        ledger never recorded is still an answer the candidate gave;
-      * the hiring manager's defined requirement, when the row carries one. It
-        contributed the BAR rather than the proof, which is why
-        `evidence_confidence` marks it as not evidencing the candidate: naming
-        it is honest, and letting it corroborate a person would raise every
-        candidate's confidence the moment a requirement was written down.
-    """
-    name = str(row.get("name") or "")
-    kinds = {str(kind) for kind in competency_sources.get(name, ())}
-    if row.get("category") == CATEGORY_MATCHING:
-        kinds.update(_AI_SCORE_SOURCES)
-    if evidence_by_item.get(name):
-        kinds.add(evidence_confidence.SOURCE_ANSWER)
-    if row.get("required_level") is not None:
-        kinds.add(evidence_confidence.SOURCE_SWOT)
-    return kinds
-
-
-def apply_evidence_confidence(
-    dimensions: list[dict[str, Any]],
-    *,
-    competency_sources: Mapping[str, Sequence[str]],
-    evidence_by_item: Mapping[str, Sequence[Any]],
-) -> None:
-    """Stamp every rated row with its confidence word and its source keys.
-
-    IT RUNS AFTER SCORING AND IT TOUCHES NO SCORE. Every row already carries
-    the `score` the rubric produced; this adds two fields beside it and changes
-    nothing else on the dict, which is the whole guarantee the feature rests
-    on. `tests/test_evidence_confidence.py` asserts it over a range of inputs
-    by comparing the rows before and after.
-    """
-    for row in dimensions:
-        derived = evidence_confidence.describe(
-            _confidence_sources(row, competency_sources, evidence_by_item)
-        )
-        row["evidence_confidence"] = derived.confidence
-        row["evidence_sources"] = list(derived.sources)
-
-
-def validation_point_rows(
-    dimensions: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """The rated lines the validation points section reads, as WORDS.
-
-    The AI Score's parameters are excluded, and the exclusion is the decision
-    worth recording. They are a resume snapshot taken before anybody asked the
-    candidate anything, so every one of them is uncorroborated by construction
-    and including them would fill a five-entry section with four rows that all
-    say the same thing about the same document. The section exists to point at
-    the areas where the ASSESSMENT is thin.
-    """
-    return [
-        {
-            "name": str(row["name"]),
-            "grade": grade_for_percent(row.get("score")),
-            "required_level": grade_for_percent(row.get("required_level")),
-            "evidence_confidence": row.get("evidence_confidence"),
-        }
-        for row in dimensions
-        if row.get("name") and row.get("category") != CATEGORY_MATCHING
-    ]
-
-
-async def _declared_employments(
-    session: AsyncSession, job: Job, link: JobCandidateLink
-) -> list[dict[str, Any]]:
-    """The candidate's declared employments with THIS TENANT'S verification.
-
-    THREE COLUMNS AND NO MORE. The employer's name, the role the candidate
-    declared, and the decision a person in this tenant recorded. `hr_name` and
-    `hr_email` are deliberately absent from the SELECT rather than dropped
-    afterwards: a third party's contact detail a candidate handed over for one
-    purpose reaches the recruiter running the verification and nobody else, and
-    a query that fetched it would put it one careless projection away from a
-    document that gets forwarded.
-
-    THE TENANT FILTER IS IN THE JOIN'S OWN ON CLAUSE, not in the WHERE. In the
-    WHERE it would turn the LEFT JOIN into an inner one and silently drop every
-    employment another tenant had verified and this one had not, which reads as
-    "the candidate declared fewer jobs" rather than as "nobody here has checked
-    yet". Another tenant's decision is invisible either way, which is the
-    point: a verification belongs to the tenant that ran it until the candidate
-    consents to sharing it.
-
-    `started_on` orders the rows and is never selected. A date is a number, and
-    a delivered report states words.
-    """
-    rows = (
-        await session.execute(
-            text(
-                """
-                SELECT e.employer_name, e.designation, v.status
-                FROM candidate_employments e
-                LEFT JOIN bgv_verifications v
-                    ON v.candidate_employment_id = e.id
-                   AND v.tenant_id = :tid
-                WHERE e.candidate_id = :cid
-                ORDER BY e.started_on DESC, e.employer_name
-                """
-            ),
-            {"tid": str(job.tenant_id), "cid": str(link.candidate_id)},
-        )
-    ).all()
-    return [
-        {
-            "employer_name": row.employer_name,
-            "designation": row.designation,
-            "status": row.status,
-        }
-        for row in rows
-    ]
-
-
-async def _ledger_claims(state: "AssessmentState") -> list[Any]:
-    """Every claim recorded against this application, or an empty list.
-
-    An unreadable ledger degrades to "no claims recorded", logged, for the same
-    reason `_uncertainty_from_evidence` does: a ledger outage that failed the
-    synthesis would discard a candidate's completed assessment over a section
-    that annotates it. What it must never do is degrade SILENTLY, so the
-    warning names the link and the sections render their own empty state rather
-    than an invented one.
-    """
-    # LAZY, like every other reach into `app.services.evidence` from this
-    # module. The package sits on an import cycle that this file has already
-    # closed once, and `test_miti_evidence_wiring` pins the rule.
-    from app.services.evidence import ledger
-
-    session = state.get("session")
-    link = state.get("link")
-    job = state.get("job")
-    if session is None or link is None or job is None:
-        return []
-    try:
-        return list(
-            await ledger.load_claims(
-                session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
-            )
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "functional_assessment.claims_not_readable link_id=%s",
-            link.id, exc_info=True,
-        )
-        return []
-
-
-def claim_records(
-    claims: Sequence[Any],
-    dimensions: Sequence[Mapping[str, Any]],
-    evidence_refs: Mapping[str, tuple[str, ...]],
-) -> list[claim_evidence.ClaimRecord]:
-    """Ledger claims as the Evidence vs Claim Summary needs them.
-
-    MATERIALITY COMES FROM THE MATRIX, through `miti.claims.materiality_for`,
-    which is the one implementation of that rule in the product. The matrix
-    handed to it is built from the report's own rated rows, {name: category}.
-    Reading the claim's wording instead would let a confidently written resume
-    rate its own assertions material, which is the document this product exists
-    to see through.
-    """
-    matrix = {
-        str(row["name"]): str(row["category"])
-        for row in dimensions
-        if row.get("name") and row.get("category")
-    }
-    records: list[claim_evidence.ClaimRecord] = []
-    for claim in claims:
-        competency = str(getattr(claim, "dimension", "") or "")
-        records.append(
-            claim_evidence.ClaimRecord(
-                claim=str(getattr(claim, "claim", "") or ""),
-                materiality=miti_claims.materiality_for([competency], matrix),
-                # The ledger's own distinct source types behind the claim. It
-                # is already the shape a reader uses to judge whether a claim
-                # rests on one document read four ways.
-                sources=tuple(getattr(claim, "provenance", ()) or ()),
-                status=str(getattr(claim, "status", "") or ""),
-                evidence_refs=tuple(evidence_refs.get(competency, ())),
-                area=competency,
-            )
-        )
-    return records
-
-
-def contradicted_areas(claims: Sequence[Any]) -> list[str]:
-    """The competencies the ledger holds active evidence on BOTH sides of.
-
-    Read from the claim's own derived status rather than from a stored flag,
-    because `Claim.status` is computed from live evidence every time it is
-    asked and a stored copy is the one a report would be written from after it
-    had gone stale.
-    """
-    seen: list[str] = []
-    for claim in claims:
-        # `claim_evidence`'s restated literal, not the ledger's own constant:
-        # reaching the ledger at module scope here closes the import cycle, and
-        # the two are pinned to each other by `test_claim_evidence`.
-        if str(getattr(claim, "status", "")) != claim_evidence.CLAIM_CONTRADICTED:
-            continue
-        name = str(getattr(claim, "dimension", "") or "")
-        if name and name not in seen:
-            seen.append(name)
-    return seen
-
-
-def _gate_report(
-    state: "AssessmentState",
-    dimensions: list[dict[str, Any]],
-    overall: str,
-    gaps: dict[str, Any],
-    validation: dict[str, Any],
-) -> "verification_base.Verdict":
-    """Project the assembled report into the shape Siddhi's gate reads.
-
-    An ADAPTER, deliberately, rather than reshaping the report to suit the gate.
-    The gate is a contract about what a PRISM report must be true of; the report
-    shape is what the renderers and the database already agreed on. Bending
-    either to fit the other would couple two things that change for different
-    reasons.
-
-    NEVER RAISES. A gate is a guard on the output, and a guard that can fail the
-    run it was guarding turns a cosmetic defect into a lost report. On its own
-    error it returns a passing verdict carrying a low finding, so the failure is
-    recorded without being charged to the candidate -- the same direction every
-    degradation path in this codebase takes, because the alternative is a report
-    withheld for a reason nobody can see.
-    """
-    from app.services.agents import gates
-    from app.services import verification as verification_base
-    from app.services.siddhi import evidence as siddhi_evidence
-
-    try:
-        evidence_by_item = _evidence_by_item(state)
-        # THE REFS THE GATE READS, COMPUTED FROM THE SAME INDEX THE GENERATOR
-        # USES. Dimension rows carry no `evidence_refs` key and never have, so
-        # `row.get("evidence_refs") or []` handed the gate an empty list for
-        # every claim: two or more rated items produced two or more
-        # `claim_not_grounded` findings, the gate failed, and EVERY report with
-        # more than one dimension was written `needs_human_review=True`. A gate
-        # wired to something it cannot read does not report a wiring error, it
-        # reports a blanket verdict, which is indistinguishable from the product
-        # working exactly as intended and flagging everybody.
-        #
-        # ANSWER refs, and not everything the index holds. `grounding` falls
-        # back to an item's `searched` record when nobody answered anything
-        # about it, so it is never empty -- and handing THAT to the gate would
-        # swing the defect the other way, into a `claim_not_grounded` check that
-        # reads as enforced and can never fire. A claim resting only on the
-        # record that a criterion was searched IS a weaker claim, and the gate
-        # is exactly where that difference should be visible.
-        index = siddhi_evidence.EvidenceIndex.build(
-            items=[str(row["name"]) for row in dimensions if row.get("name")],
-            exchanges={
-                str(key): list(value or [])
-                for key, value in evidence_by_item.items()
-            },
-        )
-        graded = {row["name"]: row.get("grade") for row in dimensions if row.get("name")}
-        # CLIENT-VISIBLE FIELDS ONLY in the sections. The first version of this
-        # adapter passed the raw dimension rows, and the gate immediately
-        # rejected the report with `number_reaches_client` pointing at
-        # `evidence_refs[0]` -- an evidence locator like
-        # `assessment_messages:1`. The gate was right to scan and wrong only
-        # about what it was scanning: a locator is an internal audit handle that
-        # exists so a grade can be traced, and it is never rendered. Refs travel
-        # on `claims` below, which is where the gate expects to find them.
-        def _rendered(row: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "name": row.get("name"),
-                "description": row.get("description"),
-                "grade": row.get("grade"),
-                "remark": row.get("remark"),
-            }
-
-        payload = {
-            "ai_score": [
-                _rendered(r) for r in dimensions if r.get("category") == CATEGORY_MATCHING
-            ],
-            "ppi_assessment": [
-                _rendered(r) for r in dimensions if r.get("category") != CATEGORY_MATCHING
-            ],
-            "validation": validation,
-            # Compared field by field against what the candidate actually
-            # submitted. Nothing scores Validation, so a report that reworded a
-            # notice period has fabricated a fact in a document a client decides
-            # from.
-            "validation_source": dict(state.get("validation") or {}),
-            # A LIST OF PROBES, because that is what the gate iterates. It was
-            # passed the whole `gaps` DICT, so `_items` returned nothing and the
-            # `grounded_in_answer` check never ran on a single probe -- the same
-            # class of defect as the empty citations above, in the opposite
-            # direction: a check wired to a shape it cannot read reports a clean
-            # pass rather than an error.
-            #
-            # `grounded_in_answer` is the property this layer can actually
-            # establish: a probe for an item with no recorded question and
-            # answer cannot be grounded in one. Whether the specific WORDING
-            # references the answer is decided upstream by
-            # `siddhi.synthesis.compose`, which raises rather than flagging, so
-            # duplicating it here would be a second, weaker copy of a rule that
-            # already holds.
-            "gap_analysis": [
-                {
-                    "id": f"{group.get('category')}.{entry.get('name')}.{index}",
-                    "text": probe,
-                    "grounded_in_answer": bool(
-                        evidence_by_item.get(str(entry.get("name")))
-                    ),
-                }
-                for group in (gaps.get("groups") or [])
-                for entry in (group.get("items") or [])
-                for index, probe in enumerate(entry.get("probes") or [])
-            ],
-            "overall_summary": overall,
-            # Miti's grades and Siddhi's must be the same grades. They are read
-            # from one place here, so this check only has teeth once the two
-            # stages are genuinely separate; it is wired now so that the day
-            # they are, the check already exists rather than being remembered.
-            "grades": graded,
-            "miti_grades": graded,
-            "claims": [
-                {
-                    "id": row.get("name"),
-                    "text": row.get("remark") or "",
-                    "evidence_refs": list(
-                        index.refs_for(
-                            str(row.get("name")), kind=siddhi_evidence.KIND_ANSWER
-                        )
-                    ),
-                }
-                for row in dimensions
-            ],
-        }
-        return gates.run_gate("siddhi", payload)
-    except Exception:  # noqa: BLE001 -- see the docstring
-        logger.warning(
-            "functional_assessment.report_gate_failed link_id=%s",
-            state["link"].id, exc_info=True,
-        )
-        return verification_base.verdict(
-            "gate:siddhi",
-            [
-                verification_base.low(
-                    "gate_unavailable",
-                    "report",
-                    "the report quality gate could not run",
-                    "Investigate the gate error; the report itself was produced normally.",
-                )
-            ],
-        )
-
-
-async def synthesis_node(state: AssessmentState) -> dict:
-    """Join scoring and validation, write the report (spec §9).
-
-    Waits for the PPI Scoring Agent; the graph's join edge is what enforces
-    that, and it is the rule spec §19 states in as many words: report synthesis
-    does not finalise until PPI scoring has completed.
-    """
-    # Imported inside the function, never at module scope. `miti.live` reaches
-    # `app.services.evidence` through `miti.tiering`, and that package sits on
-    # an import cycle this module has already closed once: the full suite went
-    # green while a single test file went red, because pytest happened to
-    # initialise the other side first.
-    from app.services import verification as verification_base
-    from app.services.miti import live as miti_live
-    from app.services.siddhi import synthesis as siddhi_synthesis
-
-    session = state["session"]
-    matching = await _matching_dimensions(state)
-    ppi_rows = state.get("ppi") or []
-    dimensions = _dedupe_dimensions(matching + ppi_rows)
-
-    # The Overall grade is the PPI Assessment's, not the AI Score's: §9.3 puts
-    # it at the head of the PPI section, below the AI Score, and the two are
-    # deliberately never merged.
-    assessed = [row for row in dimensions if row["category"] != CATEGORY_MATCHING]
-
-    # ── MITI, STAGES 2 TO 6, ON THE LIVE PATH ────────────────────────────────
-    #
-    # This is where the five isolated dimension evaluators, triangulation and
-    # the deterministic aggregator actually run for a real candidate. Until
-    # 2026-08-29 the whole of that stack was reachable only from
-    # `app/scripts/worked_example.py`, so gates G1 to G4 were real checks
-    # guarding nothing.
-    #
-    # IT IS ALLOWED TO RAISE, AND THAT IS GATE G1. `require_frozen_matrix`
-    # refuses a job with no approved, frozen Tatva matrix, and Runbook section
-    # 14.1 states the consequence as "scoring blocked entirely". Catching it
-    # here and scoring against the job's competency rows instead would be a
-    # second implementation of the criteria, chosen at runtime, which is
-    # exactly the dual path the anti-slop rules forbid -- and it would let the
-    # first candidate assessed set the criteria for everyone.
-    #
-    # The composite, the confidence and the three band caps all come from
-    # Miti's aggregate. The per-ITEM grades in the sections above are the
-    # product's own rubric scoring and are unchanged; what changed is that the
-    # OVERALL grade is now the Runbook's composite rather than the plain mean
-    # of the item scores, which is what section 10.1 through 10.8 describe.
-    candidate = await session.get(Candidate, state["link"].candidate_id)
-    evaluation = await miti_live.evaluate_application(
-        session,
-        job=state["job"],
-        link=state["link"],
-        item_scores={row["name"]: row["score"] for row in assessed},
-        # The candidate's own name parts, removed from every evidence excerpt
-        # before an evaluator reads it. The structural guarantee is that
-        # `EvaluatorInput` has no name field; this is the second mechanism, and
-        # it is needed because the excerpts are the candidate's own prose.
-        subject_names=str(getattr(candidate, "full_name", "") or "").split(),
-        review_disposition=state.get("review_disposition"),
-        review_decided_by=state.get("review_decided_by"),
-    )
-    aggregate = evaluation.aggregate
-    if aggregate is None:
-        # A blocking gate stopped the pipeline before aggregation. `deliverable`
-        # and `blocking_reasons` carry which one and why; there is no grade to
-        # write and inventing one would be the silent degradation §4.1 forbids.
-        raise miti_live.ScorecardUnavailable(
-            "Miti produced no aggregate for link "
-            f"{state['link'].id}: {'; '.join(evaluation.outcome.blocking_reasons)}"
-        )
-    overall_score = int(round(aggregate.delivered_score))
-    cap_applied = aggregate.must_have_cap_applied
-    if cap_applied:
-        logger.info(
-            "functional_assessment.band_cap link_id=%s from=%s to=%s controls=%s",
-            state["link"].id,
-            round(aggregate.adjusted_composite, 2),
-            overall_score,
-            sorted({cap.control for cap in aggregate.applied_caps}),
-        )
-
-    weak_names = ", ".join(
-        row["name"]
-        for row in assessed
-        if grade_for_percent(row["score"]) in MODERATE_OR_BELOW
-    ) or "role-specific depth"
-    strong_names = ", ".join(
-        row["name"] for row in assessed if row["score"] >= PROBE_THRESHOLD
-    ) or "the areas evidenced in the conversation"
-    overall = await bounded_remark(
-        session,
-        "this candidate's overall suitability",
-        (
-            "the candidate's demonstrated skills and behavioural competencies against this job. "
-            f"Stronger evidence: {strong_names}. Weaker or unevidenced: {weak_names}."
-        ),
-        *PPI_REMARK_WORDS,
-        rating=grade_for_percent(overall_score),
-    )
-
-    validation = dict(state["validation"])
-
-    # `validation` is read ABOVE, before the gap section rather than after it:
-    # the section that must be exact-as-submitted has to exist before the
-    # chokepoint runs, or it goes round it.
-    evidence_by_item = _evidence_by_item(state)
-
-    # -- EVIDENCE CONFIDENCE, AND THE TWO SECTIONS BUILT ON IT (0107) --------
-    #
-    # ORDER IS LOAD BEARING AND IS THE FEATURE'S WHOLE GUARANTEE. Every score
-    # in `dimensions` was decided above, by the rubric, before a single line of
-    # this ran. `apply_evidence_confidence` adds two fields to each row and
-    # touches nothing else, so a confidence word cannot move a grade: there is
-    # no path from here back to a score to move.
-    apply_evidence_confidence(
-        dimensions,
-        competency_sources=evaluation.competency_sources,
-        evidence_by_item=evidence_by_item,
-    )
-
-    # Read ONCE, and both sections are derived from the same read. Two queries
-    # could legitimately disagree, because the ledger is written during
-    # scoring, and a report whose claim summary and validation points
-    # described different evidence sets would be two answers to one question.
-    ledger_claims = await _ledger_claims(state)
-    # Read once for the same reason. The employment rows feed both the claim
-    # entries and the citable nodes those entries point at, and a second read
-    # could return a verification a recruiter recorded in between, producing a
-    # statement whose own citation is missing from the index.
-    employments = await _declared_employments(session, state["job"], state["link"])
-    claims_section = claim_evidence.build(
-        claim_records(
-            ledger_claims,
-            dimensions,
-            siddhi_synthesis.evidence_refs_for(dimensions, evidence_by_item),
-        )
-        # The declared employments join the same list rather than forming a
-        # section of their own. They are claims the candidate made, selected
-        # by the same materiality ordering, and splitting them out would give
-        # the report two places that answer "what did they assert".
-        + claim_evidence.employment_claims(employments)
-    )
-    points_section = validation_points.build(
-        validation_point_rows(dimensions),
-        contradicted_areas=contradicted_areas(ledger_claims),
-    )
-
-    # The Overall Assessment and the Validation section travel INTO Siddhi's
-    # chokepoint rather than around it. Without these three the two sections are
-    # assembled outside `citations.Section.render`, which is the one place an
-    # uncited statement is refused, so they would be the only client-facing
-    # prose in the report exempt from the rule the rest of it is built on.
-    #
-    # The two 0107 sections travel the same way, and the employer nodes with
-    # them: a statement citing an employer confirmation has to be refusable by
-    # the same chokepoint as every other statement in the document.
-    gaps = await gap_analysis.build_gap_analysis(
-        session,
-        dimensions,
-        evidence_by_item,
-        overall_summary=overall,
-        overall_grade=grade_for_percent(overall_score),
-        validation=validation,
-        validation_points=points_section,
-        claim_evidence=claims_section,
-        extra_nodes=claim_evidence.employment_nodes(employments),
-    )
-
-    scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
-    if scoring_mode != MODE_LLM_RUBRIC:
-        logger.warning(
-            "functional_assessment.scoring_mode link_id=%s mode=%s",
-            state["link"].id, scoring_mode,
-        )
-
-    # ── Siddhi's quality gate, BEFORE the report is written ─────────────────
-    #
-    # Before, not after, and the ordering is the whole value. A gate that runs
-    # after persistence has already let the report reach the candidate table,
-    # and a recruiter who opens it in the next thirty seconds sees an unmarked
-    # document. Running it first means the flag and the report are written in
-    # one transaction and cannot disagree.
-    #
-    # A FAILING GATE DOES NOT BLOCK THE REPORT. It cannot: refusing to write one
-    # would take the product's entire output away over what may be a single
-    # ungrounded phrase, and the recruiter would be left with nothing rather
-    # than with something imperfect they can judge. It ships marked instead,
-    # which is the same trade a recorded degradation makes.
-    #
-    # There is no retry here on purpose. `agent_loop.run_loop` already bounds
-    # regeneration twice over and feeds a rejection back verbatim; a second
-    # retry mechanism at this layer would multiply attempts nobody is counting.
-    gate_verdict = _gate_report(state, dimensions, overall, gaps, validation)
-
-    # ── The evidence ledger's own verdict, beside the gate's ─────────────────
-    #
-    # Two independent questions, deliberately kept apart. The gate asks whether
-    # the DRAFT is sound; this asks whether the EVIDENCE under it disagrees with
-    # itself. Either one is a reason for a person to read the report before a
-    # decision is made from it, so they are OR'd rather than blended -- an
-    # average of two review signals would let a clean draft cancel out a
-    # contradiction nobody has resolved.
-    uncertainty_review = bool(state.get("evidence_review"))
-    evidence_findings = list(state.get("evidence_findings") or [])
-
-    # ── Miti's own review verdict, beside those two ──────────────────────────
-    #
-    # NO FLAG AUTO-REJECTS, so everything Miti found routes here and nothing
-    # ends a candidacy. A held candidate (Runbook section 12.2's D4 floor of
-    # 25) and an unassessed Must-have (section 14.1) both reach a person with
-    # their evidence attached; neither is a status the pipeline may write.
-    #
-    # The reasons carry no number. `review_findings_json` is read from far more
-    # places than the report itself, and a score in it is a score outside the
-    # one conversion point `services/rating` exists to be.
-    miti_findings = [
-        {
-            "severity": verification_base.SEVERITY_MEDIUM,
-            "issue": "miti_review",
-            "location": "evaluation",
-            "recommendation": reason,
-        }
-        for reason in evaluation.review_reasons
-    ]
-
-    current = (
-        await session.execute(
-            select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == state["link"].id)
-        )
-    ).scalars().first()
-    fields = {
-        "grade": state["grade"],
-        "overall_summary": overall,
-        "overall_score": overall_score,
-        "scoring_mode": scoring_mode,
-        "validation_json": validation,
-        "gap_analysis_json": gaps,
-        # STORED, never recomputed on read. A report is immutable, and both
-        # sections are derived from an evidence ledger that keeps being written
-        # to: recomputing either one on read would let a document change after
-        # a recruiter approved it.
-        "validation_points_json": points_section,
-        "claim_evidence_json": claims_section,
-        # `suggested_probes_json` is deliberately NOT written any more and
-        # deliberately NOT dropped. Gap Analysis replaces that section entirely
-        # (spec §9.6), and leaving the column in place means a rollback of this
-        # release needs no data restore. Reports written before today keep
-        # theirs and still render it.
-        "synthesized_at": datetime.now(timezone.utc),
-        # PROVENANCE (0094). Written only for a model-backed run, resolved at
-        # THIS moment rather than reconstructed later from deploy timestamps.
-        # A deterministic-fallback report carries NULL for both, because no
-        # model and no versioned prompt produced it, and recording one would
-        # claim work that never happened -- the same honesty rule that flags
-        # the fallback for human review five lines below.
-        "model_id": (
-            llm_providers.model_for("report_synthesis")
-            if scoring_mode == MODE_LLM_RUBRIC
-            else None
-        ),
-        "prompt_version": (
-            _report_prompt_versions() if scoring_mode == MODE_LLM_RUBRIC else None
-        ),
-        "needs_human_review": (
-            not gate_verdict.passed
-            or uncertainty_review
-            or aggregate.needs_human_review
-            or bool(evaluation.unresolved_evidence)
-            # A HASH-SCORED REPORT IS ALWAYS REVIEWED, and until 2026-09-09 it
-            # was not. `scoring_mode` was computed twenty lines above, logged,
-            # and STORED on the row, and none of that reached this flag.
-            #
-            # `claude.md` has stated the rule since the agent framework landed:
-            # "A stub is always flagged for human review ... what makes that
-            # honest rather than misleading is `needs_human_review`, never a
-            # stub that reads like a result." A deterministic fallback is that
-            # stub. `_stable_score` hashes into 45..94, which cannot express
-            # Not Matching at all, and measured over 20,000 seeds it graded
-            # 69.6% of inputs Moderately Matching or better.
-            #
-            # So the failure mode was a provider outage producing a report that
-            # looked exactly like a scored one, carried a plausible grade, and
-            # went to a client with nothing asking a person to look. The column
-            # recording that it happened was written and read by nobody.
-            #
-            # Compared against the ONE known-good mode rather than against a
-            # list of bad ones: a future third mode is unreviewed by default
-            # under `!= fallback`, and reviewed by default here. Review is the
-            # safe direction.
-            or scoring_mode != MODE_LLM_RUBRIC
-        ),
-        # Issue, location and severity only. A finding's `detail` can quote the
-        # report prose, and this column is read from far more places than the
-        # report itself.
-        "review_findings_json": (
-            [
-                {
-                    "severity": finding.severity,
-                    "issue": finding.issue,
-                    "location": finding.location,
-                    "recommendation": finding.recommendation,
-                }
-                for finding in gate_verdict.findings
-            ]
-            + evidence_findings
-            + miti_findings
-        ) or None,
-    }
-    if current is None:
-        current = FunctionalSkillsReport(
-            tenant_id=state["job"].tenant_id,
-            job_id=state["job"].id,
-            job_candidate_link_id=state["link"].id,
-            **fields,
-        )
-        session.add(current)
-        await session.flush()
-    else:
-        for key, value in fields.items():
-            setattr(current, key, value)
-        await session.execute(delete(ReportDimension).where(ReportDimension.report_id == current.id))
-    session.add_all(
-        [ReportDimension(tenant_id=state["job"].tenant_id, report_id=current.id, **row) for row in dimensions]
-    )
-    await _write_evaluation(state, evaluation, gaps, current, fields["scoring_mode"])
-    await session.flush()
-    return {"report_id": str(current.id)}
-
-
-async def _write_evaluation(
-    state: AssessmentState,
-    evaluation: Any,
-    gaps: dict[str, Any],
-    report: FunctionalSkillsReport,
-    scoring_mode: str,
-) -> None:
-    """Miti's WORKING record, beside the delivered report.
-
-    `evaluations` and `functional_skills_reports` are deliberately two tables.
-    One is the working -- five dimension bands, the evidence each cited, the
-    contradictions, every gate verdict -- and is legitimately replaced by a
-    rescore. The other is the delivered artifact and is immutable. One table
-    would force a choice between making the working immutable, so a rescore
-    could never correct anything, and making the report mutable, which breaks
-    the product's oldest rule.
-
-    THE DASHBOARD READS THIS ROW, NOT THE REPORT. Column 5's Vivekium Note
-    comes from `aggregate_json` under `synthesis.READY_PICK_NOTE_KEY`, and never
-    from the delivered document: sourcing a list cell from the report would make
-    the row's pending state a statement about the report rather than about the
-    profile, so a candidate mid-assessment would read as having no note rather
-    than as not yet assessed. There is ONE producer of the sentence,
-    `siddhi.synthesis.ready_pick_note`, and two consumers: the dashboard takes
-    the sentence, and the immutable report keeps the sentence WITH its citations.
-
-    THE VERSIONS ARE COPIED, NEVER JOINED. Same rule
-    `report_dimensions.required_level` follows: an evaluation is a permanent
-    record of the criteria it was run against, and the job's matrix may be
-    re-frozen afterwards.
-    """
-    from app.models.hiring import Evaluation
-
-    # `synthesis`, not `evidence`. The import here read `evidence as
-    # siddhi_evidence` while the body below uses `siddhi_synthesis`, so every
-    # run that produced a Vivekium Note raised NameError inside the write of
-    # the evaluation row, after Miti's five evaluators and Siddhi's synthesis
-    # had already been paid for. It stayed invisible because the only deployed
-    # environment holds zero candidates, so no real evaluation has ever been
-    # written there. Found while wiring 0107; the fix is the one line.
-    from app.services.siddhi import synthesis as siddhi_synthesis
-
-    session = state["session"]
-    aggregate = evaluation.aggregate
-    matrix = evaluation.matrix
-    outcome = evaluation.outcome
-
-    payload = aggregate.as_dict()
-    note = ((gaps.get("siddhi") or {}).get("ready_pick_note") or {}).get("sentence")
-    if note:
-        payload[siddhi_synthesis.READY_PICK_NOTE_KEY] = note
-
-    session.add(
-        Evaluation(
-            tenant_id=state["job"].tenant_id,
-            job_id=state["job"].id,
-            link_id=state["link"].id,
-            report_id=report.id,
-            scorecard_version=int(getattr(matrix, "version", 1) or 1),
-            situation_type=getattr(matrix, "situation_key", None),
-            dimension_scores={
-                result.dimension: result.as_dict() for result in outcome.results
-            },
-            # Per COMPETENCY, from the evaluators' own per-item bands, with the
-            # citing dimension's refs. This is what makes citation enforcement
-            # possible after the fact and is why it cannot be retrofitted.
-            competency_scores={
-                name: {"band": band, "evidence_refs": list(result.evidence_refs)}
-                for result in outcome.results
-                for name, band in result.per_competency.items()
-            },
-            aggregate_json=payload,
-            triangulation_json=(
-                outcome.triangulation.as_dict() if outcome.triangulation else {}
-            ),
-            gate_results_json=[gate.as_dict() for gate in outcome.gate_results],
-            scoring_mode=scoring_mode,
-            confidence=aggregate.confidence,
-            needs_human_review=report.needs_human_review,
-            completed_at=datetime.now(timezone.utc),
-        )
-    )
-
-
-def build_assessment_graph():
-    """ONE scorer, joining validation capture at synthesis (spec §8, §19).
-
-    Draft v4 removed a node from this graph and that removal is the point. There
-    used to be a `technical_scoring` node running beside `ppi_scoring`, because
-    there were two question banks. There is one matrix now, so there is one
-    scoring agent, and the method varies by item type inside it rather than by
-    agent across the graph.
-
-    `validation_capture` is a node but NOT a scorer: it copies the application's
-    mandatory fields into the report shape and touches no model. It runs on the
-    same fan-out because synthesis needs its output, not because it judges
-    anything (spec §19: validation stays outside the scoring flow).
-
-    The join edge is what makes "report synthesis waits for PPI scoring" a
-    property of the graph rather than a convention someone has to remember.
-    """
-    graph = StateGraph(AssessmentState)
-    graph.add_node("ppi_scoring", ppi_scoring_node)
-    graph.add_node("validation_capture", validation_node)
-    graph.add_node("report_synthesis", synthesis_node)
-    graph.add_edge(START, "ppi_scoring")
-    graph.add_edge(START, "validation_capture")
-    graph.add_edge(["ppi_scoring", "validation_capture"], "report_synthesis")
-    graph.add_edge("report_synthesis", END)
-    return graph.compile()
-
-
-assessment_graph = build_assessment_graph()
+def _note(gap_analysis_json: dict[str, Any]) -> str | None:
+    value: Any = gap_analysis_json
+    for key in _NOTE_PATH:
+        value = value.get(key) if isinstance(value, dict) else None
+    return str(value) if value else None
 
 
 async def run_assessment(
-    session: AsyncSession,
-    job: Job,
-    link: JobCandidateLink,
-    transcript: list[dict[str, Any]] | None = None,
-) -> str:
-    """Run both scorers and synthesise the PPI Assessment Report.
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> RunResult:
+    """Grade one application with Miti and write its PRISM Report. One way.
 
-    A job that somehow reached this point without a technical bank or a PPI
-    framework gets one generated on demand rather than the run failing: the work
-    the candidate has already done must not be discarded over a setup gap.
+    The caller (the scoring task) holds the advisory lock and has already
+    checked that no report exists, so a report found by the insert is a
+    defect and raises. The caller commits.
+
+    * **No conversation, no contract, no report.** Gate G1 reads the snapshot
+      the conversation is bound to, so `ScorecardUnavailable`.
+    * **No questions is a refusal, never a generation**: a completed
+      conversation always has its questions, so none is a defect to surface.
     """
-    if transcript is None:
-        conversation = (
-            await session.execute(
-                select(AssessmentConversation).where(
-                    AssessmentConversation.job_candidate_link_id == link.id
-                )
+    from app.services.miti import live as miti_live  # noqa: PLC0415
+
+    conversation = (
+        await session.execute(
+            select(AssessmentConversation).where(
+                AssessmentConversation.job_candidate_link_id == link.id
             )
-        ).scalars().first()
-        if conversation is not None:
-            messages = (
-                await session.execute(
-                    select(AssessmentMessage)
-                    .where(AssessmentMessage.conversation_id == conversation.id)
-                    .order_by(AssessmentMessage.ordinal)
-                )
-            ).scalars().all()
-            transcript = [
-                {
-                    "speaker": message.speaker,
-                    "domain": message.domain,
-                    "question_key": message.question_key,
-                    "content": message.content,
-                }
-                for message in messages
-            ]
-        else:
-            transcript = []
-
-    # ── GATE G1 (spec-doc6 §4.3) ────────────────────────────────────────────
-    #
-    # No candidate is evaluated against a job without an approved, frozen
-    # scorecard. `require_frozen_matrix` IS the gate, and it runs BEFORE the
-    # scoring graph rather than after it: a refusal that scored first has
-    # already spent the work it was refusing.
-    #
-    # THIS REPLACED AN ON-DEMAND GENERATION. The two lines here used to call
-    # `ppi.generate_framework` when a job had no matrix, so a job that had never
-    # been through setup silently acquired criteria at the moment somebody was
-    # graded against them -- criteria no Hiring Manager had approved, which is
-    # precisely what the review step is the product's only comparability
-    # guarantee against.
-    from app.services.hiring import scorecard as _scorecard  # noqa: PLC0415
-
-    await _scorecard.require_frozen_matrix(session, job.id)
-    competencies = await ppi.load_framework(session, job.id)
-
-    # This candidate's OWN questions, each rubric-scored one carrying the rubric
-    # written with it. Generated on demand only for a link that never opened a
-    # conversation, which the "no transcript" report path deliberately allows;
-    # on every normal run the rows already exist and this is a read.
+        )
+    ).scalars().first()
+    if conversation is None:
+        raise miti_live.ScorecardUnavailable(
+            f"no assessment conversation exists for link {link.id}, so there is "
+            "no locked contract to grade against"
+        )
     questions = await ppi_interview.load_for_link(session, link.id)
     if not questions:
-        questions = await question_generation.generate_candidate_questions(session, job, link)
-
-    grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
-    profile = await session.get(Profile, link.profile_id) if link.profile_id else None
-    # EVERYTHING THE SCORING RUN SPENDS IS BILLED TO THIS APPLICATION.
-    #
-    # The graph is where the expensive half of an assessment happens: five
-    # isolated evaluators, the aggregator's inputs, and Siddhi's synthesis,
-    # which is seven report sections in one reasoning-tier response and is
-    # routinely the single largest call in the product. None of it was
-    # attributable to a candidate before: the router counted it per process,
-    # and this runs in a Fargate container that exits.
-    #
-    # The scope wraps the WHOLE invoke rather than each node, so a node added
-    # to the graph later is accounted for without anybody remembering to say
-    # so, and so a run that dies part way through still reports what it had
-    # already spent.
-    async with cost_telemetry.record_for(
-        session,
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        link_id=link.id,
-    ):
-        result = await assessment_graph.ainvoke(
-            {
-                "session": session,
-                "job": job,
-                "link": link,
-                "profile": profile,
-                "transcript": transcript,
-                "answers": answers_by_key(transcript),
-                "candidate_questions": questions,
-                "competencies": competencies,
-                "grade": grade,
-            }
+        raise miti_live.ScorecardUnavailable(
+            f"link {link.id} has an assessment conversation and no issued "
+            "questions, so there is nothing the candidate can be graded on"
         )
-    return result["report_id"]
+
+    live = await persistence.live_evaluation(session, link.id)
+    previous = (
+        live.attempts
+        if live is not None and live.status == persistence.EVALUATION_NOT_ASSESSED
+        else 0
+    )
+    attempt = previous + 1
+    final_attempt = attempt >= get_settings().miti_not_assessed_attempts
+
+    provenance = ProvenanceRecorder()
+    # EVERYTHING THE RUN SPENDS IS BILLED TO THIS APPLICATION, and the scope
+    # wraps every stage so a run that dies part way still reports its spend.
+    async with cost_telemetry.record_for(
+        session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+    ):
+        # The transcript is indexed before Miti reads related passages from it.
+        await stage_evidence.ensure_transcript_indexed(session, link.id)
+        inputs = await stage_evidence.load_inputs(
+            session,
+            job=job,
+            link=link,
+            conversation=conversation,
+            questions=questions,
+        )
+        miti = await grading.grade(
+            session, inputs, allow_incomplete=final_attempt, provenance=provenance
+        )
+        if not miti.complete and not final_attempt:
+            await persistence.upsert_evaluation(
+                session,
+                inputs,
+                miti,
+                status=persistence.EVALUATION_NOT_ASSESSED,
+                attempts=attempt,
+                report_id=None,
+                needs_human_review=True,
+            )
+            logger.warning(
+                "functional_assessment.not_assessed_retry link_id=%s attempt=%d of=%d skills=%d",
+                link.id, attempt, get_settings().miti_not_assessed_attempts,
+                len(miti.not_assessed_skills),
+            )
+            return RunResult(status=RUN_NOT_ASSESSED, attempts=attempt)
+        if miti.aggregate is None:
+            raise miti_live.ScorecardUnavailable(
+                f"Miti produced no aggregate for link {link.id}: "
+                f"{'; '.join(miti.outcome.blocking_reasons) if miti.outcome else 'no outcome'}"
+            )
+        if not miti.complete:
+            # THE ALARM. A CloudWatch metric filter counts this token
+            # (`infra/modules/observability`, `miti_not_assessed_final`).
+            logger.error(
+                "miti.not_assessed_final_report link_id=%s attempts=%d skills=%d",
+                link.id, attempt, len(miti.not_assessed_skills),
+            )
+        uncertainty = await grading.evidence_uncertainty(session, inputs)
+        composed = await composition.compose(
+            session, inputs, miti, provenance=provenance, uncertainty=uncertainty
+        )
+        report_id = await persistence.write_report(
+            session,
+            inputs,
+            fields=composed.fields,
+            dimensions=composed.dimensions,
+            provenance=provenance,
+        )
+        await persistence.upsert_evaluation(
+            session,
+            inputs,
+            miti,
+            status=persistence.EVALUATION_COMPLETE,
+            attempts=attempt,
+            report_id=report_id,
+            needs_human_review=bool(composed.fields["needs_human_review"]),
+            note=_note(composed.fields["gap_analysis_json"]),
+        )
+        await persistence.mark_assessment_completed(session, inputs)
+    logger.info(
+        "functional_assessment.report_written link_id=%s report_id=%s mode=%s attempts=%d",
+        link.id, report_id, composed.fields["scoring_mode"], attempt,
+    )
+    return RunResult(status=RUN_WRITTEN, attempts=attempt, report_id=report_id)

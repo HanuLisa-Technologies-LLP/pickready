@@ -113,20 +113,10 @@ PERMANENT: dict[tuple[str, str], str] = {
 #: entry is removed in the change that deletes the site; see the module
 #: docstring for why a stale entry fails.
 PENDING_REMOVAL: dict[tuple[str, str], str] = {
-    # The evaluator's coding branch: Phase 4 deletes it together with the Miti
-    # coding sub-stage (Phase 5), because until that sub-stage reads
-    # `coding_assessment.evidence` the branch is the only thing grading a v2
-    # answer's code on this branch.
-    ("backend/app/services/assessment_formats/evaluation.py", "NOT_EXECUTED_NOTE"): "Phase 4 hunk, with Phase 5",
-    ("backend/app/services/assessment_formats/evaluation.py", "HEDGE_MARKERS"): "Phase 4 hunk, with Phase 5",
-    ("backend/app/services/assessment_formats/evaluation.py", "read and judged, not executed"): "Phase 4 hunk, with Phase 5",
-    ("backend/app/services/assessment_formats/evaluation.py", "assessment_answer_evaluation_coding"): "Phase 4 hunk, with Phase 5",
-    ("backend/app/prompts/assessment_answer_evaluation_coding.txt", "assessment_answer_evaluation_coding"): "Phase 4 hunk, with Phase 5",
-    ("backend/app/prompts/assessment_answer_evaluation_coding.txt", "never executed"): "Phase 4 hunk, with Phase 5",
-    ("backend/tests/test_assessment_formats_evaluation.py", "NOT_EXECUTED_NOTE"): "Phase 4 hunk, with Phase 5",
-    # The old question writer (4B1 hunk 2, via wip/p3-w2) and the CodeMirror
-    # editor (WP-4D) both left at the stage 2 integration; their entries went
-    # with them.
+    # EMPTY. The old question writer (4B1 hunk 2) and the CodeMirror editor
+    # (WP-4D) left at the stage 2 integration; the evaluator's coding branch
+    # and its prompt left with the Miti coding sub-stage (PLAN-p5 WP5-D),
+    # which grades coding from `coding_assessment.evidence`.
 }
 
 

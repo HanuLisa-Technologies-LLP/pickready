@@ -300,7 +300,7 @@ def test_confidence_never_moves_a_grade(width):
     docstring: every key except the two it is allowed to add is byte identical
     afterwards, whatever confidence it derived.
     """
-    from app.services.functional_assessment import apply_evidence_confidence
+    from app.services.assessment_pipeline.composition import apply_evidence_confidence
 
     kinds = _ALL_KINDS[:width]
     rows = _rows()

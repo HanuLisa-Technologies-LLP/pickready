@@ -34,14 +34,13 @@ payload`), and a sweep that failed on its own guards would be deleted by the
 first person it annoyed. Whitespace-normalised through `removal_sweep`, so a
 mention wrapped across a line is still found.
 
-ONE HAND-OFF, AND IT CANNOT OUTLIVE ITS REASON
-----------------------------------------------
-`services/matching_categories` survives with exactly one reader,
-`functional_assessment._matching_dimensions` (the PRISM AI Score section),
-which Phase 5 replaces with `yukti.projection.ai_score_summary`. The pending
-entry below names that owner, and `test_the_pending_hand_off_is_still_real`
-fails the day the reader goes, so the module and its exemption are deleted
-together rather than forgotten.
+THE HAND-OFF IS COMPLETE
+------------------------
+`services/matching_categories` survived with exactly one reader,
+`functional_assessment._matching_dimensions` (the PRISM AI Score section).
+The grading split (PLAN-p5 WP5-D) replaced it with Yukti's frozen snapshot
+(`yukti.projection.pre_assessment_snapshot`) and deleted the module in the
+same change, so the pending map below is empty and any new reader fails.
 """
 from __future__ import annotations
 
@@ -125,10 +124,10 @@ MATCHING_CATEGORIES_MODULE = re.compile(
 
 #: Files that still reference the categories module, each with the owner who
 #: removes the reference. Not permanent: see the hand-off test.
-PENDING_CATEGORY_READERS = {
-    APP / "services" / "functional_assessment.py": (
-        "Phase 5: `_matching_dimensions` becomes yukti.projection.ai_score_summary"
-    ),
+PENDING_CATEGORY_READERS: dict = {
+    # EMPTY since the grading split (PLAN-p5 WP5-D): the report's AI Score is
+    # Yukti's frozen snapshot (`yukti.projection.pre_assessment_snapshot`), and
+    # `services/matching_categories` was deleted with its last reader.
 }
 
 #: The router and routing-table entry points a task type is passed to. A
@@ -263,4 +262,4 @@ def test_the_sweep_is_not_vacuous() -> None:
     broken helper would report a clean tree for ever."""
     planted = sweep(_pattern(LEGACY_NAMES), roots=(THIS_FILE,))
     assert len(planted) >= len(LEGACY_NAMES)
-    assert sweep(MATCHING_CATEGORIES_MODULE, roots=tuple(PENDING_CATEGORY_READERS))
+    assert sweep(MATCHING_CATEGORIES_MODULE, roots=(THIS_FILE,))

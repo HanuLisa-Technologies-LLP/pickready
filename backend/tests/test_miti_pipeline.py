@@ -43,6 +43,7 @@ from app.services.miti.dimensions import (
     EvaluatorInput,
     EvidenceView,
 )
+from tests import miti_fixtures as mf
 
 MITI_ROOT = pathlib.Path(inspect.getfile(aggregation)).parent
 
@@ -163,18 +164,25 @@ def test_render_prompt_cannot_reach_anything_the_input_does_not_carry() -> None:
 
 
 def test_evidence_is_routed_only_to_the_dimension_that_owns_it() -> None:
+    """The Miti-owned bucket routing (WP5-B): Must-have and Nice-to-have go to
+    Verified Competence, Behavioural to Role and Context Fit, and the three
+    cross-cutting dimensions read every skill."""
     inputs = pipeline.EvaluationInputs(
-        competency_dimensions={
-            "Core craft depth": "verified_competence",
-            "Delivery ownership": "track_record_impact",
+        skill_buckets={
+            "Core craft depth": "must_have",
+            "Delivery ownership": "behavioural",
         },
         evidence=[_view("e1"), _view("e2")],
         evidence_competencies={"e1": ["Core craft depth"], "e2": ["Delivery ownership"]},
     )
     built = {p.dimension: p for p in pipeline.build_evaluator_inputs(inputs)}
     assert [v.ref for v in built["verified_competence"].evidence] == ["e1"]
-    assert [v.ref for v in built["track_record_impact"].evidence] == ["e2"]
-    assert built["role_context_fit"].evidence == ()
+    assert built["verified_competence"].competencies == ("Core craft depth",)
+    assert [v.ref for v in built["role_context_fit"].evidence] == ["e2"]
+    assert built["role_context_fit"].competencies == ("Delivery ownership",)
+    for cross_cutting in dimensions.CROSS_CUTTING:
+        assert [v.ref for v in built[cross_cutting].evidence] == ["e1", "e2"]
+        assert built[cross_cutting].competencies == ("Core craft depth", "Delivery ownership")
 
 
 def test_a_candidate_name_is_scrubbed_from_evidence_text() -> None:
@@ -288,12 +296,20 @@ def _strong_results() -> list[DimensionResult]:
 
 
 def test_a_not_matching_must_have_caps_the_overall_grade() -> None:
-    uncapped = aggregation.aggregate(_strong_results())
+    uncapped = aggregation.aggregate(
+        _strong_results(),
+        skill_grades=mf.strong_skills(),
+        must_have_evidence=_evidenced("Kafka"),
+    )
     assert uncapped.overall_grade == rating.GRADE_HIGHLY
 
     capped = aggregation.aggregate(
         _strong_results(),
-        must_have_grades={"Kafka": rating.GRADE_NOT, "Go": rating.GRADE_HIGHLY},
+        skill_grades=(
+            mf.skill("Kafka", "must_have", 40, priority=1),
+            mf.skill("Go", "must_have", 98, priority=2),
+            mf.skill("Ownership", "behavioural", 98),
+        ),
         must_have_evidence=_evidenced("Kafka", "Go"),
     )
     assert capped.overall_grade == rating.GRADE_MODERATELY
@@ -318,7 +334,10 @@ def test_the_cap_never_raises_a_weak_candidate() -> None:
     ]
     capped = aggregation.aggregate(
         weak,
-        must_have_grades={"Kafka": rating.GRADE_NOT},
+        skill_grades=(
+            mf.skill("Kafka", "must_have", 30),
+            mf.skill("Ownership", "behavioural", 40),
+        ),
         must_have_evidence=_evidenced("Kafka"),
     )
     assert capped.overall_grade == rating.GRADE_NOT
@@ -331,8 +350,12 @@ def test_the_cap_is_applied_after_the_authenticity_multiplier() -> None:
     results[3] = _result("authenticity_consistency", "absent")
     out = aggregation.aggregate(
         results,
-        must_have_grades={"Kafka": rating.GRADE_NOT},
-        must_have_evidence=_evidenced("Kafka"),
+        skill_grades=(
+            mf.skill("Kafka", "must_have", 40, priority=1),
+            mf.skill("Go", "must_have", 98, priority=2),
+            mf.skill("Ownership", "behavioural", 98),
+        ),
+        must_have_evidence=_evidenced("Kafka", "Go"),
     )
     assert out.authenticity_factor < 1.0
     assert out.adjusted_composite < out.raw_composite
@@ -344,8 +367,12 @@ def test_the_cap_is_recorded_when_it_binds() -> None:
     simply scored there."""
     capped = aggregation.aggregate(
         _strong_results(),
-        must_have_grades={"Kafka": rating.GRADE_NOT},
-        must_have_evidence=_evidenced("Kafka"),
+        skill_grades=(
+            mf.skill("Kafka", "must_have", 40, priority=1),
+            mf.skill("Go", "must_have", 98, priority=2),
+            mf.skill("Ownership", "behavioural", 98),
+        ),
+        must_have_evidence=_evidenced("Kafka", "Go"),
     )
     assert capped.client_projection()["capped_by_must_have"] is True
 
@@ -368,7 +395,7 @@ def test_an_insufficient_dimension_is_excluded_not_scored_low() -> None:
         evidence_refs=(),
         insufficient_evidence=True,
     )
-    out = aggregation.aggregate(results)
+    out = aggregation.aggregate(results, skill_grades=mf.strong_skills())
 
     assert "track_record_impact" in out.insufficient_dimensions
     # Excluded, so the surviving categories are still strong.
@@ -462,7 +489,7 @@ def test_corroboration_is_counted_and_one_group_scores_below_three() -> None:
     def _at(groups: int) -> float:
         return aggregation.aggregate(
             _strong_results(),
-            competency_categories={"Kafka": aggregation.CATEGORY_MUST_HAVE},
+            skill_grades=mf.strong_skills(),
             must_have_evidence={
                 "Kafka": aggregation.MustHaveEvidence(
                     tiers=("E5",), independence_groups=groups
@@ -505,9 +532,7 @@ def test_insufficient_fires_on_either_definition_and_neither_implies_the_other()
     # one is third-party verified from three independent groups.
     breadth = aggregation.aggregate(
         _strong_results(),
-        competency_categories={
-            name: aggregation.CATEGORY_MUST_HAVE for name in ("a", "b", "c")
-        },
+        skill_grades=tuple(mf.skill(name, "must_have", 92) for name in ("a", "b", "c")),
         must_have_evidence={
             "a": aggregation.MustHaveEvidence(tiers=("E5",), independence_groups=3),
             "b": aggregation.MustHaveEvidence(tiers=("E0",), independence_groups=3),
@@ -531,9 +556,9 @@ def test_insufficient_fires_on_either_definition_and_neither_implies_the_other()
     # wrong. Reported rather than worked around.
     quality = aggregation.aggregate(
         _strong_results(),
-        competency_categories={
-            name: aggregation.CATEGORY_MUST_HAVE for name in ("a", "b", "c", "d")
-        },
+        skill_grades=tuple(
+            mf.skill(name, "must_have", 92) for name in ("a", "b", "c", "d")
+        ),
         must_have_evidence={
             "a": aggregation.MustHaveEvidence(tiers=("E2",), independence_groups=1),
             "b": aggregation.MustHaveEvidence(tiers=("E2",), independence_groups=1),
@@ -630,7 +655,6 @@ def test_the_stock_explanations_hold_the_rule_during_an_outage() -> None:
             {"ref": "e1", "independence_group": "candidate"},
             {"ref": "e2", "independence_group": "employer"},
         ],
-        generated=None,  # the model produced nothing
     )
     assert result.contradictions[0].severity == detector.MATERIAL
     assert len(result.contradictions[0].explanations) >= 2
@@ -932,19 +956,19 @@ def test_an_unknown_gate_raises() -> None:
 
 def _inputs(**kwargs) -> pipeline.EvaluationInputs:
     base = dict(
-        matrix={"Core craft depth": "must_have", "Delivery ownership": "nice_to_have"},
-        competency_dimensions={
-            "Core craft depth": "verified_competence",
-            "Delivery ownership": "track_record_impact",
-        },
+        contract=mf.contract(
+            (("Core craft depth", "must_have"), ("Delivery ownership", "behavioural"))
+        ),
+        skill_buckets={"Core craft depth": "must_have", "Delivery ownership": "behavioural"},
+        skill_grades=(
+            mf.skill("Core craft depth", "must_have", 80),
+            mf.skill("Delivery ownership", "behavioural", 80),
+        ),
         evidence=[_view("e1"), _view("e2", group="employer", trust="authoritative")],
         evidence_competencies={
             "e1": ["Core craft depth"],
             "e2": ["Delivery ownership"],
         },
-        matrix_items=[{"name": "Core craft depth"}],
-        scorecard_approved_at="2026-08-01",
-        must_have_grades={"Core craft depth": rating.GRADE_MATCHING},
     )
     base.update(kwargs)
     return pipeline.EvaluationInputs(**base)
@@ -967,9 +991,9 @@ def test_the_pipeline_runs_every_gate_in_order() -> None:
     assert out.deliverable
 
 
-def test_an_unapproved_scorecard_stops_before_any_evaluation() -> None:
-    """Evaluating against a draft would let the first candidate set the criteria
-    for everyone by being assessed against it."""
+def test_an_unlocked_contract_stops_before_any_evaluation() -> None:
+    """Evaluating against live, unlocked skills would let the criteria move
+    under a candidate who has already answered (G1 on the contract, WP5-B)."""
     calls: list[str] = []
 
     async def _counting(task, messages, response_format_json=False):
@@ -977,7 +1001,15 @@ def test_an_unapproved_scorecard_stops_before_any_evaluation() -> None:
         return await _ok(task, messages, response_format_json)
 
     out = asyncio.run(
-        pipeline.evaluate(_inputs(scorecard_approved_at=None), invoke=_counting)
+        pipeline.evaluate(
+            _inputs(
+                contract=mf.contract(
+                    (("Core craft depth", "must_have"), ("Delivery ownership", "behavioural")),
+                    locked=False,
+                )
+            ),
+            invoke=_counting,
+        )
     )
     assert calls == []
     assert not out.deliverable

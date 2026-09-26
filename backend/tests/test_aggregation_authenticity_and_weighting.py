@@ -28,6 +28,7 @@ import pytest
 
 from app.services.miti import aggregation, caps, dimensions
 from app.services.miti.dimensions import DimensionResult
+from tests import miti_fixtures as mf
 
 
 def _result(band: str, *, insufficient: bool = False) -> DimensionResult:
@@ -182,7 +183,7 @@ def test_the_bottom_row_is_the_hold_and_it_fires() -> None:
     verified misrepresentation -> integrity flag, mandatory human review,
     candidate not delivered without HR Manager decision". It is the only control
     in the product that stops a delivery on integrity grounds."""
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DIM_AUTHENTICITY
 
     bottom = dimensions.BANDS[-1][0]
     score = float(dimensions.band_for(bottom))
@@ -237,42 +238,73 @@ def test_a_scored_result_carries_its_multiplier_through() -> None:
 
 
 # ── Weighting ────────────────────────────────────────────────────────────────
+#
+# WP5-B: a bucket's score is the priority-weighted mean of Miti's SKILL grades,
+# weight `1 / priority` (Sutra's hidden per-bucket rank, 1 = highest). The
+# derived per-competency weights this section used to test came from the frozen
+# matrix, which Miti no longer reads.
 
 
-def test_weights_are_applied() -> None:
-    weighted = aggregation._weighted(
-        {"a": 100.0, "b": 0.0}, {"a": 3.0, "b": 1.0}
+def test_the_top_priority_skill_counts_most() -> None:
+    out = aggregation.aggregate(
+        [],
+        skill_grades=(
+            mf.skill("a", "must_have", 100, priority=1),
+            mf.skill("b", "must_have", 40, priority=2),
+            mf.skill("c", "behavioural", 80),
+        ),
     )
-    assert weighted == pytest.approx(75.0)
+    # (100 * 1 + 40 * 0.5) / 1.5 = 80
+    assert out.category_scores["must_have"] == pytest.approx(80.0)
 
 
-def test_a_competency_with_no_stated_weight_counts_once() -> None:
-    """Not zero. An item nobody derived a weight for is still a criterion the
-    hiring manager declared."""
-    assert aggregation._weighted({"a": 100.0, "b": 0.0}, {}) == pytest.approx(50.0)
+def test_priority_weights_never_favour_a_lower_ranked_skill() -> None:
+    weights = [aggregation.priority_weight(rank) for rank in range(1, 6)]
+    assert weights == sorted(weights, reverse=True)
+    assert weights[0] == 1.0
 
 
-def test_weights_that_all_failed_to_derive_fall_back_to_the_plain_mean() -> None:
-    """The load-bearing case. Falling to zero would produce Not Matching for
-    every candidate on that job, which reads as a hard cohort rather than a
-    broken matrix."""
-    assert aggregation._weighted(
-        {"a": 80.0, "b": 40.0}, {"a": 0.0, "b": 0.0}
-    ) == pytest.approx(60.0)
+def test_a_priority_below_one_is_a_contract_defect_not_a_weight() -> None:
+    with pytest.raises(ValueError):
+        aggregation.priority_weight(0)
 
 
-def test_a_negative_weight_is_read_as_no_weight_rather_than_a_penalty() -> None:
-    """A negative multiplier would let one item subtract from the composite,
-    which is not a weighting, it is a punishment nobody declared."""
-    assert aggregation._weighted(
-        {"a": 80.0, "b": 40.0}, {"a": -5.0, "b": -5.0}
-    ) == pytest.approx(60.0)
+def test_a_not_assessed_skill_is_excluded_from_its_bucket_and_named() -> None:
+    """Insufficient is not negative: an outage never reads as a low score."""
+    out = aggregation.aggregate(
+        [],
+        skill_grades=(
+            mf.skill("a", "must_have", 90),
+            mf.skill("b", "nice_to_have", None),
+            mf.skill("c", "behavioural", 90),
+        ),
+    )
+    assert "nice_to_have" not in out.category_scores
+    assert out.insufficient_skills == ["b"]
+    assert out.needs_human_review
+    # A Nice-to-have hole leaves the overall graded.
+    assert out.overall_status == aggregation.OVERALL_GRADED
 
 
-def test_nothing_to_average_is_zero_rather_than_an_error() -> None:
-    """A category with no scored items reaches this. Raising would take down
-    the whole aggregate for an empty section."""
-    assert aggregation._weighted({}, {"a": 1.0}) == 0.0
+def test_a_not_assessed_must_have_withholds_the_overall() -> None:
+    out = aggregation.aggregate(
+        [],
+        skill_grades=(
+            mf.skill("a", "must_have", None),
+            mf.skill("c", "behavioural", 90),
+        ),
+    )
+    assert out.overall_status == aggregation.OVERALL_NOT_ASSESSED
+    assert out.overall_grade == ""
+    assert out.client_projection()["overall_grade"] == ""
+
+
+def test_nothing_assessed_at_all_is_not_a_grade() -> None:
+    out = aggregation.aggregate([], skill_grades=())
+    assert out.category_scores == {}
+    assert out.overall_status == aggregation.OVERALL_NOT_ASSESSED
+    assert out.overall_grade == ""
+
 
 
 def test_the_hold_flag_reaches_the_client_projection() -> None:
@@ -305,7 +337,7 @@ def test_a_held_candidate_is_not_ranked() -> None:
     the worst possible reading of a worse result. Nothing downstream could catch
     it, because a grade is a plausible word whatever produced it.
     """
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DIM_AUTHENTICITY
     from app.services.miti.dimensions import DimensionResult
 
     def run(band: str):
@@ -318,7 +350,7 @@ def test_a_held_candidate_is_not_ranked() -> None:
             )
             for dimension in dimensions.DIMENSIONS
         ]
-        return aggregation.aggregate(results, competency_categories={})
+        return aggregation.aggregate(results, skill_grades=mf.strong_skills())
 
     held = run("contradicted")
     assert held.hold is True
@@ -339,7 +371,7 @@ def test_a_held_candidate_is_not_ranked() -> None:
 def test_the_client_projection_still_carries_no_number() -> None:
     """Both branches of it, because the held one is a second construction site
     and a number added there would reach a client just as fast."""
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DIM_AUTHENTICITY
     from app.services.miti.dimensions import DimensionResult
 
     for band in ("strong", "contradicted"):
@@ -353,7 +385,7 @@ def test_the_client_projection_still_carries_no_number() -> None:
             for dimension in dimensions.DIMENSIONS
         ]
         projection = aggregation.aggregate(
-            results, competency_categories={}
+            results, skill_grades=mf.strong_skills()
         ).client_projection()
         for key, value in projection.items():
             assert not isinstance(value, (int, float)) or isinstance(value, bool), (

@@ -97,6 +97,37 @@ async def test_the_first_start_locks_the_contract_and_logs_the_vaada_digest(
         await cw.cleanup(factory, world)
 
 
+async def test_vaada_and_miti_log_the_same_digest_for_one_conversation(
+    candidate, monkeypatch
+) -> None:
+    """THE PAIR (PLAN-p5 WP5-D). Vaada logs the digest when the REAL start route
+    locks the contract; Miti logs it when gate G1 loads the contract to grade.
+    For one conversation the two lines must name the same conversation and the
+    same digest, or the candidate was graded against criteria they were not
+    asked about. Driven through the route and through Miti's own G1 read,
+    never by calling the logger twice by hand."""
+    from app.core.db import superadmin_scope
+    from app.services.miti import live as miti_live
+
+    cw.quiet_models(monkeypatch)
+    digests = _spy_digests(monkeypatch)
+    factory = cw.sessions()
+    world = await _world(candidate)
+    try:
+        with cw.client(candidate) as http:
+            started = http.post(f"{cw.BASE}/conversations/links/{world.link}/start")
+        assert started.status_code == 200, started.text
+        async with factory() as session:
+            async with superadmin_scope(session):
+                contract = await miti_live.load_contract(session, world.conversation)
+        by_stage = {stage: (conversation, digest) for stage, conversation, digest in digests}
+        assert set(by_stage) == {assessment_contract.STAGE_VAADA, assessment_contract.STAGE_MITI}
+        assert by_stage[assessment_contract.STAGE_VAADA] == by_stage[assessment_contract.STAGE_MITI]
+        assert by_stage[assessment_contract.STAGE_MITI] == (str(world.conversation), contract.digest)
+    finally:
+        await cw.cleanup(factory, world)
+
+
 async def test_a_second_start_neither_relocks_nor_restamps(candidate, monkeypatch) -> None:
     """A reload is the same session: the same contract, the same start time,
     the same turn and the same clock."""

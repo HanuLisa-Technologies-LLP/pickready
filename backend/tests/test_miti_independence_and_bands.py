@@ -123,7 +123,7 @@ def test_an_unknown_dimension_has_no_rubric_anchor() -> None:
 
 
 def test_each_real_dimension_has_anchor_text() -> None:
-    from app.services.hiring.department_models import (
+    from app.services.miti.dimensions import (
         DIM_AUTHENTICITY,
         DIM_ROLE_FIT,
         DIM_TRACK_RECORD,

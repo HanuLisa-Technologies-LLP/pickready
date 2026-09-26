@@ -1,16 +1,18 @@
-"""AI evaluation with reasoning for the evidence and coding formats (spec 6.2).
+"""AI evaluation with reasoning for the evidence-based format (spec 6.2).
 
 A BARE NUMBER IS NOT DEFENSIBLE IN A HIRING CONTEXT. Every evaluation this
 module produces carries its reasoning, the parts of the answer it cites, and a
 per-criterion breakdown, and the deterministic evaluation inside the loop
-refuses an output that lacks any of them. The score folds into the matrix
-item through `functional_assessment._score_item` and is projected to a word
-at the boundary; the reasoning is what the recruiter's Q&A view shows.
+refuses an output that lacks any of them. The score folds into the skill
+through Miti's item stage (`miti.items`) and is projected to a word at the
+boundary; the reasoning is what the recruiter's Q&A view shows.
 
-THE CODE WAS NOT EXECUTED, AND THE OUTPUT SAYS SO THREE TIMES. The prompt
-states it, the evaluation refuses a reasoning with no hedged language, and
-`NOT_EXECUTED_NOTE` is stored on every coding evaluation so the recruiter's
-view cannot present a read-only judgement as a verified run.
+CODING IS NOT EVALUATED HERE ANY MORE (PLAN-p5 WP5-D, the p4-4f hunk). A
+coding answer is graded from what the sandbox RAN, 70 parts hidden tests and
+30 parts the code-quality review (`coding_assessment.review` and
+`coding_assessment.evidence`). The read-only coding evaluator and its
+"not executed" note are deleted, and `evaluate` REFUSES a coding answer, so a
+caller that still routes one here fails loudly instead of grading by reading.
 
 CITATIONS ARE VERBATIM OR THEY ARE REJECTED. A citation is a phrase copied
 from the answer; the check is a normalised substring test, so a model that
@@ -37,10 +39,7 @@ from app.services.assessment_formats import types
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "CODING_CRITERIA",
     "EVIDENCE_CRITERIA",
-    "HEDGE_MARKERS",
-    "NOT_EXECUTED_NOTE",
     "evaluate",
     "rubric_for",
 ]
@@ -54,34 +53,6 @@ EVIDENCE_CRITERIA: dict[str, str] = {
     "honesty_markers": "Willingness to name difficulty, failure, trade-offs or limits.",
 }
 
-#: Section 2.5's evaluation rubric, in order.
-CODING_CRITERIA: dict[str, str] = {
-    "correctness_of_approach": "Whether the logic, as read, solves the stated problem.",
-    "code_quality": "Structure, naming and readability.",
-    "edge_case_handling": "Whether the obvious edge cases are considered.",
-    "efficiency_awareness": "Whether the complexity is reasonable for the problem.",
-    "idiomatic_use": "Idiomatic use of the chosen language.",
-}
-
-NOT_EXECUTED_NOTE = (
-    "This code was read and judged, not executed. The evaluation describes "
-    "whether the code appears correct; it does not confirm that it runs."
-)
-
-#: Words that mark a claim as a reading rather than a verification. A coding
-#: reasoning with none of them has overclaimed.
-HEDGE_MARKERS: tuple[str, ...] = (
-    "appears",
-    "appear to",
-    "seems",
-    "likely",
-    "not executed",
-    "was read",
-    "cannot be confirmed",
-    "without running",
-    "suggests",
-)
-
 #: The bounds of the two numeric fields the model returns.
 SCORE_MIN = 0
 SCORE_MAX = 100
@@ -90,14 +61,11 @@ UNIT_MAX = 1.0
 
 _PROMPT_FOR_TYPE: dict[str, str] = {
     types.EVIDENCE_BASED: "assessment_answer_evaluation_evidence",
-    types.CODING: "assessment_answer_evaluation_coding",
 }
 
 
 def rubric_for(question_type: str) -> dict[str, str]:
     """The fixed criteria this format is evaluated against."""
-    if question_type == types.CODING:
-        return dict(CODING_CRITERIA)
     if question_type == types.EVIDENCE_BASED:
         return dict(EVIDENCE_CRITERIA)
     raise ValueError(f"{question_type} is not AI-evaluated by this module")
@@ -178,13 +146,6 @@ def _evaluator(*, question_type: str, criteria: dict[str, str], answer_text: str
                 "every citation must be copied word for word from the answer; these "
                 "are not in it: " + "; ".join(repr(item[:60]) for item in fabricated[:3])
             )
-        if question_type == types.CODING and not any(
-            marker in reasoning.casefold() for marker in HEDGE_MARKERS
-        ):
-            reasons.append(
-                "the code was not executed: say so, and use hedged language "
-                "('appears to', 'seems to', 'cannot be confirmed without running it')"
-            )
         for violation in report_numbers.scan_text(reasoning, path="reasoning"):
             reasons.append(
                 "the reasoning is prose a recruiter reads and carries no score, "
@@ -207,38 +168,32 @@ async def evaluate(
     payload: dict[str, Any] | None = None,
     language: str | None = None,
 ) -> agent_loop.LoopResult[dict[str, Any] | None]:
-    """Evaluate one subjective answer. Never raises; degraded means None.
+    """Evaluate one evidence-based answer. Degraded means None.
 
     The returned dict is what `assessment_answers.ai_evaluation_json` stores:
     the score, the per-criterion scores, the reasoning, the verbatim
-    citations, the rubric used, and for coding the not-executed note.
+    citations and the rubric used.
+
+    RAISES `ValueError` for a coding answer: coding is graded from the
+    sandbox run and `coding_assessment.review`, never by reading the code.
     """
+    if question_type == types.CODING:
+        raise ValueError(
+            "a coding answer is graded from its sandbox run and "
+            "coding_assessment.review, never evaluated by reading the code"
+        )
     criteria = rubric_for(question_type)
     conf = format_config.get_config()
-    payload = payload or {}
-    if question_type == types.CODING:
-        system = registry.render(
-            _PROMPT_FOR_TYPE[question_type],
-            item_name=item_name,
-            question=prompt,
-            language=language or str(payload.get("language") or ""),
-            constraints=str(payload.get("constraints") or "none stated"),
-            expected_approach=str(payload.get("expected_approach") or ""),
-            candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
-            criteria=_criteria_block(criteria),
-            min_words=conf.evaluation_min_reasoning_words,
-        )
-    else:
-        system = registry.render(
-            _PROMPT_FOR_TYPE[question_type],
-            item_name=item_name,
-            resume_anchor=resume_anchor or "not recorded",
-            question=prompt,
-            candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
-            criteria=_criteria_block(criteria),
-            question_rubric=_question_rubric_block(question_rubric),
-            min_words=conf.evaluation_min_reasoning_words,
-        )
+    system = registry.render(
+        _PROMPT_FOR_TYPE[question_type],
+        item_name=item_name,
+        resume_anchor=resume_anchor or "not recorded",
+        question=prompt,
+        candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
+        criteria=_criteria_block(criteria),
+        question_rubric=_question_rubric_block(question_rubric),
+        min_words=conf.evaluation_min_reasoning_words,
+    )
 
     async def execute(reflection: str) -> dict[str, Any]:
         messages = [
@@ -270,7 +225,5 @@ async def evaluate(
     record = dict(result.value)
     record["rubric"] = criteria
     record["evaluated_at"] = datetime.now(timezone.utc).isoformat()
-    if question_type == types.CODING:
-        record["not_executed_note"] = NOT_EXECUTED_NOTE
     result.value = record
     return result

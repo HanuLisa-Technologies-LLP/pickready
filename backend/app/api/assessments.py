@@ -68,6 +68,11 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
+from app.services.siddhi.synthesis import NOT_ASSESSED_WORD
+
+#: `report_dimensions.assessment_status` / `functional_skills_reports.
+#: overall_status` for a skill or an overall Miti could not assess (0130).
+NOT_ASSESSED_STATUS = "not_assessed"
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +146,13 @@ async def get_report(
         return DimensionOut(
             name=row.name,
             description=row.description,
-            grade=rating_label(row.score) or GRADES[-1],
+            # A skill Miti could not assess (0130) carries NO score and says
+            # so in words; projecting its missing score would read Not Matching.
+            grade=(
+                NOT_ASSESSED_WORD
+                if row.assessment_status == NOT_ASSESSED_STATUS
+                else rating_label(row.score) or GRADES[-1]
+            ),
             required_level=grade_for_percent(row.required_level),
             remark=row.remark,
             # EVIDENCE CONFIDENCE (0107). The stored code becomes a word HERE,
@@ -177,9 +188,13 @@ async def get_report(
     )
 
     overall = report.overall_score
-    if overall is None:
+    if overall is None and report.overall_status != NOT_ASSESSED_STATUS:
         # Written before migration 0030. Recompute rather than showing nothing.
-        assessed = [row.score for row in rows if row.category != CATEGORY_MATCHING]
+        assessed = [
+            row.score
+            for row in rows
+            if row.category != CATEGORY_MATCHING and row.score is not None
+        ]
         overall = round(sum(assessed) / len(assessed)) if assessed else 0
 
     # The Proctoring Report, appended as the final, informational section.
@@ -205,7 +220,13 @@ async def get_report(
         ),
         grade=report.grade,
         ai_score=grouped.get(CATEGORY_MATCHING, []),
-        overall_grade=grade_for_percent(overall) or GRADES[-1],
+        # Miti withheld the overall (a Must-have not assessed on the final
+        # attempt, 0130): stated in words, never recomputed from the rows.
+        overall_grade=(
+            NOT_ASSESSED_WORD
+            if report.overall_status == NOT_ASSESSED_STATUS
+            else grade_for_percent(overall) or GRADES[-1]
+        ),
         overall_summary=report.overall_summary,
         must_have=grouped.get(ppi.CATEGORY_MUST_HAVE, []),
         nice_to_have=grouped.get(ppi.CATEGORY_NICE_TO_HAVE, []),
@@ -276,11 +297,29 @@ async def download_report_pdf(
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
     tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
-    # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
-    # startup path so ordinary requests do not pay its import cost.
-    from app.services.report_pdf import render_report_pdf
+    # GATE G4, THEN THE PDF (Vivekium release, P5-D7). A report flagged for
+    # human review is not downloaded until a person has recorded a decision on
+    # it. The on-screen report above is deliberately NOT gated: it is where
+    # that person reads the report. `prism_pdf` takes the clearance G4 mints,
+    # so the renderer is unreachable from here without the gate having run.
+    from app.services.siddhi import delivery
 
-    payload = render_report_pdf(
+    report_row = (
+        await session.execute(
+            select(FunctionalSkillsReport).where(
+                FunctionalSkillsReport.job_candidate_link_id == link_id
+            )
+        )
+    ).scalars().first()
+    try:
+        clearance = await delivery.gate_delivery(session, report_row)
+    except delivery.DeliveryBlocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=delivery.PDF_BLOCKED_REASON,
+        ) from None
+    payload = delivery.prism_pdf(
+        clearance,
         report_out,
         candidate_name=candidate_name,
         job_title=job_title,

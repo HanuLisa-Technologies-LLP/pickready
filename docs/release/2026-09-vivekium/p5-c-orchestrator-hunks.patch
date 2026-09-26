@@ -1,0 +1,1753 @@
+WP5-C (Siddhi) orchestrator hunks, in two parts. Plain text above and between
+the parts is ignored by `git apply`.
+
+PART 1 applies on wip/p5-c alone (files owned by WP5-A/D/F and the observability
+module): the PDF route runs G4 then the gated renderer, the run's
+ProvenanceRecorder, the orchestrator's switch to Siddhi's remarks, composer and
+quality gate, the withheld-statement alarm, and their tests.
+
+PART 2 applies only once wip/p5-e (evidence_retrieval) is merged: it hands
+evidence_retrieval.support_passages_for_statement to Siddhi's support check
+through siddhi.support.statement_passage_source, bound to the run's session,
+tenant and application; moves evidence_retrieval and tools to LIVE in
+test_ai_reachability; adds REQUIRED_CALLERS for statement_passage_source,
+delivery.gate_delivery and delivery.prism_pdf; and adds
+tests/test_siddhi_support_wiring.py.
+
+Verified: wip/p5-c + PART 1, merged with wip/p5-e, + PART 2, gives the same
+tree as merging wip/p5-c with wip/p5-e first and then applying the whole file.
+When WP5-D moves synthesis_node's body into its own orchestrator, the
+passage_source keyword moves with the compose_prism call (and the AST test in
+test_siddhi_support_wiring.py follows the call: it looks for
+build_gap_analysis today).
+
+======================== PART 1 ========================
+diff --git a/backend/app/api/assessments.py b/backend/app/api/assessments.py
+index 790c42b..c91a034 100644
+--- a/backend/app/api/assessments.py
++++ b/backend/app/api/assessments.py
+@@ -1369,11 +1369,29 @@ async def download_report_pdf(
+     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
+     job_title = (job.title if job else None) or "Role"
+     tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
+-    # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
+-    # startup path so ordinary requests do not pay its import cost.
+-    from app.services.report_pdf import render_report_pdf
+-
+-    payload = render_report_pdf(
++    # GATE G4, THEN THE PDF (Vivekium release, P5-D7). A report flagged for
++    # human review is not downloaded until a person has recorded a decision on
++    # it. The on-screen report above is deliberately NOT gated: it is where
++    # that person reads the report. `prism_pdf` takes the clearance G4 mints,
++    # so the renderer is unreachable from here without the gate having run.
++    from app.services.siddhi import delivery
++
++    report_row = (
++        await session.execute(
++            select(FunctionalSkillsReport).where(
++                FunctionalSkillsReport.job_candidate_link_id == link_id
++            )
++        )
++    ).scalars().first()
++    try:
++        clearance = await delivery.gate_delivery(session, report_row)
++    except delivery.DeliveryBlocked:
++        raise HTTPException(
++            status_code=status.HTTP_409_CONFLICT,
++            detail=delivery.PDF_BLOCKED_REASON,
++        ) from None
++    payload = delivery.prism_pdf(
++        clearance,
+         report_out,
+         candidate_name=candidate_name,
+         job_title=job_title,
+diff --git a/backend/app/services/assessment_pipeline/types.py b/backend/app/services/assessment_pipeline/types.py
+index 9248062..22dd6f5 100644
+--- a/backend/app/services/assessment_pipeline/types.py
++++ b/backend/app/services/assessment_pipeline/types.py
+@@ -32,3 +32,64 @@ class AnswerRecord:
+     turn: int
+     text: str
+     answered_at: datetime | None
++
++
++class ProvenanceRecorder:
++    """What produced the text of one report: model calls, prompts, templates.
++
++    Threaded through Miti and Siddhi for one scoring run (PLAN-p5 section 3.1).
++    The one mutable value in this module, deliberately: it is an accumulator a
++    run appends to, never state a later stage reads to decide anything.
++
++    A model call is recorded ONLY after the call returned a value the
++    deterministic critic ACCEPTED (the callers enforce that), so
++    `model_id()` and `prompt_version()` never claim a call that did not
++    happen. A report whose every line came from a template carries None for
++    both, and `templates()` says where the templates were used.
++    """
++
++    def __init__(self) -> None:
++        self._models: list[str] = []
++        self._prompts: list[str] = []
++        self._templates: list[str] = []
++
++    def model_call(self, task_type: str, prompt_name: str | None) -> None:
++        from app.config import llm_providers
++        from app.prompts import registry
++
++        model = llm_providers.model_for(task_type)
++        if model not in self._models:
++            self._models.append(model)
++        if prompt_name:
++            label = f"{prompt_name}@{registry.version(prompt_name)}"
++            if label not in self._prompts:
++                self._prompts.append(label)
++
++    def template(self, where: str) -> None:
++        if where not in self._templates:
++            self._templates.append(where)
++
++    def models(self) -> tuple[str, ...]:
++        return tuple(self._models)
++
++    def prompt_versions(self) -> tuple[str, ...]:
++        return tuple(self._prompts)
++
++    def templates(self) -> tuple[str, ...]:
++        return tuple(self._templates)
++
++    def model_id(self) -> str | None:
++        """`functional_skills_reports.model_id`: the models that wrote, or None."""
++        return ";".join(self._models) or None
++
++    def prompt_version(self) -> str | None:
++        """`functional_skills_reports.prompt_version`: the registry labels, or None."""
++        return "; ".join(self._prompts) or None
++
++    def as_json(self) -> dict[str, list[str]]:
++        """INTERNAL provenance (`generation_provenance_json`), never served."""
++        return {
++            "models": list(self._models),
++            "prompts": list(self._prompts),
++            "templates": list(self._templates),
++        }
+diff --git a/backend/app/services/functional_assessment.py b/backend/app/services/functional_assessment.py
+index f55c6e9..54e8602 100644
+--- a/backend/app/services/functional_assessment.py
++++ b/backend/app/services/functional_assessment.py
+@@ -69,7 +69,6 @@ from app.models.job import Job
+ from app.services import (
+     agent_loop,
+     answer_quality,
+-    conversation_guardrails,
+     cost_telemetry,
+     gap_analysis,
+     llm_router,
+@@ -78,17 +77,19 @@ from app.services import (
+     ppi_interview,
+ )
+ from app.services.assessment_pipeline import evidence as answer_evidence
+-from app.services.assessment_pipeline.types import AnswerRecord
++from app.services.assessment_pipeline.types import AnswerRecord, ProvenanceRecorder
+ from app.services.assessment_questions import budget as question_budget
+ from app.services.assessment_questions import generate as question_generation
+ from app.services import evidence_confidence
+ from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
+ from app.services.miti import claims as miti_claims
+ from app.services.siddhi import claim_evidence, validation_points
++from app.services.siddhi import inputs as siddhi_inputs
++from app.services.siddhi import quality_gate as siddhi_quality_gate
++from app.services.siddhi import remarks as siddhi_remarks
+ from app.services.assessment_formats import evaluation as format_evaluation
+ from app.services.assessment_formats import rendering as format_rendering
+ from app.services.assessment_formats import types as question_types
+-from app.config import llm_providers
+ from app.prompts import registry
+ from app.services.rating import (
+     GRADES,
+@@ -183,13 +184,14 @@ REPORT_CATEGORIES: tuple[str, ...] = (
+     CATEGORY_TECHNICAL,
+ )
+ 
+-#: Word contracts (spec §9.5).
++#: Word contracts (spec §9.5). The skill, Overall and probe contracts live
++#: with Siddhi's writer (`siddhi.remarks`) and are re-exported here for the
++#: callers that still import them from this module. The 25-30 contract is the
++#: AI Score's, whose remarks this module still writes itself until Phase 2
++#: retires the four matching categories (D3).
+ MATCHING_REMARK_WORDS = (25, 30)
+-PPI_REMARK_WORDS = (45, 50)
+-#: A Gap Analysis probe is a prompt for the interviewer, not a written
+-#: assessment, and is capped shorter than an item remark for exactly that
+-#: reason (spec §9.5).
+-PROBE_REMARK_WORDS = (25, 30)
++PPI_REMARK_WORDS = siddhi_remarks.SKILL_REMARK_WORDS
++PROBE_REMARK_WORDS = siddhi_remarks.PROBE_REMARK_WORDS
+ 
+ # Score assigned when a question was never answered -- factual, not punitive.
+ UNANSWERED_SCORE = 25
+@@ -872,21 +874,6 @@ def invented_terms(value: str, *, evidence: str, name: str) -> list[str]:
+     return sorted(set(invented))
+ 
+ 
+-def _report_prompt_versions() -> str:
+-    """The registry labels of the versioned prompts a model-backed run uses.
+-
+-    `name@declared+digest`, semicolon separated, resolved at WRITE time so the
+-    stored value describes the prompt files in the running image rather than
+-    whatever is on disk when somebody later asks. The remark system prompt is
+-    inline in `bounded_remark` and therefore versioned by the image, not here;
+-    the column's own docstring says so, because a provenance field that
+-    silently claimed completeness would be worse than one that states its
+-    limit.
+-    """
+-    names = ("assessment_answer_scoring", "report_gap_probes")
+-    return "; ".join(f"{name}@{registry.version(name)}" for name in names)
+-
+-
+ async def bounded_remark(
+     session: AsyncSession | None,
+     name: str,
+@@ -1104,6 +1091,10 @@ class AssessmentState(TypedDict, total=False):
+     review_decided_by: Any
+     validation: dict[str, Any]
+     report_id: str
++    #: What produced the report's text (`assessment_pipeline.types`). Model
++    #: calls are recorded only once accepted, so `model_id` and
++    #: `prompt_version` never claim a call that did not happen.
++    provenance: ProvenanceRecorder
+ 
+ 
+ async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
+@@ -1399,6 +1390,12 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
+     for question in state.get("candidate_questions") or []:
+         questions_by_item.setdefault(str(question.competency_id), []).append(question)
+ 
++    # The run's recorder, set by `run_assessment`. A caller exercising this
++    # node alone gets a throwaway one: the direction that loses is only ever
++    # an under-claimed `model_id`, never a claimed call, and every row still
++    # carries its own `remark_provenance`.
++    provenance = state.get("provenance") or ProvenanceRecorder()
++
+     rows: list[dict[str, Any]] = []
+     ordinal_by_category: dict[str, int] = {}
+     for competency in state.get("competencies") or []:
+@@ -1423,7 +1420,7 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
+                 {
+                     **base,
+                     "score": UNANSWERED_SCORE,
+-                    "remark": _unanswered_remark(competency.name, PPI_REMARK_WORDS[0]),
++                    **siddhi_remarks.unanswered_remark(competency.name).row_fields(),
+                 }
+             )
+             continue
+@@ -1434,19 +1431,17 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
+             if ppi_interview.is_rubric_scored(competency.category)
+             else "the candidate's own answers probing this competency: "
+         )
+-        rows.append(
+-            {
+-                **base,
+-                "score": score,
+-                "remark": await bounded_remark(
+-                    state["session"],
+-                    competency.name,
+-                    f"{evidence_prefix}{combined[:800]}",
+-                    *PPI_REMARK_WORDS,
+-                    rating=grade_for_percent(score),
+-                ),
+-            }
++        # SIDDHI WRITES THE PROSE, and says how: a template that stood in for
++        # the model is `remark_provenance="template"` on the row and recorded
++        # on the run's provenance, so it can never read as generation.
++        remark = await siddhi_remarks.bounded_remark(
++            state["session"],
++            competency.name,
++            f"{evidence_prefix}{combined[:800]}",
++            rating=grade_for_percent(score),
++            provenance=provenance,
+         )
++        rows.append({**base, "score": score, **remark.row_fields()})
+ 
+     # Read AFTER every item is scored, so the pass sees the whole ledger it just
+     # wrote rather than a prefix of it. Nothing in `rows` is touched by the
+@@ -1459,6 +1454,9 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
+         "ppi_mode": mode,
+         "evidence_review": review,
+         "evidence_findings": findings,
++        # Where each answer lives, handed on so the citation trail Siddhi
++        # writes can carry durable locators rather than positions.
++        "answer_refs": locators,
+     }
+ 
+ 
+@@ -1560,23 +1558,14 @@ def _evidence_by_item(state: AssessmentState) -> dict[str, list[dict[str, str]]]
+     which is already a summary. Keyed by item NAME because that is what survives
+     onto the immutable report row.
+     """
+-    answers = state.get("answers") or answers_by_key(state.get("transcript"))
+-    by_id = {
+-        str(competency.id): competency.name
+-        for competency in state.get("competencies") or []
+-    }
+-    evidence: dict[str, list[dict[str, str]]] = {}
+-    for question in state.get("candidate_questions") or []:
+-        name = by_id.get(str(question.competency_id))
+-        if not name:
+-            continue
+-        answer = " ".join(answers.get(str(question.id), [])).strip()
+-        if not answer:
+-            continue
+-        evidence.setdefault(name, []).append(
+-            {"question": question.prompt, "answer": answer[:1500]}
+-        )
+-    return evidence
++    # Built by Siddhi's own input builder, which also carries the row
++    # addresses (question id, message ids) the citation trail's locators need.
++    return siddhi_inputs.evidence_by_item(
++        questions=state.get("candidate_questions") or [],
++        competencies=state.get("competencies") or [],
++        answers=state.get("answers") or answers_by_key(state.get("transcript")),
++        answer_records=state.get("answer_refs"),
++    )
+ 
+ 
+ # -- Evidence Confidence, and the two sections derived from it (0107) --------
+@@ -1852,153 +1841,6 @@ def contradicted_areas(claims: Sequence[Any]) -> list[str]:
+     return seen
+ 
+ 
+-def _gate_report(
+-    state: "AssessmentState",
+-    dimensions: list[dict[str, Any]],
+-    overall: str,
+-    gaps: dict[str, Any],
+-    validation: dict[str, Any],
+-) -> "verification_base.Verdict":
+-    """Project the assembled report into the shape Siddhi's gate reads.
+-
+-    An ADAPTER, deliberately, rather than reshaping the report to suit the gate.
+-    The gate is a contract about what a PRISM report must be true of; the report
+-    shape is what the renderers and the database already agreed on. Bending
+-    either to fit the other would couple two things that change for different
+-    reasons.
+-
+-    NEVER RAISES. A gate is a guard on the output, and a guard that can fail the
+-    run it was guarding turns a cosmetic defect into a lost report. On its own
+-    error it returns a passing verdict carrying a low finding, so the failure is
+-    recorded without being charged to the candidate -- the same direction every
+-    degradation path in this codebase takes, because the alternative is a report
+-    withheld for a reason nobody can see.
+-    """
+-    from app.services.agents import gates
+-    from app.services import verification as verification_base
+-    from app.services.siddhi import evidence as siddhi_evidence
+-
+-    try:
+-        evidence_by_item = _evidence_by_item(state)
+-        # THE REFS THE GATE READS, COMPUTED FROM THE SAME INDEX THE GENERATOR
+-        # USES. Dimension rows carry no `evidence_refs` key and never have, so
+-        # `row.get("evidence_refs") or []` handed the gate an empty list for
+-        # every claim: two or more rated items produced two or more
+-        # `claim_not_grounded` findings, the gate failed, and EVERY report with
+-        # more than one dimension was written `needs_human_review=True`. A gate
+-        # wired to something it cannot read does not report a wiring error, it
+-        # reports a blanket verdict, which is indistinguishable from the product
+-        # working exactly as intended and flagging everybody.
+-        #
+-        # ANSWER refs, and not everything the index holds. `grounding` falls
+-        # back to an item's `searched` record when nobody answered anything
+-        # about it, so it is never empty -- and handing THAT to the gate would
+-        # swing the defect the other way, into a `claim_not_grounded` check that
+-        # reads as enforced and can never fire. A claim resting only on the
+-        # record that a criterion was searched IS a weaker claim, and the gate
+-        # is exactly where that difference should be visible.
+-        index = siddhi_evidence.EvidenceIndex.build(
+-            items=[str(row["name"]) for row in dimensions if row.get("name")],
+-            exchanges={
+-                str(key): list(value or [])
+-                for key, value in evidence_by_item.items()
+-            },
+-        )
+-        graded = {row["name"]: row.get("grade") for row in dimensions if row.get("name")}
+-        # CLIENT-VISIBLE FIELDS ONLY in the sections. The first version of this
+-        # adapter passed the raw dimension rows, and the gate immediately
+-        # rejected the report with `number_reaches_client` pointing at
+-        # `evidence_refs[0]` -- an evidence locator like
+-        # `assessment_messages:1`. The gate was right to scan and wrong only
+-        # about what it was scanning: a locator is an internal audit handle that
+-        # exists so a grade can be traced, and it is never rendered. Refs travel
+-        # on `claims` below, which is where the gate expects to find them.
+-        def _rendered(row: dict[str, Any]) -> dict[str, Any]:
+-            return {
+-                "name": row.get("name"),
+-                "description": row.get("description"),
+-                "grade": row.get("grade"),
+-                "remark": row.get("remark"),
+-            }
+-
+-        payload = {
+-            "ai_score": [
+-                _rendered(r) for r in dimensions if r.get("category") == CATEGORY_MATCHING
+-            ],
+-            "ppi_assessment": [
+-                _rendered(r) for r in dimensions if r.get("category") != CATEGORY_MATCHING
+-            ],
+-            "validation": validation,
+-            # Compared field by field against what the candidate actually
+-            # submitted. Nothing scores Validation, so a report that reworded a
+-            # notice period has fabricated a fact in a document a client decides
+-            # from.
+-            "validation_source": dict(state.get("validation") or {}),
+-            # A LIST OF PROBES, because that is what the gate iterates. It was
+-            # passed the whole `gaps` DICT, so `_items` returned nothing and the
+-            # `grounded_in_answer` check never ran on a single probe -- the same
+-            # class of defect as the empty citations above, in the opposite
+-            # direction: a check wired to a shape it cannot read reports a clean
+-            # pass rather than an error.
+-            #
+-            # `grounded_in_answer` is the property this layer can actually
+-            # establish: a probe for an item with no recorded question and
+-            # answer cannot be grounded in one. Whether the specific WORDING
+-            # references the answer is decided upstream by
+-            # `siddhi.synthesis.compose`, which raises rather than flagging, so
+-            # duplicating it here would be a second, weaker copy of a rule that
+-            # already holds.
+-            "gap_analysis": [
+-                {
+-                    "id": f"{group.get('category')}.{entry.get('name')}.{index}",
+-                    "text": probe,
+-                    "grounded_in_answer": bool(
+-                        evidence_by_item.get(str(entry.get("name")))
+-                    ),
+-                }
+-                for group in (gaps.get("groups") or [])
+-                for entry in (group.get("items") or [])
+-                for index, probe in enumerate(entry.get("probes") or [])
+-            ],
+-            "overall_summary": overall,
+-            # Miti's grades and Siddhi's must be the same grades. They are read
+-            # from one place here, so this check only has teeth once the two
+-            # stages are genuinely separate; it is wired now so that the day
+-            # they are, the check already exists rather than being remembered.
+-            "grades": graded,
+-            "miti_grades": graded,
+-            "claims": [
+-                {
+-                    "id": row.get("name"),
+-                    "text": row.get("remark") or "",
+-                    "evidence_refs": list(
+-                        index.refs_for(
+-                            str(row.get("name")), kind=siddhi_evidence.KIND_ANSWER
+-                        )
+-                    ),
+-                }
+-                for row in dimensions
+-            ],
+-        }
+-        return gates.run_gate("siddhi", payload)
+-    except Exception:  # noqa: BLE001 -- see the docstring
+-        logger.warning(
+-            "functional_assessment.report_gate_failed link_id=%s",
+-            state["link"].id, exc_info=True,
+-        )
+-        return verification_base.verdict(
+-            "gate:siddhi",
+-            [
+-                verification_base.low(
+-                    "gate_unavailable",
+-                    "report",
+-                    "the report quality gate could not run",
+-                    "Investigate the gate error; the report itself was produced normally.",
+-                )
+-            ],
+-        )
+-
+-
+ async def synthesis_node(state: AssessmentState) -> dict:
+     """Join scoring and validation, write the report (spec §9).
+ 
+@@ -2088,16 +1930,18 @@ async def synthesis_node(state: AssessmentState) -> dict:
+     strong_names = ", ".join(
+         row["name"] for row in assessed if row["score"] >= PROBE_THRESHOLD
+     ) or "the areas evidenced in the conversation"
+-    overall = await bounded_remark(
++    overall_remark = await siddhi_remarks.bounded_remark(
+         session,
+         "this candidate's overall suitability",
+         (
+             "the candidate's demonstrated skills and behavioural competencies against this job. "
+             f"Stronger evidence: {strong_names}. Weaker or unevidenced: {weak_names}."
+         ),
+-        *PPI_REMARK_WORDS,
++        *siddhi_remarks.OVERALL_REMARK_WORDS,
+         rating=grade_for_percent(overall_score),
++        provenance=state["provenance"],
+     )
++    overall = overall_remark.text
+ 
+     validation = dict(state["validation"])
+ 
+@@ -2161,6 +2005,8 @@ async def synthesis_node(state: AssessmentState) -> dict:
+         evidence_by_item,
+         overall_summary=overall,
+         overall_grade=grade_for_percent(overall_score),
++        overall_remark_source=overall_remark.source,
++        provenance=state["provenance"],
+         validation=validation,
+         validation_points=points_section,
+         claim_evidence=claims_section,
+@@ -2198,7 +2044,27 @@ async def synthesis_node(state: AssessmentState) -> dict:
+     # There is no retry here on purpose. `agent_loop.run_loop` already bounds
+     # regeneration twice over and feeds a rejection back verbatim; a second
+     # retry mechanism at this layer would multiply attempts nobody is counting.
+-    gate_verdict = _gate_report(state, dimensions, overall, gaps, validation)
++    #
++    # TWO SOURCES, NOT ONE DICT UNDER TWO NAMES. The gate reads the grades the
++    # document RENDERED out of the stored trail, and compares them with the
++    # grades scoring decided, taken here from the scored rows BEFORE Siddhi
++    # rendered anything. Until the Vivekium release the same dict was passed
++    # as both and the comparison could not fire.
++    gate_verdict = siddhi_quality_gate.evaluate(
++        gap_analysis_json=gaps,
++        dimensions=dimensions,
++        overall_summary=overall,
++        validation=validation,
++        validation_source=dict(state.get("validation") or {}),
++        evidence_by_item=evidence_by_item,
++        miti_grades={
++            str(row["name"]): str(grade_for_percent(row["score"])) for row in assessed
++        },
++        miti_overall_grade=grade_for_percent(overall_score),
++    )
++    # Siddhi's own review verdict: withheld statements, unsupported citations
++    # and template text. Read from the section it wrote onto the row.
++    siddhi_review = (gaps.get("siddhi") or {}).get("review") or {}
+ 
+     # ── The evidence ledger's own verdict, beside the gate's ─────────────────
+     #
+@@ -2255,22 +2121,17 @@ async def synthesis_node(state: AssessmentState) -> dict:
+         # release needs no data restore. Reports written before today keep
+         # theirs and still render it.
+         "synthesized_at": datetime.now(timezone.utc),
+-        # PROVENANCE (0094). Written only for a model-backed run, resolved at
+-        # THIS moment rather than reconstructed later from deploy timestamps.
+-        # A deterministic-fallback report carries NULL for both, because no
+-        # model and no versioned prompt produced it, and recording one would
+-        # claim work that never happened -- the same honesty rule that flags
+-        # the fallback for human review five lines below.
+-        "model_id": (
+-            llm_providers.model_for("report_synthesis")
+-            if scoring_mode == MODE_LLM_RUBRIC
+-            else None
+-        ),
+-        "prompt_version": (
+-            _report_prompt_versions() if scoring_mode == MODE_LLM_RUBRIC else None
+-        ),
++        # PROVENANCE (0094), FROM WHAT ACTUALLY HAPPENED. It used to be stamped
++        # from `scoring_mode` alone, so a run whose every remark and probe fell
++        # back to a template still named the writing model and its prompts.
++        # The recorder is told about a model call only after the critic
++        # accepted its output, so a report no model wrote carries NULL for
++        # both, and templates are listed, never disguised.
++        "model_id": state["provenance"].model_id(),
++        "prompt_version": state["provenance"].prompt_version(),
+         "needs_human_review": (
+             not gate_verdict.passed
++            or bool(siddhi_review.get("needs_human_review"))
+             or uncertainty_review
+             or aggregate.needs_human_review
+             or bool(evaluation.unresolved_evidence)
+@@ -2310,6 +2171,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
+                 }
+                 for finding in gate_verdict.findings
+             ]
++            + list(siddhi_review.get("findings") or [])
+             + evidence_findings
+             + miti_findings
+         ) or None,
+@@ -2327,8 +2189,18 @@ async def synthesis_node(state: AssessmentState) -> dict:
+         for key, value in fields.items():
+             setattr(current, key, value)
+         await session.execute(delete(ReportDimension).where(ReportDimension.report_id == current.id))
++    # `remark_provenance` travels on the row for Siddhi's composer and is not a
++    # column until the grading phase's migration adds it; it is carried in the
++    # review findings (`template_output`) meanwhile, so nothing is lost.
+     session.add_all(
+-        [ReportDimension(tenant_id=state["job"].tenant_id, report_id=current.id, **row) for row in dimensions]
++        [
++            ReportDimension(
++                tenant_id=state["job"].tenant_id,
++                report_id=current.id,
++                **{key: value for key, value in row.items() if key != "remark_provenance"},
++            )
++            for row in dimensions
++        ]
+     )
+     await _write_evaluation(state, evaluation, gaps, current, fields["scoring_mode"])
+     await session.flush()
+@@ -2548,6 +2420,7 @@ async def run_assessment(
+                 "candidate_questions": questions,
+                 "competencies": competencies,
+                 "grade": grade,
++                "provenance": ProvenanceRecorder(),
+             }
+         )
+     return result["report_id"]
+diff --git a/backend/tests/test_prism_pdf_g4.py b/backend/tests/test_prism_pdf_g4.py
+new file mode 100644
+index 0000000..a84bbec
+--- /dev/null
++++ b/backend/tests/test_prism_pdf_g4.py
+@@ -0,0 +1,146 @@
++"""The PDF route runs gate G4: a flagged report is not downloaded until a person decides.
++
++PLAN-p5 P5-D7. `siddhi.delivery` had no production caller, so the PDF route
++rendered every report, flagged or not, straight through the renderer and G4
++guarded nothing a client received. The route now takes the clearance G4 mints
++and answers 409 with the server's own sentence while a flagged report has no
++recorded human disposition. The on-screen report is not gated (it is where
++that person reads the report), and that is asserted too.
++
++Reuses the retention-consent fixture: the download already needs the
++candidate's explicit Yes, and this file adds the second gate on top of it.
++"""
++from __future__ import annotations
++
++from datetime import datetime, timezone
++
++import pytest
++from fastapi import HTTPException
++
++from tests.test_retention_consent import (
++    _cleanup,
++    _factory_or_skip,
++    _Fixture,
++    _seed,
++    _staff_user,
++)
++
++
++async def _consent_and_flag(factory, fx: _Fixture) -> None:
++    from app.core.db import superadmin_scope
++    from app.models import Candidate
++    from app.models.assessment import FunctionalSkillsReport
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                candidate = await s.get(Candidate, fx.cand_id)
++                candidate.retain_assessment_consent = True
++                candidate.retain_assessment_consented_at = datetime.now(timezone.utc)
++                # A report is written once and never UPDATEd (PLAN-p5 P5-D12:
++                # the database refuses it), so a flagged report is WRITTEN
++                # flagged, the way the scoring run writes one. The seeded,
++                # unflagged row is replaced rather than edited in place, which
++                # keeps this test valid once the immutability trigger lands.
++                seeded = await s.get(FunctionalSkillsReport, fx.report_id)
++                summary, written_at = seeded.overall_summary, seeded.synthesized_at
++                await s.delete(seeded)
++                await s.flush()
++                s.add(
++                    FunctionalSkillsReport(
++                        id=fx.report_id,
++                        tenant_id=fx.tenant_id,
++                        job_id=fx.job_id,
++                        job_candidate_link_id=fx.link_id,
++                        grade="non_managerial",
++                        overall_summary=summary,
++                        validation_json={},
++                        synthesized_at=written_at,
++                        needs_human_review=True,
++                    )
++                )
++
++
++async def _download(factory, fx: _Fixture):
++    from app.api import assessments as assessments_mod
++    from app.core.db import superadmin_scope
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                return await assessments_mod.download_report_pdf(
++                    link_id=fx.link_id, user=_staff_user(fx), session=s
++                )
++
++
++@pytest.mark.asyncio
++async def test_a_flagged_report_without_a_disposition_is_refused_with_the_servers_sentence() -> None:
++    from app.api import assessments as assessments_mod
++    from app.core.db import superadmin_scope
++    from app.services.siddhi import delivery
++
++    engine, factory = await _factory_or_skip()
++    fx = _Fixture()
++    try:
++        await _seed(factory, fx)
++        await _consent_and_flag(factory, fx)
++        with pytest.raises(HTTPException) as caught:
++            await _download(factory, fx)
++        assert caught.value.status_code == 409
++        assert caught.value.detail == delivery.PDF_BLOCKED_REASON
++
++        # The on-screen report is NOT gated: it is where the decision is made.
++        async with factory() as s:
++            async with s.begin():
++                async with superadmin_scope(s):
++                    report_out = await assessments_mod.get_report(
++                        link_id=fx.link_id, user=_staff_user(fx), session=s
++                    )
++        assert report_out.overall_summary
++    finally:
++        await _cleanup(factory, fx)
++        await engine.dispose()
++
++
++@pytest.mark.asyncio
++async def test_a_recorded_human_disposition_releases_the_pdf() -> None:
++    from app.core.db import superadmin_scope
++    from app.models.hiring import ReviewDisposition
++
++    engine, factory = await _factory_or_skip()
++    fx = _Fixture()
++    try:
++        await _seed(factory, fx)
++        await _consent_and_flag(factory, fx)
++        async with factory() as s:
++            async with s.begin():
++                async with superadmin_scope(s):
++                    s.add(
++                        ReviewDisposition(
++                            tenant_id=fx.tenant_id,
++                            job_id=fx.job_id,
++                            link_id=fx.link_id,
++                            disposition="cleared",
++                            decided_by=fx.staff_user_id,
++                        )
++                    )
++        response = await _download(factory, fx)
++        assert response.media_type == "application/pdf"
++        assert response.body.startswith(b"%PDF")
++    finally:
++        await _cleanup(factory, fx)
++        await engine.dispose()
++
++
++def test_the_route_reaches_the_renderer_only_through_the_gated_path() -> None:
++    """Asserted over the source: the route names the gate and the gated
++    renderer, and never the raw renderer."""
++    import inspect
++
++    from app.api import assessments as assessments_mod
++
++    source = inspect.getsource(assessments_mod.download_report_pdf)
++    assert "delivery.gate_delivery(" in source
++    assert "delivery.prism_pdf(" in source
++    assert "render_report_pdf" not in source
++    assert source.index("gate_delivery(") < source.index("prism_pdf(")
+diff --git a/backend/tests/test_prism_withheld_alarm.py b/backend/tests/test_prism_withheld_alarm.py
+new file mode 100644
+index 0000000..a521b51
+--- /dev/null
++++ b/backend/tests/test_prism_withheld_alarm.py
+@@ -0,0 +1,77 @@
++"""The alarm on a withheld PRISM statement counts the line Siddhi actually writes.
++
++PLAN-p5 P5-D8: an uncited statement no longer fails the scoring task; it is
++withheld, the report is flagged, and `prism.statement_withheld_for_review` is
++logged at ERROR "which a CloudWatch metric filter and alarm watch". That second
++half is Terraform, and a metric filter over a log line is exactly the kind of
++coupling that breaks in silence: rename the token and the filter matches
++nothing, the metric reads zero, and the alarm reports a healthy system.
++
++So both halves are read here and compared, and the filter is checked against
++the log group the scoring task writes to (the on-demand agent, Route.ECS).
++"""
++from __future__ import annotations
++
++import re
++from pathlib import Path
++
++from app.services.siddhi import report as siddhi_report
++
++_MAIN_TF = (
++    Path(__file__).resolve().parents[2] / "infra" / "modules" / "observability" / "main.tf"
++)
++
++
++def _block(text: str, kind: str, name: str) -> str:
++    """The body of `resource "<kind>" "<name>" { ... }`, braces balanced."""
++    header = re.search(
++        rf'resource\s+"{re.escape(kind)}"\s+"{re.escape(name)}"\s*\{{', text
++    )
++    assert header is not None, f"{kind}.{name} is not declared in {_MAIN_TF}"
++    depth, position = 1, header.end()
++    while depth:
++        char = text[position]
++        depth += {"{": 1, "}": -1}.get(char, 0)
++        position += 1
++    return text[header.end() : position - 1]
++
++
++def test_the_metric_filter_matches_the_token_siddhi_logs() -> None:
++    body = _block(
++        _MAIN_TF.read_text(encoding="utf-8"),
++        "aws_cloudwatch_log_metric_filter",
++        "prism_statement_withheld",
++    )
++    pattern = re.search(r'pattern\s*=\s*"((?:[^"\\]|\\.)*)"', body)
++    assert pattern is not None
++    # The quoted-term form: the whole token, dots included, as one term.
++    assert pattern.group(1) == f'\\"{siddhi_report.WITHHELD_LOG_EVENT}\\"'
++
++
++def test_the_filter_reads_the_log_group_the_scoring_task_writes_to() -> None:
++    from app.workers import registry
++
++    assert registry.resolve("pickready.run_functional_assessment").route is registry.Route.ECS
++    body = _block(
++        _MAIN_TF.read_text(encoding="utf-8"),
++        "aws_cloudwatch_log_metric_filter",
++        "prism_statement_withheld",
++    )
++    assert re.search(r"log_group_name\s*=\s*var\.agent_log_group_name\b", body)
++
++
++def test_one_withheld_statement_pages_somebody() -> None:
++    body = _block(
++        _MAIN_TF.read_text(encoding="utf-8"),
++        "aws_cloudwatch_metric_alarm",
++        "prism_statement_withheld",
++    )
++    assert re.search(
++        r"metric_name\s*=\s*aws_cloudwatch_log_metric_filter\.prism_statement_withheld\.",
++        body,
++    )
++    assert re.search(r"threshold\s*=\s*0\b", body)
++    assert re.search(r'comparison_operator\s*=\s*"GreaterThanThreshold"', body)
++    assert re.search(r"alarm_actions\s*=\s*\[var\.alarm_topic_arn\]", body)
++    # Words only in the description an operator reads; no em dash.
++    assert chr(8212) not in body
+diff --git a/backend/tests/test_report_gate_wiring.py b/backend/tests/test_report_gate_wiring.py
+index 8003461..9816804 100644
+--- a/backend/tests/test_report_gate_wiring.py
++++ b/backend/tests/test_report_gate_wiring.py
+@@ -9,39 +9,55 @@ RUNS BEFORE PERSISTENCE. A gate that runs afterwards has already let the report
+ reach the candidate table, and a recruiter who opens it in the next thirty
+ seconds sees an unmarked document.
+ 
+-CANNOT FAIL THE RUN. The report still ships when the gate rejects it, marked.
+-Refusing to write one would take the product's whole output away over what may
+-be a single ungrounded phrase, leaving the recruiter with nothing instead of
+-something imperfect they can judge.
++CANNOT FAIL THE RUN, AND CANNOT PASS UNCHECKED. The report still ships when the
++gate rejects it, marked. A gate that CRASHES returns a failing verdict
++(`gate_unavailable`), never the passing one the old adapter returned.
++
++The gate itself is `siddhi.quality_gate.evaluate`, which replaced the
++orchestrator's `_gate_report` adapter in the Vivekium release: that adapter
++passed one dict as both `grades` and `miti_grades`, so the grade comparison
++could never fire (`tests/test_siddhi_grade_check_has_teeth.py`).
+ """
++import asyncio
+ import inspect
+ 
+ from app.services import functional_assessment as fa
+ from app.services import verification
++from app.services.siddhi import quality_gate
++from app.services.siddhi import report as siddhi_report
+ 
+ 
+ def test_the_gate_runs_before_the_report_row_is_touched():
+     """Ordering asserted on the source, because the failure is an ordering one
+     and a passing end state cannot distinguish the two orders."""
+     source = inspect.getsource(fa.synthesis_node)
+-    gate_at = source.index("_gate_report(")
++    gate_at = source.index("siddhi_quality_gate.evaluate(")
+     select_at = source.index("select(FunctionalSkillsReport)")
+     assert gate_at < select_at, "the gate must run before the report is loaded or written"
+ 
+ 
+-def test_the_verdict_is_written_onto_the_row():
++def test_the_gate_reads_two_sources_not_one_dict_twice():
++    """The regression this release fixed: the grades the document states come
++    from the stored trail inside the gate; Miti's grades come from the scored
++    rows. The call must not hand the gate the same mapping twice."""
++    source = inspect.getsource(fa.synthesis_node)
++    call = source[source.index("siddhi_quality_gate.evaluate(") :][:900]
++    assert "gap_analysis_json=gaps" in call
++    assert "miti_grades=" in call
++    assert '"grades": graded' not in source
++    assert '"miti_grades": graded' not in source
++
++
++def test_the_verdict_and_siddhis_review_are_written_onto_the_row():
+     """A log line is invisible to the one person who acts on the document.
+ 
+-    The assertion is on the FLAG BEING SET FROM THE VERDICT, not on the exact
+-    expression. The expression legitimately grows: a failing gate is one reason
+-    to flag a report and the evidence ledger's own uncertainty is another, and
+-    the day a third is added this test must not fail for having memorised the
+-    line. What it must still catch is the verdict being dropped out of it,
+-    which is the change that would leave a rejected report reading as clean.
++    The assertion is on the FLAG BEING SET FROM BOTH VERDICTS, not on the exact
++    expression, which legitimately grows.
+     """
+     source = inspect.getsource(fa.synthesis_node)
+     flag = source[source.index('"needs_human_review"') :][:400]
+     assert "gate_verdict.passed" in flag
++    assert 'siddhi_review.get("needs_human_review")' in flag
+     assert '"review_findings_json"' in source
+ 
+ 
+@@ -49,27 +65,56 @@ def test_the_stored_findings_carry_no_report_prose():
+     """A finding's `detail` can quote the report, and this column is read from
+     far more places than the report itself."""
+     source = inspect.getsource(fa.synthesis_node)
+-    stored = source[source.index('"review_findings_json"') : source.index('"review_findings_json"') + 600]
++    stored = source[source.index('"review_findings_json"') : source.index('"review_findings_json"') + 700]
+     assert "finding.severity" in stored
+     assert "finding.issue" in stored
+     assert "finding.detail" not in stored, "a finding's detail can quote the report"
+ 
+ 
++def test_provenance_comes_from_the_recorder_not_the_scoring_mode():
++    """`model_id` used to be stamped whenever the scoring mode was the model
++    one, including on a run whose every remark fell back to a template."""
++    source = inspect.getsource(fa.synthesis_node)
++    assert '"model_id": state["provenance"].model_id()' in source
++    assert '"prompt_version": state["provenance"].prompt_version()' in source
++    assert "model_for(" not in source
++
++
++def _composed(rows, exchanges, groups=()):
++    return asyncio.run(
++        siddhi_report.compose_prism(
++            dimensions=rows,
++            evidence_by_item=exchanges,
++            gap_groups=list(groups),
++            embed=None,
++        )
++    )
++
++
++def _evaluate(rows, exchanges, *, groups=(), validation=None, source=None, miti=None):
++    composed = _composed(rows, exchanges, groups)
++    return quality_gate.evaluate(
++        gap_analysis_json={"groups": list(groups), "siddhi": composed.siddhi_namespace()},
++        dimensions=rows,
++        overall_summary="overall remark",
++        validation=validation or {},
++        validation_source=source or {},
++        evidence_by_item=exchanges,
++        miti_grades=miti if miti is not None else {row["name"]: row["grade"] for row in rows},
++        miti_overall_grade=None,
++    )
++
++
++PYTHON = {"name": "Python", "category": "must_have", "grade": "Matching", "remark": "Wrote the ingest path."}
++PYTHON_EXCHANGE = {"Python": [{"question": "The ingest path?", "answer": "I wrote the ingest path."}]}
++
++
+ def test_a_clean_report_is_not_flagged():
+-    verdict = fa._gate_report(
+-        {"link": _Link(), "validation": {"notice_period": "30 days"}},
+-        [
+-            {
+-                "name": "Python",
+-                "category": "must_have",
+-                "grade": "Matching",
+-                "remark": "x",
+-                "evidence_refs": ["assessment_messages:1"],
+-            }
+-        ],
+-        "overall remark",
+-        {"groups": []},
+-        {"notice_period": "30 days"},
++    verdict = _evaluate(
++        [PYTHON],
++        PYTHON_EXCHANGE,
++        validation={"notice_period": "30 days"},
++        source={"notice_period": "30 days"},
+     )
+     assert verdict.passed, [f.as_dict() for f in verdict.findings]
+ 
+@@ -78,47 +123,20 @@ def test_a_reworded_validation_field_is_caught():
+     """THE case the gate exists for. Nothing scores Validation, so a report that
+     reworded a notice period has fabricated a fact in a document a client makes
+     a decision from."""
+-    verdict = fa._gate_report(
+-        {"link": _Link(), "validation": {"notice_period": "90 days"}},
+-        [
+-            {
+-                "name": "Python",
+-                "category": "must_have",
+-                "grade": "Matching",
+-                "remark": "x",
+-                "evidence_refs": ["assessment_messages:1"],
+-            }
+-        ],
+-        "overall remark",
+-        {"groups": []},
+-        {"notice_period": "about three months"},
++    verdict = _evaluate(
++        [PYTHON],
++        PYTHON_EXCHANGE,
++        validation={"notice_period": "about three months"},
++        source={"notice_period": "90 days"},
+     )
+     assert not verdict.passed
+-    assert any("validation" in f.location for f in verdict.findings), [
+-        f.as_dict() for f in verdict.findings
+-    ]
+-
+-
+-def _ungrounded(name: str) -> dict:
+-    return {
+-        "name": name,
+-        "category": "behavioural",
+-        "grade": "Highly Matching",
+-        "remark": "Led the team decisively.",
+-        "evidence_refs": [],
+-    }
++    assert any("validation" in f.location for f in verdict.findings)
+ 
+ 
+ def _gate_claims(*names: str) -> "verification.Verdict":
+-    """Run the gate on ungrounded claims DIRECTLY, not through the adapter.
+-
+-    The severity policy is the gate's, and since Siddhi went live the adapter
+-    can no longer produce its input: `synthesis.evidence_refs_for` mints a
+-    `searched` record for every rated item, so a claim about an item on the
+-    report always carries at least that. The policy still has to hold for a
+-    caller that hands the gate a claim with nothing behind it, and this is where
+-    it is now exercised.
+-    """
++    """Run the gate on ungrounded claims DIRECTLY. The severity policy is the
++    gate's, and it has to hold for a caller that hands the gate a claim with
++    nothing behind it."""
+     from app.services.agents import gates
+ 
+     return gates.run_gate(
+@@ -141,9 +159,6 @@ def _gate_claims(*names: str) -> "verification.Verdict":
+ 
+ 
+ def test_one_ungrounded_claim_is_recorded_without_failing_the_report():
+-    """The severity policy in `verification/base` is deliberate and this pins
+-    the quiet half of it: one medium finding is worth telling the next attempt
+-    about and is not worth discarding an otherwise sound report over."""
+     verdict = _gate_claims("Leadership")
+     assert verdict.passed
+     assert any(f.issue == "claim_not_grounded" for f in verdict.findings)
+@@ -154,52 +169,11 @@ def test_two_ungrounded_claims_do_fail_the_report():
+     assert not _gate_claims("Leadership", "Ownership").passed
+ 
+ 
+-class _Competency:
+-    def __init__(self, name: str) -> None:
+-        self.id = f"competency-{name}"
+-        self.name = name
+-
+-
+-class _Question:
+-    def __init__(self, competency: _Competency) -> None:
+-        self.id = f"question-{competency.name}"
+-        self.competency_id = competency.id
+-        self.prompt = f"Walk me through your work on {competency.name}."
+-
+-
+-def _answered_state(name: str) -> dict:
+-    """A state where exactly one competency actually has an answer behind it."""
+-    competency = _Competency(name)
+-    question = _Question(competency)
+-    return {
+-        "link": _Link(),
+-        "validation": {},
+-        "competencies": [competency],
+-        "candidate_questions": [question],
+-        "answers": {question.id: ["I rebuilt the ingest path myself over two sprints."]},
+-    }
+-
+-
+-def test_the_adapter_hands_the_gate_the_refs_siddhi_actually_minted(monkeypatch):
+-    """THE REGRESSION THIS PART OF THE FILE EXISTS TO PIN.
+-
+-    A dimension row carries no `evidence_refs` key and never has, so the
+-    adapter's `row.get("evidence_refs") or []` gave the gate an empty list for
+-    every claim. Two rated items produced two `claim_not_grounded` findings, the
+-    gate failed, and EVERY report with more than one dimension was written
+-    `needs_human_review=True`. A check wired to something it cannot read does
+-    not report a wiring error; it reports a blanket verdict, which is
+-    indistinguishable from the product working and flagging everybody.
+-
+-    The refs now come from Siddhi's own index, and they are the ANSWER refs
+-    rather than everything the index holds. That distinction is deliberate and
+-    is the reason this test asserts BOTH directions below: a claim resting only
+-    on the record that a criterion was searched IS a weaker claim, so
+-    `claim_not_grounded` has to stay able to fire, or the fix would swing the
+-    defect the other way into a check that reads as enforced and never is.
+-    """
++def test_the_gate_reads_the_answer_refs_from_the_stored_trail(monkeypatch):
++    """A claim about an answered item arrives with that item's ANSWER refs, read
++    from the trail the report stores; a claim resting only on the record that
++    it was searched arrives with none, so `claim_not_grounded` can still fire."""
+     from app.services.agents import gates
+-    from app.services.siddhi import evidence as siddhi_evidence
+ 
+     seen: dict[str, object] = {}
+     real = gates.run_gate
+@@ -209,111 +183,44 @@ def test_the_adapter_hands_the_gate_the_refs_siddhi_actually_minted(monkeypatch)
+         return real(name, payload)
+ 
+     monkeypatch.setattr(gates, "run_gate", _capture)
+-    verdict = fa._gate_report(
+-        _answered_state("Leadership"),
+-        [_ungrounded("Leadership")],
+-        "overall remark",
+-        {"groups": []},
+-        {},
+-    )
+-    assert not any(f.issue == "claim_not_grounded" for f in verdict.findings), [
+-        f.as_dict() for f in verdict.findings
+-    ]
++    unanswered = {"name": "Leadership", "category": "behavioural", "grade": "Matching", "remark": "x"}
++    _evaluate([PYTHON, unanswered], PYTHON_EXCHANGE)
++    claims = {claim["id"]: claim for claim in seen["payload"]["claims"]}  # type: ignore[index]
++    assert claims["Python"]["evidence_refs"] == ["answer:python:0"]
++    assert claims["Leadership"]["evidence_refs"] == []
+ 
+-    # Asserted against the payload the gate actually received, and compared to
+-    # Siddhi's own index rather than to a literal, so this keeps holding
+-    # whichever node kinds the adapter chooses to expose. What it cannot survive
+-    # is a revert to `row.get("evidence_refs")`: that key does not exist on a
+-    # dimension row, so the claim would arrive with nothing while the index
+-    # plainly holds an answer node for the same item.
+-    index = siddhi_evidence.EvidenceIndex.build(
+-        items=["Leadership"],
+-        exchanges={
+-            "Leadership": [
+-                {
+-                    "question": "Walk me through your work on Leadership.",
+-                    "answer": "I rebuilt the ingest path myself over two sprints.",
+-                }
+-            ]
+-        },
+-    )
+-    claim = seen["payload"]["claims"][0]  # type: ignore[index]
+-    assert claim["id"] == "Leadership"
+-    assert claim["evidence_refs"]
+-    assert set(claim["evidence_refs"]) <= set(index.refs_for("Leadership"))
+-
+-
+-def test_the_adapter_hands_the_gate_a_list_of_probes_it_can_iterate():
+-    """The same defect class in the opposite direction. The whole `gaps` DICT
+-    was passed where the gate iterates a LIST, so `grounded_in_answer` never ran
+-    on a single probe and the section reported a clean pass rather than an
+-    error."""
+-    verdict = fa._gate_report(
+-        {"link": _Link(), "validation": {}},
+-        [_ungrounded("Leadership")],
+-        "overall remark",
++
++def test_the_gate_is_handed_a_list_of_probes_it_can_iterate():
++    """The whole `gaps` DICT was once passed where the gate iterates a LIST, so
++    `grounded_in_answer` never ran on a single probe."""
++    groups = [
+         {
+-            "groups": [
+-                {
+-                    "category": "behavioural",
+-                    "items": [
+-                        {"name": "Leadership", "probes": ["Walk me through the call."]}
+-                    ],
+-                }
+-            ]
+-        },
+-        {},
+-    )
+-    # No exchange was recorded for Leadership, so the probe cannot be grounded
+-    # in an answer and the gate says so. The finding is the proof the check ran.
+-    assert any(f.issue == "generic_gap_probe" for f in verdict.findings), [
+-        f.as_dict() for f in verdict.findings
++            "category": "behavioural",
++            "items": [{"name": "Leadership", "probes": ["Walk me through the call."]}],
++        }
+     ]
++    leadership = {"name": "Leadership", "category": "behavioural", "grade": "Matching", "remark": "x"}
++    verdict = _evaluate([leadership], {}, groups=groups)
++    assert any(f.issue == "generic_gap_probe" for f in verdict.findings)
+ 
+ 
+ def test_an_evidence_locator_is_not_mistaken_for_a_number_a_client_reads():
+-    """Found by the gate itself while this adapter was being written. The first
+-    version passed raw dimension rows and was rejected with
+-    `number_reaches_client` pointing at `assessment_messages:1` -- an internal
+-    audit handle that exists so a grade can be traced and is never rendered.
+-    The sections now carry client-visible fields only."""
+-    verdict = fa._gate_report(
+-        {"link": _Link(), "validation": {}},
+-        [
+-            {
+-                "name": "Python",
+-                "category": "must_have",
+-                "grade": "Matching",
+-                "remark": "x",
+-                "evidence_refs": ["assessment_messages:1", "profiles:42#line7"],
+-            }
+-        ],
+-        "overall remark",
+-        {"groups": []},
+-        {},
+-    )
+-    assert not any(f.issue == "number_reaches_client" for f in verdict.findings), [
+-        f.as_dict() for f in verdict.findings
+-    ]
+-
+-
+-def test_a_broken_gate_never_costs_the_report():
+-    """A guard that can fail the run it guards turns a cosmetic defect into a
+-    lost report."""
+-    verdict = fa._gate_report(_Exploding(), [], "", {}, {})
+-    assert verdict.passed
+-    assert any(f.issue == "gate_unavailable" for f in verdict.findings)
+-
++    """The sections carry client-visible fields only; a locator is an audit
++    handle that exists so a grade can be traced and is never rendered."""
++    row = dict(PYTHON, evidence_refs=["assessment_messages:1", "profiles:42#line7"])
++    verdict = _evaluate([row], PYTHON_EXCHANGE)
++    assert not any(f.issue == "number_reaches_client" for f in verdict.findings)
+ 
+-class _Link:
+-    id = "00000000-0000-0000-0000-000000000001"
+ 
++def test_a_broken_gate_flags_the_report_instead_of_passing_it(monkeypatch):
++    """The old adapter returned a PASSING verdict on its own error. A gate that
++    cannot run has checked nothing."""
++    from app.services.agents import gates
+ 
+-class _Exploding(dict):
+-    def __getitem__(self, key):
+-        if key == "link":
+-            return _Link()
+-        raise RuntimeError("state is unusable")
++    def _broken(name, payload):
++        raise TypeError("state is unusable")
+ 
+-    def get(self, key, default=None):
+-        raise RuntimeError("state is unusable")
++    monkeypatch.setattr(gates, "run_gate", _broken)
++    verdict = _evaluate([PYTHON], PYTHON_EXCHANGE)
++    assert not verdict.passed
++    assert [f.issue for f in verdict.findings] == ["gate_unavailable"]
+diff --git a/backend/tests/test_report_provenance.py b/backend/tests/test_report_provenance.py
+index b50fca5..810d90d 100644
+--- a/backend/tests/test_report_provenance.py
++++ b/backend/tests/test_report_provenance.py
+@@ -27,15 +27,48 @@ def test_the_prompt_versions_are_real_registry_labels() -> None:
+     """Each label must resolve through the registry, in name@declared+digest
+     form, so the stored value describes the prompt files in the running image
+     rather than a string somebody typed once."""
+-    value = fa._report_prompt_versions()
++    from app.services.assessment_pipeline.types import ProvenanceRecorder
++
++    recorder = ProvenanceRecorder()
++    recorder.model_call("report_synthesis", "report_gap_probes")
++    recorder.model_call("report_synthesis", "report_gap_probes")
++    value = recorder.prompt_version()
+     parts = value.split("; ")
+-    assert len(parts) == 2, value
++    assert len(parts) == 1, "a repeated call is recorded once"
+     for part in parts:
+         name, _, version = part.partition("@")
+         assert version == registry.version(name), part
+         assert re.fullmatch(r"\d+\+[0-9a-f]+", version), part
+ 
+ 
++def test_a_run_with_no_accepted_model_call_claims_no_model() -> None:
++    """THE FALLBACK DIRECTION. Templates are recorded as templates and name no
++    model and no prompt, so a report no model wrote stores NULL for both."""
++    from app.services.assessment_pipeline.types import ProvenanceRecorder
++
++    recorder = ProvenanceRecorder()
++    recorder.template("remark:Distributed Systems")
++    recorder.template("probes:Kafka")
++    assert recorder.model_id() is None
++    assert recorder.prompt_version() is None
++    assert recorder.as_json() == {
++        "models": [],
++        "prompts": [],
++        "templates": ["remark:Distributed Systems", "probes:Kafka"],
++    }
++
++
++def test_the_report_row_takes_its_provenance_from_the_recorder() -> None:
++    """Asserted over the source, the way this suite pins write-site rules. The
++    columns used to be stamped from the scoring mode, so a run whose every
++    remark fell back to a template still named the writing model."""
++    import inspect
++
++    source = inspect.getsource(fa.synthesis_node)
++    assert '"model_id": state["provenance"].model_id()' in source
++    assert '"prompt_version": state["provenance"].prompt_version()' in source
++
++
+ def test_the_model_id_comes_from_the_closed_mapping() -> None:
+     """The value written is resolved through `model_for`, so a report can only
+     ever name a model the closed mapping actually routes to. The mapping is
+@@ -45,30 +78,6 @@ def test_the_model_id_comes_from_the_closed_mapping() -> None:
+     )
+ 
+ 
+-def test_provenance_is_gated_on_the_model_backed_mode_in_source() -> None:
+-    """Asserted over the source, the way this suite pins write-site rules.
+-
+-    The condition that guards `model_id` must be the same comparison that
+-    guards `needs_human_review`'s fallback arm: equality with the ONE
+-    known-good mode, never inequality with a list of bad ones, so a future
+-    third scoring mode defaults to honest NULL provenance rather than to a
+-    claimed model.
+-    """
+-    import inspect
+-
+-    source = inspect.getsource(fa)
+-    assert re.search(
+-        r'"model_id":\s*\(\s*\n?\s*llm_providers\.model_for\("report_synthesis"\)'
+-        r"\s*\n?\s*if scoring_mode == MODE_LLM_RUBRIC",
+-        source,
+-    ), "model_id must be written only for a model-backed run"
+-    assert re.search(
+-        r'"prompt_version":\s*\(\s*\n?\s*_report_prompt_versions\(\)'
+-        r"\s*if scoring_mode == MODE_LLM_RUBRIC",
+-        source,
+-    ), "prompt_version must be written only for a model-backed run"
+-
+-
+ def test_the_columns_exist_and_are_nullable() -> None:
+     """Nullable is load-bearing: every pre-0094 row and every fallback run is
+     an honest NULL, and a NOT NULL constraint would force a lie into both."""
+diff --git a/infra/modules/observability/main.tf b/infra/modules/observability/main.tf
+index d351166..62ba749 100644
+--- a/infra/modules/observability/main.tf
++++ b/infra/modules/observability/main.tf
+@@ -390,6 +390,48 @@ resource "aws_cloudwatch_metric_alarm" "redis_evictions" {
+   tags          = merge(var.tags, { CacheCluster = each.value })
+ }
+ 
++# ── A PRISM statement withheld for human review (PLAN-p5 P5-D8, WP5-C) ──────
++#
++# Siddhi no longer fails the scoring task over a statement it cannot cite: it
++# WITHHOLDS the statement, writes the report flagged for review, and logs
++# `prism.statement_withheld_for_review` at ERROR from the scoring task, which
++# runs on the on-demand agent. The flag reaches a person only when somebody
++# opens the report; this alarm is what reaches one before then. A withheld
++# statement is a writer that produced a sentence it could not trace, so ONE is
++# worth a page: it is either a prompt regression or a wiring defect, and both
++# repeat on every report until fixed. The token is `siddhi.report.
++# WITHHELD_LOG_EVENT`, and `tests/test_prism_withheld_alarm.py` pins the two
++# together, because renaming one without the other stops the count in silence.
++
++resource "aws_cloudwatch_log_metric_filter" "prism_statement_withheld" {
++  name           = "${local.name}-prism-statement-withheld"
++  log_group_name = var.agent_log_group_name
++  pattern        = "\"prism.statement_withheld_for_review\""
++
++  metric_transformation {
++    name          = "PrismStatementWithheld"
++    namespace     = "ReadyPick/${var.environment}"
++    value         = "1"
++    default_value = "0"
++  }
++}
++
++resource "aws_cloudwatch_metric_alarm" "prism_statement_withheld" {
++  alarm_name          = "${local.name}-prism-statement-withheld"
++  alarm_description   = "A PRISM Report statement could not be traced to the candidate's evidence and was withheld; the report was written flagged for human review. Read the report's review findings and the agent log line for the section and item."
++  namespace           = "ReadyPick/${var.environment}"
++  metric_name         = aws_cloudwatch_log_metric_filter.prism_statement_withheld.metric_transformation[0].name
++  statistic           = "Sum"
++  period              = 300
++  evaluation_periods  = 1
++  threshold           = 0
++  comparison_operator = "GreaterThanThreshold"
++  treat_missing_data  = "notBreaching"
++
++  alarm_actions = [var.alarm_topic_arn]
++  tags          = var.tags
++}
++
+ # ── One dashboard ────────────────────────────────────────────────────────────
+ #
+ # The five things above, on one page, so the first question during an incident
+
+======================== PART 2 (after merging wip/p5-e) ========================
+diff --git a/backend/app/services/functional_assessment.py b/backend/app/services/functional_assessment.py
+index 54e8602..78fcc8d 100644
+--- a/backend/app/services/functional_assessment.py
++++ b/backend/app/services/functional_assessment.py
+@@ -1853,8 +1853,10 @@ async def synthesis_node(state: AssessmentState) -> dict:
+     # an import cycle this module has already closed once: the full suite went
+     # green while a single test file went red, because pytest happened to
+     # initialise the other side first.
++    from app.services import evidence_retrieval
+     from app.services import verification as verification_base
+     from app.services.miti import live as miti_live
++    from app.services.siddhi import support as siddhi_support
+     from app.services.siddhi import synthesis as siddhi_synthesis
+ 
+     session = state["session"]
+@@ -2018,6 +2020,17 @@ async def synthesis_node(state: AssessmentState) -> dict:
+         # evidence under that grade came from (CR 23, 2026-09-22).
+         extra_nodes=claim_evidence.employment_nodes(employments)
+         + portable_evidence_nodes(state),
++        # THE SUPPORT CHECK'S THIRD LOOK, THROUGH THE TOOL LAYER. A statement
++        # its own citation does not support is looked up once in this
++        # application's other answers; the lookup can only lift it to `weak`.
++        # Siddhi never imports the retrieval entry point: it is handed here,
++        # bound to this tenant and this application, so the scope is fixed once.
++        passage_source=siddhi_support.statement_passage_source(
++            evidence_retrieval.support_passages_for_statement,
++            session,
++            tenant_id=state["job"].tenant_id,
++            link_id=state["link"].id,
++        ),
+     )
+ 
+     scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
+diff --git a/backend/tests/test_ai_reachability.py b/backend/tests/test_ai_reachability.py
+index d1de5a6..beeb850 100644
+--- a/backend/tests/test_ai_reachability.py
++++ b/backend/tests/test_ai_reachability.py
+@@ -108,6 +108,21 @@ LIVE: dict[str, str] = {
+         "as the scoring backfill. The conversation's per-answer call is wired by "
+         "the assessment phase."
+     ),
++    "app.services.evidence_retrieval": (
++        "PLAN-p5 WP5-E built it and WP5-C wired its first caller (Vivekium "
++        "release): functional_assessment.synthesis_node hands "
++        "support_passages_for_statement to Siddhi's support check through "
++        "siddhi.support.statement_passage_source. Vaada's and Miti's calls "
++        "(resume_passages_for_skill, project_evidence_for_candidate, "
++        "transcript_passages_for_skill) land with Phase 3 and WP5-B."
++    ),
++    "app.services.tools": (
++        "evidence_retrieval calls tools.executor.execute, so the capability "
++        "check, the stage policy and the tenant check run on the scoring path "
++        "before any row is read. Until the Vivekium release the package was "
++        "reachable only because rbac reads the agent constants, and it guarded "
++        "a path no route executed."
++    ),
+     "app.services.rag": (
+         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
+         "pickready.index_document and pickready.reconcile_context_index, which "
+@@ -123,21 +138,6 @@ LIVE: dict[str, str] = {
+ NOT_LIVE: dict[str, str] = {
+     "app.services.reasoning": "RPN-AI-UP-001 W5; reached only from eval scripts",
+     "app.services.orchestration": "RPN-AI-UP-001 W10.1; reached only from eval scripts",
+-    # AWAITING CALLERS, on purpose. PLAN-p5 WP5-E built the one Evidence RAG
+-    # entry point ahead of the agents that read it; nothing on the live path
+-    # imports it yet. When this fails, the wiring phase moves it to LIVE, and
+-    # `app.services.tools` leaves IMPORTED_BUT_NOT_EXERCISED in the same
+-    # change, because these calls are the first live `tools.execute` callers.
+-    "app.services.evidence_retrieval": (
+-        "PLAN-p5 WP5-E, awaiting callers. Phase 3 (Vaada, the dispatched "
+-        "question generation in assessment_questions/generate.py) calls "
+-        "resume_passages_for_skill per contract skill and "
+-        "project_evidence_for_candidate once, replacing its direct "
+-        "projects.context read; Phase 5 WP5-B/C (Miti items.evaluate_skill, "
+-        "before the model call) calls transcript_passages_for_skill with the "
+-        "skill's own answer ids excluded, and Siddhi's support check calls "
+-        "support_passages_for_statement"
+-    ),
+     "app.evaluation": (
+         "W7.4 requires this in the other direction too: nothing under "
+         "app/services may import app/evaluation, and no route or worker may "
+@@ -166,13 +166,13 @@ NOT_LIVE: dict[str, str] = {
+ #: about the entry point that would prove execution rather than about the
+ #: import graph. `ENTRY_POINTS_WITHOUT_CALLERS` below is the sharp version of
+ #: the same claim, and it is the one W2 has to change.
+-IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
+-    "app.services.tools": (
+-        "RPN-AI-UP-001 W3. Reachable only because rbac reads the agent "
+-        "constants. The capability check runs before the handler, which is the "
+-        "correct ordering, but it guards a path no route executes."
+-    ),
+-}
++#:
++#: EMPTY SINCE THE VIVEKIUM RELEASE: `tools` left it when Siddhi's support
++#: check became the first live `tools.execute` caller (see LIVE). Kept, like
++#: `ENTRY_POINTS_WITHOUT_CALLERS`, because it is the shape the next such
++#: finding needs, and its check iterates inside the body so an empty dict
++#: passes having checked everything there was rather than emitting a skip.
++IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {}
+ 
+ #: The behavioural half: a function that is the ONLY writer of a table and has
+ #: no caller. `(module, function)` -> the reason it currently has none.
+@@ -212,6 +212,24 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
+ #: defect: `services/rag` was importable from `api/admin` for its whole life
+ #: while `context_chunks` stayed empty in every environment.
+ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
++    ("app/services/siddhi/support.py", "statement_passage_source"): (
++        "app/services/functional_assessment.py synthesis_node (the grading "
++        "orchestrator after WP5-D). Without it the support check never looks "
++        "in the candidate's other answers, so a true statement pinned to the "
++        "wrong answer goes to review as unsupported and nobody is told where "
++        "the candidate actually said it."
++    ),
++    ("app/services/siddhi/delivery.py", "gate_delivery"): (
++        "app/api/assessments.py download_report_pdf (the report routes move to "
++        "api/assessment_reports.py with WP5-F). For its whole life before the "
++        "Vivekium release G4 had no production caller, so every flagged report "
++        "was downloadable while the gate read as enforced."
++    ),
++    ("app/services/siddhi/delivery.py", "prism_pdf"): (
++        "the same PDF route, with the clearance gate_delivery minted. A route "
++        "that called report_pdf.render_report_pdf directly would render a "
++        "flagged report with G4 never having run."
++    ),
+     ("app/services/rag/index.py", "index_document"): (
+         "app/workers/tasks.py, from pickready.index_document. Without a caller "
+         "the index is never written, and retrieval over an empty table returns "
+@@ -381,20 +399,25 @@ def test_a_package_recorded_as_dead_has_not_quietly_become_live(
+     )
+ 
+ 
+-@pytest.mark.parametrize("package", sorted(IMPORTED_BUT_NOT_EXERCISED))
+ def test_a_package_recorded_as_importable_but_unexercised_is_still_importable(
+-    package: str, reachable: dict[str, list[str]]
++    reachable: dict[str, list[str]]
+ ) -> None:
+     """The weaker claim, asserted so the stronger one below stays meaningful.
+ 
+     If one of these loses its import path entirely it has become genuinely
+     dead, which is a different fact from the one recorded here and belongs in
+-    NOT_LIVE. Asserting it keeps the two lists from silently swapping."""
+-    assert _hits(reachable, package), (
+-        f"{package} is no longer reachable at all. It was recorded as "
+-        f"importable but unexercised: {IMPORTED_BUT_NOT_EXERCISED[package]}\n"
+-        "Move it to NOT_LIVE, or restore the import."
+-    )
++    NOT_LIVE. Asserting it keeps the two lists from silently swapping.
++
++    Iterated inside the body, not parametrised: the dict is empty today, and a
++    parametrised test over an empty collection is a SKIPPED placeholder, which
++    the skip inventory then reports as undeclared (the reason
++    `test_every_function_recorded_as_uncalled_still_has_no_caller` gives)."""
++    for package, reason in sorted(IMPORTED_BUT_NOT_EXERCISED.items()):
++        assert _hits(reachable, package), (
++            f"{package} is no longer reachable at all. It was recorded as "
++            f"importable but unexercised: {reason}\n"
++            "Move it to NOT_LIVE, or restore the import."
++        )
+ 
+ 
+ def _callers_of(relative: str, function: str) -> list[str]:
+diff --git a/backend/tests/test_siddhi_support_wiring.py b/backend/tests/test_siddhi_support_wiring.py
+new file mode 100644
+index 0000000..5f9e7b1
+--- /dev/null
++++ b/backend/tests/test_siddhi_support_wiring.py
+@@ -0,0 +1,204 @@
++"""Siddhi's support check reaches the candidate's other answers through the tool layer.
++
++Lands with the wiring, once WP5-C (Siddhi) and WP5-E (`evidence_retrieval`)
++are both merged: before that the production seam had nothing real to bind, and
++a test that could only skip is not a check.
++
++  * the seam's keyword parameters exist on the real retrieval entry point, so
++    the wiring cannot drift from the function it names;
++  * the scoring orchestrator hands Siddhi exactly that function, bound to the
++    run's own session, tenant and application;
++  * END TO END against a real database, through the REAL executor, policy and
++    retriever: a remark pinned to the wrong answer is lifted to `weak` by the
++    answer that does support it, the stored verdict names that answer's chunk,
++    and the read model resolves it to the candidate's words;
++  * an agent without the grant is refused by the real executor, and that
++    refusal propagates through the seam rather than reading as "unavailable".
++"""
++from __future__ import annotations
++
++import ast
++import inspect
++import pathlib
++
++import pytest
++
++from app.services import evidence_retrieval
++from app.services.siddhi import report as siddhi_report
++from app.services.siddhi import support, trail
++
++from tests import rag_world
++
++BACKEND = pathlib.Path(__file__).resolve().parents[1]
++
++
++def test_the_seam_matches_the_retrieval_entry_points_signature() -> None:
++    parameters = inspect.signature(
++        evidence_retrieval.support_passages_for_statement
++    ).parameters
++    assert list(parameters)[0] == "session"
++    for name in ("tenant_id", "link_id", "statement"):
++        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
++    # The seam binds nothing else, so every other parameter must default.
++    for name, parameter in parameters.items():
++        if name not in {"session", "tenant_id", "link_id", "statement"}:
++            assert parameter.default is not inspect.Parameter.empty, name
++
++
++def test_the_orchestrator_hands_siddhi_the_retrieval_entry_point() -> None:
++    """Read from the source, because running `synthesis_node` needs a scored
++    application; what this pins is the ONE call and what it is bound to."""
++    source = (BACKEND / "app/services/functional_assessment.py").read_text(encoding="utf-8")
++    calls = [
++        node
++        for node in ast.walk(ast.parse(source))
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Attribute)
++        and node.func.attr == "build_gap_analysis"
++    ]
++    assert len(calls) == 1
++    [seam] = [kw.value for kw in calls[0].keywords if kw.arg == "passage_source"]
++    assert isinstance(seam, ast.Call)
++    assert isinstance(seam.func, ast.Attribute)
++    assert seam.func.attr == "statement_passage_source"
++    fetch = seam.args[0]
++    assert isinstance(fetch, ast.Attribute)
++    assert fetch.attr == "support_passages_for_statement"
++    assert isinstance(fetch.value, ast.Name) and fetch.value.id == "evidence_retrieval"
++    assert {kw.arg for kw in seam.keywords} == {"tenant_id", "link_id"}
++
++
++# ── End to end, against a real database ──────────────────────────────────────
++
++SKILL = "Streaming platform"
++
++#: Pinned to exchange 1 (a disagreement with an architect), which names no
++#: Kafka and no consumer offsets. Exchange 2 says exactly this.
++MISATTRIBUTED = "They migrated the consumer offsets ahead of the Kafka cutover."
++
++
++@pytest.fixture
++async def indexed(monkeypatch):
++    rag_world.disable_prefixes(monkeypatch)
++    engine, factory = await rag_world.factory_or_skip()
++    fx = rag_world.World()
++    await rag_world.seed(factory, fx)
++    await rag_world.index_all(factory, fx)
++    try:
++        yield factory, fx
++    finally:
++        await rag_world.cleanup(factory, fx)
++        await engine.dispose()
++
++
++def _rows() -> list[dict]:
++    return [
++        {
++            "category": "must_have",
++            "name": SKILL,
++            "grade": "Matching",
++            "remark": MISATTRIBUTED,
++        }
++    ]
++
++
++def _exchanges(fx) -> dict:
++    question, answer = rag_world.EXCHANGES[1]
++    return {
++        SKILL: [
++            {
++                "question": question,
++                "answer": answer,
++                "question_id": "",
++                "message_ids": [str(fx.answer_ids[1])],
++            }
++        ]
++    }
++
++
++async def _compose(session, fx):
++    return await siddhi_report.compose_prism(
++        dimensions=_rows(),
++        evidence_by_item=_exchanges(fx),
++        embed=None,
++        passage_source=support.statement_passage_source(
++            evidence_retrieval.support_passages_for_statement,
++            session,
++            tenant_id=fx.tenant_id,
++            link_id=fx.link_id,
++        ),
++    )
++
++
++async def test_a_misattributed_remark_is_lifted_by_the_answer_that_supports_it(
++    indexed,
++) -> None:
++    from app.core.db import superadmin_scope
++
++    factory, fx = indexed
++    chunks = {row.ordinal: row.id for row in await rag_world.chunk_rows(factory, fx.link_id)}
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                composed = await _compose(s, fx)
++
++    [(section, statement)] = [
++        pair for pair in composed.statements() if pair[1]["kind"] == "finding"
++    ]
++    verdict = statement["support"]
++    assert verdict["level"] == support.LEVEL_WEAK
++    assert verdict["reason"] == support.REASON_ELSEWHERE
++    assert verdict["passage_check"] == support.PASSAGE_FOUND
++    # The chunk that SAYS it (exchange 2), and not the one the remark cites.
++    assert f"context_chunks:{chunks[2]}" in verdict["passages"]
++    assert f"context_chunks:{chunks[1]}" not in verdict["passages"]
++    # Misattributed, not unsupported: marked, and not sent to review for it.
++    assert not composed.unsupported()
++    assert statement["text"] == MISATTRIBUTED
++
++    stored = {"groups": [], "siddhi": composed.siddhi_namespace()}
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                view = await trail.citation_view(
++                    s, stored, link_id=fx.link_id,
++                    chunk_source_ids=(fx.link_id, fx.profile_id),
++                )
++    [shown] = [entry for entry in view["statements"] if entry["kind"] == "finding"]
++    assert shown["support"] == support.SUPPORT_NOTES[support.REASON_ELSEWHERE]
++    supporting = [
++        entry for entry in shown["evidence"]
++        if entry["kind"] == trail.EVIDENCE_KIND_WORDS[trail.SUPPORTING_PASSAGE]
++    ]
++    assert supporting and "consumer offsets" in (supporting[0]["excerpt"] or "")
++
++
++async def test_an_agent_without_the_grant_is_refused_through_the_seam(indexed) -> None:
++    """A policy refusal is a wiring defect identical on every retry, so it
++    RAISES through the seam; recording it as `unavailable` would ship a lookup
++    that never ran."""
++    from app.core.db import superadmin_scope
++    from app.services.tools import permissions
++    from app.services.tools.errors import ToolPermissionError
++
++    factory, fx = indexed
++
++    async def _as_email_agent(session, **kwargs):
++        return await evidence_retrieval.support_passages_for_statement(
++            session, agent=permissions.AGENT_EMAIL, **kwargs
++        )
++
++    async with factory() as s:
++        async with s.begin():
++            async with superadmin_scope(s):
++                with pytest.raises(ToolPermissionError):
++                    await siddhi_report.compose_prism(
++                        dimensions=_rows(),
++                        evidence_by_item=_exchanges(fx),
++                        embed=None,
++                        passage_source=support.statement_passage_source(
++                            _as_email_agent, s,
++                            tenant_id=fx.tenant_id, link_id=fx.link_id,
++                        ),
++                    )

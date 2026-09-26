@@ -11,16 +11,14 @@ from app.services import functional_assessment as fa
 from app.services import gap_analysis
 from app.services import ppi
 from app.services import rating
+from app.services.assessment_pipeline.evidence import answers_by_key
+from app.services.assessment_pipeline.validation import validation_section
 from app.services.functional_assessment import (
-    _fallback_remark_25,
-    _fallback_remark_45,
-    _unanswered_remark,
-    answers_by_key,
-    assessment_graph,
     build_radar_charts,
     rating_label,
     word_count,
 )
+from app.services.siddhi import remarks as siddhi_remarks
 
 GRADES = ("non_managerial", "managerial", "leadership", "cxo")
 
@@ -149,201 +147,7 @@ def test_answers_are_grouped_by_question_key() -> None:
     assert grouped[competency_id] == ["B1", "B2"]
 
 
-def _competency(category: str, name: str, level: int = 82, ordinal: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), category=category, name=name,
-        description=f"What {name} measures.", required_level=level, ordinal=ordinal,
-    )
-
-
-def _question(competency, prompt: str, rubric: dict | None) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), competency_id=competency.id, prompt=prompt,
-        rubric_json=rubric, ordinal=1,
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_must_have_answer_is_scored_against_its_own_questions_rubric(
-    monkeypatch,
-) -> None:
-    """Spec §8: rubric-based for Must-have and Nice-to-have.
-
-    The rubric that reaches the scorer must be the one written FOR THE QUESTION
-    THE CANDIDATE WAS ASKED. That is the whole invariant that made generating a
-    technical question mid-conversation safe.
-    """
-    seen: list[str] = []
-
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        seen.append(blob)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 82, "band": "75_89"}'
-        return (
-            "Evidence from the candidate's own answer supports solid applied capability here, "
-            "naming the constraint they hit, the option they rejected and the outcome that "
-            "followed, which an interviewer should confirm with one further worked example."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "Python", 95)
-    question = _question(
-        competency,
-        "Explain GIL trade-offs.",
-        {"0_39": "none", "90_100": "exceptional GIL insight"},
-    )
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {
-            str(question.id): [
-                "The GIL serialises bytecode execution, so I used multiprocessing."
-            ]
-        },
-        "transcript": [],
-    })
-    assert out["ppi"][0]["score"] == 82
-    assert out["ppi"][0]["category"] == ppi.CATEGORY_MUST_HAVE
-    assert out["ppi_mode"] == "llm_rubric"
-    # The question's OWN rubric text reached the scorer.
-    assert any("exceptional GIL insight" in blob for blob in seen)
-
-
-@pytest.mark.asyncio
-async def test_a_behavioural_answer_is_judged_not_scored_against_a_stored_rubric(
-    monkeypatch,
-) -> None:
-    """Spec §8: judgement-based for Behavioural.
-
-    A behavioural item carries no rubric of its own, so the scorer must reach
-    for the shared judgement standard instead of skipping the answer.
-    """
-    seen: list[str] = []
-
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        seen.append(blob)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 71}'
-        return (
-            "The candidate describes a delivery they personally owned, naming the constraint "
-            "they hit, the option they rejected and why, and the outcome that followed. An "
-            "interviewer should press for a second example under different pressure."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-
-    competency = _competency(ppi.CATEGORY_BEHAVIOURAL, "Ownership", 82)
-    question = _question(competency, "Tell me about work you saw through.", None)
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {
-            str(question.id): [
-                "I owned the payments migration end to end and stayed on it until "
-                "the last consumer had cut over cleanly."
-            ]
-        },
-        "transcript": [],
-    })
-    assert out["ppi"][0]["score"] == 71
-    assert any("credible situation with clear personal action" in blob for blob in seen)
-
-
-@pytest.mark.asyncio
-async def test_an_unanswered_item_scores_low_and_says_so() -> None:
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "Kafka")
-    question = _question(competency, "Describe a Kafka design.", {})
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {"other": ["hello"]},
-        "transcript": [],
-    })
-    row = out["ppi"][0]
-    assert row["score"] == fa.UNANSWERED_SCORE < 40
-    assert "No substantive answer" in row["remark"]
-    assert 45 <= word_count(row["remark"]) <= 50
-
-
-@pytest.mark.asyncio
-async def test_scoring_falls_back_deterministically_when_llm_is_down(monkeypatch) -> None:
-    async def _boom(*a, **k):
-        raise RuntimeError("no providers")
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
-    competency = _competency(ppi.CATEGORY_MUST_HAVE, "SQL")
-    question = _question(competency, "Explain indexes.", {})
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": [competency],
-        "candidate_questions": [question],
-        "answers": {str(question.id): ["B-trees keep lookups logarithmic."]},
-        "transcript": [],
-    })
-    assert out["ppi_mode"] == "deterministic_fallback"
-    assert 0 <= out["ppi"][0]["score"] <= 100
-
-
-@pytest.mark.asyncio
-async def test_every_matrix_item_is_scored_in_report_order(monkeypatch) -> None:
-    async def _chat(role_hint, messages, **k):
-        blob = " ".join(m["content"] for m in messages)
-        if "scoring one assessment answer" in blob:
-            return '{"score": 68}'
-        return (
-            "The candidate's answers describe a specific delivery they personally owned, naming the constraint they hit, "
-            "the option they rejected and why, and the outcome that followed. An interviewer should press for a second "
-            "example to confirm the pattern holds under different pressure and a different team."
-        )
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    competencies = [
-        _competency(ppi.CATEGORY_MUST_HAVE, "Distributed systems", 95),
-        _competency(ppi.CATEGORY_NICE_TO_HAVE, "Observability", 67),
-        _competency(ppi.CATEGORY_BEHAVIOURAL, "Ownership", 82),
-    ]
-    questions = [
-        _question(row, f"Tell me about {row.name}.", {"0_39": "none", "90_100": "deep"})
-        for row in competencies
-    ]
-    # Real prose, not a placeholder. `services/answer_quality` refuses a
-    # non-answer before it can reach the rubric, so a single-character
-    # placeholder routes to the unanswered branch and scores UNANSWERED_SCORE.
-    answers = {
-        str(question.id): [
-            f"I owned the {competency.name.lower()} work on our payments platform "
-            "and drove it from design through to production rollout.",
-            "The hardest part was migrating live traffic without downtime, so we "
-            "shadowed reads for two weeks before cutting over.",
-        ]
-        for competency, question in zip(competencies, questions)
-    }
-    out = await fa.ppi_scoring_node({
-        "session": None,
-        "link": SimpleNamespace(id=uuid.uuid4()),
-        "competencies": competencies,
-        "candidate_questions": questions,
-        "answers": answers,
-        "transcript": [],
-    })
-    assert len(out["ppi"]) == 3
-    assert [row["category"] for row in out["ppi"]] == list(ppi.CATEGORIES)
-    assert all(row["score"] == 68 for row in out["ppi"])
-    # The job's requirement travels onto the report row, so the radar can plot
-    # both shapes even after the job's matrix is later edited.
-    assert [row["required_level"] for row in out["ppi"]] == [95, 67, 82]
-    # Every PPI remark is 45-50 words (spec §9.5).
-    assert all(45 <= word_count(row["remark"]) <= 50 for row in out["ppi"])
+# Item scoring moved to Miti in WP5-B: see tests/test_miti_items.py.
 
 
 # ── Validation: captured, never scored (spec §7) ─────────────────────────────
@@ -371,14 +175,14 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
         "document_readiness": "All documents ready",
         "role_interest": "I want to work on larger distributed systems.",
     }
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=submitted
             ),
-            "session": _CandidateSession(),
-        }
-    )
+        )
+    }
     value = out["validation"]
     assert value["captured"] is True
     for key, expected in submitted.items():
@@ -402,14 +206,14 @@ async def test_validation_node_also_carries_the_full_profile_questionnaire() -> 
             "bgv_consent": "Yes, I consent to a Background Verification check",
         }
     )
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(candidate),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
             ),
-            "session": _CandidateSession(candidate),
-        }
-    )
+        )
+    }
     fields = out["validation"]["fields"]
     # All 38 profile items appear, not just the 6 application ones.
     assert len(fields) == 6 + len(ALL_FIELDS)
@@ -432,14 +236,14 @@ async def test_validation_node_also_carries_the_full_profile_questionnaire() -> 
 async def test_validation_node_survives_a_missing_candidate_row() -> None:
     """A deleted or unlinked candidate must not crash report synthesis; the
     profile section simply renders every item as unanswered."""
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(None),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
             ),
-            "session": _CandidateSession(None),
-        }
-    )
+        )
+    }
     assert out["validation"]["fields"]
 
 
@@ -535,14 +339,14 @@ def test_the_intro_states_the_reuse_behaviour_and_breaks_no_copy_rule() -> None:
 @pytest.mark.asyncio
 async def test_validation_node_is_explicit_when_nothing_was_collected() -> None:
     """Applications submitted before 2026-07-30 predate the mandatory fields."""
-    out = await fa.validation_node(
-        {
-            "link": SimpleNamespace(
+    out = {
+        "validation": await validation_section(
+            _CandidateSession(),
+            SimpleNamespace(
                 id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=None
             ),
-            "session": _CandidateSession(),
-        }
-    )
+        )
+    }
     assert out["validation"]["captured"] is False
     assert out["validation"]["current_ctc"] is None
 
@@ -558,21 +362,25 @@ def test_rating_labels_follow_the_four_grade_table() -> None:
 
 
 def test_deterministic_fallbacks_honor_word_contracts() -> None:
+    """Every fixed sentence a report can carry is a COMPLETE 45 to 50 word
+    remark: the template stand-in, the unanswered and the not assessed
+    catalogue sentences, and the withheld Overall (PLAN-p5 WP5-D)."""
     for name in ("Java", "Learning agility", "Enterprise vision & strategy"):
-        assert 25 <= word_count(_fallback_remark_25(name)) <= 30
-        assert 25 <= word_count(_unanswered_remark(name, 25)) <= 30
-        assert 45 <= word_count(_fallback_remark_45(name)) <= 50
-        assert 45 <= word_count(_unanswered_remark(name, 45)) <= 50
+        assert 45 <= word_count(siddhi_remarks.template_remark(name)) <= 50
+        assert 45 <= word_count(siddhi_remarks.unanswered_remark(name).text) <= 50
+    assert 45 <= word_count(siddhi_remarks.not_assessed_remark().text) <= 50
+    assert 45 <= word_count(siddhi_remarks.not_assessed_overall_remark().text) <= 50
 
 
 def test_remarks_end_in_complete_sentences() -> None:
     for value in (
-        _fallback_remark_25("Java"),
-        _unanswered_remark("Java", 25),
-        _fallback_remark_45("Java"),
-        _unanswered_remark("Java", 45),
+        siddhi_remarks.template_remark("Java"),
+        siddhi_remarks.unanswered_remark("Java").text,
+        siddhi_remarks.not_assessed_remark().text,
+        siddhi_remarks.not_assessed_overall_remark().text,
     ):
         assert value.rstrip().endswith(".")
+        assert chr(8212) not in value
 
 
 # ── Radar charts (spec §10.4) ────────────────────────────────────────────────
@@ -828,28 +636,19 @@ async def test_the_focus_summary_names_a_real_gap(monkeypatch) -> None:
     assert "SQL" in section["focus_summary"]
 
 
-# ── Graph shape (spec §9) ────────────────────────────────────────────────────
+# ── The orchestrator (PLAN-p5 WP5-D) ───────────────────────────────────────
 
-def test_graph_has_one_scorer_joining_validation_at_synthesis() -> None:
-    """Spec §8 and §19.
+def test_a_skill_not_assessed_has_no_radar_axis() -> None:
+    """A row with no score is stated "Not assessed"; drawing it would plot a
+    grade nobody made, and at the bottom band it would read Not Matching."""
+    rows = _dimensions() + [
+        {"category": ppi.CATEGORY_MUST_HAVE, "name": "Kafka", "score": None,
+         "required_level": None, "ordinal": 3, "remark": "Not assessed."},
+    ]
+    names = {axis["axis"] for chart in build_radar_charts(rows) for axis in chart["axes"]}
+    assert "Kafka" not in names
+    assert "Python" in names
 
-    ONE scoring agent, because there is one matrix. `validation_capture` is a
-    node but not a scorer: it copies the application's fields and touches no
-    model. The join edge is what makes "synthesis waits for scoring" a property
-    of the graph rather than a convention.
-    """
-    graph = assessment_graph.get_graph()
-    edges = {(edge.source, edge.target) for edge in graph.edges}
-    assert ("__start__", "ppi_scoring") in edges
-    assert ("__start__", "validation_capture") in edges
-    assert ("ppi_scoring", "report_synthesis") in edges
-    assert ("validation_capture", "report_synthesis") in edges
-    # The retired scorers must not come back. `technical_scoring` was a second
-    # agent for a second question bank that no longer exists, and
-    # `behavioral_scoring` was a third one retired before it.
-    sources = {source for source, _ in edges}
-    assert "technical_scoring" not in sources
-    assert "behavioral_scoring" not in sources
 
 # ── Self-checks retired from module scope (2026-08-24) ──────────────────────
 #
@@ -872,7 +671,6 @@ def test_a_probe_is_shorter_than_an_items_remark() -> None:
 
 
 def test_at_least_one_aspect_is_rubric_scored() -> None:
-    from app.services import ppi_interview  # noqa: PLC0415
 
     assert ppi.RUBRIC_SCORED_CATEGORIES
 

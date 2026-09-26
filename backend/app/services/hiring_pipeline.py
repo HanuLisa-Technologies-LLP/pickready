@@ -250,21 +250,26 @@ def can_transition(current: str | None, target: str) -> bool:
 # the assessment, and it has a system writer that keeps that promise: the
 # start routes move the application when the session begins. A hand move to
 # it claimed a started session that did not exist. `api/pipeline.change_status`
-# refuses it as a target, not only the dropdown. `assessment_completed` is
-# NOT withdrawn yet: nothing in the product writes it automatically today, so
-# withdrawing the hand move would strand every assessed candidate before
-# shortlisting. It goes when the report writer moves the application itself
-# (Phase 5; recorded in docs/release/2026-09-vivekium/stage2-deferred-hunks.md).
-MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset({SHORTLISTED, ASSESSMENT_IN_PROGRESS})
+# refuses it as a target, not only the dropdown. `assessment_completed` went
+# the same way in Phase 5 (WP5-D): it promises that a PRISM Report exists, and
+# the report's one writer (`assessment_pipeline.persistence.
+# mark_assessment_completed`) moves the application in the same transaction
+# as the insert. A hand move claimed a report that did not exist.
+MANUAL_TRANSITION_EXCLUDED: frozenset[str] = frozenset(
+    {SHORTLISTED, ASSESSMENT_IN_PROGRESS, ASSESSMENT_COMPLETED}
+)
 
 #: Targets `api/pipeline.change_status` refuses outright, because a system
 #: writer owns them and a hand move would claim an event that did not happen.
-SYSTEM_ONLY_TARGETS: frozenset[str] = frozenset({ASSESSMENT_IN_PROGRESS})
+SYSTEM_ONLY_TARGETS: frozenset[str] = frozenset(
+    {ASSESSMENT_IN_PROGRESS, ASSESSMENT_COMPLETED}
+)
 
 #: The sentence a refused hand move to a system-only target answers with.
 SYSTEM_ONLY_REFUSAL = (
     "An application moves to Assessment in progress when the candidate opens "
-    "the assessment. It cannot be set by hand."
+    "the assessment, and to Assessment completed when its PRISM Report is "
+    "written. Neither can be set by hand."
 )
 
 

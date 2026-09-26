@@ -68,6 +68,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -104,6 +105,14 @@ class Evaluation(Base, UUIDPKMixin, CreatedAtMixin):
     __table_args__ = (
         Index("ix_evaluations_link", "link_id", "created_at"),
         Index("ix_evaluations_tenant_job", "tenant_id", "job_id"),
+        # 0130: ONE LIVE ROW per application. The writer upserts onto it;
+        # an older duplicate is stamped `superseded_at`, never deleted.
+        Index(
+            "uq_evaluations_live_link",
+            "link_id",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+        ),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -166,6 +175,17 @@ class Evaluation(Base, UUIDPKMixin, CreatedAtMixin):
         Boolean, nullable=False, default=False, server_default="false"
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 0130. Set on an older duplicate; the live row has NULL here.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 0130: `complete`, or `not_assessed` while a skill could not be assessed
+    #: and no report exists yet (P5-D4). The retry sweep reads `attempts`.
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="complete", server_default="complete"
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    contract_digest: Mapped[str | None] = mapped_column(String(64))
 
 
 class ReviewDisposition(Base, UUIDPKMixin, CreatedAtMixin):

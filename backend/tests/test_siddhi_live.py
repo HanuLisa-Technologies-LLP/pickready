@@ -14,13 +14,14 @@ non-test importer of the whole Siddhi package was a worked example.
 THE LIVE PATH, NAMED
 ----------------------
     functional_assessment.synthesis_node
-      -> gap_analysis.build_gap_analysis          (the assessment graph calls this)
-        -> siddhi.synthesis.compose
-          -> citations.Report.render              THE CHOKEPOINT
+      -> gap_analysis.build_gap_analysis          (the orchestrator calls this)
+        -> siddhi.report.compose_prism            THE ONE COMPOSER
+          -> citations.Report.render_collect      render the cited, withhold the rest
 
 Every test below enters at `build_gap_analysis`. None of them constructs a
 `citations.Report` by hand, because a test that did would be testing the module
-again rather than the path.
+again rather than the path. Since the Vivekium release an uncited statement is
+WITHHELD and the report goes to review, rather than the task failing.
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ import pytest
 
 from app.schemas.assessments import GapAnalysisOut
 from app.services import gap_analysis, ppi
-from app.services.siddhi import citations, delivery, evidence, synthesis
+from app.services.siddhi import delivery, evidence, synthesis
+from app.services.siddhi import report as siddhi_report
 
 
 def _boom(monkeypatch) -> None:
@@ -101,60 +103,85 @@ def _exchanges() -> dict[str, list[dict[str, str]]]:
 
 
 @pytest.mark.asyncio
-async def test_the_live_generator_renders_through_the_citation_chokepoint(
+async def test_the_live_generator_renders_through_the_one_composer(
     monkeypatch,
 ) -> None:
     """The wiring itself, asserted before anything about its behaviour.
 
-    `compose` is the only thing that turns a rated row into delivered text, and
-    `build_gap_analysis` is what the assessment graph calls. If this stops being
-    true, every other test in this file is testing a path the product no longer
-    runs.
+    `compose_prism` is the only thing that turns a rated row into delivered
+    text, and `build_gap_analysis` is what the scoring orchestrator calls. If
+    this stops being true, every other test in this file is testing a path the
+    product no longer runs.
     """
     _boom(monkeypatch)
     seen: dict[str, object] = {}
-    real = synthesis.compose
+    real = siddhi_report.compose_prism
 
-    def _spy(**kwargs):
+    async def _spy(**kwargs):
         seen.update(kwargs)
-        return real(**kwargs)
+        return await real(**kwargs)
 
-    monkeypatch.setattr(gap_analysis.siddhi_synthesis, "compose", _spy)
+    monkeypatch.setattr(gap_analysis.siddhi_report, "compose_prism", _spy)
     await gap_analysis.build_gap_analysis(None, _dimensions(), _exchanges())
     assert seen["dimensions"] == _dimensions()
     assert seen["gap_groups"]
+    # The composer is told whether a semantic tier exists; it is never left to
+    # assume one.
+    assert "embed" in seen
 
 
 @pytest.mark.asyncio
-async def test_producing_an_uncited_statement_is_blocked_on_the_live_path(
-    monkeypatch,
+async def test_an_uncited_statement_is_withheld_on_the_live_path_and_sent_to_review(
+    monkeypatch, caplog
 ) -> None:
-    """THE ACCEPTANCE CRITERION. Try to produce an uncited statement through the
-    real generator, and confirm the report is not written.
+    """THE ACCEPTANCE CRITERION, REVISED (P5-D8). Produce uncited statements
+    through the real generator: the report is still produced, nothing uncited
+    is in it, and it goes to a person with an alert.
 
     The uncitable condition is simulated the way it actually arises: an
-    evaluation whose evidence set came back empty. That is what a degraded
-    dimension evaluator produces, and it is precisely the run where an uncited
-    claim is most likely to be wrong. The report is refused rather than shipped
-    with a marker, because a PRISM Report whose claims are not traced is not a
-    worse report, it is a different product.
+    evaluation whose evidence set came back empty. Before this release that
+    raised out of the scoring task and the candidate got no report at all.
     """
     _boom(monkeypatch)
     monkeypatch.setattr(
         synthesis.EvidenceIndex, "build", classmethod(lambda cls, **kw: cls())
     )
-    with pytest.raises(citations.UncitedStatement) as caught:
-        await gap_analysis.build_gap_analysis(None, _dimensions(), _exchanges())
-    assert "evidence citation" in str(caught.value)
+    with caplog.at_level("ERROR"):
+        section = await gap_analysis.build_gap_analysis(None, _dimensions(), _exchanges())
+    trail = section["siddhi"]["citations"]
+    # Nothing uncited reached the trail: the rated lines whose evidence
+    # vanished are absent, and every statement that did render is cited.
+    assert not [
+        statement
+        for statement in trail["statements"]
+        if statement["section"] in synthesis.RATED_SECTIONS
+    ]
+    assert all(statement["evidence_refs"] for statement in trail["statements"])
+    assert {held["section"] for held in trail["withheld"]} >= {"must_have"}
+    for held in trail["withheld"]:
+        assert set(held) == {"section", "kind", "item", "problem"}
+    review = section["siddhi"]["review"]
+    assert review["needs_human_review"] is True
+    issues = {finding["issue"] for finding in review["findings"]}
+    assert "uncited_statement" in issues
+    # Findings name a place and never a sentence: the withheld line must not
+    # reach a reader through the finding either.
+    for finding in review["findings"]:
+        assert set(finding) == {"severity", "issue", "location", "recommendation"}
+        assert "rollback" not in json.dumps(finding)
+    assert any(
+        record.getMessage().startswith(siddhi_report.WITHHELD_LOG_EVENT)
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
-async def test_a_fabricated_citation_is_blocked_on_the_live_path_and_named_apart(
+async def test_a_fabricated_citation_is_withheld_on_the_live_path_and_named_apart(
     monkeypatch,
 ) -> None:
     """An empty citation list is a generator that forgot; an unknown ref is a
     generator that INVENTED one. The second is worse because it reads as
-    provenance, so it raises a different error class, on the live path too."""
+    provenance, so it is reported under its own finding, on the live path too."""
     _boom(monkeypatch)
 
     class _Fabricating(evidence.EvidenceIndex):
@@ -176,35 +203,39 @@ async def test_a_fabricated_citation_is_blocked_on_the_live_path_and_named_apart
             },
         ),
     )
-    with pytest.raises(citations.UnknownEvidence):
-        await gap_analysis.build_gap_analysis(None, _dimensions(), _exchanges())
+    section = await gap_analysis.build_gap_analysis(None, _dimensions(), _exchanges())
+    review = section["siddhi"]["review"]
+    assert "fabricated_citation" in {finding["issue"] for finding in review["findings"]}
+    trail = section["siddhi"]["citations"]
+    for statement in trail["statements"]:
+        assert "answer:not-in-this-evaluation:0" not in statement["evidence_refs"]
 
 
 @pytest.mark.asyncio
 async def test_the_live_generator_has_no_bypass_to_reach_for(monkeypatch) -> None:
-    """`compose` takes no `force`, no `strict`, no `allow_uncited`. A bypass
-    parameter is a bypass that will be used, in a hotfix, at the end of a
-    release, and the way it gets added is somebody hitting this failure once."""
+    """`compose_prism` takes no `force`, no `strict`, no `allow_uncited`. A
+    bypass parameter is a bypass that will be used, in a hotfix, at the end of
+    a release, and the way it gets added is somebody hitting this failure once."""
     import inspect
 
-    parameters = set(inspect.signature(synthesis.compose).parameters)
+    parameters = set(inspect.signature(siddhi_report.compose_prism).parameters)
     for forbidden in ("force", "strict", "allow_uncited", "skip_checks", "degraded"):
         assert forbidden not in parameters
 
 
 @pytest.mark.asyncio
-async def test_the_live_generator_does_not_catch_the_chokepoints_errors() -> None:
-    """Asserted against the SOURCE, because a `try` around `render` would make
-    every other test in this file pass while the product shipped uncited
-    reports."""
+async def test_the_live_generator_renders_only_in_the_collecting_mode() -> None:
+    """Asserted against the SOURCE. The composer renders with `render_collect`
+    and never catches a chokepoint error to render around it: a `try` around
+    the raising mode would be a second, silent way to ship an uncited line."""
     import pathlib
 
-    for module in (synthesis, gap_analysis):
+    for module in (synthesis, gap_analysis, siddhi_report):
         source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
         assert "except citations." not in source
-        assert "UncitedStatement" not in source.replace(
-            "raises `UncitedStatement`", ""
-        ).replace("`UncitedStatement`", "")
+    report_source = pathlib.Path(siddhi_report.__file__).read_text(encoding="utf-8")
+    assert "render_collect()" in report_source
+    assert ".render()" not in report_source
 
 
 # ── EVERY STATEMENT CARRIES ITS EVIDENCE ─────────────────────────────────────
@@ -667,73 +698,64 @@ async def test_the_gate_reads_the_disposition_from_the_database_not_the_caller()
 
 
 @pytest.mark.asyncio
-async def test_nothing_is_rendered_in_any_format_while_g4_blocks() -> None:
-    """Gating after serialisation would mean the bytes already exist, and bytes
-    that exist get sent."""
+async def test_no_pdf_is_rendered_while_g4_blocks() -> None:
+    """Gating after rendering would mean the bytes already exist, and bytes
+    that exist get sent. The PDF renderer takes the clearance as its first
+    argument, so a blocked report never reaches it."""
     with pytest.raises(delivery.DeliveryBlocked):
-        await delivery.deliver(
-            _Session(None),
-            _Report(True),
+        await delivery.gate_delivery(_Session(None), _Report(True))
+    with pytest.raises(TypeError):
+        delivery.prism_pdf(  # type: ignore[arg-type]
+            None,
             {"reference_code": "K7QP-2M4X-9TB1"},
             candidate_name="Fixture Candidate",
             job_title="Platform Engineer",
             tenant_name="Fixture Tenant",
+            generated_at=None,
         )
 
 
-# ── THE FROZEN MATRIX A REPORT IS WRITTEN AGAINST ────────────────────────────
+def test_a_clearance_cannot_be_minted_outside_the_gate() -> None:
+    """A clearance a caller builds itself would satisfy G4 without the gate
+    running, which is the one thing G4 exists to make impossible."""
+    with pytest.raises(TypeError):
+        delivery.DeliveryClearance(needed_review=False)
 
 
 @pytest.mark.asyncio
-async def test_a_missing_scorecard_module_refuses_rather_than_falling_back(
-    monkeypatch,
-) -> None:
-    """`hiring.scorecard` is built by the job-setup phase and may not be present
-    in a given checkout. Its absence must be a loud, specific refusal: a report
-    written without the frozen matrix would state grades against criteria nobody
-    finalised, which is what gate G1 exists to refuse."""
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _no_scorecard(name, *args, **kwargs):
-        if name == "app.services.hiring" and args and "scorecard" in (args[2] or ()):
-            raise ImportError("no scorecard module")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _no_scorecard)
-    with pytest.raises(synthesis.ScorecardUnavailable) as caught:
-        await synthesis.require_frozen_matrix(None, "job-1")
-    assert "no report is generated" in str(caught.value) or "not present" in str(
-        caught.value
-    )
+async def test_the_non_raising_form_is_the_same_gate_with_the_servers_sentence() -> None:
+    """The report payload says whether the PDF is available using the SAME
+    gate, so the screen can never offer a download the route then refuses."""
+    clearance, reason = await delivery.clearance_or_reason(_Session(None), _Report(True))
+    assert clearance is None
+    assert reason == delivery.PDF_BLOCKED_REASON
+    clearance, reason = await delivery.clearance_or_reason(_Session(None), _Report(False))
+    assert clearance is not None and reason is None
 
 
-@pytest.mark.asyncio
-async def test_a_scorecard_module_without_the_function_also_refuses(
-    monkeypatch,
-) -> None:
-    """Half a dependency is not a dependency. A module that exists but exposes
-    no `require_frozen_matrix` would otherwise fail as an AttributeError deep in
-    a report task, which reads as a bug rather than as a missing phase."""
-    import sys
-    import types
-
-    package = sys.modules.get("app.services.hiring")
-    stub = types.ModuleType("app.services.hiring.scorecard")
-    monkeypatch.setitem(sys.modules, "app.services.hiring.scorecard", stub)
-    monkeypatch.setattr(package, "scorecard", stub, raising=False)
-    with pytest.raises(synthesis.ScorecardUnavailable) as caught:
-        await synthesis.require_frozen_matrix(None, "job-1")
-    assert "require_frozen_matrix" in str(caught.value)
+def test_delivery_exposes_the_gate_and_the_pdf_and_nothing_else() -> None:
+    """P5-D7: the three exports with no consumer were deleted, not kept for a
+    caller that might one day exist."""
+    assert set(delivery.__all__) == {
+        "PDF_BLOCKED_REASON",
+        "DeliveryBlocked",
+        "DeliveryClearance",
+        "gate_delivery",
+        "clearance_or_reason",
+        "prism_pdf",
+    }
+    for gone in ("prism_json", "prism_email_body", "prism_attachment", "deliver"):
+        assert not hasattr(delivery, gone), gone
 
 
-def test_the_scorecard_dependency_is_imported_lazily() -> None:
-    """A module-level import would make Siddhi unimportable in a checkout
-    without the job-setup phase, which hides the dependency rather than making
-    it loud."""
-    import pathlib
+def test_the_blocked_reason_is_words_only() -> None:
+    assert not re.search(r"\d", delivery.PDF_BLOCKED_REASON)
+    assert chr(8212) not in delivery.PDF_BLOCKED_REASON
 
-    source = pathlib.Path(synthesis.__file__).read_text(encoding="utf-8")
-    header = source.split("def require_frozen_matrix")[0]
-    assert "from app.services.hiring import scorecard" not in header
+
+def test_the_frozen_matrix_reader_is_gone_from_siddhi() -> None:
+    """G1 runs against the locked skills contract in Miti. Siddhi's own
+    frozen-matrix reader had no caller on the live path and was deleted."""
+    assert not hasattr(synthesis, "require_frozen_matrix")
+    assert not hasattr(synthesis, "ScorecardUnavailable")
+    assert not hasattr(synthesis, "compose")

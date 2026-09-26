@@ -10,7 +10,7 @@ was a real check guarding nothing.
 
 What is asserted here:
 
-  1. GATE G1 IS THE ONLY WAY IN. No frozen matrix, no scoring, no default.
+  1. GATE G1 IS THE ONLY WAY IN. No locked contract, no scoring, no default.
   2. Isolation survives the wiring. Each of the five evaluators receives only
      its own competencies, its own dimension's rubric anchors and the evidence
      routed to them; none receives a name, another dimension's band, or the
@@ -31,26 +31,25 @@ import subprocess
 import sys
 import types
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 
+from app.services import assessment_contract
 from app.services import functional_assessment as fa
 from app.services import rating
 from app.services.evidence import ledger
-import app.services.hiring as hiring_pkg
 from app.services.hiring import gates
-from app.services.hiring.department_models import (
+from app.services.miti import aggregation, items, live, triangulation
+from app.services.miti.dimensions import (
     DIM_AUTHENTICITY,
     DIM_ROLE_FIT,
     DIM_TRACK_RECORD,
     DIM_TRAJECTORY,
     DIM_VERIFIED_COMPETENCE,
+    DIMENSIONS,
+    DIMENSION_LABELS,
 )
-from app.services.miti import aggregation, live, triangulation
-from app.services.miti.dimensions import DIMENSIONS, DIMENSION_LABELS
-
-SCORECARD_MODULE = "app.services.hiring.scorecard"
+from tests import miti_fixtures as mf
 
 _TENANT = uuid.uuid4()
 _JOB = uuid.uuid4()
@@ -73,41 +72,13 @@ class _Session:
         return None
 
 
-def _item(
-    competency: str,
-    category: str,
-    dimension: str,
-    *,
-    weight: float = 0.3,
-    threshold: float | None = None,
-):
-    return types.SimpleNamespace(
-        competency=competency,
-        category=category,
-        dimension=dimension,
-        weight=weight,
-        threshold=threshold,
-        evidence_sources=("assessment",),
-        assessment_method="structured probe",
-        disqualifier=None,
-        provenance={"layer": "L1"},
-    )
-
-
-def _matrix(items=None, *, approved_at=datetime(2026, 8, 1, tzinfo=timezone.utc)):
-    return types.SimpleNamespace(
-        items=list(
-            items
-            if items is not None
-            else [
-                _item("Stream processing depth", "must_have", DIM_VERIFIED_COMPETENCE),
-                _item("Migration ownership", "nice_to_have", DIM_TRACK_RECORD),
-                _item("Operating in ambiguity", "behavioural", DIM_ROLE_FIT),
-            ]
-        ),
-        approved_at=approved_at,
-        version=3,
-    )
+#: The contract every harness run grades against unless a test says otherwise:
+#: one skill per bucket, locked, as `load_contract_for_conversation` returns it.
+_SKILLS = (
+    ("Stream processing depth", "must_have"),
+    ("Migration ownership", "nice_to_have"),
+    ("Operating in ambiguity", "behavioural"),
+)
 
 
 def _evidence_item(
@@ -144,61 +115,41 @@ def _claim(competency: str, items):
     )
 
 
-def _detach_scorecard(monkeypatch, replacement) -> None:
-    """Make `from app.services.hiring import scorecard` resolve to `replacement`.
-
-    BOTH bindings, for the reason spelled out in `_Harness._install`: the
-    package attribute wins over the `sys.modules` entry once anything has
-    imported the real module, so setting only one makes the test depend on
-    which files ran before it. `None` in `sys.modules` is how Python reports an
-    absent module, and deleting the package attribute is how it reports one
-    that was never imported; a genuinely missing module has both.
-    """
-    monkeypatch.setitem(sys.modules, SCORECARD_MODULE, replacement)
-    if replacement is None:
-        monkeypatch.delattr(hiring_pkg, "scorecard", raising=False)
-    else:
-        monkeypatch.setattr(hiring_pkg, "scorecard", replacement, raising=False)
-
-
 class _Harness:
-    """Installs a scorecard module, a ledger and a recording `invoke`."""
+    """Installs a contract, the item grades, a ledger and a recording `invoke`.
 
-    def __init__(self, monkeypatch, *, claims=None, texts=None, matrix=None):
+    The contract is what `load_contract_for_conversation` returns and the item
+    grades are what `items.evaluate_skills` returns; both are stubbed at the
+    function the live module calls, so G1's gate, Miti's digest line and the
+    whole evaluator wiring still run for real. The item stage has its own
+    tests (`test_miti_items.py`); this file is about the wiring after it.
+    """
+
+    def __init__(self, monkeypatch, *, claims=None, texts=None, contract=None):
         self.monkeypatch = monkeypatch
         self.calls: list[tuple[str, list[dict[str, str]]]] = []
         self.claims = claims if claims is not None else _default_claims()
         self.texts = texts or {}
-        self.matrix = matrix if matrix is not None else _matrix()
+        self.contract = contract if contract is not None else mf.contract(_SKILLS)
         self.band_by_dimension: dict[str, str] = {d: "solid" for d in DIMENSIONS}
+        self.disposition: tuple[str | None, object] = (None, None)
+        self.item_stage_runs = 0
         self._install()
 
     def _install(self) -> None:
-        module = types.ModuleType(SCORECARD_MODULE)
+        async def load_contract_for_conversation(session, conversation_id):
+            return self.contract
 
-        async def require_frozen_matrix(session, job_id):
-            return self.matrix
+        self.monkeypatch.setattr(
+            assessment_contract,
+            "load_contract_for_conversation",
+            load_contract_for_conversation,
+        )
 
-        module.require_frozen_matrix = require_frozen_matrix
-        self.monkeypatch.setitem(sys.modules, SCORECARD_MODULE, module)
-        # AND rebind the attribute on the parent package, which is what the
-        # consumer actually resolves.
-        #
-        # `functional_assessment` does `from app.services.hiring import
-        # scorecard` inside the function, which looks like a lazy import that
-        # would pick the fake out of `sys.modules`. It does, but only until
-        # something imports the real module once: `from package import
-        # submodule` reads the PACKAGE ATTRIBUTE when one exists, and importing
-        # `app.services.hiring.scorecard` sets `app.services.hiring.scorecard`
-        # as an attribute of the package. After that the `sys.modules` entry is
-        # never consulted again.
-        #
-        # So swapping `sys.modules` alone passes when this file runs on its own
-        # and fails the moment any earlier test has touched the real module,
-        # which is how these nineteen tests came to pass in isolation and fail
-        # in the suite. Both bindings are set, so the harness no longer depends
-        # on test ordering.
-        self.monkeypatch.setattr(hiring_pkg, "scorecard", module, raising=False)
+        async def latest_disposition(session, link_id):
+            return self.disposition
+
+        self.monkeypatch.setattr(live, "latest_disposition", latest_disposition)
 
         async def load_claims(session, *, tenant_id, job_id, link_id=None):
             return list(self.claims)
@@ -224,7 +175,25 @@ class _Harness:
             }
         )
 
-    def run(self, **kwargs):
+    def run(
+        self,
+        *,
+        item_scores=None,
+        review_disposition=None,
+        review_decided_by=None,
+        **kwargs,
+    ):
+        scores = dict(_SCORES if item_scores is None else item_scores)
+        self.disposition = (review_disposition, review_decided_by)
+
+        async def evaluate_skills(session, *, context, skills, **_ignored):
+            self.item_stage_runs += 1
+            return tuple(
+                mf.skill(skill.name, skill.bucket, scores.get(skill.name), priority=skill.priority)
+                for skill in skills
+            )
+
+        self.monkeypatch.setattr(items, "evaluate_skills", evaluate_skills)
         return asyncio.run(
             live.evaluate_application(
                 _Session(),
@@ -233,6 +202,11 @@ class _Harness:
                     assessment_grade="managerial",
                 ),
                 link=types.SimpleNamespace(id=_LINK, candidate_id=uuid.uuid4()),
+                conversation_id=uuid.uuid4(),
+                questions=[],
+                answers={},
+                locators={},
+                structured={},
                 invoke=self.invoke,
                 **kwargs,
             )
@@ -261,94 +235,125 @@ _SCORES = {
 }
 
 
-def test_structured_sutra_threshold_does_not_crash_live_scoring(monkeypatch) -> None:
-    """Evidence-quality metadata is not a numeric minimum score."""
-    matrix = _matrix()
-    matrix.items[0].threshold = {
-        "independence_required": 2,
-        "level": 1.0,
-        "max_age_days": None,
-    }
-    harness = _Harness(monkeypatch, matrix=matrix)
+def test_the_result_carries_the_contract_it_graded_against(monkeypatch) -> None:
+    """An evaluation is a permanent record of the criteria it was run against,
+    so the result names the contract (version and digest) rather than leaving
+    the writer to look the job up again later."""
+    harness = _Harness(monkeypatch)
 
     result = harness.run(item_scores=_SCORES)
 
     assert result.aggregate is not None
-    assert result.matrix is matrix
+    assert result.contract is harness.contract
+    assert result.contract_version == harness.contract.version
+    assert result.contract_digest == harness.contract.digest
+    assert [grade.name for grade in result.skills] == [name for name, _ in _SKILLS]
 
 
 # -- 1. GATE G1 IS THE ONLY WAY IN ------------------------------------------
 
 
-def test_a_missing_scorecard_module_blocks_scoring_and_names_what_is_missing(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "refusal",
+    [assessment_contract.ContractIntegrityError, assessment_contract.ContractNotBound],
+)
+def test_a_contract_nobody_can_prove_blocks_scoring_before_any_model_call(
+    monkeypatch, refusal
 ) -> None:
-    """Runbook section 14.1: "the scorecard was not approved -> scoring blocked
-    entirely (Gate G1)".
+    """A digest mismatch between the conversation and its snapshot, or a started
+    conversation with no binding, is refused by the one read API and surfaces
+    as G1: `ScorecardUnavailable`, before the item stage and before any
+    evaluator. Falling back to the job's live skills would grade a candidate
+    against criteria that may have moved since they were asked."""
+    harness = _Harness(monkeypatch)
 
-    A missing module is not a reason to score against something else. Setting
-    the entry to None is how Python reports an absent module, so this is the
-    real failure and not an approximation of it.
-    """
-    _detach_scorecard(monkeypatch, None)
-    with pytest.raises(live.ScorecardUnavailable) as raised:
-        asyncio.run(live.frozen_matrix(_Session(), _JOB))
-    assert "hiring.scorecard" in str(raised.value)
+    async def refuse(session, conversation_id):
+        raise refusal("the stored digest does not match the snapshot")
 
-
-def test_a_scorecard_module_without_the_gate_function_blocks_scoring(
-    monkeypatch,
-) -> None:
-    _detach_scorecard(monkeypatch, types.ModuleType(SCORECARD_MODULE))
+    monkeypatch.setattr(assessment_contract, "load_contract_for_conversation", refuse)
     with pytest.raises(live.ScorecardUnavailable):
-        asyncio.run(live.frozen_matrix(_Session(), _JOB))
+        harness.run(item_scores=_SCORES)
+    assert harness.calls == []
+    assert harness.item_stage_runs == 0
 
 
-def test_an_empty_or_unstamped_matrix_blocks_scoring(monkeypatch) -> None:
-    """G1 asks the TABLE first and the stamp second, in that order.
-
-    This codebase has paid for believing a timestamp: 19 of 35 live jobs
-    carried a generation stamp and zero competency rows, so every one was stuck
-    with an empty framework nobody could approve.
-    """
-    harness = _Harness(monkeypatch, matrix=_matrix(items=[]))
+@pytest.mark.parametrize(
+    "contract",
+    [
+        mf.contract(_SKILLS, locked=False),
+        mf.contract(()),
+        mf.contract((("Stream processing depth", "must_have"),)),
+        mf.contract((("Operating in ambiguity", "behavioural"),)),
+    ],
+    ids=["unlocked", "empty", "no_behavioural", "no_must_have"],
+)
+def test_a_contract_g1_would_not_pass_blocks_scoring(monkeypatch, contract) -> None:
+    """G1 asks the CONTRACT: locked, non-empty, at least one Must-have and one
+    Behavioural skill. A stamp is not evidence that work happened."""
+    harness = _Harness(monkeypatch, contract=contract)
     with pytest.raises(live.ScorecardUnavailable):
-        harness.run(item_scores={})
+        harness.run(item_scores=_SCORES)
+    assert harness.item_stage_runs == 0
+    assert harness.calls == []
 
-    harness.matrix = _matrix(approved_at=None)
-    with pytest.raises(live.ScorecardUnavailable):
-        harness.run(item_scores={})
+
+def test_miti_logs_its_digest_line_for_the_conversation(monkeypatch, caplog) -> None:
+    """The Miti half of "Vaada and Miti read the same contract": the one
+    structured line, `stage=miti`, carrying the contract digest."""
+    import logging
+
+    harness = _Harness(monkeypatch)
+    with caplog.at_level(logging.INFO, logger="app.services.assessment_contract"):
+        harness.run(item_scores=_SCORES)
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("assessment_contract.digest")
+    ]
+    assert len(lines) == 1
+    assert "stage=miti" in lines[0]
+    assert f"contract_digest={harness.contract.digest}" in lines[0]
 
 
 def test_the_live_module_has_no_default_matrix_anywhere_in_it() -> None:
     """The cheapest possible proof that G1 cannot be routed around: there is no
     code in this module that could construct a matrix to fall back to."""
     source = inspect.getsource(live)
-    for banned in ("load_framework", "generate_framework", "DEFAULT_MATRIX", "or _matrix("):
+    for banned in (
+        "load_framework",
+        "generate_framework",
+        "DEFAULT_MATRIX",
+        "require_frozen_matrix(",
+        "assessment_contract.load_contract(",
+    ):
         assert banned not in source, banned
 
 
-def test_synthesis_calls_miti_and_does_not_catch_the_gate(monkeypatch) -> None:
-    """THE LIVE ENTRY POINT. `functional_assessment.synthesis_node` is the only
-    caller, and it must not swallow G1: catching the refusal and scoring
-    against the job's competency rows would be a second implementation of the
-    criteria chosen at runtime, which is the dual path the anti-slop rules
-    forbid."""
+def test_scoring_calls_miti_once_and_does_not_catch_the_gate(monkeypatch) -> None:
+    """THE LIVE ENTRY POINT. `assessment_pipeline.grading.grade` is the only
+    caller (PLAN-p5 WP5-D), the orchestrator calls it once and composition
+    reads its result rather than running Miti a second time, and none of them
+    may swallow G1: catching the refusal and scoring against the job's live
+    skills would be a second implementation of the criteria chosen at
+    runtime, which is the dual path the anti-slop rules forbid."""
     import ast
 
-    source = inspect.getsource(fa.synthesis_node)
-    assert "miti_live.evaluate_application" in source
+    from app.services.assessment_pipeline import composition, grading
 
-    # Read the AST rather than the prose: the comment above the call explains
-    # WHY the refusal is allowed to propagate, and a substring scan would
-    # report the explanation as the violation.
-    tree = ast.parse(source.lstrip())
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler):
-            continue
-        caught = ast.dump(node.type) if node.type else "bare except"
-        assert "ScorecardUnavailable" not in caught, caught
-        assert node.type is not None, "a bare except would swallow gate G1"
+    assert "miti_live.evaluate_application" in inspect.getsource(grading.grade)
+    assert "evaluate_application" not in inspect.getsource(composition)
+    assert inspect.getsource(fa.run_assessment).count("grading.grade(") == 1
+
+    # Read the AST rather than the prose: a comment explaining WHY the refusal
+    # propagates must not read as the violation.
+    for function in (grading.grade, fa.run_assessment):
+        tree = ast.parse(inspect.getsource(function).lstrip())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            caught = ast.dump(node.type) if node.type else "bare except"
+            assert "ScorecardUnavailable" not in caught, caught
+            assert node.type is not None, "a bare except would swallow gate G1"
 
 
 # -- 2. ISOLATION SURVIVES THE WIRING ---------------------------------------
@@ -360,10 +365,16 @@ def test_each_live_evaluator_sees_only_its_own_competencies(monkeypatch) -> None
     harness = _Harness(monkeypatch)
     harness.run(item_scores=_SCORES)
 
+    # Must-have and Nice-to-have skills are Verified Competence's; the
+    # Behavioural skill is Role and Context Fit's.
     assert "Stream processing depth" in harness.prompt_for(DIM_VERIFIED_COMPETENCE)
-    assert "Migration ownership" not in harness.prompt_for(DIM_VERIFIED_COMPETENCE)
-    assert "Migration ownership" in harness.prompt_for(DIM_TRACK_RECORD)
-    assert "Stream processing depth" not in harness.prompt_for(DIM_TRACK_RECORD)
+    assert "Migration ownership" in harness.prompt_for(DIM_VERIFIED_COMPETENCE)
+    assert "Operating in ambiguity" not in harness.prompt_for(DIM_VERIFIED_COMPETENCE)
+    assert "Operating in ambiguity" in harness.prompt_for(DIM_ROLE_FIT)
+    assert "Stream processing depth" not in harness.prompt_for(DIM_ROLE_FIT)
+    # Track Record is cross-cutting and reads every skill.
+    for name, _bucket in _SKILLS:
+        assert name in harness.prompt_for(DIM_TRACK_RECORD)
 
 
 def test_no_live_evaluator_prompt_carries_a_name_a_score_or_the_composite(
@@ -466,13 +477,12 @@ def test_the_evaluation_task_is_the_only_task_this_module_can_route_to() -> None
 
 _DETERMINISM_SNIPPET = """
 import json
-from app.services import rating
-from app.services.hiring.department_models import (
-    DIM_AUTHENTICITY, DIM_ROLE_FIT, DIM_TRACK_RECORD, DIM_TRAJECTORY,
-    DIM_VERIFIED_COMPETENCE,
-)
 from app.services.miti import aggregation
-from app.services.miti.dimensions import DimensionResult
+from app.services.miti.dimensions import (
+    DIM_AUTHENTICITY, DIM_ROLE_FIT, DIM_TRACK_RECORD, DIM_TRAJECTORY,
+    DIM_VERIFIED_COMPETENCE, DimensionResult,
+)
+from tests import miti_fixtures as mf
 
 results = [
     DimensionResult(dimension=d, band=b, evidence_refs=("e1",))
@@ -486,8 +496,11 @@ results = [
 ]
 out = aggregation.aggregate(
     results,
-    competency_categories={"k": aggregation.CATEGORY_MUST_HAVE},
-    must_have_grades={"k": rating.GRADE_NOT},
+    skill_grades=(
+        mf.skill("k", "must_have", 40),
+        mf.skill("j", "nice_to_have", 88, priority=1),
+        mf.skill("b", "behavioural", 79),
+    ),
     must_have_evidence={
         "k": aggregation.MustHaveEvidence(tiers=("E0", "E3"), independence_groups=2)
     },
@@ -537,18 +550,20 @@ def test_insufficient_evidence_lowers_confidence_and_not_the_score(
     mathematically identical to negative evidence, which is wrong and unfair."
 
     The two are compared directly here: a dimension the evaluator could not
-    judge, against one it judged NEGATIVELY. The first must leave the surviving
-    composite alone and be paid for in confidence; the second must move it.
+    judge, against one it judged NEGATIVELY. Since WP5-B the composite is Miti's
+    skill grades alone, so an evaluator moves the DELIVERED score only through
+    the controls it feeds: a negative Verified Competence breaches section
+    12.2's D1 floor and caps; an insufficient one is excluded and caps nothing.
     """
     judged = _Harness(monkeypatch)
-    judged.band_by_dimension[DIM_TRACK_RECORD] = "absent"
+    judged.band_by_dimension[DIM_VERIFIED_COMPETENCE] = "absent"
     negative = judged.run(item_scores=_SCORES).aggregate
 
     insufficient = _Harness(monkeypatch)
 
     async def one_insufficient(task, messages, **kwargs):
         system = messages[0]["content"]
-        if DIMENSION_LABELS[DIM_TRACK_RECORD] in system:
+        if DIMENSION_LABELS[DIM_VERIFIED_COMPETENCE] in system:
             return json.dumps(
                 {
                     "band": "partial",
@@ -562,11 +577,12 @@ def test_insufficient_evidence_lowers_confidence_and_not_the_score(
     insufficient.invoke = one_insufficient
     excluded = insufficient.run(item_scores=_SCORES).aggregate
 
-    assert DIM_TRACK_RECORD in excluded.insufficient_dimensions
-    assert DIM_TRACK_RECORD not in negative.insufficient_dimensions
-    # Excluded, not scored low: the composite of what WAS judged is higher than
-    # the composite that absorbed a negative band.
-    assert excluded.raw_composite > negative.raw_composite
+    assert DIM_VERIFIED_COMPETENCE in excluded.insufficient_dimensions
+    assert DIM_VERIFIED_COMPETENCE not in negative.insufficient_dimensions
+    # The evaluators grade nothing: the composite is the skill grades in both.
+    assert excluded.raw_composite == negative.raw_composite
+    # Excluded, not scored low: only the negative band trips the floor.
+    assert excluded.delivered_score > negative.delivered_score
     # Paid for in review instead.
     assert excluded.needs_human_review
     assert any("insufficient" in reason for reason in excluded.review_reasons)

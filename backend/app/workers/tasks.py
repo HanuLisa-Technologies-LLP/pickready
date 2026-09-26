@@ -1227,24 +1227,28 @@ def run_functional_assessment(link_id: str):
     transaction scoped, released by this task's own commit or by the rollback
     that replaces it, with no `finally` to forget and no leak when a container
     is killed mid-run.
+
+    SINCE THE VIVEKIUM RELEASE (PLAN-p5 WP5-D) the writer has no UPDATE branch
+    at all: the report is INSERT-only, refused an UPDATE by trigger and by
+    REVOKE (migration 0130), and an existing report found under the lock means
+    return before anything is spent. A run that could not assess a skill
+    writes no report and returns; this task's own retry does not re-run it,
+    the hourly `release_held_assessments` sweep does, bounded by
+    `miti_not_assessed_attempts`.
     """
-    from app.models.assessment import (
-        AssessmentConversation,
-        AssessmentMessage,
-        JobCompetency,
-    )
+    from app.models.assessment import AssessmentConversation
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
     from app.services import credits, locks
+    from app.services.assessment_pipeline import persistence
+    from app.services.coding_assessment import submissions as coding_submissions
     from app.services.functional_assessment import run_assessment
-    from app.services.report_evidence import persist_skill_evidence
+    from app.workers.dispatch import dispatch_after_commit
 
     async def _task():
         async with _worker_session() as session:
             # BEFORE the work, never after. A lock taken after the model calls
-            # would report a duplicate rather than prevent one, the same
-            # argument `require_frozen_matrix` makes for running G1 ahead of
-            # the scoring graph rather than behind it.
+            # would report a duplicate rather than prevent one.
             if not await locks.try_advisory_lock(session, locks.SCORING, link_id):
                 logger.info(
                     "functional_assessment.already_running link_id=%s "
@@ -1255,13 +1259,17 @@ def run_functional_assessment(link_id: str):
             link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
             if link is None:
                 raise ValueError(f"Application {link_id} not found")
-            job = await session.get(Job, link.job_id)
-            if not await credits.has_positive_balance(session, link.tenant_id):
-                logger.warning(
-                    "functional_assessment.held_pending_credits link_id=%s tenant_id=%s",
-                    link_id, link.tenant_id,
+            # A SECOND RUN IS A NO-OP (CONTRACT v1 "Grading"). The report is
+            # immutable and insert-only; under the lock, an existing one means
+            # the work is done, and a redelivered dispatch, the retry sweep or
+            # a coding completion racing the conversation's own dispatch all
+            # land here and return.
+            if await persistence.report_exists(session, link.id):
+                logger.info(
+                    "functional_assessment.already_written link_id=%s", link_id
                 )
                 return
+            job = await session.get(Job, link.job_id)
             conversation = (
                 await session.execute(
                     select(AssessmentConversation).where(
@@ -1269,49 +1277,41 @@ def run_functional_assessment(link_id: str):
                     )
                 )
             ).scalars().first()
-            transcript = []
+            # SCORING WAITS FOR AN OWED CODING ANSWER (CONTRACT v2 P4, v8).
+            # Answering the last question completes the conversation and
+            # dispatches scoring while a final coding submission may still be
+            # executing. Held, not failed: the submission's own completion
+            # dispatches scoring again (`coding_submissions` hands it over when
+            # the last open one closes), and once every open one is older than
+            # `coding_execution_max_wait_hours` this proceeds and the evidence
+            # reads unavailable, which Miti states as Not assessed.
             if conversation is not None:
-                messages = (
-                    await session.execute(
-                        select(AssessmentMessage)
-                        .where(AssessmentMessage.conversation_id == conversation.id)
-                        .order_by(AssessmentMessage.ordinal)
-                    )
-                ).scalars().all()
-                transcript = [
-                    {
-                        "speaker": message.speaker,
-                        "domain": message.domain,
-                        "question_key": message.question_key,
-                        "content": message.content,
-                        "answer_label": message.answer_label,
-                        "evidence_gap": message.evidence_gap,
-                    }
-                    for message in messages
-                ]
-                competencies = (
-                    await session.execute(
-                        select(JobCompetency)
-                        .where(
-                            JobCompetency.job_id == job.id,
-                            JobCompetency.is_active.is_(True),
-                        )
-                        .order_by(JobCompetency.category, JobCompetency.ordinal)
-                    )
-                ).scalars().all()
-                await persist_skill_evidence(
-                    session,
-                    conversation=conversation,
-                    transcript=transcript,
-                    competencies=list(competencies),
+                hold = await coding_submissions.scoring_hold(
+                    session, conversation_id=conversation.id
                 )
-            await run_assessment(session, job, link, transcript)
+                if hold.hold:
+                    logger.info(
+                        "functional_assessment.held_for_coding link_id=%s open=%d",
+                        link_id, hold.open_submissions,
+                    )
+                    return
+            if not await credits.has_positive_balance(session, link.tenant_id):
+                logger.warning(
+                    "functional_assessment.held_pending_credits link_id=%s tenant_id=%s",
+                    link_id, link.tenant_id,
+                )
+                return
+            result = await run_assessment(session, job, link)
+            if result.report_id is not None:
+                # The proctoring report is written AFTER the PRISM Report and
+                # by a separate task, so the two never race on the same rows
+                # and a proctoring failure can never take the assessment
+                # report with it. After commit: a rolled-back report
+                # dispatches nothing.
+                dispatch_after_commit(
+                    session, "pickready.generate_proctoring_report", args=[str(link_id)]
+                )
             await session.commit()
-        # The proctoring report is written AFTER the PRISM Report and by a
-        # separate task, so the two never race on the same rows and a
-        # proctoring failure can never take the assessment report with it.
-        # It is informational and moves no grade (proctoring spec P3).
-        dispatch("pickready.generate_proctoring_report", args=[str(link_id)])
     _run(_task())
 
 
@@ -1448,6 +1448,14 @@ def release_held_assessments(tenant_id: str | None = None):
     Also safe to run on a schedule or by hand: `run_functional_assessment` is
     idempotent and re-checks the balance itself, so releasing a tenant who is
     still at zero re-holds every one of them and changes nothing.
+
+    IT IS ALSO THE RETRY OF A NOT-ASSESSED RUN (PLAN-p5 P5-D4). A run in which
+    a skill could not be assessed writes no report and records the attempt on
+    the live evaluation row, so the application still matches this query and
+    is re-dispatched here. The bound lives in the scoring run, not here: on
+    attempt `miti_not_assessed_attempts` the report is written with those
+    skills stated "Not assessed", which removes the application from this
+    query for good.
     """
     from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
     from app.services import credits

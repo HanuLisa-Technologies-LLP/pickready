@@ -12,8 +12,8 @@ candidate's answer in Miti's evidence ledger (`evidence_items`,
   exists while the candidate is still answering. Until this module the ledger
   was written only at scoring time, after the conversation had ended, so the
   loop between the interviewer and the grader was dead by construction.
-* AS A BACKFILL at scoring (`backfill_answer_evidence`, from
-  `functional_assessment`), which covers conversations that finished before
+* AS A BACKFILL at scoring (`backfill_answer_evidence`, from Miti's item
+  stage), which covers conversations that finished before
   the per-answer call existed and any answer whose per-answer write failed.
 
 Both calls write the same rows once. The evidence row is idempotent in the
@@ -62,7 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import AssessmentConversation, AssessmentMessage
 from app.services import answer_quality
-from app.services.assessment_pipeline.types import AnswerRecord
+from app.services.assessment_pipeline.types import AnswerRecord, AssessmentInputs
 
 logger = logging.getLogger(__name__)
 
@@ -282,3 +282,145 @@ async def backfill_answer_evidence(
             text=record.text,
             answered_at=record.answered_at,
         )
+
+
+# ── Stage 1: everything the later stages read, gathered once ────────────────
+
+
+def answers_by_key(transcript: Iterable[Any] | None) -> dict[str, list[str]]:
+    """Candidate answers grouped by the `question_key` stamped on each message.
+
+    Accepts message rows or dicts (`speaker`, `question_key`, `content`). The
+    key is the QUESTION's own id, which is what the conversation stamps and
+    what Miti's item stage looks answers up by
+    (`tests/test_conversation_key_contract.py`).
+    """
+    grouped: dict[str, list[str]] = {}
+    for message in transcript or []:
+        if isinstance(message, dict):
+            speaker = message.get("speaker")
+            key = message.get("question_key")
+            content = message.get("content")
+        else:
+            speaker = getattr(message, "speaker", None)
+            key = getattr(message, "question_key", None)
+            content = getattr(message, "content", None)
+        text = str(content or "").strip()
+        if str(speaker) != "candidate" or not key or not text:
+            continue
+        grouped.setdefault(str(key), []).append(text)
+    return grouped
+
+
+async def structured_answers(
+    session: AsyncSession, link_id: uuid.UUID
+) -> dict[str, Any]:
+    """Every `assessment_answers` row on this application, keyed exactly as the
+    scorer keys answers: by the question's own id.
+
+    A failed read RAISES: scoring every structured answer as unanswered because
+    the table could not be read would be a synthetic Not Matching written from
+    an outage.
+    """
+    from app.models.assessment import AssessmentAnswer
+
+    rows = (
+        await session.execute(
+            select(AssessmentAnswer)
+            .join(
+                AssessmentConversation,
+                AssessmentConversation.id == AssessmentAnswer.conversation_id,
+            )
+            .where(AssessmentConversation.job_candidate_link_id == link_id)
+        )
+    ).scalars().all()
+    return {str(row.question_id): row for row in rows}
+
+
+async def ensure_transcript_indexed(session: AsyncSession, link_id: uuid.UUID) -> Any:
+    """Index this application's transcript INLINE, before Miti reads passages.
+
+    Completing a conversation dispatches `pickready.index_document` after the
+    commit, and scoring is dispatched by the same commit, so the two race:
+    Miti's `transcript_passages_for_skill` read would find an empty index and
+    look like a transcript with nothing related in it, with nothing recording
+    why (PLAN-p5 3.6). Scoring is already a background task, so it indexes the
+    one transcript itself first.
+
+    IDEMPOTENT: `index_document` re-embeds only a chunk whose content changed,
+    so when the dispatched indexing already ran this costs one SELECT and
+    writes nothing. An embedding or prefix outage DEGRADES inside the indexer
+    (text indexed, no vector, recorded on the result and logged here), which
+    leaves lexical retrieval working and never fails the scoring run. A
+    database failure raises: it has aborted the transaction the report would
+    be written in.
+
+    Returns the `rag.index.IndexResult`, or None when the application has no
+    answered exchange to index (a legitimate state, logged).
+    """
+    from app.services.rag import chunking
+    from app.services.rag import index as rag_index
+    from app.services.rag import sources as rag_sources
+
+    document = await rag_sources.load(
+        session, source_type=chunking.SOURCE_ASSESSMENT, source_id=link_id
+    )
+    if document is None:
+        logger.info("assessment_pipeline.transcript_not_indexable link_id=%s", link_id)
+        return None
+    result = await rag_index.index_document(
+        session,
+        tenant_id=document.tenant_id,
+        source_type=document.source_type,
+        source_id=document.source_id,
+        document=document.text,
+        chunks=document.chunks,
+    )
+    logger.log(
+        logging.WARNING if result.degraded else logging.INFO,
+        "assessment_pipeline.transcript_indexed link_id=%s written=%d unchanged=%d degraded=%s",
+        link_id, result.written, result.unchanged, result.degraded,
+    )
+    return result
+
+
+async def load_inputs(
+    session: AsyncSession,
+    *,
+    job: Any,
+    link: Any,
+    conversation: Any,
+    questions: Iterable[Any],
+) -> AssessmentInputs:
+    """Stage 1: read what the grading and the report are written from.
+
+    The transcript, the answer locators, the structured answers, the coding
+    evidence (hidden tests and the quality review, Phase 4's one evidence
+    helper), the candidate's name parts and the Validation section. Every read
+    RAISES on a failure; none is absorbed into "nothing recorded".
+    """
+    from app.models.candidate import Candidate
+    from app.services.assessment_pipeline.validation import validation_section
+    from app.services.coding_assessment import evidence as coding_evidence
+
+    messages = (
+        await session.execute(
+            select(AssessmentMessage)
+            .where(AssessmentMessage.conversation_id == conversation.id)
+            .order_by(AssessmentMessage.ordinal)
+        )
+    ).scalars().all()
+    coding = await coding_evidence.for_conversation(session, conversation.id)
+    candidate = await session.get(Candidate, link.candidate_id)
+    return AssessmentInputs(
+        job=job,
+        link=link,
+        conversation=conversation,
+        questions=tuple(questions),
+        answers=answers_by_key(messages),
+        locators=await answer_records(session, link.id),
+        structured=await structured_answers(session, link.id),
+        coding={str(question_id): item for question_id, item in coding.items()},
+        subject_names=tuple(str(getattr(candidate, "full_name", "") or "").split()),
+        validation=await validation_section(session, link),
+    )
