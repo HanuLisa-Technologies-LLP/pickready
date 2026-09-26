@@ -20,9 +20,9 @@ WHY A SWEEP AND NOT ONLY AN IMPORT CHECK
 ------------------------------------------
 A module deleted while a schema field, a docstring or a screen still names it
 is a feature one edit away from returning, and the copy is the half a
-candidate reads. The sweep normalises whitespace first, for the reason
-`test_company_dna_removed.py` records: a mention wrapped across a newline
-passed a line-at-a-time sweep for two weeks.
+candidate reads. The sweep normalises whitespace first, for the reason the
+2026-09-23 removal-sweep rule in CLAUDE.md records: a mention wrapped across a
+newline passed a line-at-a-time sweep for two weeks.
 """
 from __future__ import annotations
 

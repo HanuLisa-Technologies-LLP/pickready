@@ -115,16 +115,24 @@ async def _issue(factory, w) -> dict[str, uuid.UUID]:
                          if question_type == "mcq_single" else {}
                      )},
                 )
+                # The transcript as the turn engine writes it: the agent's
+                # question, then the candidate's answer under the same key.
+                # An answer with no question before it is not an exchange, so
+                # the transcript indexer (rag.sources) would pair nothing.
                 message = uuid.uuid4()
-                await session.execute(
-                    text(
-                        "INSERT INTO assessment_messages (id, tenant_id, conversation_id, "
-                        "ordinal, speaker, domain, question_key, content, evidence_gap) "
-                        "VALUES (:i, :t, :c, :o, 'candidate', 'technical', :q, :content, false)"
-                    ),
-                    {"i": message, "t": w.tenant, "c": conversation, "o": ordinal,
-                     "q": str(question), "content": _ANSWERS[name]},
-                )
+                for speaker, row_id, row_ordinal, content in (
+                    ("agent", uuid.uuid4(), ordinal * 2 - 1, f"Tell me about {name}."),
+                    ("candidate", message, ordinal * 2, _ANSWERS[name]),
+                ):
+                    await session.execute(
+                        text(
+                            "INSERT INTO assessment_messages (id, tenant_id, conversation_id, "
+                            "ordinal, speaker, domain, question_key, content, evidence_gap) "
+                            "VALUES (:i, :t, :c, :o, :sp, 'technical', :q, :content, false)"
+                        ),
+                        {"i": row_id, "t": w.tenant, "c": conversation, "o": row_ordinal,
+                         "sp": speaker, "q": str(question), "content": content},
+                    )
                 if question_type in ("mcq_single", "evidence_based"):
                     await session.execute(
                         text(

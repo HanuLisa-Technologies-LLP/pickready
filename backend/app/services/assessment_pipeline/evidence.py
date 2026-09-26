@@ -358,24 +358,18 @@ async def ensure_transcript_indexed(session: AsyncSession, link_id: uuid.UUID) -
     Returns the `rag.index.IndexResult`, or None when the application has no
     answered exchange to index (a legitimate state, logged).
     """
-    from app.services.rag import chunking
-    from app.services.rag import index as rag_index
-    from app.services.rag import sources as rag_sources
+    # A WRITE, and the one `services.rag` import an agent module may hold:
+    # `test_evidence_retrieval_through_tools.INDEXING_WRITERS` declares it.
+    # Every READ of retrieved evidence goes through `evidence_retrieval`.
+    from app.services import evidence_retrieval  # noqa: PLC0415
+    from app.services.rag.index import index_source  # noqa: PLC0415
 
-    document = await rag_sources.load(
-        session, source_type=chunking.SOURCE_ASSESSMENT, source_id=link_id
+    result = await index_source(
+        session, source_type=evidence_retrieval.SOURCE_ASSESSMENT, source_id=link_id
     )
-    if document is None:
+    if result is None:
         logger.info("assessment_pipeline.transcript_not_indexable link_id=%s", link_id)
         return None
-    result = await rag_index.index_document(
-        session,
-        tenant_id=document.tenant_id,
-        source_type=document.source_type,
-        source_id=document.source_id,
-        document=document.text,
-        chunks=document.chunks,
-    )
     logger.log(
         logging.WARNING if result.degraded else logging.INFO,
         "assessment_pipeline.transcript_indexed link_id=%s written=%d unchanged=%d degraded=%s",

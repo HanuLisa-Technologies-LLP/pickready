@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import uuid
 from types import SimpleNamespace
 
@@ -711,7 +712,11 @@ def test_the_evidence_path_can_reach_no_grading_rule() -> None:
             "_stable_score",
             "GRADES",
         ):
-            assert rule not in source, f"{name} reaches a grading rule: {rule}"
+            # A whole identifier, never a substring: "DEGRADES" in a docstring
+            # names no grading rule, and a substring match reported it as one.
+            assert not re.search(rf"\b{rule}\b", source), (
+                f"{name} reaches a grading rule: {rule}"
+            )
 
 
 # ── The import rule this change is most able to break ────────────────────────

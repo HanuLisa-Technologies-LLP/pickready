@@ -1709,28 +1709,20 @@ def index_document(source_type: str, source_id: str):
     draft, the resume may not be parsed yet. Raising on those would spend three
     attempts against a state that is not going to change on its own.
     """
-    from app.services.rag import index as rag_index, sources as rag_sources
+    from app.services.rag import index as rag_index
 
     async def _task():
         async with _worker_session() as session:
-            document = await rag_sources.load(
+            result = await rag_index.index_source(
                 session, source_type=source_type, source_id=uuid.UUID(str(source_id))
             )
-            if document is None:
+            if result is None:
                 logger.info(
                     "rag.index.nothing_to_index source_type=%s source_id=%s",
                     source_type,
                     source_id,
                 )
                 return
-            result = await rag_index.index_document(
-                session,
-                tenant_id=document.tenant_id,
-                source_type=document.source_type,
-                source_id=document.source_id,
-                document=document.text,
-                chunks=document.chunks,
-            )
             await session.commit()
             # `degraded` is logged rather than raised: the text IS indexed and
             # the keyword half of retrieval works on it, because `content_tsv`
@@ -1741,8 +1733,8 @@ def index_document(source_type: str, source_id: str):
             logger.info(
                 "rag.index.written source_type=%s source_id=%s written=%d "
                 "unchanged=%d deleted=%d embedded=%d degraded=%s",
-                document.source_type,
-                document.source_id,
+                result.source_type,
+                result.source_id,
                 result.written,
                 result.unchanged,
                 result.deleted,

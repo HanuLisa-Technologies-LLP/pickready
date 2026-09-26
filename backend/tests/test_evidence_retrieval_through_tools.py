@@ -11,7 +11,9 @@ attempts and the tenant-keyed cache are enforced. An agent module importing
   exactly as coupled and harder to see). The set of modules is the named
   directories and files below PLUS whatever `agents/identity` says implements
   those three agents today, so an agent that grows a new module is covered
-  without anybody remembering to add it here. The same holds for
+  without anybody remembering to add it here. The one declared exception is a
+  WRITE (`INDEXING_WRITERS`: the scoring run's inline transcript index through
+  `rag.index.index_source`), pinned to its exact import. The same holds for
   `projects.context`, the direct read `extract_project_evidence` replaces,
   with ONE pending entry the assessment phase removes; the pending list must
   shrink, and a test fails when an entry no longer needs to be on it.
@@ -69,6 +71,17 @@ AGENT_FILES: tuple[str, ...] = (
     "functional_assessment.py",
     "gap_analysis.py",
 )
+
+#: The ONE `services.rag` import an agent module may hold, and it is a WRITE:
+#: the scoring run indexes its own transcript inline before Miti reads related
+#: passages, because the dispatched indexer races the scoring dispatch that the
+#: same commit starts. Exact imported names, so a READ added beside it (a
+#: `retrieval`, `sources` or package import) still fails the sweep.
+INDEXING_WRITERS: dict[str, frozenset[str]] = {
+    "app/services/assessment_pipeline/evidence.py": frozenset(
+        {"app.services.rag.index", "app.services.rag.index.index_source"}
+    ),
+}
 
 #: Modules that still read `projects.context` directly, each with the phase
 #: that removes the read. Must SHRINK to empty: `evidence_retrieval.
@@ -154,7 +167,11 @@ def test_the_agent_module_set_is_not_vacuous() -> None:
 
 def test_no_vaada_miti_or_siddhi_module_reads_the_retrieval_layer_directly() -> None:
     offenders = {
-        relative: _reaches(_imports(path), RAG)
+        relative: [
+            name
+            for name in _reaches(_imports(path), RAG)
+            if name not in INDEXING_WRITERS.get(relative, frozenset())
+        ]
         for relative, path in sorted(_agent_modules().items())
     }
     offenders = {k: v for k, v in offenders.items() if v}
@@ -163,6 +180,16 @@ def test_no_vaada_miti_or_siddhi_module_reads_the_retrieval_layer_directly() -> 
         "layer's permission, stage, tenant, validation and timeout checks: "
         f"{offenders}. Read through app.services.evidence_retrieval."
     )
+
+
+def test_every_indexing_writer_still_writes_through_index_source() -> None:
+    """The write exemption is not a standing hole: each entry must still hold
+    exactly the import it declares, or it leaves the list in the same change."""
+    for relative, allowed in INDEXING_WRITERS.items():
+        path = BACKEND / relative
+        assert path.exists(), f"remove from INDEXING_WRITERS: {relative}"
+        held = set(_reaches(_imports(path), RAG))
+        assert held == set(allowed), (relative, sorted(held))
 
 
 def test_no_agent_module_reads_project_evidence_around_the_tool() -> None:

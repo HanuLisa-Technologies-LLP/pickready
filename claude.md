@@ -919,7 +919,10 @@ are in `docs/spec/ASSESSMENT_FLOW.md`.
 - **Scoring indexes the transcript INLINE before Miti reads passages**
   (`evidence.ensure_transcript_indexed`), because completion dispatches
   indexing and scoring from one commit and an empty index reads as "nothing
-  related".
+  related". It writes through `rag.index.index_source`, the one
+  load-then-index path the dispatched `pickready.index_document` shares, and
+  that WRITE is the one `services.rag` import an agent module may hold
+  (`INDEXING_WRITERS`, pinned to its exact import).
 - **`extract_project_evidence` is a READ tool**, interviewer only, assessment
   stage only; project evidence stays OUT of the index.
 - **Every embedded chunk says which model produced it**

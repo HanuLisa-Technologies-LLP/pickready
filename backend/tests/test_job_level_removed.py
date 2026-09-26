@@ -36,10 +36,11 @@ _JOB_NAMES = re.compile(r"^(?:job|j|_job|job_row|jobs?_?\w*)$")
 #: column, which stays (CONTRACT S4).
 _DECLARES = APP / "models" / "job.py"
 
-#: Readers other packages own, each deleted by its owner. Not permanent.
-PENDING_BACKEND = {
-    APP / "services" / "functional_assessment.py": "Phase 7 (`infer_grade`)",
-}
+#: Readers other packages own, each deleted by its owner. EMPTY since Phase 5
+#: deleted the keyword grade inference (`infer_grade`) from
+#: `functional_assessment.py`: the report states the contract's locked grade.
+#: Kept, with the check below, as the shape the next hand-off needs.
+PENDING_BACKEND: dict = {}
 
 _FRONTEND_PATTERN = re.compile(r"\b(?:job|role)\??\.level\b")
 #: Every frontend reader has landed (PLAN-p1 WP-D and Phase 6 WP6-E): the job
@@ -49,7 +50,11 @@ PENDING_FRONTEND: tuple = ()
 
 
 def _level_reads(path) -> list[int]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return _level_reads_in(path.read_text(encoding="utf-8"))
+
+
+def _level_reads_in(source: str) -> list[int]:
+    tree = ast.parse(source)
     return sorted(
         node.lineno
         for node in ast.walk(tree)
@@ -92,9 +97,16 @@ def test_every_pending_hand_off_still_reads_level() -> None:
 
 
 def test_the_walk_is_not_vacuous() -> None:
-    """The AST walk must still find the readers it is told are pending, or it
-    has quietly stopped seeing the attribute at all."""
-    assert _backend_reads(), "the walk found no `.level` read anywhere"
+    """With no reader left, a walk that had quietly stopped seeing the
+    attribute would pass as well. So it must still flag every job-shaped read
+    in a known source, ignore a read on a name that is not a job, and walk the
+    whole of `app/` rather than an empty directory."""
+    known = "\n".join(("job.level", "j.level", "job_row.level", "x = candidate.level"))
+    assert _level_reads_in(known) == [1, 2, 3]
+    walked = [p for p in APP.rglob("*.py") if "__pycache__" not in p.parts]
+    # 482 modules when this floor was set; far enough below to survive growth
+    # and deletions, far above an empty or mis-rooted walk.
+    assert len(walked) > 400, len(walked)
 
 
 def test_no_job_schema_carries_level() -> None:

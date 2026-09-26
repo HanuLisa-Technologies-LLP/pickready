@@ -139,7 +139,8 @@ LIVE: dict[str, str] = {
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
-        "call rag.sources.load and rag.index.index_document. Before that the "
+        "call rag.index.index_source (which loads through rag.sources.load and "
+        "writes through rag.index.index_document). Before that the "
         "package was importable from a route and had never executed once."
     ),
 }
@@ -328,8 +329,11 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "stamps started_at; without it no skill ever locks (D5) and Miti has "
         "no snapshot to grade against."
     ),
-    ("app/services/rag/index.py", "index_document"): (
-        "app/workers/tasks.py, from pickready.index_document. Without a caller "
+    ("app/services/rag/index.py", "index_source"): (
+        "app/workers/tasks.py, from pickready.index_document, and "
+        "assessment_pipeline/evidence.ensure_transcript_indexed, the scoring "
+        "run's inline index. It is the one load-then-index path and the only "
+        "caller of index_document. Without a caller "
         "the index is never written, and retrieval over an empty table returns "
         "nothing SILENTLY: the lexical retriever ORs its terms and fusion "
         "tolerates an empty list, so it looks like a query with no good match."

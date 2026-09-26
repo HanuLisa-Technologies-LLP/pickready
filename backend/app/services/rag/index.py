@@ -57,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.llm_providers import EMBEDDING_CONTRACT_VERSION, EMBEDDING_MODEL
 from app.services.embeddings import EmbeddingError, embed, is_semantic
-from app.services.rag import chunking, contextual
+from app.services.rag import chunking, contextual, sources
 
 logger = logging.getLogger(__name__)
 
@@ -323,3 +323,28 @@ async def index_document(
     )
 
 
+async def index_source(
+    session: AsyncSession, *, source_type: str, source_id: uuid.UUID
+) -> IndexResult | None:
+    """Resolve one source document and index it: the ONE load-then-index path.
+
+    Both callers need exactly this sequence, `pickready.index_document` (the
+    dispatched indexer) and the scoring run, which indexes its own transcript
+    inline before Miti reads passages from it. One implementation, so the two
+    cannot come apart over which document a source id resolves to.
+
+    None when `sources.load` resolves nothing to index, which is a legitimate
+    state (a deleted row, a draft JD, an unparsed resume, an assessment with no
+    answered exchange) and never a failure. The caller commits and logs.
+    """
+    document = await sources.load(session, source_type=source_type, source_id=source_id)
+    if document is None:
+        return None
+    return await index_document(
+        session,
+        tenant_id=document.tenant_id,
+        source_type=document.source_type,
+        source_id=document.source_id,
+        document=document.text,
+        chunks=document.chunks,
+    )
