@@ -74,12 +74,8 @@ AGENT_FILES: tuple[str, ...] = (
 #: that removes the read. Must SHRINK to empty: `evidence_retrieval.
 #: project_evidence_for_candidate` is the replacement.
 PENDING_PROJECT_CONTEXT_READERS: dict[str, str] = {
-    "app/services/assessment_questions/generate.py": (
-        "Phase 3 (Vaada question writing): replace the direct "
-        "candidate_project_context call with "
-        "evidence_retrieval.project_evidence_for_candidate in the dispatched "
-        "generation step"
-    ),
+    # EMPTY since the stage 3 final sweeps: question writing reads project
+    # evidence through evidence_retrieval.project_evidence_for_candidate.
 }
 
 

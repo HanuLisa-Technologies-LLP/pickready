@@ -366,12 +366,9 @@ async def ranked_candidates(
                     p.resume_mime_type      AS resume_mime_type,
                     rep.id                  AS report_id,
                     rep.synthesized_at      AS report_ready_at,
-                    -- Assessment/video metadata (2026-09-05 dashboard/video
-                    -- spec). METADATA ONLY: rows, never S3, never media work.
-                    sess.mode               AS assessment_mode,
+                    -- The conversation's status, for the PRISM Report word.
+                    -- METADATA ONLY: rows, never S3, never media work.
                     sess.status             AS conversation_status,
-                    vid.status              AS video_recording_status,
-                    vid.media_deleted_at    AS video_media_deleted_at,
                     EXISTS (
                         SELECT 1 FROM proctoring_reports pr
                         JOIN proctoring_sessions psess
@@ -406,19 +403,12 @@ async def ranked_candidates(
                     -- `sess`, not `conv`: `_NEW_CANDIDATE_SQL` already uses
                     -- `conv` for its own scalar subquery over this table, and
                     -- two aliases one shadowing the other is a review trap.
-                    SELECT ac.mode, ac.status
+                    SELECT ac.status
                     FROM assessment_conversations ac
                     WHERE ac.job_candidate_link_id = l.id
                     ORDER BY ac.created_at DESC, ac.id DESC
                     LIMIT 1
                 ) sess ON TRUE
-                LEFT JOIN LATERAL (
-                    SELECT vr.status, vr.media_deleted_at
-                    FROM video_recordings vr
-                    WHERE vr.job_candidate_link_id = l.id
-                    ORDER BY vr.created_at DESC, vr.id DESC
-                    LIMIT 1
-                ) vid ON TRUE
                 WHERE l.job_id = :job_id {archived_filter} {age_filter} {arrival}
                 ORDER BY {ranking.order_by_sql()}
                 LIMIT :limit OFFSET :offset
@@ -520,11 +510,10 @@ def _row_payload(
         # The PRISM Report button is only actionable once a report exists.
         "has_report": row["report_id"] is not None,
         "report_ready_at": row["report_ready_at"],
-        # Assessment/video metadata (2026-09-05 dashboard/video spec). Words
-        # derived server-side from row presence alone. `.get()` rather than
-        # indexing: the absent-key state IS the honest empty state.
-        "assessment_mode": row.get("assessment_mode"),
-        "assessment_mode_label": video_access.mode_label(row.get("assessment_mode")),
+        # Report availability words, derived server-side from row presence
+        # alone. `.get()` rather than indexing: the absent-key state IS the
+        # honest empty state. The mode and video words left this table in the
+        # stage 3 final sweeps (see `schemas/ranking.py`).
         "prism_report_status": video_access.prism_status_word(
             has_report=row["report_id"] is not None,
             conversation_status=row.get("conversation_status"),
@@ -532,10 +521,6 @@ def _row_payload(
         "proctoring_report_status": video_access.proctoring_status_word(
             has_proctoring_report=bool(row.get("has_proctoring_report")),
             has_proctoring_session=bool(row.get("has_proctoring_session")),
-        ),
-        "video_status": video_access.video_status_word(
-            row.get("video_recording_status"),
-            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
         # Old Profile / New Profile. Presentation and billing only.
         "profile_age": row["profile_age"],

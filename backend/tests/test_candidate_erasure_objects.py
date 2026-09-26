@@ -547,7 +547,11 @@ async def test_a_pre_migration_resume_is_refused_rather_than_reported_deleted(
                         "WHERE candidate_id = :c"
                     ),
                     {
-                        "legacy": erasure.legacy_storage_provider(),
+                        # Any provider but the current one. The CHECK still
+                        # admits the pre-AWS value until a migration narrows
+                        # it, which is exactly why the refusal is keyed on
+                        # "not current" rather than on that name.
+                        "legacy": "gcs",
                         "c": str(world.subject),
                     },
                 )
@@ -566,6 +570,46 @@ async def test_a_pre_migration_resume_is_refused_rather_than_reported_deleted(
             "the pre-migration key was sent to the current store, where the "
             "delete is a no-op and the HEAD then reports a successful erasure"
         )
+    finally:
+        async with factory() as session:
+            async with superadmin_scope(session):
+                await _cleanup(session, world)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_an_s3_object_under_the_old_default_label_is_still_erased(
+    monkeypatch,
+) -> None:
+    """The column's server default was 'cloudinary' until migration 0128, so a
+    writer that forgot it labelled an S3 object with a store it never touched.
+    Its bytes ARE in S3: the read path serves it (`resume_storage.
+    is_in_current_store` accepts the `s3://` URL), so the erasure must delete
+    it too. Treating the label alone as legacy would refuse a Delete My
+    Profile over bytes this product can reach, the opposite failure to the
+    one the pre-migration refusal exists for.
+    """
+    engine, factory = await _factory_or_skip()
+    world = World()
+    store = _FakeStore(set())
+    _install(monkeypatch, store)
+    try:
+        async with factory() as session:
+            async with superadmin_scope(session):
+                await _seed(session, world)
+                await session.execute(
+                    text(
+                        "UPDATE profiles SET resume_storage_provider = 'cloudinary', "
+                        "resume_url = 's3://bucket/' || resume_public_id "
+                        "WHERE candidate_id = :c"
+                    ),
+                    {"c": str(world.subject)},
+                )
+                await session.commit()
+                found = await erasure.candidate_object_keys(session, world.subject)
+
+        kinds = [entry["kind"] for entry in found if entry["kind"].startswith("resume")]
+        assert kinds == [erasure.KIND_RESUME]
     finally:
         async with factory() as session:
             async with superadmin_scope(session):

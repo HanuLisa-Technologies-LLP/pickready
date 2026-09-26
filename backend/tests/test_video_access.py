@@ -214,15 +214,22 @@ def test_the_metadata_path_touches_no_media_and_no_object_store() -> None:
 
 def test_the_dashboard_queries_read_the_recording_in_one_statement() -> None:
     """No N+1: the latest recording and the latest session are LATERAL joins
-    inside the same statement as everything else, never a per-row query."""
+    inside the same statement as everything else, never a per-row query.
+
+    The job page's candidate table reads the session only: its mode and
+    video words left it in the stage 3 final sweeps, so a recording join
+    there would be a query for a column nothing renders."""
     for module in ("services/job_candidates.py", "services/dashboard.py"):
         source = (BACKEND / "app" / module).read_text(encoding="utf-8")
         assert "LEFT JOIN LATERAL" in source, module
-        assert "video_recordings vr" in source, module
         assert "assessment_conversations ac" in source, module
         # The pipeline package stays untouched by the dashboard read path;
         # the words come from the delivery layer's pure functions.
         assert "from app.services.video import" not in source, module
+    dashboard = (BACKEND / "app" / "services" / "dashboard.py").read_text(encoding="utf-8")
+    assert "video_recordings vr" in dashboard
+    table = (BACKEND / "app" / "services" / "job_candidates.py").read_text(encoding="utf-8")
+    assert "video_recordings" not in table
 
 
 def test_the_audit_actions_are_the_specifications() -> None:
@@ -627,7 +634,8 @@ async def test_download_succeeds_with_consent_and_audits(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_the_job_table_row_carries_the_new_metadata_words() -> None:
     """End to end through `ranked_candidates`: one query, and the row carries
-    the mode label, the report words and the video word."""
+    the report words. The mode and video words left the table in the stage 3
+    final sweeps: the recording is reached from the report's video section."""
     from app.core.db import superadmin_scope
     from app.services import job_candidates
 
@@ -640,8 +648,8 @@ async def test_the_job_table_row_carries_the_new_metadata_words() -> None:
                 page = await job_candidates.ranked_candidates(s, fx.job_id)
         assert page.total == 1
         row = page.rows[0]
-        assert row["assessment_mode_label"] == "Video interview"
-        assert row["video_status"] == "Ready"
+        assert "assessment_mode_label" not in row
+        assert "video_status" not in row
         assert row["prism_report_status"] == "Not available"
         assert row["proctoring_report_status"] == "Not available"
     finally:

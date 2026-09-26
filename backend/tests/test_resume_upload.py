@@ -103,15 +103,15 @@ async def test_store_resume_reports_gcs_failure(monkeypatch) -> None:
 # ── Validation: type / size / empty ──────────────────────────────────────────
 
 async def test_upload_rejects_oversized_file() -> None:
-    big = b"x" * (cand_mod.MAX_RESUME_BYTES + 1)
+    big = b"x" * (resume_storage.MAX_RESUME_BYTES + 1)
     with pytest.raises(cand_mod.HTTPException) as exc:
-        await cand_mod.read_validated_resume(_upload(data=big, filename="huge.pdf"))
+        await resume_storage.read_validated_resume(_upload(data=big, filename="huge.pdf"))
     assert exc.value.status_code == 413
 
 
 async def test_upload_rejects_wrong_type() -> None:
     with pytest.raises(cand_mod.HTTPException) as exc:
-        await cand_mod.read_validated_resume(
+        await resume_storage.read_validated_resume(
             _upload(data=b"hello", filename="notes.txt", content_type="text/plain")
         )
     assert exc.value.status_code == 422
@@ -119,13 +119,13 @@ async def test_upload_rejects_wrong_type() -> None:
 
 async def test_upload_rejects_empty_file() -> None:
     with pytest.raises(cand_mod.HTTPException) as exc:
-        await cand_mod.read_validated_resume(_upload(data=b"", filename="cv.pdf"))
+        await resume_storage.read_validated_resume(_upload(data=b"", filename="cv.pdf"))
     assert exc.value.status_code == 422
 
 
 async def test_upload_accepts_docx_by_extension() -> None:
     # Some browsers send application/octet-stream for .docx — extension wins.
-    data, filename, mime_type = await cand_mod.read_validated_resume(
+    data, filename, mime_type = await resume_storage.read_validated_resume(
         _upload(data=b"PK\x03\x04 docx", filename="resume.docx",
                 content_type="application/octet-stream")
     )

@@ -1368,7 +1368,7 @@ module "ecs" {
       # two cannot get out of step.
       target_group_arn = local.has_public_entry ? module.alb[0].target_group_arns["api"] : null
       needs_s3         = true
-      environment = {
+      environment = merge(local.judge0_client_environment, {
         # THIS CONTAINER SIGNS (sessions, OTP hashes, signed links), so
         # in production it must refuse to boot without its key. The
         # guard is opt-in per container because secrets are enumerated
@@ -1381,7 +1381,12 @@ module "ecs" {
         # Its partner, RAZORPAY_KEY_SECRET, is server-side only and is mounted
         # from Secrets Manager below. Checkout needs both.
         RAZORPAY_KEY_ID = var.razorpay_key_id
-      }
+      })
+      # Code sandbox stage B (all three empty until `judge0_clients_enabled`):
+      # the client group that admits the API to the sandbox, and the read on
+      # the token the execution role injects as JUDGE0_AUTH_TOKEN.
+      extra_security_group_ids    = local.judge0_client_security_group_ids
+      extra_execution_policy_arns = local.judge0_token_policy_arns
       # The backend writes no APPLICATION data to disk by design: resume bytes
       # never persist on the filesystem, and that invariant is what
       # `readonly_root` enforces.
@@ -1402,7 +1407,7 @@ module "ecs" {
       # is only half the fix: a Fargate task volume arrives root-owned 0755, so
       # it has to be handed to that uid before the application starts.
       writable_paths_uid = "10001"
-      secrets = {
+      secrets = merge({
         DATABASE_URL                  = module.secrets.secret_arns["DATABASE_URL"]
         REDIS_URL                     = module.secrets.secret_arns["REDIS_URL"]
         JWT_SECRET                    = module.secrets.secret_arns["JWT_SECRET"]
@@ -1434,7 +1439,7 @@ module "ecs" {
         # wrong state to leave an environment in. It is minted by the secrets
         # module rather than by a human for exactly that reason.
         INBOUND_WEBHOOK_SECRET = module.secrets.secret_arns["INBOUND_WEBHOOK_SECRET"]
-      }
+      }, local.judge0_client_secrets)
     }
 
     # THE ASSESSMENT AGENT. A task definition and nothing else: no service, no
@@ -1465,19 +1470,23 @@ module "ecs" {
       needs_s3     = true
       # NOT read-only: resume and project parsing write temp files.
       readonly_root = false
-      environment = {
+      environment = merge(local.judge0_client_environment, {
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
-      }
+      })
+      # Code sandbox stage B: the token read for the injection. The client
+      # GROUP for this task is on the trigger's ECS_SECURITY_GROUP_IDS below,
+      # because an on-demand task has no service to carry one.
+      extra_execution_policy_arns = local.judge0_token_policy_arns
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business reading the service account.
-      secrets = {
+      secrets = merge({
         DATABASE_URL      = module.secrets.secret_arns["DATABASE_URL"]
         REDIS_URL         = module.secrets.secret_arns["REDIS_URL"]
         OPENAI_GPT_TERRA  = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
         VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-      }
+      }, local.judge0_client_secrets)
     }
 
     # THE MIGRATION JOB. A task definition with no service, run as a one-shot
@@ -1675,10 +1684,15 @@ module "lambda" {
       # inside db.t4g.micro's limit with the API's pool alongside it.
       reserved_concurrency = var.reserve_lambda_concurrency ? 20 : null
       secret_policy_key    = "task-worker"
+      # Code sandbox stage B: the client group on THIS function only (the
+      # drafting agents never execute code), and the token read its cold-start
+      # fetch of JUDGE0_AUTH_TOKEN needs. Empty until `judge0_clients_enabled`.
+      extra_security_group_ids = local.judge0_client_security_group_ids
+      extra_policy_arns        = local.judge0_token_policy_arns
       # The SAME map the ECS services use. ECS injects these; Lambda has no
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
-      secrets = {
+      secrets = merge({
         DATABASE_URL = module.secrets.secret_arns["DATABASE_URL"]
         # The worker MINTS assessment invite links (workers/tasks.py, the
         # invitation email), which are signed material: it needs the real
@@ -1691,8 +1705,8 @@ module "lambda" {
         VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
         VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         TAVILY_API_KEY    = module.secrets.secret_arns["TAVILY_API_KEY"]
-      }
-      environment = {
+      }, local.judge0_client_secrets)
+      environment = merge(local.judge0_client_environment, {
         # Must match the ECS services: agents reach retrieval from here too,
         # and two halves of one product ranking the same query differently
         # is worse than either value applied everywhere. See the note on
@@ -1747,7 +1761,7 @@ module "lambda" {
         # count = 0 resource fails the plan even on the branch that never runs.
         # An empty splat joins to "", which is exactly "no working bucket".
         TRANSCRIBE_BUCKET = join("", aws_s3_bucket.transcribe[*].id)
-      }
+      })
     }
 
     "jd-gen" = {
@@ -1842,11 +1856,18 @@ module "lambda" {
         # answers 400 for any request that also supplies it. Nothing is lost --
         # `Settings.aws_region` reads that same variable, so boto3 and the
         # application agree with the platform rather than with a literal.
-        ECS_CLUSTER            = module.ecs.cluster_name
-        ECS_TASK_DEFINITION    = module.ecs.on_demand_task_families["agent"]
-        ECS_CONTAINER_NAME     = "agent"
-        PRIVATE_SUBNET_IDS     = join(",", module.network.private_subnet_ids)
-        ECS_SECURITY_GROUP_IDS = module.network.ecs_security_group_id
+        ECS_CLUSTER         = module.ecs.cluster_name
+        ECS_TASK_DEFINITION = module.ecs.on_demand_task_families["agent"]
+        ECS_CONTAINER_NAME  = "agent"
+        PRIVATE_SUBNET_IDS  = join(",", module.network.private_subnet_ids)
+        # The shared ECS group, plus the code sandbox's client group from
+        # stage B on (the agent scores coding answers). Comma-joined, which is
+        # what the handler splits on; with the switch off this is exactly the
+        # one group it always was.
+        ECS_SECURITY_GROUP_IDS = join(",", concat(
+          [module.network.ecs_security_group_id],
+          local.judge0_client_security_group_ids,
+        ))
       }
     }
 
@@ -2119,11 +2140,11 @@ module "observability" {
 #                                        host group.
 #   A2  judge0_instance_enabled = true   the instance, after the images are
 #       + ami + digests                  mirrored (scripts/mirror-judge0-images.sh).
-#   B   client wiring                    `client_security_group_id` on the API,
+#   B   judge0_clients_enabled = true    `client_security_group_id` on the API,
 #                                        the task worker and the agent, the
 #                                        token mount and JUDGE0_URL, with
 #                                        CODE_EXECUTION_BACKEND still disabled.
-#                                        NOT in this change: see the runbook.
+#                                        Wired below (`local.judge0_*`).
 #   C   CODE_EXECUTION_BACKEND = judge0  only after the sandbox verification
 #                                        task is green.
 #
@@ -2160,6 +2181,33 @@ module "code_sandbox" {
   alarm_topic_arn = aws_sns_topic.alarms.arn
 
   tags = local.tags
+}
+
+# Stage B, the callers. Everything here is EMPTY unless both
+# `judge0_enabled` and `judge0_clients_enabled` are true, so a default apply
+# (and a stage A1 or A2 apply) changes no service, task definition or function.
+# Splats rather than `[0]`: Terraform does not reliably short-circuit an index
+# on a count = 0 module, and an empty splat is exactly "no sandbox".
+locals {
+  judge0_clients = var.judge0_enabled && var.judge0_clients_enabled
+
+  # API service, task worker Lambda, and (through the trigger) the on-demand
+  # agent. NOT the frontend, the analysis service or the drafting Lambdas.
+  judge0_client_security_group_ids = local.judge0_clients ? module.code_sandbox[*].client_security_group_id : []
+  judge0_token_policy_arns         = local.judge0_clients ? module.code_sandbox[*].token_read_policy_arn : []
+  judge0_client_secrets = local.judge0_clients ? {
+    JUDGE0_AUTH_TOKEN = one(module.code_sandbox[*].token_secret_arn)
+  } : {}
+  judge0_client_environment = local.judge0_clients ? {
+    JUDGE0_URL = one(module.code_sandbox[*].sandbox_url)
+  } : {}
+}
+
+check "judge0_clients_need_the_module" {
+  assert {
+    condition     = !var.judge0_clients_enabled || var.judge0_enabled
+    error_message = "judge0_clients_enabled is true but judge0_enabled is false, so there is no sandbox for the callers to reach and nothing is wired."
+  }
 }
 
 # The instance lives inside the module the first switch creates, so the second

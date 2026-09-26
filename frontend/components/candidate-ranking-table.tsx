@@ -339,8 +339,8 @@ export function CandidateRankingTable({
   // with the caller's capabilities, a hardcoded span leaves a ragged row.
   const selectable = Boolean(onEmail || onSelectionChange);
   // Name, AI Match, CTC Match, Notice Period, Education, BGV Status, Type of
-  // Procurement, Status, Assessment, Resume, PRISM Report, Q&A, Validation.
-  const columnCount = 13 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
+  // Procurement, Status, Resume, PRISM Report, Q&A, Validation.
+  const columnCount = 12 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
   const selectedRows = rows.filter((r) => selected.has(r.link_id));
 
   /**
@@ -520,10 +520,6 @@ export function CandidateRankingTable({
               <TableHead className="w-[110px]">BGV Status</TableHead>
               <TableHead className="w-[130px]">Type of Procurement</TableHead>
               <TableHead className="w-[150px]">Status</TableHead>
-              {/* How the assessment was conducted and whether its recording is
-                  there to watch (2026-09-05 dashboard/video spec 4.1 / 4.4).
-                  Metadata words from the server; this file computes nothing. */}
-              <TableHead className="w-[140px]">Assessment</TableHead>
               <TableHead className="w-[110px]">Resume</TableHead>
               {/* PRISM Report is the document a completed Tatva Assessment
                   produces (spec doc 4). The column header is the document's
@@ -649,31 +645,6 @@ export function CandidateRankingTable({
                   </TableCell>
                   <TableCell className="pt-4">
                     <StageBadge status={row.status} short />
-                  </TableCell>
-                  <TableCell className="pt-4">
-                    {/* Mode word, then the video word underneath. Both come
-                        from the server; "Ready" is teal because a watchable
-                        recording is evidence, and the empty states stay plain
-                        words because they are normal, not warnings. */}
-                    <span className="inline-block whitespace-nowrap rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium leading-tight">
-                      {row.assessment_mode_label ?? "Not started"}
-                    </span>
-                    <span
-                      className={
-                        "mt-1 block text-xs " +
-                        (row.video_status === "Ready"
-                          ? "font-medium text-teal-700"
-                          : "")
-                      }
-                    >
-                      {row.video_status === "Ready"
-                        ? "Video ready"
-                        : row.video_status === "Processing"
-                          ? "Video processing"
-                          : row.video_status === "Failed"
-                            ? "Video failed"
-                            : "No video"}
-                    </span>
                   </TableCell>
                   <TableCell className="pt-4">
                     <ResumeLinkCell row={row} />

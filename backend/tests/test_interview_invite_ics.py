@@ -132,7 +132,9 @@ async def test_the_invite_carries_an_ics_attachment(monkeypatch) -> None:
     sent: list[tuple] = []
     monkeypatch.setattr(module, "_get_link", fake_get_link)
     monkeypatch.setattr(
-        module, "dispatch", lambda name, args: sent.append((name, args))
+        module,
+        "dispatch_after_commit",
+        lambda session, name, args: sent.append((name, args)),
     )
 
     async def fake_audit(*_a, **_k):  # noqa: ANN002

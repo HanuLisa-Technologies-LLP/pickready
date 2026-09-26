@@ -39,9 +39,8 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
 
-from app.core.config import get_settings
+from app.core.redis_loop import LoopBoundRedis
 
 logger = logging.getLogger(__name__)
 
@@ -83,25 +82,30 @@ class StateUnavailable(RuntimeError):
     decision that nothing happened."""
 
 
-_client: Any = None
-_client_loop: asyncio.AbstractEventLoop | None = None
+#: The one loop-binding implementation (`core/redis_loop`), shared with the
+#: cache, the run-status record and the web-search breaker since the stage 3
+#: final sweeps. This module used to build its own per-loop client by hand,
+#: which was the same rule written twice.
+_CLIENT = LoopBoundRedis(
+    name="proctoring_state",
+    socket_timeout=_SOCKET_TIMEOUT_SECONDS,
+    connect_timeout=_SOCKET_TIMEOUT_SECONDS,
+)
 
 
 def _redis():
-    global _client, _client_loop
-    loop = asyncio.get_running_loop()
-    if _client is None or _client_loop is not loop:
-        import redis.asyncio as redis_asyncio
+    """The client for the running loop, or `StateUnavailable`.
 
-        _client = redis_asyncio.from_url(
-            get_settings().redis_url,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_connect_timeout=_SOCKET_TIMEOUT_SECONDS,
-            socket_timeout=_SOCKET_TIMEOUT_SECONDS,
-        )
-        _client_loop = loop
-    return _client
+    FAIL CLOSED, unlike the cache: `LoopBoundRedis.client()` answers None
+    when no client can be built, and a proctoring decision that could not be
+    made must not read as one that was made, so None becomes the same 503 a
+    Redis that stopped answering produces.
+    """
+    client = _CLIENT.client()
+    if client is None:
+        logger.error("proctoring.state.unavailable op=client err=unbuildable")
+        raise StateUnavailable("proctoring state unavailable: no Redis client")
+    return client
 
 
 async def _call(operation: str, coroutine_factory):

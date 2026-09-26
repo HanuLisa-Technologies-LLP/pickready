@@ -7,7 +7,7 @@ from pydantic import (
     BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator,
 )
 
-from app.models.enums import JobStatus, PipelineStatus
+from app.models.enums import JobStatus
 
 #: E.164-ish: an optional leading '+' and 7-15 digits. Separators (spaces,
 #: dashes, dots, parentheses) are accepted from the client and stripped before
@@ -183,13 +183,10 @@ class ApplicationOut(BaseModel):
     #: Slug of the employer's PUBLIC page, same contract as PortalJobOut.
     company_slug: str | None = None
     applied_at: datetime
-    # Latest pipeline status; None means still in review.
-    #
-    # RETAINED for backwards compatibility: this is the OLD five-value enum
-    # (shortlisted/rejected/hold/offered/joined) and it is null for every
-    # application sitting in one of the new pipeline stages. New clients should
-    # read `status`/`stage_label` below, which cover all ten.
-    stage: PipelineStatus | None
+    # The OLD five-value `stage` projection (shortlisted/rejected/hold/
+    # offered/joined, null for every newer stage) was DELETED at the 2026-09
+    # compatibility cutoff: no client read it, and `status`/`stage_label`
+    # below cover all ten stages.
     assessment_status: str | None = None
     conversation_status: str | None = None
     report_ready: bool = False

@@ -175,6 +175,7 @@ from app.schemas.dashboard import (
     TeamReviewIn,
     TeamReviewPanelOut,
 )
+from app.services import assessment_invitations
 from app.services import calibration as calibration_service
 from app.services import dashboard as dashboard_service
 from app.services import hiring_pipeline, rbac, reference_code, team_review
@@ -787,15 +788,37 @@ async def move_stage(
         raise HTTPException(status_code=403, detail=STAGE_DISABLED_UNDER_REVIEW)
 
     previous = hiring_pipeline.normalize(link["status"])
+    target = hiring_pipeline.normalize(payload.status)
+    # The same two refusals `api/pipeline.change_status` makes, because this
+    # is the same lifecycle point reached from a second surface (CONTRACT v8).
+    # A system-owned stage cannot be set by hand, and a move to "invitation
+    # sent" IS an invitation: as a bare transition it wrote the stage with no
+    # `assessment_conversations` row, asked no credit question and sent no
+    # invitation.
+    if target in hiring_pipeline.SYSTEM_ONLY_TARGETS:
+        raise HTTPException(status_code=409, detail=hiring_pipeline.SYSTEM_ONLY_REFUSAL)
     try:
-        result = await hiring_pipeline.apply_transition(
-            session,
-            link_id=link_id,
-            tenant_id=user.tenant_id,
-            target=payload.status,
-            actor_user_id=user.user_id,
-            remarks=payload.remarks,
-        )
+        if target == hiring_pipeline.ASSESSMENT_INVITED:
+            result = await assessment_invitations.invite_by_stage_move(
+                session,
+                tenant_id=uuid.UUID(str(user.tenant_id)),
+                job_id=job_id,
+                link_id=link_id,
+                actor_user_id=user.user_id,
+                actor_role=user.role,
+                remarks=payload.remarks,
+            )
+        else:
+            result = await hiring_pipeline.apply_transition(
+                session,
+                link_id=link_id,
+                tenant_id=user.tenant_id,
+                target=payload.status,
+                actor_user_id=user.user_id,
+                remarks=payload.remarks,
+            )
+    except assessment_invitations.InvitationRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except hiring_pipeline.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LookupError as exc:

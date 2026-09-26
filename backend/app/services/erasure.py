@@ -619,27 +619,28 @@ KIND_CONVERSATION_ATTACHMENT = "conversation_attachment"
 
 
 class LegacyObjectNotDeletable(RuntimeError):
-    """A stored object lives in the pre-migration object store.
+    """A stored object lives in a store other than the current one.
 
     Raised rather than skipped, and this is the whole reason the type exists.
-    Calling `object_storage.delete` on a pre-migration object name reaches the
+    Calling `object_storage.delete` on a key from another store reaches the
     current store, which has no such key, and the HEAD that follows then
     answers "absent" -- so the erasure would report the candidate's resume
-    deleted while the actual bytes sat untouched in the old bucket. A deletion
-    that cannot be performed must be visible, not confirmed.
-    `scripts/migrate_resumes_to_s3.py` is the fix.
+    deleted while the actual bytes sat untouched elsewhere. A deletion that
+    cannot be performed must be visible, not confirmed.
+
+    Decided by `resume_storage.is_in_current_store`, the same answer the
+    resume READ path uses, rather than by naming the pre-AWS provider: that
+    constant and its readers went in the 2026-09 final sweeps, and the
+    database CHECK still admits the old value until a migration narrows it,
+    so the refusal must not depend on a name.
     """
 
 
-def legacy_storage_provider() -> str:
-    """The provider string a pre-migration resume row carries.
-
-    Read from `resume_storage` rather than repeated, so the two cannot disagree
-    about which rows this module must refuse.
-    """
+def _in_current_store(provider: str | None, url: str | None) -> bool:
+    """`resume_storage.is_in_current_store`, imported late to avoid a cycle."""
     from app.services import resume_storage  # noqa: PLC0415 -- avoids a cycle
 
-    return resume_storage.LEGACY_STORAGE_PROVIDER
+    return resume_storage.is_in_current_store(provider, url)
 
 
 async def candidate_object_keys(
@@ -664,21 +665,21 @@ async def candidate_object_keys(
     identifier = uuid.UUID(str(candidate_id))
     params = {"candidate_id": str(identifier)}
     found: list[dict[str, str]] = []
-    legacy_provider = legacy_storage_provider()
 
     # 1. Resumes. The key is `resume_public_id`; `resume_storage_provider`
     # says which store it is in, and a row written before the AWS migration is
     # named rather than silently mishandled (see LegacyObjectNotDeletable).
     resumes = await session.execute(
         text(
-            "SELECT resume_public_id, resume_storage_provider FROM profiles "
+            "SELECT resume_public_id, resume_storage_provider, resume_url "
+            "FROM profiles "
             "WHERE candidate_id = :candidate_id "
             "AND resume_public_id IS NOT NULL AND btrim(resume_public_id) <> ''"
         ),
         params,
     )
-    for key, provider in resumes.all():
-        legacy = str(provider or "") == legacy_provider
+    for key, provider, url in resumes.all():
+        legacy = not _in_current_store(provider, url)
         found.append(
             {"key": str(key), "kind": KIND_RESUME_LEGACY if legacy else KIND_RESUME}
         )

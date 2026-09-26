@@ -66,18 +66,6 @@ def test_every_refusal_is_recorded() -> None:
 # ── safety ───────────────────────────────────────────────────────────────────
 
 
-def test_pii_masking_keeps_what_debugging_needs_and_drops_the_rest() -> None:
-    masked = safety.mask_text("write to priya.raman@example.com about it")
-    assert "example.com" in masked
-    assert "priya.raman" not in masked
-
-
-def test_masking_recurses_through_structures() -> None:
-    masked = safety.mask({"to": ["a.person@example.com"], "n": 3})
-    assert "a.person" not in str(masked)
-    assert masked["n"] == 3
-
-
 def test_a_sensitive_action_needs_a_human_at_any_confidence() -> None:
     """A confidently wrong agent is exactly the one that should be stopped."""
     decision = safety.evaluate(safety.actions.REJECT_CANDIDATE, confidence=1.0)
@@ -110,19 +98,13 @@ def test_an_injection_shaped_chunk_is_quarantined_not_fatal() -> None:
 
 
 def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
-    """THE REQUEST ID IS PINNED, AND THAT IS A BUG FIX, NOT A CONVENIENCE.
+    """A trace line names the run and never carries what the run read.
 
-    `RequestTrace.request_id` defaults to `uuid4().hex[:16]`, and roughly one
-    generated id in sixteen contains a run of ten or more digits -- which is
-    exactly what `pii._PHONE`'s generic long-number rule is looking for. So this
-    assertion failed for about six percent of runs, on a random value, with a
-    message about PII in a line that contained none.
-
-    A test that fails one run in sixteen is worse than no test, because it
-    trains people to re-run rather than to read. The identifier is therefore
-    fixed here; the property being asserted -- that no CONTENT reaches the log
-    -- is unaffected by which identifier is used, and the digit-run behaviour it
-    was accidentally exercising is pinned deliberately in the test below.
+    The request id is pinned so the assertion is about content, not about a
+    random identifier. This used to ask the PII masker whether the line held
+    PII, and one generated id in sixteen tripped its long-number rule; the
+    masker went in the stage 3 final sweeps (nothing in the product ran it),
+    so the line is checked for the content itself instead.
     """
     trace = tracing.RequestTrace(
         agent_type="ranking", task_type="ranking", request_id="abcdefabcdefabcd"
@@ -133,22 +115,8 @@ def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
         trace.log()
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "ranking" in logged
-    assert not safety.contains_pii(logged)
-
-
-def test_a_hex_identifier_can_look_like_a_long_number_to_the_masker() -> None:
-    """The behaviour the test above used to discover by chance, stated once.
-
-    `_PHONE` bounds a 10-to-15 digit run so an ordinal or a year is not mistaken
-    for one, and a hex string is mostly digits. This is not a defect in the
-    masker: the rule is deliberately generic, and the reason it is harmless is
-    that NOTHING in the telemetry path masks a trace line. Traces carry
-    identifiers, counts and timings, so there is no content to mask -- and if
-    that ever stopped being true, masking would start corrupting the request id
-    an operator needs to find the run.
-    """
-    assert safety.contains_pii("request_id=b097811392924fbd")
-    assert not safety.contains_pii("request_id=abcdefabcdefabcd")
+    assert "abcdefabcdefabcd" in logged
+    assert "@" not in logged
 
 
 def test_an_unknown_stage_field_is_dropped_rather_than_stored() -> None:

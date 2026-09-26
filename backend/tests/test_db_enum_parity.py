@@ -308,10 +308,7 @@ def _writable_storage_providers() -> set[str]:
     Read from the module rather than restated, so a future provider move that
     changes the constant and forgets the migration fails HERE.
     """
-    return {
-        resume_storage.STORAGE_PROVIDER,
-        resume_storage.LEGACY_STORAGE_PROVIDER,
-    }
+    return {resume_storage.STORAGE_PROVIDER}
 
 
 @pytest.mark.asyncio

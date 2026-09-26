@@ -343,6 +343,12 @@ variable "judge0_instance_enabled" {
   default     = false
 }
 
+variable "judge0_clients_enabled" {
+  description = "Wire the callers to the sandbox (stage B): the client security group on the API service, the task worker Lambda and the on-demand agent, JUDGE0_AUTH_TOKEN mounted with its read policy, and JUDGE0_URL. Needs `judge0_enabled`. Its own switch so stages A1 and A2 stay plans that touch no running service, as the runbook requires. CODE_EXECUTION_BACKEND stays disabled until stage C."
+  type        = bool
+  default     = false
+}
+
 variable "judge0_ami_id" {
   description = "Amazon Linux 2023 x86_64 AMI id for the sandbox host, PINNED. Never a lookup: a newly published image must not replace the host in an apply nobody meant as a replacement. Empty until stage A2."
   type        = string

@@ -200,6 +200,24 @@ resource "aws_iam_role_policy_attachment" "execution_secrets" {
   }
 }
 
+# A mounted secret another module owns (the code sandbox token), read by the
+# EXECUTION role for the same reason as the policy above: it is the ECS agent
+# that fetches and injects it. Keyed by "<service>/<position>", because an ARN
+# created in the same apply cannot key a for_each.
+resource "aws_iam_role_policy_attachment" "execution_extra" {
+  for_each = merge([
+    for name, service in var.services : {
+      for index, arn in service.extra_execution_policy_arns : "${name}/${index}" => {
+        service = name
+        arn     = arn
+      }
+    }
+  ]...)
+
+  role       = aws_iam_role.execution[each.value.service].name
+  policy_arn = each.value.arn
+}
+
 # ── The task role: what the APPLICATION CODE may do ─────────────────────────
 
 resource "aws_iam_role" "task" {
@@ -532,7 +550,7 @@ resource "aws_ecs_service" "this" {
 
   network_configuration {
     subnets         = var.private_subnet_ids
-    security_groups = [var.ecs_security_group_id]
+    security_groups = concat([var.ecs_security_group_id], each.value.extra_security_group_ids)
     # PRIVATE SUBNETS, so no public IP. Egress is through NAT, which is why the
     # network module has one.
     assign_public_ip = false

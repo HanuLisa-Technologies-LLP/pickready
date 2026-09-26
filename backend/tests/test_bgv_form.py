@@ -176,7 +176,9 @@ def test_the_form_round_trip_and_the_single_use_latch(monkeypatch) -> None:
     w = _World()
     sent: list[tuple] = []
     monkeypatch.setattr(
-        bgv_api, "dispatch", lambda name, args=None, **kw: sent.append((name, args))
+        bgv_api,
+        "dispatch_after_commit",
+        lambda session, name, args=None, **kw: sent.append((name, args)),
     )
 
     async def _flow(factory):
@@ -262,7 +264,7 @@ def test_an_expired_link_is_410_and_writes_nothing(monkeypatch) -> None:
 
     _skip_without_database()
     w = _World()
-    monkeypatch.setattr(bgv_api, "dispatch", lambda *a, **k: None)
+    monkeypatch.setattr(bgv_api, "dispatch_after_commit", lambda *a, **k: None)
 
     async def _flow(factory):
         ttl = get_settings().verification_link_ttl_days
@@ -318,7 +320,9 @@ def test_a_partial_confirmation_records_not_verified(monkeypatch) -> None:
     w = _World()
     sent: list[tuple] = []
     monkeypatch.setattr(
-        bgv_api, "dispatch", lambda name, args=None, **kw: sent.append((name, args))
+        bgv_api,
+        "dispatch_after_commit",
+        lambda session, name, args=None, **kw: sent.append((name, args)),
     )
 
     async def _flow(factory):

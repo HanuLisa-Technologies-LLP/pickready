@@ -80,11 +80,29 @@ def test_one_loop_reuses_its_client() -> None:
     assert a is b
 
 
-def test_the_three_callers_share_the_one_implementation() -> None:
-    """Three copies of "a client for this loop" is how two of them were wrong."""
+def test_the_four_callers_share_the_one_implementation() -> None:
+    """Several copies of "a client for this loop" is how two of them were
+    wrong. The proctoring state joined in the stage 3 final sweeps."""
+    from app.services.proctoring import state as proctoring_state
+
     assert isinstance(cache._CLIENT, LoopBoundRedis)
     assert isinstance(status._CLIENT, LoopBoundRedis)
     assert isinstance(web_research._BREAKER_CLIENT, LoopBoundRedis)
+    assert isinstance(proctoring_state._CLIENT, LoopBoundRedis)
+
+
+def test_the_proctoring_state_fails_closed_when_no_client_can_be_built(
+    monkeypatch,
+) -> None:
+    """The cache reads None as a miss; the proctoring gate must not. A
+    decision that could not be made answers 503, never "nothing happened"."""
+    import pytest
+
+    from app.services.proctoring import state as proctoring_state
+
+    monkeypatch.setattr(proctoring_state._CLIENT, "client", lambda: None)
+    with pytest.raises(proctoring_state.StateUnavailable):
+        proctoring_state._redis()
 
 
 def test_a_build_failure_is_logged_and_latched_for_that_loop_only(

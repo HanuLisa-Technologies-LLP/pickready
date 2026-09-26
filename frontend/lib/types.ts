@@ -640,18 +640,10 @@ export interface RankedCandidate {
   /** The skills or the resume changed after the check: a rerun refreshes it. */
   ai_match_stale: boolean;
   validation_answers: ValidationAnswer[];
-  /** How the assessment was conducted: 'conversational' | 'video_interview',
-   *  or null before any session opens (2026-09-05 dashboard/video spec 4.1). */
-  assessment_mode?: StoredAssessmentMode | null;
-  /** "Video interview" / "Conversational" / "Not started", server-rendered. */
-  assessment_mode_label?: string;
   /** PRISM Report availability word: Available / Processing / Not available. */
   prism_report_status?: string;
   /** Proctoring Report availability word, same vocabulary. */
   proctoring_report_status?: string;
-  /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
-   *  words come from the server so the table never invents a state. */
-  video_status?: string;
   /** "Within range" / "Above range" / "Below range", or null for "Not
    *  stated". Derived server-side; nothing here computes a comparison. */
   ctc_match_label?: string | null;
@@ -997,6 +989,9 @@ export interface CreditSummary {
   average_credits_per_assessment?: number;
   alert_message: string | null;
   unlimited: boolean;
+  /** How long a NEW grant stays spendable. Credits granted before expiry
+   *  was introduced carry no expiry at all (change request 25). */
+  credit_validity_months: number;
 }
 
 export interface CreditLedgerEntry {

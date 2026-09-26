@@ -1418,11 +1418,6 @@ def _safe_database_name() -> str:
 
 # ── Object store reconciliation ──────────────────────────────────────────────
 
-#: Recognised durable URI schemes for a stored object. Anything else on a row is
-#: a legacy provider that the bucket cannot be asked about.
-OBJECT_SCHEMES: tuple[str, ...] = ("s3://", "gs://")
-
-
 def classify_object_uri(uri: str | None) -> str:
     """One of: none | s3 | legacy. Pure, so the survey's arithmetic is testable
     without a bucket."""

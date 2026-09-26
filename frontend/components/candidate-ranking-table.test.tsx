@@ -73,11 +73,8 @@ function row(overrides: Partial<RankedCandidate>): RankedCandidate {
     allowed_transitions: [],
     allowed_transition_options: [],
     validation_answers: [],
-    assessment_mode: null,
-    assessment_mode_label: "Not started",
     prism_report_status: "Not available",
     proctoring_report_status: "Not available",
-    video_status: "No recording",
     // Server words with no digit in them, so the sweep below tests what the
     // TABLE adds. A real notice label ("Within 30 days") does carry digits:
     // it is the candidate's application answer, not a score, and it is the

@@ -45,7 +45,7 @@ from app.core.config import get_settings
 from app.core.db import superadmin_scope
 from app.models.enums import Role, UserStatus
 from app.schemas.provider import PrimaryContactSetIn
-from app.workers import dispatch as dispatch_module
+from app.core import after_commit
 
 pytestmark = pytest.mark.asyncio
 
@@ -116,11 +116,16 @@ async def _live_invites(session, user_id: uuid.UUID) -> int:
     ).scalar_one()
 
 
-def _emails_dispatched() -> list:
+def _emails_dispatched(session) -> list[str]:
+    """The invitation sends waiting on this transaction's COMMIT.
+
+    The route dispatches after commit, and these tests roll back, so the
+    send is read where it waits rather than where it would land.
+    """
     return [
-        call
-        for call in dispatch_module.recorded()
-        if call.name == "pickready.send_email"
+        label
+        for label in after_commit.pending_labels(session)
+        if "task=pickready.send_email " in label
     ]
 
 
@@ -149,7 +154,7 @@ async def test_a_customer_with_no_contact_gets_one_and_an_invitation() -> None:
                     assert contact["email"] == "first@customer.example.com"
                     assert contact["status"] == UserStatus.invited.value
                     assert await _live_invites(session, contact["id"]) == 1
-                    assert len(_emails_dispatched()) == 1
+                    assert len(_emails_dispatched(session)) == 1
                 await session.rollback()
     finally:
         await engine.dispose()
@@ -227,7 +232,7 @@ async def test_a_bound_account_keeping_its_email_is_not_invited_again() -> None:
                         ),
                         {"uid": f"fb-{uuid.uuid4().hex}", "id": contact["id"]},
                     )
-                    dispatch_module.clear_recorded()
+                    sends_before = len(_emails_dispatched(session))
 
                     result = await provider_api.set_primary_contact(
                         tenant_id,
@@ -240,7 +245,7 @@ async def test_a_bound_account_keeping_its_email_is_not_invited_again() -> None:
                     )
                     assert result.invite_sent is False
                     assert result.rebound is False
-                    assert _emails_dispatched() == []
+                    assert len(_emails_dispatched(session)) == sends_before
 
                     kept = await _contact_row(session, tenant_id)
                     assert kept["firebase_uid"] is not None

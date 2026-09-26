@@ -84,7 +84,7 @@ from app.services import tenant_cache
 from app.services.audit import audit
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers import agent_client
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
 
@@ -443,14 +443,18 @@ async def _issue_invite(
     await _ensure_invite_template(session, actor.tenant_id)
     # `dispatch_state`, NOT `dispatch`. This local was called `dispatch` and it
     # SHADOWED THE IMPORTED FUNCTION on the next line: `_email_dispatch_state()`
-    # returns a str, so `dispatch(...)` below raised
+    # returns a str, so the `dispatch(...)` call that stood below raised
     # `TypeError: 'str' object is not callable` and POST /companies/me/staff
     # answered 500 unconditionally. Staff invitation has been completely broken
     # since 2026-09-05, and no test ever issued the request, so nothing caught
     # it. The third return value is the STATE, which is what the caller wants.
     dispatch_state = _email_dispatch_state()
     # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
-    dispatch(
+    # After the COMMIT: the link carries a token whose hash is written above,
+    # and an invitation mailed for a rolled-back invite would open onto
+    # nothing. A lost invoke is logged at ERROR; Resend invite issues a new one.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(actor.tenant_id),

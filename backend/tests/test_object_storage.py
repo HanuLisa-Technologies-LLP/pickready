@@ -59,6 +59,10 @@ class _Settings:
     s3_bucket = BUCKET
     aws_region = REGION
     s3_endpoint_url = LIVE_ENDPOINT
+    #: The key MinIO's single static KMS key is named in
+    #: `docker-compose.test.yml` (`MINIO_KMS_SECRET_KEY`); moto accepts it too.
+    #: Every write names it, as the pilot bucket policy requires.
+    s3_kms_key_id = "readypick-test-key"
 
 
 def _live_bucket_or_fail(boto3):
@@ -288,18 +292,6 @@ def test_delete_removes_an_object(s3) -> None:
         object_storage.get_bytes(stored.key)
 
 
-# ── URI provenance ───────────────────────────────────────────────────────────
-
-
-def test_a_pre_migration_uri_is_recognised_rather_than_treated_as_missing() -> None:
-    """A row pointing at `gs://` is not corrupt, it is un-migrated.
-
-    Reporting it as missing would send somebody looking for a lost file.
-    """
-    assert object_storage.is_legacy_uri("gs://old-bucket/resumes/abc")
-    assert not object_storage.is_legacy_uri("s3://new-bucket/resumes/abc")
-    assert not object_storage.is_legacy_uri(None)
-
 
 def test_a_presigned_url_requires_an_explicit_ttl(s3) -> None:
     """No default. A caller must not be able to mint a long-lived bearer token
@@ -322,3 +314,36 @@ def test_a_presigned_url_can_force_a_download(s3) -> None:
     assert "response-content-disposition" in url.lower()
     # The filename is quoted, so a space does not truncate the header.
     assert "attachment" in url.lower()
+
+
+def test_every_write_names_this_environments_kms_key(s3, monkeypatch) -> None:
+    """The pilot bucket policy denies a PutObject that names any encryption
+    but `aws:kms`, and one that names `aws:kms` without this environment's
+    key. This module sent `AES256` until the stage 3 final sweeps, so every
+    resume, compliance, project and attachment upload on pilot was refused."""
+    sent: list[dict] = []
+    real_put = object_storage.client().put_object
+
+    def _spy(**kwargs):
+        sent.append(kwargs)
+        return real_put(**kwargs)
+
+    monkeypatch.setattr(object_storage.client(), "put_object", _spy)
+    data = b"kms-encrypted resume bytes"
+    object_storage.put_if_absent(
+        key=_key(data), data=data, content_type="application/pdf", metadata={}
+    )
+    assert sent, "the write never reached put_object"
+    assert sent[0]["ServerSideEncryption"] == "aws:kms"
+    assert sent[0]["SSEKMSKeyId"] == _Settings.s3_kms_key_id
+
+
+def test_a_missing_kms_key_refuses_before_any_request(monkeypatch) -> None:
+    class _NoKey(_Settings):
+        s3_kms_key_id = ""
+
+    monkeypatch.setattr(object_storage, "get_settings", lambda: _NoKey())
+    with pytest.raises(object_storage.ObjectStorageNotConfigured, match="S3_KMS_KEY_ID"):
+        object_storage.put_if_absent(
+            key=_key(b"x"), data=b"x", content_type="text/plain", metadata={}
+        )

@@ -106,15 +106,6 @@ def _keyword_retrieval_does_not_require_every_query_term() -> bool:
     return " | " in tsquery and "&" not in tsquery
 
 
-def _pii_masking_handles_a_card_before_a_phone() -> bool:
-    from app.services.safety import pii
-
-    # A 16-digit card matches the generic long-number rule too. Masked as a card
-    # it keeps its last four; masked as a phone it would keep a different four.
-    masked = pii.mask_text("card 4111 1111 1111 1234")
-    return masked.endswith("1234") and "4111" not in masked
-
-
 CASES: tuple[RegressionCase, ...] = (
     RegressionCase(
         "generic-language-false-positive",
@@ -168,12 +159,6 @@ CASES: tuple[RegressionCase, ...] = (
         "2026-08-18, found by running retrieval against the live index rather "
         "than against a unit test: plainto_tsquery ANDs every term, so one word "
         "absent from the document killed the whole lexical match",
-    ),
-    RegressionCase(
-        "pii-card-before-phone",
-        "a card number masked as a phone keeps the wrong four digits",
-        _pii_masking_handles_a_card_before_a_phone,
-        "2026-08-18, safety PII masker ordering",
     ),
 )
 
