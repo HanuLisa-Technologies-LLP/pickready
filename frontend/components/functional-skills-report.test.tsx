@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Recharts measures its container, which jsdom reports as zero, so the radar
@@ -22,6 +22,13 @@ vi.mock("recharts", () => {
 });
 
 import {
+  EVIDENCE_LOAD_FAILED,
+  NO_CITED_EVIDENCE,
+  TRAIL_UNAVAILABLE,
+  type ReportCitations,
+} from "./report-citations";
+import {
+  AI_MATCH_TITLE,
   CLAIM_EVIDENCE_TITLE,
   FunctionalSkillsReportView,
   REPORT_SECTION_ORDER,
@@ -276,5 +283,171 @@ describe("the number ban, on the screen as in the PDF", () => {
       expect(section).not.toBeNull();
       expect(section?.textContent ?? "").not.toMatch(/\d/);
     }
+  });
+});
+
+describe("a skill the evaluation could not complete", () => {
+  it("states Not assessed and the server's sentence, never a grade", () => {
+    render(
+      <FunctionalSkillsReportView
+        report={report({
+          must_have: [
+            dimension("Distributed Systems", {
+              grade: "Not assessed",
+              status: "not_assessed",
+              status_note: "Not assessed: the evaluation could not be completed.",
+            }),
+          ],
+        })}
+      />,
+    );
+    const section = within(screen.getByLabelText("Must-have"));
+    expect(section.getByText("Not assessed")).toBeDefined();
+    expect(
+      section.getByText("Not assessed: the evaluation could not be completed."),
+    ).toBeDefined();
+  });
+
+  it("prints the template and support markers under the remark", () => {
+    render(
+      <FunctionalSkillsReportView
+        report={report({
+          must_have: [
+            dimension("Distributed Systems", {
+              remark_note: "Written from a fixed template while the writing model was unavailable.",
+              support_note: "The cited answer does not clearly support this remark.",
+            }),
+          ],
+        })}
+      />,
+    );
+    const section = within(screen.getByLabelText("Must-have"));
+    expect(
+      section.getByText("Written from a fixed template while the writing model was unavailable."),
+    ).toBeDefined();
+    expect(
+      section.getByText("The cited answer does not clearly support this remark."),
+    ).toBeDefined();
+  });
+});
+
+describe("the AI Match section", () => {
+  it("renders the frozen snapshot: the word, the header and tagged evidence", () => {
+    const { container } = render(
+      <FunctionalSkillsReportView
+        report={report({
+          ai_score: [],
+          ai_score_snapshot: {
+            status: "scored",
+            grade: "Matching",
+            header: "Resume check only. Real skills are tested in the assessment.",
+            tags: [
+              { text: "Kafka in production", polarity: "positive" },
+              { text: "No on-call history", polarity: "negative" },
+            ],
+          },
+        })}
+      />,
+    );
+    const section = within(screen.getByLabelText(AI_MATCH_TITLE));
+    expect(screen.getByRole("heading", { name: "AI Match" })).toBeDefined();
+    expect(section.getByText("Matching")).toBeDefined();
+    expect(
+      section.getByText("Resume check only. Real skills are tested in the assessment."),
+    ).toBeDefined();
+    // A screen reader hears which side of the evidence each tag is on.
+    expect(section.getByText("Evidenced:")).toBeDefined();
+    expect(section.getByText("Not evidenced:")).toBeDefined();
+    expect(section.getByText("Kafka in production")).toBeDefined();
+    const text = container.querySelector(`[aria-label="${AI_MATCH_TITLE}"]`)?.textContent ?? "";
+    expect(text).not.toMatch(/\d/);
+    expect(text).not.toMatch(/AI Score/);
+  });
+
+  it("still renders an older report's four legacy rows as they were written", () => {
+    render(<FunctionalSkillsReportView report={report()} />);
+    expect(within(screen.getByLabelText(AI_MATCH_TITLE)).getByText("Skills present")).toBeDefined();
+  });
+});
+
+function citations(overrides: Partial<ReportCitations> = {}): ReportCitations {
+  return {
+    trail_available: true,
+    statements: [
+      {
+        section: "must_have",
+        item: "Distributed Systems",
+        kind: "finding",
+        text: "Owned the migration end to end and named the rollback they wrote.",
+        support: null,
+        evidence: [
+          {
+            kind: "The candidate's answer",
+            question: "How did you run the orders migration?",
+            excerpt: "I planned the partitions and wrote the rollback myself.",
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("clicking a remark shows what it rests on", () => {
+  const remark = /Owned the migration end to end/;
+
+  it("fetches on the first click only and renders the cited answer", async () => {
+    const load = vi.fn().mockResolvedValue(citations());
+    render(<FunctionalSkillsReportView report={report()} loadCitations={load} />);
+    // Opening the report is not reading the evidence: nothing is fetched yet.
+    expect(load).not.toHaveBeenCalled();
+
+    const button = within(screen.getByLabelText("Must-have")).getByRole("button", {
+      name: remark,
+    });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      await screen.findByText(/I planned the partitions and wrote the rollback myself/),
+    ).toBeDefined();
+    expect(screen.getByText("Asked: How did you run the orders migration?")).toBeDefined();
+    expect(screen.getByText("The candidate's answer")).toBeDefined();
+
+    // Closing and reopening reuses what was fetched.
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so when the report predates its evidence trail", async () => {
+    const load = vi.fn().mockResolvedValue(citations({ trail_available: false, statements: [] }));
+    render(<FunctionalSkillsReportView report={report()} loadCitations={load} />);
+    fireEvent.click(screen.getByRole("button", { name: remark }));
+    expect(await screen.findByText(TRAIL_UNAVAILABLE)).toBeDefined();
+  });
+
+  it("says so when the trail holds nothing for this remark", async () => {
+    const load = vi.fn().mockResolvedValue(citations({ statements: [] }));
+    render(<FunctionalSkillsReportView report={report()} loadCitations={load} />);
+    fireEvent.click(screen.getByRole("button", { name: remark }));
+    expect(await screen.findByText(NO_CITED_EVIDENCE)).toBeDefined();
+  });
+
+  it("reports a failed fetch rather than an empty panel", async () => {
+    const load = vi.fn().mockRejectedValue(new Error("Report not found"));
+    render(<FunctionalSkillsReportView report={report()} loadCitations={load} />);
+    fireEvent.click(screen.getByRole("button", { name: remark }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(EVIDENCE_LOAD_FAILED);
+    expect(alert.textContent).toContain("Report not found");
+  });
+
+  it("is plain text, not a control, where no citations route exists", () => {
+    render(<FunctionalSkillsReportView report={report()} />);
+    expect(screen.queryByRole("button", { name: remark })).toBeNull();
+    expect(
+      within(screen.getByLabelText("Must-have")).getByText(remark),
+    ).toBeDefined();
   });
 });
