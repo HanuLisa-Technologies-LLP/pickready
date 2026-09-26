@@ -34,10 +34,12 @@ it expects to have been asked for.
 """
 from __future__ import annotations
 
+import io
 import json
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 from app.workers import dispatch as dispatch_mod
 
@@ -83,7 +85,73 @@ GATES = (
     "skills_drafted",
     "skills_saved",
     "job_published",
+    "applied",
+    "matched",
+    "invited",
+    "questions_written",
 )
+
+
+RESUME_LINES = (
+    "Meera Iyer",
+    "Settlement engineer with six years on multi-bank payment switches.",
+    "Built the Python reconciliation service that matches settlement files "
+    "from twelve partner banks against the internal ledger.",
+    "Tuned the PostgreSQL settlement ledger: partitioned the entries table and "
+    "added covering indexes for the nightly reconciliation queries.",
+    "Owned the rollback when a malformed settlement file broke reconciliation "
+    "in production, and wrote the incident review.",
+)
+RESUME_FILENAME = "meera-iyer-resume.docx"
+
+
+def resume_docx() -> bytes:
+    """A real DOCX, so the upload validator and the text extractor both run
+    on the bytes a candidate's browser would send."""
+    import docx  # noqa: PLC0415
+
+    document = docx.Document()
+    for line in RESUME_LINES:
+        document.add_paragraph(line)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+@contextmanager
+def object_store() -> Iterator[Any]:
+    """The harness's in-memory S3 at `object_storage._client`, with a bucket
+    configured, restored exactly on the way out. Object storage is
+    infrastructure the CI job does not run, like the database it does."""
+    from app.core.config import get_settings  # noqa: PLC0415
+    from app.services import object_storage  # noqa: PLC0415
+    from harness.doubles.storage import InMemoryObjectStore  # noqa: PLC0415
+
+    settings = get_settings()
+    store = InMemoryObjectStore()
+    prior_client = object_storage._client  # noqa: SLF001
+    prior_bucket = settings.s3_bucket
+    object_storage._client = store  # noqa: SLF001
+    settings.s3_bucket = "golden-journey-private"
+    try:
+        yield store
+    finally:
+        object_storage._client = prior_client  # noqa: SLF001
+        settings.s3_bucket = prior_bucket
+
+
+#: The six mandatory application fields, answered in full.
+VALIDATION = {
+    "current_ctc": "18,00,000",
+    "expected_ctc": "24,00,000",
+    "notice_period": "30 days",
+    "joining_date": "2026-11-03",
+    "document_readiness": "All documents ready",
+    "role_interest": (
+        "The role pairs settlement engineering with direct ownership of the "
+        "reconciliation platform, which is the work I want to do next."
+    ),
+}
 
 
 class JourneyError(AssertionError):
@@ -203,4 +271,62 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
     _expect("publish", status, body, 200)
     state.responses["published"] = body
     gate("job_published", state)
+
+    # ── The candidate uploads a resume and applies ────────────────────────
+    client.as_candidate()
+    status, body = client.call(
+        "upload_resume",
+        "PUT",
+        f"{V1}/portal/me/resume",
+        files={
+            "resume": (
+                RESUME_FILENAME,
+                resume_docx(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    _expect("upload_resume", status, body, 200)
+    _run_dispatched(state, "pickready.parse_resume")
+    status, body = client.call(
+        "apply",
+        "POST",
+        f"{V1}/portal/jobs/{state.job}/apply",
+        data={
+            "reuse_previous": "true",
+            "validation": json.dumps(VALIDATION),
+            "application_source": "direct",
+        },
+    )
+    _expect("apply", status, body, 201)
+    state.link = uuid.UUID(str(body["link_id"]))
+    # The application's own profile is a snapshot of the main resume, parsed
+    # on its own: an application is an immutable copy of what was sent.
+    _run_dispatched(state, "pickready.parse_resume")
+    gate("applied", state)
+
+    # ── AI Matching (Yukti, the resume stage) ─────────────────────────────
+    client.as_staff()
+    status, body = client.call("run_matching", "POST", f"{V1}/matching/jobs/{state.job}/run")
+    _expect("run_matching", status, body, 202)
+    # Publish asked for a run too; both read the same saved skills.
+    _run_dispatched(state, "pickready.run_matching", at_least=2)
+    status, body = client.call("ranked_before", "GET", f"{V1}/jobs/{state.job}/candidates")
+    _expect("ranked_before", status, body, 200)
+    state.responses["ranked_before"] = body
+    gate("matched", state)
+
+    # ── The invitation: one credit question for the batch ────────────────
+    status, body = client.call(
+        "invite",
+        "POST",
+        f"{V1}/pipeline/jobs/{state.job}/select-candidates",
+        json={"link_ids": [str(state.link)]},
+    )
+    _expect("invite", status, body, 202)
+    if body.get("invited") != 1:
+        raise JourneyError(f"the invitation invited nobody: {body}")
+    gate("invited", state)
+    _run_dispatched(state, "pickready.generate_candidate_questions")
+    gate("questions_written", state)
     return state

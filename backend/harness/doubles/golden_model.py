@@ -120,11 +120,65 @@ def _assessment_context(model: "GoldenModel", messages: Sequence[Mapping[str, An
     }
 
 
+def _extraction(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -> Any:
+    return {
+        "skills": ["Python", "PostgreSQL", "Payments reconciliation"],
+        "total_experience_years": 6,
+        "education": [],
+        "employment_history": [],
+    }
+
+
+# ── Yukti (AI Match) ─────────────────────────────────────────────────────────
+
+
+def _yukti(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -> Any:
+    """One reading per candidate, every quote lifted verbatim from the resume
+    the request carried, so grounding keeps it rather than refusing it."""
+    request = _user_payload(messages)
+    if not isinstance(request, Mapping):
+        raise UnscriptedTask("yukti_matching was asked without a JSON payload")
+    results = []
+    for candidate in request.get("candidates") or []:
+        quote = _first_sentence(str(candidate.get("resume") or ""))
+        results.append(
+            {
+                "candidate": candidate["ref"],
+                "skills": [
+                    {"skill": skill["ref"], "verdict": "strong", "quote": quote}
+                    for skill in request.get("skills") or []
+                ],
+                "experience_level": {
+                    "verdict": "strong",
+                    "quote": quote,
+                    "tag": "Seasoned settlement engineer",
+                },
+                "role_fit": {
+                    "verdict": "strong",
+                    "quote": quote,
+                    "tag": "Payments platform ownership",
+                },
+                "company_needs": [
+                    {
+                        "need": need["ref"],
+                        "verdict": "some",
+                        "quote": quote,
+                        "tag": "Reconciliation ownership",
+                    }
+                    for need in request.get("needs") or []
+                ],
+            }
+        )
+    return {"results": results}
+
+
 #: task type -> how the model answers it. Extended one entry per task the
 #: journey reaches; a task missing here is refused and recorded.
 SCRIPT: dict[str, Answer] = {
     "skills_drafting": _skills_draft,
     "assessment_context": _assessment_context,
+    "yukti_matching": _yukti,
+    "extraction": _extraction,
 }
 
 

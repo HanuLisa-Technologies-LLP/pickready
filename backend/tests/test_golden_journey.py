@@ -160,6 +160,39 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
     elif name == "job_published":
         rows = await _rows("SELECT ratified_at, posting_start_date FROM jobs WHERE id = :j", j=job)
         assert rows[0].ratified_at is not None and rows[0].posting_start_date is not None
+    elif name == "applied":
+        rows = await _rows(
+            "SELECT job_id, candidate_id, status, validation_json FROM job_candidate_links "
+            "WHERE id = :l",
+            l=str(state.link),
+        )
+        assert rows and rows[0].candidate_id == state.candidate
+        assert rows[0].status == "applied" and rows[0].validation_json
+        assert not await _rows(
+            "SELECT id FROM assessment_conversations WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        ), "applying created an assessment"
+    elif name == "matched":
+        rows = await _rows(
+            "SELECT yukti_status, yukti_pre_score FROM job_candidate_links WHERE id = :l",
+            l=str(state.link),
+        )
+        assert rows[0].yukti_status == "scored" and rows[0].yukti_pre_score is not None
+    elif name == "invited":
+        rows = await _rows(
+            "SELECT id, status FROM assessment_conversations WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert len(rows) == 1 and rows[0].status == "active"
+        state.conversation = rows[0].id
+        link = await _rows("SELECT status FROM job_candidate_links WHERE id = :l", l=str(state.link))
+        assert link[0].status == "assessment_invited"
+    elif name == "questions_written":
+        rows = await _rows(
+            "SELECT question_type FROM candidate_questions WHERE job_candidate_link_id = :l",
+            l=str(state.link),
+        )
+        assert rows, "no question was written for the invited candidate"
     else:
         raise AssertionError(f"no judge for gate {name!r}")
 
@@ -182,7 +215,7 @@ def test_the_golden_journey() -> None:
         state = journey.JourneyState(
             tenant=world.id("tenant"), staff=world.id("staff"), candidate=world.id("candidate")
         )
-        with TestClient(app) as http, model.installed():
+        with TestClient(app) as http, model.installed(), journey.object_store():
             client = _RealClient(http, staff, candidate)
             journey.drive(client, state, gate)
         assert reached == list(journey.GATES)
