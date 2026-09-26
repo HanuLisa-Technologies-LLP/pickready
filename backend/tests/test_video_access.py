@@ -214,15 +214,22 @@ def test_the_metadata_path_touches_no_media_and_no_object_store() -> None:
 
 def test_the_dashboard_queries_read_the_recording_in_one_statement() -> None:
     """No N+1: the latest recording and the latest session are LATERAL joins
-    inside the same statement as everything else, never a per-row query."""
+    inside the same statement as everything else, never a per-row query.
+
+    The job page's candidate table reads the session only: its mode and
+    video words left it in the stage 3 final sweeps, so a recording join
+    there would be a query for a column nothing renders."""
     for module in ("services/job_candidates.py", "services/dashboard.py"):
         source = (BACKEND / "app" / module).read_text(encoding="utf-8")
         assert "LEFT JOIN LATERAL" in source, module
-        assert "video_recordings vr" in source, module
         assert "assessment_conversations ac" in source, module
         # The pipeline package stays untouched by the dashboard read path;
         # the words come from the delivery layer's pure functions.
         assert "from app.services.video import" not in source, module
+    dashboard = (BACKEND / "app" / "services" / "dashboard.py").read_text(encoding="utf-8")
+    assert "video_recordings vr" in dashboard
+    table = (BACKEND / "app" / "services" / "job_candidates.py").read_text(encoding="utf-8")
+    assert "video_recordings" not in table
 
 
 def test_the_audit_actions_are_the_specifications() -> None:
