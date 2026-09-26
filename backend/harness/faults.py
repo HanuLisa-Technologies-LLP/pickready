@@ -617,9 +617,8 @@ def redis_down() -> Iterator[FaultSpec]:
     modules that build their OWN client would meet.
 
     THE LIMIT, STATED: a module holding an ALREADY BUILT client keeps it for
-    the rest of that event loop. `proctoring/state` caches its own, and
-    `workers/status` and the web-search breaker hold a `core/redis_loop`
-    client, so a scenario that exercised them earlier IN THE SAME LOOP still
+    the rest of that event loop. `proctoring/state`, `workers/status` and the
+    web-search breaker hold a `core/redis_loop` client, so a scenario that exercised them earlier IN THE SAME LOOP still
     reaches a live client; a new loop rebuilds through the patched factory.
     `cache._redis` is the seam HARNESS.md names and is the one that covers
     `rate_limit`, `auth_sessions` and the cache itself.

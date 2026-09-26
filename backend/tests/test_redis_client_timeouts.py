@@ -126,7 +126,12 @@ def test_the_loop_bound_callers_build_no_client_of_their_own() -> None:
     """The three modules that share `LoopBoundRedis` must not grow a second,
     process-global client back: that is exactly the warm-worker defect."""
     sites = _client_sites()
-    for module in ("core/cache.py", "workers/status.py", "services/web_research.py"):
+    for module in (
+        "core/cache.py",
+        "workers/status.py",
+        "services/web_research.py",
+        "services/proctoring/state.py",
+    ):
         assert module not in sites, module
         source = (BACKEND_APP / module).read_text(encoding="utf-8")
         assert "LoopBoundRedis(" in source, module
