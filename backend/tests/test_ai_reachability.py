@@ -120,6 +120,21 @@ LIVE: dict[str, str] = {
         "replaced the retired matcher, hiring.prescreen and services.longevity, "
         "which are deleted rather than left unreachable."
     ),
+    "app.services.evidence_retrieval": (
+        "PLAN-p5 WP5-E built it; the stage 3 final sweeps gave it its first "
+        "live caller. The dispatched question generation "
+        "(workers.tasks_questions -> assessment_questions.generate) reads "
+        "project_evidence_for_candidate instead of projects.context. Phase 5 "
+        "WP5-D adds Miti's transcript passages, Siddhi's support passages and "
+        "the per-skill resume passages."
+    ),
+    "app.services.tools": (
+        "evidence_retrieval calls tools.executor.execute, so the capability "
+        "check, the stage policy and the tenant check run on the "
+        "question-writing path before any row is read. Until the Vivekium "
+        "release the package was reachable only because rbac reads the agent "
+        "constants, and it guarded a path no route executed."
+    ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
@@ -139,21 +154,6 @@ LIVE: dict[str, str] = {
 #: release, and `test_unreachable_subsystems_removed.py` keeps them gone: a
 #: package that does not exist needs a removal sweep, not a reachability claim.
 NOT_LIVE: dict[str, str] = {
-    # AWAITING CALLERS, on purpose. PLAN-p5 WP5-E built the one Evidence RAG
-    # entry point ahead of the agents that read it; nothing on the live path
-    # imports it yet. When this fails, the wiring phase moves it to LIVE, and
-    # `app.services.tools` leaves IMPORTED_BUT_NOT_EXERCISED in the same
-    # change, because these calls are the first live `tools.execute` callers.
-    "app.services.evidence_retrieval": (
-        "PLAN-p5 WP5-E, awaiting callers. Phase 3 (Vaada, the dispatched "
-        "question generation in assessment_questions/generate.py) calls "
-        "resume_passages_for_skill per contract skill and "
-        "project_evidence_for_candidate once, replacing its direct "
-        "projects.context read; Phase 5 WP5-B/C (Miti items.evaluate_skill, "
-        "before the model call) calls transcript_passages_for_skill with the "
-        "skill's own answer ids excluded, and Siddhi's support check calls "
-        "support_passages_for_statement"
-    ),
     "app.evaluation": (
         "W7.4 requires this in the other direction too: nothing under "
         "app/services may import app/evaluation, and no route or worker may "
@@ -182,13 +182,7 @@ NOT_LIVE: dict[str, str] = {
 #: about the entry point that would prove execution rather than about the
 #: import graph. `ENTRY_POINTS_WITHOUT_CALLERS` below is the sharp version of
 #: the same claim, and it is the one W2 has to change.
-IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
-    "app.services.tools": (
-        "RPN-AI-UP-001 W3. Reachable only because rbac reads the agent "
-        "constants. The capability check runs before the handler, which is the "
-        "correct ordering, but it guards a path no route executes."
-    ),
-}
+IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {}
 
 #: The behavioural half: a function that is the ONLY writer of a table and has
 #: no caller. `(module, function)` -> the reason it currently has none.
