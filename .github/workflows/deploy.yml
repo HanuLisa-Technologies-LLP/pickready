@@ -415,6 +415,82 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # THE GOLDEN JOURNEY (CONTRACT v4 item 1), as a gate of its own.
+  #
+  # One customer and two applicants from job creation to the recruiter reading
+  # the PRISM Report, over the real routes and a real Postgres, with only the
+  # model (at the router), the code sandbox (its provider seam) and Transcribe
+  # (its one function) doubled. It also runs inside `backend-tests` and, as a
+  # scenario, inside `harness`; it is a job of its own so that a broken seam
+  # BETWEEN phases reads as "the golden journey failed" in the checks list,
+  # rather than as one red dot among seven thousand, and so its log is the
+  # journey's log alone. The same services as `backend-tests`, for the reason
+  # that job gives: pgvector because `0001_initial` creates the extension.
+  golden-journey:
+    name: Golden end-to-end journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: pickready
+          POSTGRES_PASSWORD: pickready
+          POSTGRES_DB: pickready
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pickready"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-only-not-a-real-secret-value
+      # `record`, as in `harness`: the journey runs each dispatched task BY
+      # NAME through `runtime.run_task` and asserts what was asked for, so a
+      # backend that ran work on its own would run it twice.
+      TASK_DISPATCH_BACKEND: record
+      # DELIBERATELY UNSET: OPENAI_GPT_TERRA, OPENAI_GPT_LUNA, VOYAGE_CONTEXT_4.
+      # The model is the journey's scripted double; a key here would let a
+      # vendor answer a call the script should have refused and recorded.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Migrate
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: The golden journey
+        working-directory: backend
+        # No `-x` and no retry: the gate message names the gate that failed
+        # and the model call nobody scripted, which is the whole diagnosis.
+        run: pytest tests/test_golden_journey.py -q --no-header
+
+      - name: The golden journey, as the harness scenario
+        working-directory: backend
+        run: python -m harness run --scenario integration.the_golden_journey
+
+  # ---------------------------------------------------------------------------
   frontend-checks:
     name: Frontend tests, design gate and build
     runs-on: ubuntu-latest
@@ -895,7 +971,7 @@ jobs:
 
   pilot-build-and-push:
     name: Build and push to ECR (pilot)
-    needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
+    needs: [backend-tests, harness, golden-journey, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
     # A manual dispatch may only build from main or a tag. A dispatch of any
     # other branch producing a deployable image is how production drifted from
     # main (2026-09-23 audit, Part 2, P0).
@@ -1085,7 +1161,7 @@ jobs:
 
   build-and-push:
     name: Build and push to ECR
-    needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
+    needs: [backend-tests, harness, golden-journey, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
     # A manual dispatch may only build from main or a tag. A dispatch of any
     # other branch producing a deployable image is how production drifted from
     # main (2026-09-23 audit, Part 2, P0).
