@@ -1,11 +1,24 @@
 """The golden end-to-end journey, against real Postgres (CONTRACT v4 item 1).
 
-One customer, one job, one candidate, from an empty funded tenant to the
-recruiter reading the executive profile, over the real routes, with exactly
-three things faked at their boundaries: the model (at the router), the code
-execution provider (`override_provider(FakeProvider())`) and speech to text
-(at the transcription service). The sequence lives in `harness.golden_journey`
-so this module and the harness scenario drive the same journey.
+One customer, one job, two applicants (one assessed, one rival who only
+applies), from an empty funded tenant to the recruiter reading the executive
+profile, over the real routes, with exactly three services faked at their
+boundaries: the model (at the router), the code execution provider
+(`override_provider(FakeProvider())`) and speech to text
+(`transcribe.run_transcription`), plus the in-memory object store standing in
+for S3 as infrastructure. The sequence lives in `harness.golden_journey` so
+this module and the harness scenario drive the same journey.
+
+WHAT IT PROVES, GATE BY GATE: job setup to publish, two applications, AI
+Matching, the batch invitation, questions written in every format, the
+proctoring session and consent, the start that locks the contract, typed
+prose, a spoken answer, a multiple choice, a fill-in-the-blank and a coding
+Run and Submit, completion, the sandbox execution of the coding answer, Miti's
+evaluation and Siddhi's report (neither templated), the proctoring report,
+Yukti's re-rank putting the assessed candidate above the rival, and the
+recruiter reading only words. Then, over the whole run: Vaada and Miti logged
+the same contract digest, no number and no em dash reached any response, and
+the spoken answer was stored under the bucket's own KMS key and deleted.
 
 HOW IT DIFFERS FROM THE HARNESS SCENARIO
 ------------------------------------------
@@ -18,8 +31,10 @@ that answered 200 and vanished is invisible to the connection that made it).
 
 A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED. Every gate asserts a row.
 
-Supersedes `tests/test_end_to_end_journey.py`, which drove the cross-cutting
-provenance half without the HTTP API while the routes were still moving.
+`tests/test_end_to_end_journey.py` is NOT superseded by this and stays: it
+runs every situation type (this journey runs one) and asserts the provenance
+ledger, the A2A contracts and the gate arithmetic row by row, none of which
+this journey reaches over HTTP.
 """
 from __future__ import annotations
 
