@@ -360,3 +360,17 @@ variable "judge0_image_digests" {
   type        = map(string)
   default     = {}
 }
+
+# ── The native arm64 image builder ───────────────────────────────────────────
+
+variable "image_builder_enabled" {
+  description = "Create the CodeBuild image builder (infra/modules/image_builder). TRUE by default because it is purely additive: a bucket, a log group, a role and a project that no existing resource references. scripts/build-images-remote.sh is how it is used."
+  type        = bool
+  default     = true
+}
+
+variable "image_builder_bucket_name" {
+  description = "The builder's source-archive bucket. Empty means <project>-<environment>-image-builds-<account id>, which is this account's in practice; set it only if that name is ever taken, which fails the apply loudly rather than silently."
+  type        = string
+  default     = ""
+}

@@ -79,3 +79,10 @@ judge0_image_digests = {
   "judge0-postgres" = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
   "judge0-redis"    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 }
+
+# PILOT-ONLY. The image builder is on by default in the real environment too;
+# it is set explicitly here so CI plans every resource of
+# infra/modules/image_builder whatever the default becomes. The bucket name is
+# the same never-created shape as every other bucket in this file.
+image_builder_enabled     = true
+image_builder_bucket_name = "readypick-never-created-image-builds"

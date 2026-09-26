@@ -589,6 +589,39 @@ module "secrets" {
   tags = local.tags
 }
 
+# ── The native arm64 image builder ───────────────────────────────────────────
+#
+# A deploy used to build all three arm64 images under QEMU on an x86 laptop,
+# which cost about two hours. This is a CodeBuild project on a native arm64
+# host that `scripts/build-images-remote.sh` starts with one commit's source
+# archive; docs/operations/DEPLOY_AWS.md makes it the default build path and
+# keeps the local QEMU build as the fallback.
+#
+# PURELY ADDITIVE: a bucket, a log group, a role and a project, none of which
+# any existing resource references, which is why the switch defaults to true.
+# The bucket name defaults to one carrying the account id, so it is this
+# account's in practice; if somebody else ever holds it the apply fails on
+# BucketAlreadyExists, loudly, and `image_builder_bucket_name` names another.
+
+module "image_builder" {
+  source = "../../modules/image_builder"
+  count  = var.image_builder_enabled ? 1 : 0
+
+  project     = var.project
+  environment = local.environment
+  region      = var.region
+  account_id  = var.account_id
+
+  repository_arns = module.ecr.repository_arns
+  repository_urls = module.ecr.repository_urls
+
+  bucket_name                  = var.image_builder_bucket_name != "" ? var.image_builder_bucket_name : "${var.project}-${local.environment}-image-builds-${var.account_id}"
+  huggingface_token_secret_arn = module.secrets.secret_arns["HUGGINGFACE_TOKEN"]
+  kms_key_arn                  = aws_kms_key.this.arn
+
+  tags = local.tags
+}
+
 # ── Data ─────────────────────────────────────────────────────────────────────
 
 module "rds" {
