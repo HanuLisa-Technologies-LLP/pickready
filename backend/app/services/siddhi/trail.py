@@ -37,7 +37,6 @@ from app.services.siddhi.evidence import (
     KIND_ANSWER,
     KIND_EMPLOYER,
     KIND_PASSAGE,
-    KIND_PORTABLE,
     KIND_QUESTION,
     KIND_SEARCHED,
     LOCATOR_CHUNK,
@@ -71,7 +70,6 @@ EVIDENCE_KIND_WORDS: Mapping[str, str] = {
     KIND_PASSAGE: "A passage the evaluation read",
     KIND_SEARCHED: "The record that this area was assessed",
     KIND_EMPLOYER: "A previous employer's confirmation",
-    KIND_PORTABLE: "The candidate's standing record",
     SUPPORTING_PASSAGE: "Another of the candidate's answers, which supports this statement",
 }
 

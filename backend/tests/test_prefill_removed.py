@@ -73,10 +73,8 @@ EXEMPT_PREFIXES: tuple[tuple[str, str], ...] = (
 #: Files another work package still has to clean, and who. MUST SHRINK TO
 #: EMPTY at integration; a stale entry fails below, so the ratchet stays tight.
 PENDING: dict[str, str] = {
-    "backend/app/services/siddhi/evidence.py": (
-        "Phase 5: portable_node and KIND_PORTABLE lost their only caller "
-        "(functional_assessment.portable_evidence_nodes, deleted here)"
-    ),
+    # EMPTY since the grading split (PLAN-p5 WP5-D): `portable_node` and
+    # `KIND_PORTABLE` were deleted from siddhi/evidence.py and siddhi/trail.py.
 }
 
 #: Modules that must not come back.

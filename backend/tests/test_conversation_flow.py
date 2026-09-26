@@ -251,7 +251,7 @@ async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> 
     from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
-    from app.services.functional_assessment import answers_by_key
+    from app.services.assessment_pipeline.evidence import answers_by_key
 
     monkeypatch.setattr(mod, "_candidate_link", _link_stub)
 

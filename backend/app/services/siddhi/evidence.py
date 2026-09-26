@@ -58,8 +58,8 @@ outside it: it names "the first exchange filed under this item", and a reader
 of the stored trail had no way from it back to the message the candidate
 actually typed. So a node now also carries `locators`, durable addresses of the
 rows it was built from (`assessment_messages:<uuid>`,
-`candidate_questions:<uuid>`, `context_chunks:<uuid>`, `employer:<slug>`,
-`portable:<slug>`), persisted in the trail beside the ref. A locator is an
+`candidate_questions:<uuid>`, `context_chunks:<uuid>`, `employer:<slug>`),
+persisted in the trail beside the ref. A locator is an
 address and never text: resolving it to an excerpt happens at READ time,
 behind the capability that guards the transcript
 (`siddhi.trail.resolve_evidence`), so the stored trail stays a record anyone
@@ -79,7 +79,6 @@ __all__ = [
     "KIND_QUESTION",
     "KIND_SEARCHED",
     "KIND_EMPLOYER",
-    "KIND_PORTABLE",
     "KIND_PASSAGE",
     "LOCATOR_MESSAGE",
     "LOCATOR_QUESTION",
@@ -88,12 +87,11 @@ __all__ = [
     "EvidenceIndex",
     "employer_item",
     "employer_node",
-    "portable_node",
     "passage_node",
 ]
 
 #: Durable address prefixes. `siddhi.trail` resolves the first three at read
-#: time; the employer and portable addresses are their own refs and carry no
+#: time; the employer address is its own ref and carries no
 #: text to resolve.
 LOCATOR_MESSAGE = "assessment_messages"
 LOCATOR_QUESTION = "candidate_questions"
@@ -119,27 +117,6 @@ KIND_SEARCHED = "searched"
 #: over for one purpose, it reaches the recruiter running the verification and
 #: nobody else, and a delivered report is forwarded.
 KIND_EMPLOYER = "employer"
-
-#: A FIFTH KIND: THIS CRITERION RESTS ON THE CANDIDATE'S PORTABLE RECORD.
-#:
-#: Owner ruling 2026-09-22 (change request 23). A criterion the Portable layer
-#: already established was recorded rather than asked, so the answer in the
-#: transcript is the platform stating what it already held rather than the
-#: candidate typing it afresh. Both facts are true and the report must be able
-#: to say which it is standing on.
-#:
-#: A SEPARATE KIND RATHER THAN AN `answer` NODE WITH A NOTE ON IT, because the
-#: distinction is exactly the one a person auditing a grade needs: "they told
-#: us this, here, in this assessment" and "we already knew this, from their
-#: standing record" are different provenances, and a reader with one ref kind
-#: could not recover which. The node joins the item's own grounding rather than
-#: replacing it, so a criterion with both kinds cites both.
-#:
-#: WHAT IT DOES NOT CARRY, and this is the constraint the whole feature rests
-#: on: no score, no grade, no prior verdict of any kind. There is nothing in
-#: `portable_evidence_items` that could supply one, and a ref is a locator in
-#: any case. The new job's matrix grades this criterion itself.
-KIND_PORTABLE = "portable"
 
 #: A SIXTH KIND: A TRANSCRIPT OR RESUME PASSAGE A GRADING JUDGEMENT READ.
 #:
@@ -229,21 +206,6 @@ def employer_node(employer_name: str) -> "EvidenceNode":
     return EvidenceNode(ref=ref, kind=KIND_EMPLOYER, item=item, locators=(ref,))
 
 
-def portable_node(item: str) -> "EvidenceNode":
-    """One citable "this came from the portable record" node for a rated item.
-
-    Filed under the ITEM's own name, not under a namespace of its own, because
-    it is evidence about that criterion and has to join that criterion's
-    grounding. The employer nodes are namespaced instead, and the difference is
-    real: an employer confirmation is about an EMPLOYER, which could collide
-    with a competency of the same name, while this is about the competency
-    already.
-    """
-    key = str(item)
-    ref = f"{KIND_PORTABLE}:{_slug(key)}"
-    return EvidenceNode(ref=ref, kind=KIND_PORTABLE, item=key, locators=(ref,))
-
-
 def passage_node(
     item: str, slug: str, index: int, *, chunk_id: Any, content: str
 ) -> "EvidenceNode":
@@ -297,29 +259,24 @@ class EvidenceIndex:
     def grounding(self, item: str) -> tuple[str, ...]:
         """The refs a claim ABOUT this item rests on.
 
-        The item's answers and its portable record when it has either, and its
-        `searched` record when it has neither. Never both-or-nothing: a claim
-        resting on the search record alone is a weaker claim, and the ref says
-        so by its kind.
+        The item's answers (and the passages its judgement read) when it has
+        any, and its `searched` record when it has none. Never both-or-nothing:
+        a claim resting on the search record alone is a weaker claim, and the
+        ref says so by its kind. The `searched` fallback is the record that the
+        criterion was assessed at all, and it is what makes a gap statement
+        citable.
 
-        THE TWO REAL KINDS ARE RETURNED TOGETHER RATHER THAN ONE WINNING. A
-        criterion the Portable layer established still produced a recorded
-        exchange in the transcript, so both nodes exist and both are true; a
-        reader auditing the grade is entitled to see that the answer was the
-        platform restating what it held, which is only visible if the portable
-        ref travels beside it. The `searched` fallback stays last for the
-        reason it has always been last: it is the record that the criterion was
-        assessed at all, and it is what makes a gap statement citable.
+        The portable-record kind that stood beside the answers is DELETED with
+        the pre-fill (it lost its only caller; `test_prefill_removed.py`).
         """
         answers = self.refs_for(item, kind=KIND_ANSWER)
-        portable = self.refs_for(item, kind=KIND_PORTABLE)
         # A passage a grading judgement read is evidence the grade rests on,
         # so a claim about the grade cites it beside the answers. It never
         # stands in for them: an item with passages and no answer still has
         # real evidence, and the refs say which kind by their prefix.
         passages = self.refs_for(item, kind=KIND_PASSAGE)
-        if answers or portable or passages:
-            return answers + portable + passages
+        if answers or passages:
+            return answers + passages
         return self.refs_for(item, kind=KIND_SEARCHED)
 
     def node(self, ref: str) -> EvidenceNode | None:

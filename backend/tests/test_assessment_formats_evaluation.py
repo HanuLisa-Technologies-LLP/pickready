@@ -56,31 +56,12 @@ REASONING = (
     "worth confirming in interview."
 )
 
-CODING_REASONING = (
-    "The code was read and not executed, so this describes how it appears rather than "
-    "how it runs. The comprehension over items with a seen set appears to preserve "
-    "first-seen order while removing repeats, which seems to match the stated problem. "
-    "It relies on the side effect of adding inside the condition, which is compact but "
-    "harder to read. Behaviour on unhashable elements cannot be confirmed without "
-    "running it."
-)
-
-
 def _valid_evidence_output() -> dict:
     return {
         "score": 78,
         "rubric_scores": {name: 0.8 for name in evaluation.EVIDENCE_CRITERIA},
         "reasoning": REASONING,
         "citations": ["the dual-write window", "read amplification"],
-    }
-
-
-def _valid_coding_output() -> dict:
-    return {
-        "score": 71,
-        "rubric_scores": {name: 0.7 for name in evaluation.CODING_CRITERIA},
-        "reasoning": CODING_REASONING,
-        "citations": ["seen = set()"],
     }
 
 
@@ -128,28 +109,6 @@ async def test_an_evidence_evaluation_carries_reasoning_citations_and_a_rubric(m
 
 
 @pytest.mark.asyncio
-async def test_a_coding_evaluation_always_states_that_the_code_was_not_run(monkeypatch) -> None:
-    sent = _responder(monkeypatch, [_valid_coding_output()])
-    result = await evaluation.evaluate(
-        None,
-        question_type=types.CODING,
-        prompt="Remove duplicates, preserving order.",
-        answer_text=CODE,
-        item_name="Python",
-        payload={"language": "python", "constraints": "No imports.", "expected_approach": "Set plus scan."},
-        language="python",
-    )
-    assert not result.degraded
-    record = result.value
-    assert record["not_executed_note"] == evaluation.NOT_EXECUTED_NOTE
-    assert "not executed" in record["not_executed_note"].casefold()
-    # The prompt says it too, so the model does not have to be corrected into it.
-    assert "NOT BEEN EXECUTED" in sent[0]
-    # And the expected approach is for the reader, never for the candidate.
-    assert "Set plus scan." in sent[0]
-
-
-@pytest.mark.asyncio
 async def test_a_short_reasoning_is_rejected_and_the_model_is_told(monkeypatch) -> None:
     """"A bare number is not defensible in a hiring context"."""
     thin = {**_valid_evidence_output(), "reasoning": "Good answer with detail."}
@@ -189,27 +148,6 @@ async def test_a_fabricated_citation_is_rejected_and_named(monkeypatch) -> None:
     assert not result.degraded
     assert "copied word for word" in sent[1]
     assert "I rewrote the billing engine" in sent[1]
-
-
-@pytest.mark.asyncio
-async def test_an_unhedged_coding_verdict_is_rejected(monkeypatch) -> None:
-    """The code was not executed, so a verdict that claims it works is a claim
-    the product cannot make."""
-    overclaimed = {
-        **_valid_coding_output(),
-        "reasoning": (
-            "The function removes duplicates correctly and returns the list in the "
-            "original order. The set membership check is efficient and the code is "
-            "clean, readable and handles the required cases without any problem at "
-            "all in the general case as written by the candidate here."
-        ),
-    }
-    sent = _responder(monkeypatch, [overclaimed, _valid_coding_output()])
-    result = await evaluation.evaluate(
-        None, question_type=types.CODING, prompt="q", answer_text=CODE, item_name="Python"
-    )
-    assert not result.degraded
-    assert "hedged language" in sent[1]
 
 
 @pytest.mark.asyncio
@@ -265,16 +203,25 @@ def test_the_two_rubrics_are_the_ones_the_specification_lists() -> None:
         "coherence_with_resume",
         "honesty_markers",
     ]
-    assert list(evaluation.CODING_CRITERIA) == [
-        "correctness_of_approach",
-        "code_quality",
-        "edge_case_handling",
-        "efficiency_awareness",
-        "idiomatic_use",
-    ]
     assert evaluation.rubric_for(types.EVIDENCE_BASED) == evaluation.EVIDENCE_CRITERIA
     with pytest.raises(ValueError):
         evaluation.rubric_for(types.MCQ_SINGLE)
+    # Coding has no read-only rubric any more (PLAN-p5 WP5-D, the p4-4f hunk).
+    with pytest.raises(ValueError):
+        evaluation.rubric_for(types.CODING)
+
+
+@pytest.mark.asyncio
+async def test_a_coding_answer_is_refused_rather_than_graded_by_reading(monkeypatch) -> None:
+    """A coding answer is graded from its sandbox run: 70 parts hidden tests,
+    30 parts `coding_assessment.review`. A caller that still routes one here
+    fails loudly, before any model is called."""
+    sent = _responder(monkeypatch, [_valid_evidence_output()])
+    with pytest.raises(ValueError, match="sandbox"):
+        await evaluation.evaluate(
+            None, question_type=types.CODING, prompt="q", answer_text=CODE, item_name="Python"
+        )
+    assert sent == []
 
 
 # ── Where each format's score comes from (spec 6.3) ─────────────────────────
@@ -403,26 +350,6 @@ async def test_an_evidence_answer_is_scored_by_the_evaluation_and_stores_it(monk
     assert not degraded and used == [ANSWER]
     # The reasoning is persisted where the recruiter's view reads it.
     assert record.ai_evaluation_json["reasoning"] == REASONING
-
-
-@pytest.mark.asyncio
-async def test_a_coding_answer_is_evaluated_from_the_code_it_submitted(monkeypatch) -> None:
-    competency = _competency()
-    question = _question(types.CODING, weight=0.8, payload={"language": "python"})
-    question.competency_id = competency.id
-    record = _record(answer_json={"language": "python", "code": CODE})
-    seen: dict = {}
-
-    async def _evaluate(session, **kwargs):
-        seen.update(kwargs)
-        return agent_loop.LoopResult(value={**_valid_coding_output(), "rubric": {}}, degraded=False)
-
-    monkeypatch.setattr(evaluation, "evaluate", _evaluate)
-    score, used, _degraded = await _score(competency, [question], {}, {str(question.id): record})
-    assert score == 71
-    assert seen["language"] == "python"
-    assert CODE in seen["answer_text"]
-    assert used
 
 
 @pytest.mark.asyncio
