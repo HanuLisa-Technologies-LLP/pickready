@@ -1122,6 +1122,45 @@ are in `docs/spec/ASSESSMENT_FLOW.md`.
   U+0008 made the employment-gap sweep over Miti match nothing. The lesson is
   the 2026-09-23 one again.
 
+### SMALLER RULES, EACH OF WHICH COST SOMEBODY A DEFECT
+
+- **A script that marks skills saved goes through `skills.save`, or writes the
+  honest empty context** `{"role_summary": "", "generated_by": "<script>"}`.
+  `seed_demo_applications` presses Save Skills per demo job, one transaction
+  each, re-entering `superadmin_scope` (transaction-local) every time;
+  `backfill_assessment_context` is a DRY RUN by default and its audit rows name
+  the OPERATOR who ran it, never the original saver. **A rollback expires
+  every ORM instance**: carry ids across transactions, never rows.
+  `legacy_reset` classifies `job_skill_snapshots` as PRESERVE. Details in
+  `docs/spec/JOB_SETUP_FLOW.md`.
+- **The harness serves a model that must ANSWER at the vendor seam**
+  (`faults.model_answers`), never by patching, so the real router, contract
+  check and validator run; it is deliberately not a registered fault.
+  Harness worlds are states the product writes (`job_with_drafted_skills`,
+  `job_with_team_written_skills`, `job_with_saved_skills`) and none seeds the
+  seven-stage columns.
+- **The composer posts `sender_id`**: a holder of `manage_email_senders` picks
+  an ACTIVE sender, preselected to the default; everybody else posts none and
+  is told the default applies. A "Vivekium mailbox" choice is offered only
+  when no default exists, because omitting the sender MEANS the default. A
+  sentence built by concatenating a label ("could not approved this sender") is
+  why the sender card's toasts are an action TABLE of whole sentences.
+- **A promise printed on a control is a claim about the code**: the Add sender
+  dialog promised a six-digit code for sixteen days after the code was
+  withdrawn.
+- **`lib/api-mount-parity.test.ts` sweeps a third shape**, template literals
+  that put `/skills` or `/setup` after an interpolated job id, and asserts it
+  found at least two.
+- **The Candidate Dashboard's AI Match filter takes WORDS and sends bounds**
+  read off `rating.grade_for_percent` at every whole percent; `score` and
+  `pre_screen` sort keys answer 422.
+- **`/portal/assessments/[link_id]` is not an alias** and stays: every
+  invitation and Updates entry links to it; `test_candidate_update_links.py`
+  resolves every catalogue `link_path` against the App Router tree.
+- **Monaco's scripts pass `proxy.ts` like a page**, and that is correct only
+  because the editor mounts on signed-in pages; a test pins the 307 a
+  signed-out page would get.
+
 ### SUPERSEDED IN PLACE BY THIS SECTION
 
 Every older rule this release changes carries a marker dated 2026-09-25 where
