@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.execute_coding_submission",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "one tenant's work, not yet proven under tenant_worker_session (PLAN-p7 3.3 "
+        "converts only with a real-Postgres read-back test)"
+    ),
     max_attempts=3,
     backoff_seconds=5.0,
     backoff_max_seconds=60.0,
@@ -72,6 +77,8 @@ def execute_coding_submission(submission_id: str):
 @task(
     name="pickready.reconcile_coding_submissions",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_coding_submissions():
     """Every fifteen minutes: re-dispatch coding work nothing is working on.
@@ -110,6 +117,8 @@ def reconcile_coding_submissions():
 @task(
     name="pickready.probe_code_execution",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="an operator probe of the code sandbox; it belongs to no tenant",
 )
 def probe_code_execution():
     """Every five minutes: one canary through the sandbox, and its health.
@@ -126,6 +135,8 @@ def probe_code_execution():
 @task(
     name="pickready.verify_code_execution_sandbox",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="an operator probe of the code sandbox; it belongs to no tenant",
 )
 def verify_code_execution_sandbox():
     """The operator's acceptance check for the sandbox. NOT scheduled.

@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.repair_semantic_index",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def repair_semantic_index():
     """Hourly: re-embed chunks whose vector is missing, stale or the wrong width.

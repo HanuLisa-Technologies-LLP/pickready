@@ -54,6 +54,8 @@ from app.workers.dispatch import dispatch
 from app.workers.registry import Route, task
 from app.workers.runtime import (
     TaskContext,
+    resolve_tenant_id as _resolve_tenant_id,
+    tenant_worker_session as _tenant_worker_session,
     worker_session as _worker_session,
     _run,
 )
@@ -334,6 +336,11 @@ async def _send_email_async(
 @task(
     name="pickready.send_email",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "delivers platform and staff mail whose tenant_id is None, so there is no "
+        "tenant to confine it to"
+    ),
     max_attempts_setting="delivery_max_retries",
     backoff_seconds=60.0,
     backoff_max_seconds=60.0,
@@ -567,6 +574,7 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
 @task(
     name="pickready.send_lifecycle_email",
     route=Route.LAMBDA,
+    rls="tenant",
     max_attempts_setting="delivery_max_retries",
     backoff_seconds=60.0,
     backoff_max_seconds=60.0,
@@ -576,7 +584,11 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
 def send_lifecycle_email(ctx: TaskContext, email_log_id: str):
     """Send one of the six lifecycle emails from its `email_log` row."""
     async def _task():
-        async with _worker_session() as session:
+        tenant_id = await _resolve_tenant_id("email_log", email_log_id)
+        if tenant_id is None:
+            logger.warning("lifecycle_email.log_row_missing id=%s", email_log_id)
+            return {"status": "skipped", "reason": "log row not found"}
+        async with _tenant_worker_session(tenant_id) as session:
             return await _send_lifecycle_email_async(session, email_log_id)
 
     try:
@@ -588,7 +600,10 @@ def send_lifecycle_email(ctx: TaskContext, email_log_id: str):
             async def _mark_failed():
                 from app.models.email_log import STATUS_FAILED, STATUS_QUEUED, EmailLog
 
-                async with _worker_session() as session:
+                tenant_id = await _resolve_tenant_id("email_log", email_log_id)
+                if tenant_id is None:
+                    return
+                async with _tenant_worker_session(tenant_id) as session:
                     row = await session.get(EmailLog, uuid.UUID(str(email_log_id)))
                     if row is not None and row.status == STATUS_QUEUED:
                         from app.models.conversation import DELIVERY_FAILED
@@ -691,6 +706,11 @@ async def _autosend_lifecycle_email(
 @task(
     name="pickready.send_application_confirmation",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads the candidate row, which a tenant session cannot see when a databank "
+        "candidate owned by another tenant is linked to this job"
+    ),
 )
 def send_application_confirmation(link_id: str):
     """Email type 1: confirm an application was received (spec §6.1)."""
@@ -725,6 +745,11 @@ def reminder_stage_for(hours_elapsed: int) -> int:
 @task(
     name="pickready.send_assessment_reminder",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads the candidate row, which a tenant session cannot see when a databank "
+        "candidate owned by another tenant is linked to this job"
+    ),
 )
 def send_assessment_reminder(
     link_id: str, hours_elapsed: int = 24, reminder_stage: int | None = None
@@ -759,6 +784,11 @@ def send_assessment_reminder(
 @task(
     name="pickready.notify_candidate_of_message",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads the candidate row, which a tenant session cannot see when a databank "
+        "candidate owned by another tenant is linked to this job"
+    ),
 )
 def notify_candidate_of_message(conversation_id: str, message_id: str):
     """Tell a candidate a recruiter wrote to them: one Updates entry and one
@@ -788,6 +818,8 @@ def notify_candidate_of_message(conversation_id: str, message_id: str):
 @task(
     name="pickready.reconcile_queued_emails",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_queued_emails():
     """Every fifteen minutes: re-dispatch candidate emails whose send was lost.
@@ -830,6 +862,11 @@ def reconcile_queued_emails():
 @task(
     name="pickready.run_matching",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason=(
+        "databank discovery reads the tenant-free profiles and candidates of every "
+        "consenting candidate"
+    ),
     max_attempts=2,
     backoff_seconds=5.0,
     bind=True,
@@ -870,6 +907,11 @@ def run_matching(ctx: TaskContext, job_id: str):
 @task(
     name="pickready.generate_job_swot",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "one tenant's work, not yet proven under tenant_worker_session (PLAN-p7 3.3 "
+        "converts only with a real-Postgres read-back test)"
+    ),
 )
 def generate_job_swot(
     job_id: str,
@@ -891,9 +933,9 @@ def generate_job_swot(
     function's error metric moves. A lost invoke needs no sweep: a
     `generating` row past `swot_generation_stale_minutes` reads as failed.
 
-    RLS: the worker session bypasses RLS like every task today; this one reads
-    and writes one tenant's job and SWOT row, and is a candidate for the tenant
-    worker session when Phase 7 lands it.
+    RLS: registered `rls="bypass"` until a real-Postgres read-back test proves
+    it under `tenant_worker_session`; it reads and writes one tenant's job and
+    SWOT row, so it is the next candidate for conversion.
     """
     from app.models.job import Job
     from app.services import swot_analysis
@@ -951,6 +993,11 @@ def generate_job_swot(
 @task(
     name="pickready.draft_job_skills",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "one tenant's work, not yet proven under tenant_worker_session (PLAN-p7 3.3 "
+        "converts only with a real-Postgres read-back test)"
+    ),
     max_attempts=2,
     backoff_seconds=5.0,
 )
@@ -1019,6 +1066,8 @@ def draft_job_skills(
 @task(
     name="pickready.reconcile_job_setup",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_job_setup():
     """Find every job whose skills draft never landed, and ask again.
@@ -1129,6 +1178,8 @@ def reconcile_job_setup():
 @task(
     name="pickready.run_functional_assessment",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason="reads the tenant-free candidate row and profile",
     max_attempts=2,
     backoff_seconds=5.0,
 )
@@ -1267,6 +1318,8 @@ def run_functional_assessment(link_id: str):
 @task(
     name="pickready.purge_proctoring_events",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def purge_proctoring_events():
     """Hourly retention sweep over `proctoring_events` (proctoring spec 5).
@@ -1306,6 +1359,8 @@ def purge_proctoring_events():
 @task(
     name="pickready.purge_closed_job_assessments",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def purge_closed_job_assessments():
     """Delete a closed job's assessment data once its thirty days are up.
@@ -1373,6 +1428,10 @@ def purge_closed_job_assessments():
 @task(
     name="pickready.release_held_assessments",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "a sweep: with no tenant argument one run reads every tenant's held assessments"
+    ),
     max_attempts=3,
 )
 def release_held_assessments(tenant_id: str | None = None):
@@ -1437,6 +1496,8 @@ def release_held_assessments(tenant_id: str | None = None):
 @task(
     name="pickready.remind_unsaved_skills",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def remind_unsaved_skills():
     """One reminder per job whose drafted skills nobody has saved.
@@ -1546,6 +1607,10 @@ def remind_unsaved_skills():
 @task(
     name="pickready.parse_resume",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "a profile is tenant-free (source_tenant_id, shared through the databank)"
+    ),
     max_attempts=3,
 )
 def parse_resume(profile_id: str):
@@ -1574,6 +1639,10 @@ def parse_resume(profile_id: str):
 @task(
     name="pickready.yukti_score_profile",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "a profile is tenant-free (source_tenant_id, shared through the databank)"
+    ),
     max_attempts=2,
     backoff_seconds=5.0,
 )
@@ -1608,6 +1677,10 @@ def yukti_score_profile(profile_id: str):
 @task(
     name="pickready.index_document",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "indexes tenant-free resumes as well as one tenant's JDs and assessments"
+    ),
     max_attempts=3,
     backoff_seconds=2.0,
 )
@@ -1675,6 +1748,8 @@ def index_document(source_type: str, source_id: str):
 @task(
     name="pickready.sweep_consent_lifecycle",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def sweep_consent_lifecycle():
     """Consent renewal, the final warning, and the inactivity rule (feature 8).
@@ -1882,6 +1957,8 @@ def sweep_consent_lifecycle():
 @task(
     name="pickready.sweep_bgv_reminders",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def sweep_bgv_reminders():
     """Email 3 of the vivekium BGV flow: the day-3 non-response chase.
@@ -1955,6 +2032,10 @@ def sweep_bgv_reminders():
 @task(
     name="pickready.bgv_auto_maintenance",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads candidate_employments, the candidate's tenant-free employment history"
+    ),
 )
 def bgv_auto_maintenance(candidate_id: str, employment_id: str):
     """Feature 5's wiring: an appended employer fires its own verification.
@@ -1990,6 +2071,8 @@ def bgv_auto_maintenance(candidate_id: str, employment_id: str):
 @task(
     name="pickready.cascade_erasure",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="erases one candidate from every tenant that holds their data",
 )
 def cascade_erasure(
     candidate_id: str,
@@ -2087,6 +2170,8 @@ def cascade_erasure(
 @task(
     name="pickready.reconcile_candidate_erasures",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_candidate_erasures():
     """Finish every erasure that is not finished (feature 7, change 15).
@@ -2179,6 +2264,8 @@ def reconcile_candidate_erasures():
 @task(
     name="pickready.reconcile_context_index",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_context_index():
     """Hourly: find documents with text and no chunks, and index them.
@@ -2233,6 +2320,8 @@ def reconcile_context_index():
 @task(
     name="pickready.process_candidate_project",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason="candidate projects are candidate-owned and tenant-free",
     max_attempts=2,
     backoff_seconds=5.0,
 )
@@ -2267,6 +2356,8 @@ def process_candidate_project(project_id: str):
 @task(
     name="pickready.reconcile_project_intake",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_project_intake():
     """Hourly sweeper for the two states that must not persist quietly.
@@ -2353,6 +2444,8 @@ def reconcile_project_intake():
 @task(
     name="pickready.reconcile_assessment_credits",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_assessment_credits():
     """Daily sweep: charge abandoned assessments and queue due reminders.
@@ -2388,6 +2481,7 @@ def reconcile_assessment_credits():
 @task(
     name="pickready.send_payment_failed_email",
     route=Route.LAMBDA,
+    rls="tenant",
 )
 def send_payment_failed_email(tenant_id: str):
     """Tell the customer a charge failed, before credits quietly stop arriving.
@@ -2396,7 +2490,7 @@ def send_payment_failed_email(tenant_id: str):
     pool ran out, and the first the customer would hear of it is a 402.
     """
     async def _task():
-        async with _worker_session() as session:
+        async with _tenant_worker_session(uuid.UUID(str(tenant_id))) as session:
             row = (
                 await session.execute(
                     text(
@@ -2431,6 +2525,7 @@ def send_payment_failed_email(tenant_id: str):
 @task(
     name="pickready.send_credit_warning_email",
     route=Route.LAMBDA,
+    rls="tenant",
 )
 def send_credit_warning_email(tenant_id: str, level: int):
     """The Part 5 §4 balance warnings: LOW at 20 credits, CRITICAL at 10.
@@ -2441,7 +2536,7 @@ def send_credit_warning_email(tenant_id: str, level: int):
     stale snapshot from whenever the task queued.
     """
     async def _task():
-        async with _worker_session() as session:
+        async with _tenant_worker_session(uuid.UUID(str(tenant_id))) as session:
             from app.services import credits as credits_service
 
             row = (
@@ -2495,6 +2590,8 @@ def send_credit_warning_email(tenant_id: str, level: int):
 @task(
     name="pickready.expire_credit_lots",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def expire_credit_lots(limit: int = 500):
     """Materialise every credit lot that has passed its expiry.
@@ -2567,6 +2664,8 @@ def _expiry_line(summary) -> str:
 @task(
     name="pickready.sweep_subscription_usage_alerts",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def sweep_subscription_usage_alerts(limit: int = 200):
     """The month 10 and month 11 informational usage summary.
@@ -2672,6 +2771,7 @@ def sweep_subscription_usage_alerts(limit: int = 200):
 @task(
     name="pickready.send_credit_invoice_email",
     route=Route.LAMBDA,
+    rls="tenant",
 )
 def send_credit_invoice_email(purchase_id: str):
     """Email the GST invoice PDF for a settled credit-pack purchase.
@@ -2687,7 +2787,13 @@ def send_credit_invoice_email(purchase_id: str):
     async def _task():
         import base64
 
-        async with _worker_session() as session:
+        owner = await _resolve_tenant_id("purchase", purchase_id)
+        if owner is None:
+            logger.warning(
+                "billing.credit_invoice_email_not_paid purchase=%s", purchase_id
+            )
+            return {"sent": False, "reason": "purchase not paid"}
+        async with _tenant_worker_session(owner) as session:
             from app.models.billing import PURCHASE_PAID, CreditPurchase
             from app.services import credit_packs
 
@@ -2774,6 +2880,8 @@ def send_credit_invoice_email(purchase_id: str):
 @task(
     name="pickready.refresh_dashboard_views",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
     max_attempts=3,
 )
 def refresh_dashboard_views():
@@ -2851,6 +2959,10 @@ def refresh_dashboard_views():
 @task(
     name="pickready.send_bgv_inquiry",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads candidate_employments, the candidate's tenant-free employment history"
+    ),
     max_attempts_setting="delivery_max_retries",
     backoff_seconds=60.0,
     backoff_max_seconds=60.0,
@@ -2949,6 +3061,10 @@ def send_bgv_inquiry(ctx: TaskContext, inquiry_id: str):
 @task(
     name="pickready.parse_bgv_reply",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "reads candidate_employments, the candidate's tenant-free employment history"
+    ),
     max_attempts=3,
 )
 def parse_bgv_reply(inquiry_id: str, raw_email_text: str):
@@ -3005,6 +3121,11 @@ def parse_bgv_reply(inquiry_id: str, raw_email_text: str):
 @task(
     name="pickready.notify_support_message",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "a customer message is routed to Vivekium staff, whose users rows carry no "
+        "tenant"
+    ),
     max_attempts=2,
 )
 def notify_support_message(thread_id: str, message_id: str):

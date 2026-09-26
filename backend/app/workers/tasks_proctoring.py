@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.generate_proctoring_report",
     route=Route.ECS,
+    rls="bypass",
+    rls_reason=(
+        "the report names the candidate: reads the candidate row, which a tenant "
+        "session cannot see when a databank candidate owned by another tenant is linked"
+        " to this job"
+    ),
     max_attempts=2,
     backoff_seconds=5.0,
 )
@@ -88,6 +94,8 @@ def generate_proctoring_report(link_id: str):
 @task(
     name="pickready.reconcile_proctoring_sessions",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason="a sweep: one run reads every tenant's rows",
 )
 def reconcile_proctoring_sessions():
     """Hourly: close the sessions nothing else will close, and report them.

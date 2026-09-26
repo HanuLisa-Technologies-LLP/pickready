@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 @task(
     name="pickready.transcribe_voice_answer",
     route=Route.LAMBDA,
+    rls="bypass",
+    rls_reason=(
+        "one tenant's work, not yet proven under tenant_worker_session (PLAN-p7 3.3 "
+        "converts only with a real-Postgres read-back test)"
+    ),
     max_attempts=1,
     summary="Transcribe one spoken assessment answer and delete its audio.",
 )
