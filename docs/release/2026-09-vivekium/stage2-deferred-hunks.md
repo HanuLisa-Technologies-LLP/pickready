@@ -1,5 +1,18 @@
 # Stage 2 integration: deferred orchestrator hunks
 
+> **STATUS AT FINAL INTEGRATION (stage 3, `wip/final-int`, 2026-09-26).**
+> Every item below has landed except two, which stay open by design:
+> p3-w4 hunk 4 (optional; the proctoring speech event is stored without a
+> `question_id`) and p3-w5 hunk 3 (pilot `terraform.tfvars`
+> `transcribe_enabled = true`, a deploy-stage setting in a gitignored file).
+> Landed: `assessment_completed` in `hiring_pipeline.SYSTEM_ONLY_TARGETS`
+> (Phase 5 persistence writes that stage); the KMS header
+> (`object_storage.sse_arguments`); the ranking table's Assessment column and
+> `schemas/ranking` mode fields; `services/matching_categories.py` deleted;
+> the read-only coding evaluation deleted; the dashboard stage control routed
+> through the invitation service; `scoring_hold` called before scoring. This
+> file and `hunks/` are provenance, not a to-do list.
+
 Branch `wip/stage2-int`, built from `release/vivekium` (5bc4efb) by merging,
 in order, `wip/p2-a`, `wip/p4-4b1`, `wip/p3-w1`, `wip/p3-w4`, `wip/p4-4d`,
 `wip/p3-w6a`, `wip/p3-w6b`, then (second round) `wip/p2-b`, `wip/p2-e`,
