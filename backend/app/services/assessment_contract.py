@@ -1,4 +1,4 @@
-"""The ONE read API for a job's assessment contract: its skills, locked.
+"""The ONE read API for a job's assessment contract: its skills, frozen.
 
 WHAT A CONTRACT IS
 ------------------
@@ -9,23 +9,35 @@ role summary Sutra wrote at Save, and the grade that decides the question
 budget. The recruitment team sees skill NAMES only; everything else here is
 internal and crosses no API boundary.
 
-LIVE UNTIL THE FIRST START, SNAPSHOT FOREVER AFTER (D5)
--------------------------------------------------------
-Before any candidate starts, the contract is read from the live rows
-(`job_competencies`, `jobs.assessment_context_json`, `jobs.assessment_grade`)
-and reports `version=0, locked=False`. The first candidate start calls
-`lock_contract`, which writes an immutable `job_skill_snapshots` row (the
-database refuses to UPDATE it, see migration 0118) and binds the conversation
-to it. From then on `load_contract` answers from the latest snapshot, and
+LIVE UNTIL THE FIRST GENUINE APPLICATION, SNAPSHOT FOREVER AFTER (CONTRACT v10)
+-------------------------------------------------------------------------------
+Owner ruling v10 (2026-09-28) SUPERSEDES D5's lock point, which was the first
+candidate START. Before any candidate applies, the contract is read from the
+live rows (`job_competencies`, `jobs.assessment_context_json`,
+`jobs.assessment_grade`) and reports `version=0, locked=False`. The first
+GENUINE application (the one apply path, portal or public `/apply`, including
+a sourced link the candidate converts by applying) calls
+`freeze_at_application` in the SAME transaction as the application write,
+which writes an immutable `job_skill_snapshots` row (`source='application'`,
+`locked_by_link_id`). A sourced upload, a databank link, the matching run's
+own links and an invitation are not applications and freeze nothing.
+
+The start keeps `lock_contract` as an idempotent BACKSTOP: it binds the
+conversation to the snapshot that already exists, and writes one
+(`source='lock'`) only for a job whose first application arrived before its
+skills were saved, when no freeze was possible. From the first snapshot on,
+`load_contract` answers from the latest snapshot, and
 `load_contract_for_conversation` answers from the snapshot THAT conversation
 is bound to, so no later version can move a candidate who has already started.
 
-"Locked" is the EXISTENCE of a snapshot row, never a timestamp (rule 8).
+"Frozen" (the code says "locked") is the EXISTENCE of a snapshot row, never a
+timestamp (rule 8). The database refuses to rewrite one (migrations 0118 and
+0131).
 
 THE DIGEST COVERS CONTENT ONLY
 ------------------------------
 `compute_digest` hashes the skills, the role summary and the grade, and never
-the version or the lock state. So the live digest at the instant of the lock
+the version or the lock state. So the live digest at the instant of the freeze
 equals the snapshot's digest, and Vaada (the conversation) and Miti (the
 grade) can prove they read the same contract by logging the same digest:
 `log_digest` is the one format, and a test compares the two.
@@ -50,6 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import AssessmentConversation, JobCompetency
 from app.models.job import Job
 from app.models.job_skill_snapshot import (
+    SNAPSHOT_SOURCE_APPLICATION,
     SNAPSHOT_SOURCE_LOCK,
     JobSkillSnapshot,
 )
@@ -71,8 +84,9 @@ STAGE_VAADA = "vaada"
 STAGE_MITI = "miti"
 DIGEST_STAGES: tuple[str, ...] = (STAGE_VAADA, STAGE_MITI)
 
-#: `audit_log.action` for the lock. The candidate's start takes it, so there is
-#: no human principal and no agent: the row names the job and the conversation.
+#: `audit_log.action` for the freeze. A candidate's application (or, as the
+#: backstop, their start) takes it, so there is no human principal and no
+#: agent: the row names the job and the application or the conversation.
 AUDIT_SKILLS_LOCKED = "job_skills_locked"
 _AUDIT_ACTOR_ROLE = "candidate"
 
@@ -81,10 +95,26 @@ CONTRACT_NOT_READY = (
     "The skills for this job have not been saved yet, so the assessment "
     "cannot start. The hiring team needs to save the skills first."
 )
-SKILLS_LOCKED_DETAIL = (
-    "The skills are locked because a candidate has started the assessment. "
-    "Every candidate on this job is assessed against the same skills."
+#: The ONE refusal every frozen field answers with: the JD document, the
+#: title, the experience band, the grade and every skills write. `{date}` is
+#: the day of the FIRST snapshot. It replaces the two sentences that named a
+#: started assessment (the skills lock and the grade lock), which v10 retired.
+#: Nobody can start an assessment without having applied first, so "has
+#: applied" is true of every snapshot, a start-time backstop included.
+FROZEN_DETAIL = (
+    "The job description and skills are frozen because a candidate has "
+    "applied. Frozen since {date}."
 )
+
+
+def frozen_detail(frozen_at: datetime) -> str:
+    """The frozen sentence for a job first frozen at `frozen_at`.
+
+    A DATE (`28 Sep 2026`), never a count of days: a date is a fact about the
+    record, and the no-numbers rule is about assessment signals, not the
+    calendar (the closed-applications sentence prints a date the same way).
+    """
+    return FROZEN_DETAIL.format(date=f"{frozen_at:%d %b %Y}")
 
 
 class ContractNotReady(RuntimeError):
@@ -95,10 +125,17 @@ class ContractNotReady(RuntimeError):
 
 
 class SkillsLocked(RuntimeError):
-    """A write was attempted on skills that a started assessment has locked."""
+    """A write was attempted on a job whose JD and skills are frozen.
 
-    def __init__(self, message: str = SKILLS_LOCKED_DETAIL) -> None:
-        super().__init__(message)
+    Carries the moment of the FIRST snapshot, so every refusal says since
+    when. There is deliberately no default: a refusal that cannot name the
+    date was raised by code that never read the snapshot it claims exists.
+    """
+
+    def __init__(self, frozen_at: datetime) -> None:
+        self.frozen_at = frozen_at
+        self.detail = frozen_detail(frozen_at)
+        super().__init__(self.detail)
 
 
 class ContractNotBound(RuntimeError):
@@ -232,22 +269,40 @@ async def _latest_snapshot(db: AsyncSession, job_id: uuid.UUID) -> JobSkillSnaps
 
 async def is_locked(db: AsyncSession, job_id: uuid.UUID) -> bool:
     """True once a snapshot exists for the job. The table, never a stamp."""
-    found = (
+    return await frozen_since(db, job_id) is not None
+
+
+async def frozen_since(db: AsyncSession, job_id: uuid.UUID) -> datetime | None:
+    """When the job's JD and skills were FIRST frozen, or None if they are not.
+
+    The earliest snapshot's `locked_at`, asked of the table. A later version
+    does not move the day the job stopped being editable.
+    """
+    frozen_at: datetime | None = (
         await db.execute(
-            select(JobSkillSnapshot.id).where(JobSkillSnapshot.job_id == job_id).limit(1)
+            select(func.min(JobSkillSnapshot.locked_at)).where(
+                JobSkillSnapshot.job_id == job_id
+            )
         )
-    ).scalar_one_or_none()
-    return found is not None
+    ).scalar_one()
+    return frozen_at
+
+
+async def frozen_reason(db: AsyncSession, job_id: uuid.UUID) -> str | None:
+    """The frozen sentence for the job, or None when it is not frozen."""
+    frozen_at = await frozen_since(db, job_id)
+    return None if frozen_at is None else frozen_detail(frozen_at)
 
 
 async def require_unlocked(db: AsyncSession, job_id: uuid.UUID) -> None:
-    """Raise `SkillsLocked` when a started assessment has locked the skills.
+    """Raise `SkillsLocked` when the job's JD and skills are frozen.
 
     A writer calls this INSIDE `locks.advisory_xact_lock(SKILLS, job_id)`, so a
-    candidate's start and a skills edit cannot interleave.
+    candidate's application (or start) and an edit cannot interleave.
     """
-    if await is_locked(db, job_id):
-        raise SkillsLocked()
+    frozen_at = await frozen_since(db, job_id)
+    if frozen_at is not None:
+        raise SkillsLocked(frozen_at)
 
 
 def _saved(job: Job) -> bool:
@@ -411,29 +466,256 @@ async def load_contract_for_conversation(
     return contract
 
 
-# ── The lock ─────────────────────────────────────────────────────────────────
+# ── The posting: skill NAMES by bucket (CONTRACT v10) ────────────────────────
+
+#: The headings the candidate-facing posting and the recruiter's preview print.
+POSTING_BUCKET_LABELS: dict[str, str] = {
+    BUCKET_MUST_HAVE: "Must-have skills",
+    BUCKET_NICE_TO_HAVE: "Nice-to-have skills",
+    BUCKET_BEHAVIOURAL: "Behavioural competencies",
+}
+
+
+@dataclass(frozen=True)
+class PostingBucket:
+    bucket: str
+    label: str
+    names: tuple[str, ...]
+
+
+def _posting(pairs: Iterable[tuple[str, str]]) -> tuple[PostingBucket, ...]:
+    """(bucket, name) pairs as the three posting buckets, names ALPHABETICAL.
+
+    Alphabetical rather than by priority: the priority is hidden, and an
+    ordered list would publish it.
+    """
+    by_bucket: dict[str, list[str]] = {bucket: [] for bucket in BUCKETS}
+    for bucket, name in pairs:
+        if bucket in by_bucket:
+            by_bucket[bucket].append(name)
+    return tuple(
+        PostingBucket(
+            bucket=bucket,
+            label=POSTING_BUCKET_LABELS[bucket],
+            names=tuple(sorted(by_bucket[bucket], key=lambda name: (name.casefold(), name))),
+        )
+        for bucket in BUCKETS
+    )
+
+
+async def posting_skills(
+    db: AsyncSession, jobs: Sequence[Job], *, include_unsaved: bool = False
+) -> dict[uuid.UUID, tuple[PostingBucket, ...]]:
+    """The skills each job's posting shows, by NAME, for many jobs at once.
+
+    * Frozen: the latest snapshot's names (read through `_from_snapshot`, so a
+      snapshot whose digest no longer describes it RAISES rather than being
+      published).
+    * Not frozen and skills SAVED: the active rows.
+    * Otherwise: an EMPTY tuple, so the posting shows no skills section. With
+      `include_unsaved` (the recruiter's preview, never a public surface) the
+      active rows are shown whether or not they are saved.
+
+    The ONE builder for every surface that shows a posting's skills, so the
+    apply page, the portal, the employer page and the preview cannot
+    disagree. Two queries whatever the number of jobs.
+    """
+    if not jobs:
+        return {}
+    job_ids = [job.id for job in jobs]
+    latest: dict[uuid.UUID, JobSkillSnapshot] = {}
+    for snapshot in (
+        await db.execute(
+            select(JobSkillSnapshot)
+            .where(JobSkillSnapshot.job_id.in_(job_ids))
+            .order_by(JobSkillSnapshot.job_id, JobSkillSnapshot.version.desc())
+        )
+    ).scalars():
+        latest.setdefault(snapshot.job_id, snapshot)
+    live_ids = [
+        job.id
+        for job in jobs
+        if job.id not in latest and (include_unsaved or _saved(job))
+    ]
+    live: dict[uuid.UUID, list[tuple[str, str]]] = {job_id: [] for job_id in live_ids}
+    if live_ids:
+        for job_id, bucket, name in (
+            await db.execute(
+                select(JobCompetency.job_id, JobCompetency.category, JobCompetency.name).where(
+                    JobCompetency.job_id.in_(live_ids), JobCompetency.is_active.is_(True)
+                )
+            )
+        ).all():
+            live[job_id].append((bucket, name))
+    out: dict[uuid.UUID, tuple[PostingBucket, ...]] = {}
+    for job in jobs:
+        if job.id in latest:
+            contract = _from_snapshot(latest[job.id])
+            out[job.id] = _posting((skill.bucket, skill.name) for skill in contract.skills)
+        elif job.id in live:
+            out[job.id] = _posting(live[job.id])
+        else:
+            out[job.id] = ()
+    return out
+
+
+# ── The freeze ───────────────────────────────────────────────────────────────
+
+
+async def _lockable_contract(db: AsyncSession, job: Job) -> AssessmentContract | None:
+    """The live contract when it may be frozen, else None.
+
+    Saved (the stamp AND the hidden context) and non-empty. Saved and then
+    emptied is not a contract anybody can be assessed against: freezing it
+    would fix "nothing" as what every later candidate is graded on.
+    """
+    if not _saved(job):
+        return None
+    live = await _live_contract(db, job)
+    return live if live.skills else None
+
+
+async def _write_snapshot(
+    db: AsyncSession,
+    job: Job,
+    live: AssessmentContract,
+    *,
+    source: str,
+    conversation_id: uuid.UUID | None,
+    link_id: uuid.UUID | None,
+    application_id: uuid.UUID | None,
+) -> JobSkillSnapshot:
+    """The ONE writer of a `job_skill_snapshots` row, and of its audit row.
+
+    The caller holds `locks.advisory_xact_lock(SKILLS, job.id)` and has seen
+    that no snapshot exists. Writes the live contract as the next version and
+    ONE `audit_log` row in a single INSERT through `audit.record_action` (the
+    2026-09-20 rule). `link_id` is stored on the snapshot only when an
+    APPLICATION froze the job; `application_id` is the audit row's
+    application either way (the start's own link for the backstop).
+    """
+    next_version = (
+        await db.execute(
+            select(func.coalesce(func.max(JobSkillSnapshot.version), 0)).where(
+                JobSkillSnapshot.job_id == job.id
+            )
+        )
+    ).scalar_one() + 1
+    context = dict(job.assessment_context_json or {})
+    context.pop("role_summary", None)
+    snapshot = JobSkillSnapshot(
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        version=next_version,
+        skills_json=_skills_to_json(live.skills),
+        role_summary=live.role_summary,
+        context_json=context,
+        grade=live.grade,
+        digest=live.digest,
+        source=source,
+        locked_by_conversation_id=conversation_id,
+        locked_by_link_id=link_id,
+        locked_at=datetime.now(timezone.utc),
+    )
+    db.add(snapshot)
+    await db.flush()
+    metadata: dict[str, Any] = {
+        "source": source,
+        "version": snapshot.version,
+        "contract_digest": snapshot.digest,
+    }
+    if conversation_id is not None:
+        metadata["conversation_id"] = str(conversation_id)
+    await audit.record_action(
+        db,
+        action=AUDIT_SKILLS_LOCKED,
+        actor_user_id=None,
+        actor_role=_AUDIT_ACTOR_ROLE,
+        tenant_id=job.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        application_id=application_id,
+        correlation_id=job.correlation_id,
+        new_state={"skills_locked": True, "version": snapshot.version},
+        metadata=metadata,
+    )
+    logger.info(
+        "assessment_contract.locked job_id=%s version=%d source=%s contract_digest=%s "
+        "conversation_id=%s link_id=%s skills=%d",
+        job.id, snapshot.version, source, snapshot.digest,
+        conversation_id, link_id, len(live.skills),
+    )
+    return snapshot
+
+
+async def freeze_at_application(
+    db: AsyncSession, job_id: uuid.UUID, link_id: uuid.UUID
+) -> AssessmentContract | None:
+    """Freeze the job's JD and skills at a GENUINE application. Idempotent.
+
+    Called by the ONE apply path (`api/portal.apply_to_job`) after the
+    application's link is written or converted from `sourced`, in the SAME
+    transaction, so the application and the snapshot commit together and a
+    rolled-back application leaves no snapshot. Under
+    `locks.advisory_xact_lock(SKILLS, job_id)`, the lock every skills write,
+    every JD, title, band and grade edit, and every start takes, so an edit
+    and an application cannot interleave: either the snapshot carries the
+    edit, or the edit is refused.
+
+    * Already frozen: the latest snapshot, nothing written.
+    * Skills saved and non-empty: the live contract becomes the next version
+      with `source='application'` and `locked_by_link_id`.
+    * Otherwise (a legacy published job whose skills were never saved, or
+      skills edited after publication and not saved again): None. The
+      application still succeeds; nothing is frozen, and the next genuine
+      application after the skills are saved freezes them.
+
+    A sourced upload, a databank link, the matching run's links and an
+    invitation never call this: they are not applications.
+    """
+    await locks.advisory_xact_lock(db, locks.SKILLS, job_id)
+    snapshot = await _latest_snapshot(db, job_id)
+    if snapshot is not None:
+        return _from_snapshot(snapshot)
+    job = await _job(db, job_id)
+    live = await _lockable_contract(db, job)
+    if live is None:
+        logger.info(
+            "assessment_contract.not_frozen job_id=%s link_id=%s reason=skills_not_saved",
+            job_id, link_id,
+        )
+        return None
+    snapshot = await _write_snapshot(
+        db, job, live, source=SNAPSHOT_SOURCE_APPLICATION,
+        conversation_id=None, link_id=link_id, application_id=link_id,
+    )
+    return _from_snapshot(snapshot)
 
 
 async def lock_contract(
     db: AsyncSession, job_id: uuid.UUID, conversation_id: uuid.UUID
 ) -> AssessmentContract:
-    """Lock the job's skills (once) and bind this conversation. Idempotent.
+    """Bind this conversation to the job's frozen contract. Idempotent.
 
     Called where a conversation's `started_at` is stamped, in the same
-    transaction. Under `locks.advisory_xact_lock(SKILLS, job_id)`, so two
-    candidates starting at once and a skills edit racing a start all
-    serialise; `uq_job_skill_snapshots_version` is the second line.
+    transaction. Since CONTRACT v10 the job is normally frozen already, by its
+    first genuine application (`freeze_at_application`), and this is the
+    BACKSTOP that binds the conversation to that snapshot. Under
+    `locks.advisory_xact_lock(SKILLS, job_id)`, so two candidates starting at
+    once and an edit racing a start all serialise;
+    `uq_job_skill_snapshots_version` is the second line.
 
     * A conversation already bound gets its own snapshot back, unchanged.
-    * A job already locked binds the conversation to the latest snapshot.
-    * Otherwise the skills must be saved and non-empty (`ContractNotReady`),
-      the live contract is written as the next version with `source='lock'`,
-      the conversation is bound (`skill_snapshot_id` and `contract_digest`),
-      and ONE `audit_log` row records the lock, written in a single INSERT
-      through `audit.record_action` (the 2026-09-20 rule).
+    * A job already frozen binds the conversation to the latest snapshot.
+    * Otherwise (the job's first application predated its saved skills, so
+      nothing could freeze then) the skills must be saved and non-empty
+      (`ContractNotReady`), and the live contract is written as the next
+      version with `source='lock'`. The conversation is bound
+      (`skill_snapshot_id` and `contract_digest`) either way.
 
     Nothing here calls a model, so holding the advisory lock is bounded by the
-    caller's own transaction. The grade is locked with the skills: it is part
+    caller's own transaction. The grade is frozen with the skills: it is part
     of the snapshot and of the digest.
     """
     await locks.advisory_xact_lock(db, locks.SKILLS, job_id)
@@ -455,60 +737,14 @@ async def lock_contract(
     snapshot = await _latest_snapshot(db, job_id)
     if snapshot is None:
         job = await _job(db, job_id)
-        if not _saved(job):
+        live = await _lockable_contract(db, job)
+        if live is None:
             raise ContractNotReady()
-        live = await _live_contract(db, job)
-        if not live.skills:
-            # Saved and then emptied is not a contract anybody can be assessed
-            # against. Locking it would freeze "nothing" as what every later
-            # candidate on the job is graded on.
-            raise ContractNotReady()
-        next_version = (
-            await db.execute(
-                select(func.coalesce(func.max(JobSkillSnapshot.version), 0)).where(
-                    JobSkillSnapshot.job_id == job_id
-                )
-            )
-        ).scalar_one() + 1
-        context = dict(job.assessment_context_json or {})
-        context.pop("role_summary", None)
-        snapshot = JobSkillSnapshot(
-            tenant_id=job.tenant_id,
-            job_id=job_id,
-            version=next_version,
-            skills_json=_skills_to_json(live.skills),
-            role_summary=live.role_summary,
-            context_json=context,
-            grade=live.grade,
-            digest=live.digest,
-            source=SNAPSHOT_SOURCE_LOCK,
-            locked_by_conversation_id=conversation_id,
-            locked_at=datetime.now(timezone.utc),
-        )
-        db.add(snapshot)
-        await db.flush()
-        await audit.record_action(
-            db,
-            action=AUDIT_SKILLS_LOCKED,
-            actor_user_id=None,
-            actor_role=_AUDIT_ACTOR_ROLE,
-            tenant_id=job.tenant_id,
-            resource_type="job",
-            resource_id=job_id,
-            job_id=job_id,
+        snapshot = await _write_snapshot(
+            db, job, live, source=SNAPSHOT_SOURCE_LOCK,
+            conversation_id=conversation_id,
+            link_id=None,
             application_id=conversation.job_candidate_link_id,
-            correlation_id=job.correlation_id,
-            new_state={"skills_locked": True, "version": snapshot.version},
-            metadata={
-                "conversation_id": str(conversation_id),
-                "version": snapshot.version,
-                "contract_digest": snapshot.digest,
-            },
-        )
-        logger.info(
-            "assessment_contract.locked job_id=%s version=%d contract_digest=%s "
-            "conversation_id=%s skills=%d",
-            job_id, snapshot.version, snapshot.digest, conversation_id, len(live.skills),
         )
 
     contract = _from_snapshot(snapshot)

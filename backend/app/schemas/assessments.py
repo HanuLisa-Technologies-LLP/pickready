@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.jobs import PostingSkillBucketOut
 from app.schemas.proctoring import ProctoringReportOut
 from app.schemas.reports import NumberFreeDelivery
 from app.services.assessment_formats import types as question_types
@@ -85,6 +86,12 @@ class SkillsOut(BaseModel):
     buckets: SkillBucketsOut
     can_edit: SkillBucketPermissionsOut
     can_save: bool = False
+    #: The server's frozen sentence (`assessment_contract.FROZEN_DETAIL`, with
+    #: the date), rendered verbatim, or None when the job is not frozen.
+    frozen_reason: str | None = None
+    #: Why a draft cannot be asked for now (the JD is too thin to draft from),
+    #: the fixed sentence rendered verbatim, or None when it can.
+    draft_blocked_reason: str | None = None
 
 
 class SkillAddIn(BaseModel):
@@ -115,30 +122,74 @@ class SkillsDraftIn(BaseModel):
 
 
 class JobSetupOut(BaseModel):
-    """The job-setup checklist (PLAN-p1 section 3.12). States only.
+    """The job-setup checklist (PLAN-p1 section 3.12, CONTRACT v10). States only.
 
     Every flag is DERIVED from the tables on read: `swot_saved` from the SWOT
     row's own status, `skills_saved` from the saved stamp AND the hidden
-    context, `skills_locked` from the existence of a snapshot row. A timestamp
-    is not evidence that work happened (rule 8).
+    context, `frozen` from the existence of a snapshot row. A timestamp is not
+    evidence that work happened (rule 8).
     """
 
     job_id: uuid.UUID
     jd_ready: bool
     #: The SWOT document's state as a reader sees it (a lost generation reads
-    #: `failed`).
+    #: `failed`). Informational: the SWOT is internal hiring intelligence and
+    #: never a publication step (CONTRACT v10).
     swot_status: str
     swot_saved: bool
     skills_draft_status: str
     skills_saved: bool
+    #: Equal to `frozen`; kept for the readers that already ask it.
     skills_locked: bool
-    #: The grade is locked with the skills (D5).
+    #: Equal to `frozen`: the grade is frozen with the skills.
     grade_locked: bool
     published: bool
     ready_for_candidates: bool
     #: The server's own sentence naming every step still missing before
-    #: publication, or None when nothing blocks it.
+    #: publication (the JD and saved skills), or None when nothing blocks it.
     publish_blocked_reason: str | None = None
+    #: The JD, the title, the experience band, the grade and the skills are
+    #: read-only: the first genuine application froze them (CONTRACT v10).
+    frozen: bool = False
+    #: When the job was first frozen, or None.
+    frozen_at: datetime | None = None
+    #: The banner sentence, rendered verbatim, or None when not frozen.
+    frozen_reason: str | None = None
+
+
+class PostingPreviewOut(BaseModel):
+    """The Final Job Posting, as the recruiter previews it (CONTRACT v10).
+
+    What the candidate-facing posting says: the JD, the skills by NAME in
+    three buckets, the company narrative, the grade as a WORD and the
+    experience band as words. Never an evidence line, a priority or the role
+    summary. Before the freeze the skills are the job's current active ones
+    (`skills_saved` says whether they are the saved set); once frozen they are
+    the snapshot's.
+    """
+
+    job_id: uuid.UUID
+    title: str
+    department: str | None = None
+    #: The grade code, for a reader that keys on it.
+    grade: str
+    #: The grade as the posting prints it.
+    grade_label: str
+    #: "3 to 5 years", "at least 3 years", or None when no band is set.
+    experience_band: str | None = None
+    jd_markdown: str | None = None
+    company_name: str | None = None
+    about_company: str | None = None
+    work_life: str | None = None
+    benefits: str | None = None
+    skill_buckets: list[PostingSkillBucketOut]
+    skills_saved: bool
+    published: bool
+    public_application_url: str | None = None
+    publish_blocked_reason: str | None = None
+    frozen: bool = False
+    frozen_at: datetime | None = None
+    frozen_reason: str | None = None
 
 
 # ── The PRISM Report (spec §10) ──────────────────────────────────────────────

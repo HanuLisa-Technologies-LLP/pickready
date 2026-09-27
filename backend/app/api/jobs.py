@@ -1,8 +1,15 @@
 """Job endpoints: create a draft, edit its JD, publish, and the posting lifecycle.
 
-THE FLOW (Vivekium release): Create Job saves a DRAFT, always. The JD has one
-edit path (`PATCH /jobs/{id}/jd`). The job goes live only through
-`POST /jobs/{id}/publish`, which needs a JD, a saved SWOT and saved skills.
+THE FLOW (CONTRACT v10, 2026-09-28): JD, then Skills, then the Final Job
+Posting, then Publish. Create Job saves a DRAFT, always, and asks Sutra for a
+skills draft from its JD after the commit. The JD has one edit path
+(`PATCH /jobs/{id}/jd`). The job goes live only through
+`POST /jobs/{id}/publish`, which needs the JD and saved skills; the SWOT is
+internal hiring intelligence and never a publication step. The FIRST GENUINE
+APPLICATION freezes the JD, the title, the experience band, the grade and the
+skills (`assessment_contract.freeze_at_application`); every edit of a frozen
+field answers 409 with the frozen sentence.
+
 The multi-level approval chain (the hand-off to the Hiring Manager, submit,
 approve and the approvals list) and the second JD writer (`PUT /jobs/{id}/jd`)
 are DELETED: none had a caller, and one left the canonical document stale.
@@ -61,6 +68,7 @@ from app.schemas.jobs import (
     JobDetailOut,
     JobOut,
     JobPatchIn,
+    PostingSkillBucketOut,
     PublicJobOut,
     PublishJobOut,
     ReportingToOptionsOut,
@@ -82,8 +90,8 @@ from app.services import candidate_identity
 from app.services import candidate_updates
 from app.services import hiring_pipeline
 from app.services import rbac
+from app.services import skills
 from app.services import status_hygiene
-from app.services import swot_analysis
 from app.services import telemetry_events
 from app.services.audit import audit, record_action
 from app.workers import agent_client
@@ -92,7 +100,7 @@ from app.workers.dispatch import dispatch_after_commit
 logger = logging.getLogger(__name__)
 
 
-async def _invalidate_public_job(job_id: uuid.UUID) -> None:
+async def invalidate_public_job(job_id: uuid.UUID) -> None:
     """Drop the cached public application page for one job.
 
     Called from every path that changes what an applicant would read: the JD
@@ -368,9 +376,12 @@ async def create_job(
     else writes it: without this, the person who created a job could not
     publish it or edit its skills.
 
-    Nothing is dispatched here. The skills draft starts when the team first
-    saves the Job SWOT (`skills.after_swot_saved`), the event that produces
-    its input, and matching starts at publication.
+    THE SKILLS DRAFT STARTS HERE (CONTRACT v10). The JD is its one required
+    input, so Sutra's draft is dispatched after the commit
+    (`skills.after_jd_saved`); a rolled-back create dispatches nothing, and
+    a JD too thin to draft from is recorded as the draft's state rather than
+    refused, because the job itself was created correctly. Matching starts at
+    publication.
     """
     await _require_create_gates(session, user.tenant_id)
 
@@ -489,6 +500,7 @@ async def create_job(
     )
 
     await rbac.assign_creator(session, job, user.user_id, user.role)
+    await skills.after_jd_saved(session, job, actor_user_id=user.user_id)
     await record_action(
         session,
         action="job_created",
@@ -551,10 +563,21 @@ async def save_jd_markdown(
     The document is canonical, so `jd_json` is re-derived from it here. That is
     what keeps the matching pipeline, the technical question generator and the
     public apply page reading the same words the candidate reads.
+
+    FROZEN AT THE FIRST APPLICATION (CONTRACT v10): once a candidate has
+    genuinely applied, the document is what they applied to and every
+    candidate is assessed against, so an edit is a 409 with the frozen
+    sentence. Asked under the skills advisory lock, the lock an application's
+    freeze takes, so an edit and a first application never interleave.
+
+    SKILLS FROM THE JD: when the job has no skill row of any kind, the save
+    asks Sutra for a draft after the commit (`skills.after_jd_saved`). A JD
+    edit never re-drafts skills that exist.
     """
     from app.services import jd_generation
 
     job = await _get_visible_job(session, user, job_id)
+    await _require_not_frozen(session, job)
     document = jd_generation.strip_em_dashes(body.jd_markdown.strip())
     previous_length = len((job.jd_markdown or "").strip())
 
@@ -578,7 +601,8 @@ async def save_jd_markdown(
             "new_length": len(document),
         },
     )
-    await _invalidate_public_job(job.id)
+    await skills.after_jd_saved(session, job, actor_user_id=user.user_id)
+    await invalidate_public_job(job.id)
     return await _job_detail_out(session, job)
 
 
@@ -593,8 +617,9 @@ async def publish_job(
     The ONLY way a job goes live (Vivekium release). Refused, each with a 409
     naming the fix: an archived job, a job already live (re-stamping
     `posting_start_date` would quietly restart the fixed 30-day window), and a
-    job missing any setup step: the JD, the saved SWOT, the saved skills
-    (`_publication_blocked` names every missing one, in order).
+    job missing any setup step: the JD and the saved skills
+    (`_publication_blocked` names every missing one, in order). The SWOT is
+    NOT a step (CONTRACT v10): it is internal hiring intelligence.
 
     Matching and the JD index are dispatched AFTER the commit, so a publish
     that rolls back starts nothing.
@@ -656,7 +681,7 @@ async def publish_job(
     # Publishing moves `posting_start_date`, which regenerates the two derived
     # window columns in the database. Same refresh as `renew_job` below.
     await session.refresh(job)
-    await _invalidate_public_job(job.id)
+    await invalidate_public_job(job.id)
     # Every column in ONE insert (the 2026-09-20 audit_log rule).
     await record_action(
         session,
@@ -699,9 +724,10 @@ async def publish_job(
 
 
 #: The setup steps publication waits for, in the order the job page walks
-#: them. Each is the sentence the checklist and the 409 both render.
+#: them. Each is the sentence the checklist and the 409 both render. The SWOT
+#: step is DELETED (CONTRACT v10): the SWOT is internal hiring intelligence,
+#: editable at any time and never a prerequisite of publication.
 PUBLISH_STEP_JD = "write and save the job description"
-PUBLISH_STEP_SWOT = "save the SWOT analysis"
 PUBLISH_STEP_SKILLS = "save the skills"
 
 
@@ -709,17 +735,13 @@ async def publication_missing_steps(session: AsyncSession, job: Job) -> list[str
     """Every setup step still missing before `job` may be published, in order.
 
     Asked of the TABLES, never of the lifecycle: the JD from the document
-    itself, the SWOT from its own row (`swot_analysis.is_saved`: a human saved
-    or restored it; a model draft nobody read is not the team's analysis), and
-    the skills from the saved stamp AND the hidden context
-    (`assessment_contract.skills_saved`), so "publishable" and "lockable" can
-    never disagree.
+    itself, and the skills from the saved stamp AND the hidden context
+    (`assessment_contract.skills_saved`), so "publishable" and "freezable"
+    can never disagree.
     """
     missing: list[str] = []
     if not has_publishable_jd(job):
         missing.append(PUBLISH_STEP_JD)
-    if not swot_analysis.is_saved(await swot_analysis.get(session, job)):
-        missing.append(PUBLISH_STEP_SWOT)
     if not await assessment_contract.skills_saved(session, job.id):
         missing.append(PUBLISH_STEP_SKILLS)
     return missing
@@ -780,7 +802,7 @@ async def renew_job(
     job.posting_start_date = now
     await session.flush()
     await session.refresh(job)  # pick up the regenerated end/grace columns
-    await _invalidate_public_job(job.id)
+    await invalidate_public_job(job.id)
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -880,7 +902,7 @@ async def close_job(
         job.closed_at
     )
     await session.flush()
-    await _invalidate_public_job(job.id)
+    await invalidate_public_job(job.id)
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -1165,7 +1187,7 @@ async def archive_job(
     if job.archived_at is None:
         job.archived_at = datetime.now(timezone.utc)
         await session.flush()
-        await _invalidate_public_job(job.id)
+        await invalidate_public_job(job.id)
         await audit(
             session,
             tenant_id=user.tenant_id,
@@ -1187,7 +1209,7 @@ async def restore_job(
     if job.archived_at is not None:
         job.archived_at = None
         await session.flush()
-        await _invalidate_public_job(job.id)
+        await invalidate_public_job(job.id)
         await audit(
             session,
             tenant_id=user.tenant_id,
@@ -1244,11 +1266,51 @@ async def get_job(
     return await _job_detail_out(session, job)
 
 
-#: The refusal a grade change gets once a candidate has started (D5).
-GRADE_LOCKED_DETAIL = (
-    "The grade is locked because a candidate has started the assessment. It "
-    "decides the question budget every candidate on this job receives."
+#: The metadata fields frozen with the JD at the first genuine application
+#: (CONTRACT v10): what a candidate applied to, and the grade that decides
+#: every candidate's question budget. Everything else on `PATCH /jobs/{id}`
+#: (the company narrative, the proctoring policy, the department and the
+#: requirement period) stays editable.
+FROZEN_METADATA_FIELDS: tuple[str, ...] = (
+    "title",
+    "experience_min_years",
+    "experience_max_years",
+    "grade",
 )
+
+
+async def _require_not_frozen(session: AsyncSession, job: Job) -> None:
+    """409 with the frozen sentence when the job is frozen. Nothing written.
+
+    Takes the SKILLS advisory lock first, the lock an application's freeze
+    takes, so the answer cannot go stale before the caller's write: either
+    the freeze lands after this write, and the snapshot carries it, or it
+    landed before, and the write is refused.
+    """
+    await locks.advisory_xact_lock(session, locks.SKILLS, job.id)
+    try:
+        await assessment_contract.require_unlocked(session, job.id)
+    except assessment_contract.SkillsLocked as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.detail) from exc
+
+
+def _frozen_changes(job: Job, body: JobPatchIn) -> list[str]:
+    """The frozen fields this PATCH would CHANGE. A value equal to the current
+    one is not a change and is not refused."""
+    current = {
+        "title": job.title,
+        "experience_min_years": job.experience_min_years,
+        "experience_max_years": job.experience_max_years,
+        "grade": job.assessment_grade,
+    }
+    sent = body.model_fields_set
+    return [
+        name
+        for name in FROZEN_METADATA_FIELDS
+        if name in sent
+        and not (name in ("title", "grade") and getattr(body, name) is None)
+        and getattr(body, name) != current[name]
+    ]
 
 
 @router.patch("/{job_id}", response_model=JobDetailOut)
@@ -1268,21 +1330,19 @@ async def patch_job(
 
     The JD itself is NOT edited here: `PATCH /jobs/{id}/jd` is its one path.
 
-    THE GRADE LOCKS WITH THE SKILLS (D5). It decides the question budget
-    every candidate on the job receives, so once a candidate has started the
-    assessment a change is a 409, asked of the snapshot TABLE. A value equal
-    to the current grade is not a change and is not refused.
+    FROZEN AT THE FIRST APPLICATION (CONTRACT v10): the title, the experience
+    band and the grade are what a candidate applied to, and the grade decides
+    every candidate's question budget, so once the job is frozen a CHANGE to
+    any of them is a 409 with the frozen sentence, asked of the snapshot TABLE
+    under the lock an application's freeze takes. A value equal to the
+    current one is not a change. The company narrative, the proctoring policy,
+    the department and the requirement period stay editable.
     """
     job = await _get_visible_job(session, user, job_id)
     sent = body.model_fields_set
 
-    if "grade" in sent and body.grade is not None and body.grade != job.assessment_grade:
-        # The skills lock a candidate's start takes too, so a grade change and
-        # a first start can never interleave: either the snapshot carries the
-        # new grade, or the change is refused.
-        await locks.advisory_xact_lock(session, locks.SKILLS, job.id)
-        if await assessment_contract.is_locked(session, job.id):
-            raise HTTPException(status_code=409, detail=GRADE_LOCKED_DETAIL)
+    if _frozen_changes(job, body):
+        await _require_not_frozen(session, job)
 
     if "title" in sent and body.title is not None:
         job.title = body.title
@@ -1314,7 +1374,7 @@ async def patch_job(
         target_id=job.id,
         metadata={"fields": sorted(sent), "grade": job.assessment_grade},
     )
-    await _invalidate_public_job(job.id)
+    await invalidate_public_job(job.id)
     return await _job_detail_out(session, job)
 
 
@@ -2091,5 +2151,22 @@ async def get_public_job(
     out.about_company = resolved["about_company"]
     out.work_life = resolved["work_life"]
     out.benefits = resolved["benefits"]
+    # The posting's skills by NAME (CONTRACT v10): the saved set, or the frozen
+    # snapshot's, or none at all. The one builder every posting surface uses.
+    out.skill_buckets = posting_skill_buckets(
+        (await assessment_contract.posting_skills(session, [job]))[job.id]
+    )
     await cache.set(cache_key, out.model_dump(mode="json"), ttl=cache.TTL_JOB_DESCRIPTION)
     return out
+
+
+def posting_skill_buckets(
+    buckets: tuple[assessment_contract.PostingBucket, ...],
+) -> list[PostingSkillBucketOut]:
+    """`assessment_contract.PostingBucket`s as the response model every posting
+    surface declares: the public apply page, the portal, the employer page and
+    the recruiter's preview. The one conversion."""
+    return [
+        PostingSkillBucketOut(bucket=bucket.bucket, label=bucket.label, names=list(bucket.names))
+        for bucket in buckets
+    ]

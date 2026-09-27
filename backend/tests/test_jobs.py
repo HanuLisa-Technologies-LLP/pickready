@@ -414,7 +414,7 @@ async def test_a_document_edit_keeps_the_reporting_line(monkeypatch) -> None:
 
     monkeypatch.setattr(jobs_api, "_get_visible_job", _visible)
     monkeypatch.setattr(jobs_api, "audit", _audit)
-    monkeypatch.setattr(jobs_api, "_invalidate_public_job", _invalidate)
+    monkeypatch.setattr(jobs_api, "invalidate_public_job", _invalidate)
     monkeypatch.setattr(jobs_api, "_job_detail_out", _detail)
 
     await jobs_api.save_jd_markdown(

@@ -8,6 +8,7 @@ from pydantic import (
 )
 
 from app.models.enums import JobStatus
+from app.schemas.jobs import PostingSkillBucketOut
 
 #: E.164-ish: an optional leading '+' and 7-15 digits. Separators (spaces,
 #: dashes, dots, parentheses) are accepted from the client and stripped before
@@ -128,6 +129,11 @@ class PortalJobOut(BaseModel):
     #: straight to it on Applied Jobs instead of opening an apply form that can
     #: only answer 409.
     application_id: uuid.UUID | None = None
+
+    #: The posting's skills by name (CONTRACT v10), three buckets in order, or
+    #: EMPTY when the job has no saved skills. The same builder as the public
+    #: apply page and the employer page (`assessment_contract.posting_skills`).
+    skill_buckets: list[PostingSkillBucketOut] = []
 
     # Serialization mirrors, matching JobDetailOut/PublicJobOut: the frontend
     # reads `jd` and `grade`, the canonical columns are `jd_json` and

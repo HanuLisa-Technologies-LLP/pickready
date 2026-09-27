@@ -410,9 +410,11 @@ class Resource:
     #: auto-rejects, so this never blocks reading; it blocks MOVING the
     #: candidate until a human has disposed of the finding (spec-doc6 C7).
     under_integrity_review: bool = False
-    #: The job's skills are LOCKED (D5): a `job_skill_snapshots` row exists,
-    #: because a candidate has started the assessment. Read from the TABLE by
-    #: `load_job_resource`, never from a timestamp (rule 8).
+    #: The job's skills are LOCKED (frozen, CONTRACT v10): a
+    #: `job_skill_snapshots` row exists, because a candidate has genuinely
+    #: applied (or, for a job whose first application predated its saved
+    #: skills, started). Read from the TABLE by `load_job_resource`, never
+    #: from a timestamp (rule 8).
     skills_locked: bool = False
 
 
@@ -581,8 +583,8 @@ def _state_rules(
     # because the snapshot is immutable whatever happens to the documents it
     # was drafted from. The Recruiter's NEVER cells refuse them earlier, at
     # the ceiling, whatever the lock says. Handlers re-check the lock inside
-    # the skills advisory lock too, because a start can land between this
-    # decision and the write.
+    # the skills advisory lock too, because an application (the freeze,
+    # CONTRACT v10) can land between this decision and the write.
     if capability in SKILL_CAPABILITIES and resource.skills_locked:
         return Authorization(Decision.DENY, "skills_locked", invariant)
 
