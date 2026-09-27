@@ -21,10 +21,11 @@ A deleted symbol a docstring, a screen or a test still names is a rule one
 edit away from returning, so the sweep reads live source whitespace-normalised
 (`tests/removal_sweep.py`, the 2026-09-23 lesson).
 
-PENDING, AND IT ONLY SHRINKS: the frontend still hard-codes the retired grade
-sentence on the job page. The frontend package of this release replaces it
-with the server's `frozen_reason`; each pending file must still HIT, so the
-entry is removed in the change that fixes it rather than left as an exemption.
+PENDING, AND IT ONLY SHRINKS: it is EMPTY. The job page and its test used to
+hard-code the retired grade sentence; the v10 frontend renders the server's
+`frozen_reason` and the 409 `detail` instead, and both entries left in that
+change. A pending file must still HIT, so a new entry is removed in the change
+that fixes it rather than left as an exemption.
 """
 from __future__ import annotations
 
@@ -56,15 +57,9 @@ ALLOWED = {
     ),
 }
 
-#: Owned by the frontend package of this release (render `frozen_reason`).
-PENDING = {
-    REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "[id]" / "page.tsx": (
-        "the job page's hard-coded grade lock sentence"
-    ),
-    REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "[id]" / "page.test.tsx": (
-        "the job page test's copy of the same sentence"
-    ),
-}
+#: Files that still name the thing and are owed a fix. Empty since the v10
+#: frontend rendered the server's sentence; it only ever shrinks.
+PENDING: dict[pathlib.Path, str] = {}
 
 
 def _hits(pattern: re.Pattern[str]) -> list[str]:
@@ -93,10 +88,13 @@ def test_every_pending_entry_still_names_it() -> None:
 
 
 def test_the_sweep_is_not_vacuous() -> None:
-    """The sweep must find the sentence where it is known to be (a pending
-    file), or a broken root list would pass everything."""
-    known = sweep(PATTERNS[-1], roots=list(PENDING))
-    assert known, "the sweep found nothing where the retired sentence is known to be"
+    """The sweep must find the sentence where it is known to be (this file
+    spells every pattern out), or a broken root list would pass everything."""
+    this_file = BACKEND / "tests" / "test_setup_order_v10_removed.py"
+    known = [hit for pattern in PATTERNS for hit in sweep(pattern, roots=[this_file])]
+    assert len(known) >= len(PATTERNS), (
+        "the sweep found nothing where the retired sentences are known to be"
+    )
 
 
 def test_the_replacements_are_live() -> None:
