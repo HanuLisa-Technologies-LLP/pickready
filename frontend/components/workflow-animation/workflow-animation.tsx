@@ -17,10 +17,10 @@ import { WORKFLOW_SCENES } from "./step-scenes";
 const STEPS = [
   { short: "Login", title: "Secure sign in", duration: 2600 },
   { short: "Workspace", title: "Workspace comes alive", duration: 2000 },
-  { short: "Create", title: "Create the role", duration: 3400 },
+  { short: "Create", title: "Write the JD and its Skills", duration: 3400 },
   { short: "Publish", title: "Publish for 30 days", duration: 1900 },
   { short: "Profiles", title: "Candidate evidence arrives", duration: 2400 },
-  { short: "Match", title: "AI matching settles", duration: 3000 },
+  { short: "Match", title: "AI Match settles", duration: 3000 },
   { short: "Assess", title: "Invite the strongest profiles", duration: 2800 },
   { short: "PRISM", title: "Read the PRISM Report", duration: 3500 },
   { short: "Decide", title: "Shortlist and communicate", duration: 2700 },

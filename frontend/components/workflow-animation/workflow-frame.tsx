@@ -33,10 +33,12 @@ export function DemoWindow({
         {!compact ? (
           <aside className="hidden w-32 shrink-0 border-r border-white/10 bg-white/[0.025] p-3 sm:block lg:w-40">
             <div className="mb-5 flex items-center gap-2 px-2 text-[10px] font-bold tracking-[.15em] text-teal-400">
+              {/* V and WORKSPACE. It read P and READY WORKSPACE, the
+                  previous name's initial and half its wordmark. */}
               <span className="grid h-6 w-6 place-items-center rounded-md bg-teal-600/20">
-                P
+                V
               </span>
-              READY WORKSPACE
+              WORKSPACE
             </div>
             <DemoNav
               icon={BarChart3}

@@ -3,6 +3,7 @@ import { ArrowRight } from "lucide-react";
 
 import { Pressable, Reveal } from "@/components/motion";
 import { Button } from "@/components/ui/button";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 
 /**
  * The closing action.
@@ -29,10 +30,15 @@ export function CallToAction() {
             >
               Start with one role and see the reports
             </h2>
+            {/* It promised nothing reaches a candidate until a person approves
+                the wording, which stopped being true when the invitation
+                email moved to a worker. What IS held for a person is the job
+                itself: nothing is published until the team saves the JD and
+                its skills. */}
             <p className="mx-auto mt-4 max-w-xl text-pretty text-base text-white">
-              Create an account, post a job, and read what comes back. Nothing
-              is sent to a candidate until someone on your team approves the
-              wording.
+              Ask for a workspace, post a job, and read what comes back.
+              Nothing is published until someone on your team has saved the JD
+              and its skills.
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
               <Pressable>
@@ -41,13 +47,17 @@ export function CallToAction() {
                   size="xl"
                   className="group bg-white text-navy-700 shadow-none hover:bg-navy-50"
                 >
-                  <Link href="/register?role=candidate">
-                    Get started
+                  <a
+                    href={REQUEST_ACCESS_HREF}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Request access
                     <ArrowRight
                       className="transition-transform duration-150 group-hover:translate-x-0.5"
                       aria-hidden="true"
                     />
-                  </Link>
+                  </a>
                 </Button>
               </Pressable>
               <Pressable>
@@ -57,7 +67,7 @@ export function CallToAction() {
                   variant="outline"
                   className="border-white bg-transparent text-white shadow-none hover:bg-white/10 hover:text-white"
                 >
-                  <Link href="/login?initial_context=all">Log in</Link>
+                  <Link href="/login">Log in</Link>
                 </Button>
               </Pressable>
             </div>

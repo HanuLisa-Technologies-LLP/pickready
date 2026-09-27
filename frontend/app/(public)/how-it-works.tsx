@@ -2,21 +2,27 @@ import { FileText, ScanSearch, UserCheck } from "lucide-react";
 
 import { Reveal, RevealStagger, StaggerItem } from "@/components/motion";
 
+/**
+ * The sequence, told once (the flow the owner ruled on 2026-09-28): JD, then
+ * Skills, then the final job posting, then publish. The SWOT the team may keep
+ * is internal hiring intelligence and is not a step anybody is sold here.
+ * "Suggested interview probes" became the gap analysis they now live in.
+ */
 const STEPS = [
   {
     icon: FileText,
-    title: "Post the role",
-    body: "Describe the job once. Vivekium drafts the description, your team edits it, and publishing gives you one link to share on any job board.",
+    title: "Write the JD and its Skills",
+    body: "Vivekium drafts the job description and proposes the Must-have, Nice-to-have and Behavioural skills from it. Your team edits both, checks the final job posting and publishes one link to share on any job board. The JD and skills hold still from the first real application.",
   },
   {
     icon: ScanSearch,
-    title: "AI ranks and assesses",
-    body: "Every applicant is parsed and ranked against the role. The candidates you select take a structured assessment generated from that job's own skills.",
+    title: "AI matches, then assesses",
+    body: "AI Match reads every resume against those skills and ranks applicants with the evidence it found and a grade in words. The candidates you invite take one proctored assessment built from the same skills: typed or spoken answers, multiple choice, fill in the blank, and coding run in a sandbox.",
   },
   {
     icon: UserCheck,
     title: "You decide",
-    body: "Read one report per candidate, with rated remarks in plain words and suggested interview probes. Then move people through the pipeline.",
+    body: "Read a PRISM Report and a Proctoring Report for each assessed candidate, with every skill graded in plain words and a gap analysis to take into the interview. Then move people through the pipeline.",
   },
 ];
 
