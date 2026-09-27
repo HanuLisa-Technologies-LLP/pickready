@@ -8,8 +8,16 @@
  * Create Job used to publish inside the create call under `create_job` alone,
  * so a job went live with no SWOT, no skills, a DRAFT lifecycle state and no
  * JD index. Publishing is now `POST /jobs/{id}/publish`, which requires the
- * `publish_job` capability and a saved JD, a saved SWOT and saved skills, sets
- * the lifecycle state and dispatches the indexing after the commit.
+ * `publish_job` capability, a saved JD and saved skills, sets the lifecycle
+ * state and dispatches the indexing after the commit.
+ *
+ * THE SWOT IS NOT ON THIS LIST (CONTRACT v10, owner ruling 2026-09-28)
+ * --------------------------------------------------------------------
+ *     JD -> Skills -> Final Job Posting -> Publish
+ * The SWOT is internal hiring intelligence, edited on its own and never a
+ * publish prerequisite, so the checklist names the JD and the skills only.
+ * The recruiter reads the Final Job Posting preview directly above this card
+ * before the one Publish click.
  *
  * THE CHECKLIST IS THE SERVER'S
  * -----------------------------
@@ -64,18 +72,26 @@ export interface JobSetupStatus {
   skills_draft_status: string;
   skills_saved: boolean;
   skills_locked: boolean;
-  /** The grade locks with the skills: it decides every candidate's question
-   *  budget, so it cannot move once somebody has started. */
+  /** The grade freezes with the skills: it decides every candidate's
+   *  question budget, so it cannot move once somebody has applied. */
   grade_locked: boolean;
   published: boolean;
   ready_for_candidates: boolean;
   /** Every missing step, in order, in the server's words. Null when none. */
   publish_blocked_reason: string | null;
+  /** A snapshot row exists: the first genuine application froze the JD and
+   *  the skills (CONTRACT v10). Equal to `skills_locked`; optional so a
+   *  server without it still reads through `skills_locked`. */
+  frozen?: boolean;
+  /** When the FIRST snapshot was taken, or null. */
+  frozen_at?: string | null;
+  /** The server's banner sentence, verbatim; null when not frozen. */
+  frozen_reason?: string | null;
 }
 
-const CHECKLIST: { key: "jd_ready" | "swot_saved" | "skills_saved"; label: string }[] = [
+/** JD and Skills only: the SWOT is never a publish prerequisite (v10). */
+const CHECKLIST: { key: "jd_ready" | "skills_saved"; label: string }[] = [
   { key: "jd_ready", label: "Job description" },
-  { key: "swot_saved", label: "SWOT saved" },
   { key: "skills_saved", label: "Skills saved" },
 ];
 
@@ -182,7 +198,8 @@ export function JobPublishCard({
       <CardHeader>
         <CardTitle>Publish</CardTitle>
         <CardDescription>
-          A job goes live once its description, SWOT and skills are saved.
+          A job goes live once its description and skills are saved. Read
+          the final job posting above before publishing.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">

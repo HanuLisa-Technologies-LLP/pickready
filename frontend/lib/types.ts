@@ -861,6 +861,49 @@ export interface PortalJob {
   company_culture?: string | null;
   company_industry?: string | null;
   company_benefits?: string | null;
+  /** The job's skills by bucket, names only (CONTRACT v10). An empty list on
+   *  a job with no SAVED skills; read through `postingSkillsFrom`. */
+  skill_buckets?: PostingSkillBucket[] | null;
+}
+
+/**
+ * One bucket of a job's skills as a candidate reads them (CONTRACT v10,
+ * point 2; `s4-api-shapes.md` section 4): the server's label and the skill
+ * NAMES, alphabetical. The hidden evidence line, the priority and the role
+ * summary are assessment context and never ride this shape.
+ */
+export interface PostingSkillBucket {
+  bucket: "must_have" | "nice_to_have" | "behavioural";
+  label: string;
+  names: string[];
+}
+
+/**
+ * `GET /api/v2/assessments/jobs/{id}/posting-preview` (`PostingPreviewOut`):
+ * the candidate-facing posting, for the recruiter, before and after
+ * publishing. Every word here is the server's.
+ */
+export interface PostingPreview {
+  job_id: string;
+  title: string;
+  department: string | null;
+  grade: string;
+  grade_label: string;
+  experience_band: string | null;
+  jd_markdown: string | null;
+  company_name: string | null;
+  about_company: string | null;
+  work_life: string | null;
+  benefits: string | null;
+  skill_buckets: PostingSkillBucket[];
+  /** False: the names are the team's unsaved working set. */
+  skills_saved: boolean;
+  published: boolean;
+  public_application_url: string | null;
+  publish_blocked_reason: string | null;
+  frozen: boolean;
+  frozen_at: string | null;
+  frozen_reason: string | null;
 }
 
 export interface PortalApplication {

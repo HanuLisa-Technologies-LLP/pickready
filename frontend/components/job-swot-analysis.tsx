@@ -37,13 +37,21 @@
  * was not yet confirmed; any other 409 (a JD too thin to draft from) is a
  * refusal, shown in the server's words.
  *
- * THE SKILLS FOLLOW THE SWOT, AND NEVER SILENTLY
- * ----------------------------------------------
- * The first human save of a SWOT on a job with no skills starts Sutra's skills
- * draft on the server. A later save only makes a re-draft AVAILABLE: the
- * response says so (`skills_redraft_available`) and this panel offers
- * "Re-draft skills from the updated SWOT", which opens the Skills panel's own
- * confirmation. Nothing is re-drafted without that second click.
+ * INTERNAL HIRING INTELLIGENCE (CONTRACT v10, owner ruling 2026-09-28)
+ * --------------------------------------------------------------------
+ * The SWOT is no longer a step of job setup. It is never shown to candidates,
+ * never a publish prerequisite, and editable at any time, including after the
+ * first application froze the JD and the skills: an edit then changes nothing
+ * frozen. The page renders it in its own "Hiring intelligence (internal)"
+ * section, outside the JD -> Skills -> Final Job Posting -> Publish chain.
+ *
+ * THE SKILLS MAY USE THE SWOT, AND NEVER SILENTLY
+ * -----------------------------------------------
+ * A SWOT save never drafts skills. While the job is unfrozen a save may make a
+ * re-draft AVAILABLE: the response says so (`skills_redraft_available`) and
+ * this panel offers "Re-draft skills from the updated SWOT", which opens the
+ * Skills panel's own confirmation. Nothing is re-drafted without that second
+ * click, and the page withholds the offer (`canRedraftSkills`) once frozen.
  *
  * PERMISSION-AWARE, FROM THE SERVER'S ANSWER
  * -------------------------------------------
@@ -209,11 +217,12 @@ export function JobSwotAnalysisPanel({
 }: {
   jobId: string;
   className?: string;
-  /** Told after a save or a restore lands, so the skills and the publish
-   *  checklist re-read: the first save starts the skills draft. */
+  /** Told after a save or a restore lands, so the skills panel re-reads
+   *  whether a re-draft is now available. */
   onSaved?: (analysis: SwotAnalysis) => void;
-  /** The capability half of "may this person re-draft the skills". The
-   *  Skills panel re-checks with the server's per-job answer. */
+  /** The capability half of "may this person re-draft the skills", already
+   *  false once the job is frozen. The Skills panel re-checks with the
+   *  server's per-job answer. */
   canRedraftSkills?: boolean;
   /** Opens the Skills panel's re-draft confirmation. Never drafts by itself. */
   onRequestSkillsRedraft?: () => void;
