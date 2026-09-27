@@ -48,6 +48,7 @@ from app.core.security import ALGORITHM
 from app.models.enums import Role, UserStatus
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services import staff_invites
 
 #: A context token is a short-lived proof that an identity was verified, listing
 #: the workspaces it may be exchanged for. Five minutes: long enough to read a
@@ -319,5 +320,7 @@ async def select_context(
     # `api/auth._finalize_single` does for a single-workspace identity.
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    # Same session issuance, same acceptance (services/staff_invites).
+    await staff_invites.accept_pending_invite(session, user.id)
     await session.flush()
     return SelectionResult(user=user)
