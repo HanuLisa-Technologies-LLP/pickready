@@ -27,7 +27,7 @@ const Table = React.forwardRef<
       ref={ref}
       aria-label={label}
       className={cn(
-        "w-full caption-bottom text-sm [font-variant-numeric:tabular-nums]",
+        "w-full caption-bottom text-table [font-variant-numeric:tabular-nums]",
         className
       )}
       {...props}
@@ -107,7 +107,7 @@ const TableHead = React.forwardRef<
     ref={ref}
     scope={scope}
     className={cn(
-      "h-11 px-4 text-left align-middle text-xs font-semibold uppercase tracking-wide text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      "h-11 px-4 text-left align-middle text-table-head font-semibold uppercase text-muted-foreground [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}
@@ -122,7 +122,7 @@ const TableCell = React.forwardRef<
   <td
     ref={ref}
     className={cn(
-      "px-4 py-3.5 align-middle [&:has([role=checkbox])]:pr-0",
+      "px-4 py-3 align-middle [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}
@@ -136,7 +136,7 @@ const TableCaption = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <caption
     ref={ref}
-    className={cn("mt-4 text-sm text-muted-foreground", className)}
+    className={cn("mt-4 text-body-sm text-muted-foreground", className)}
     {...props}
   />
 ));

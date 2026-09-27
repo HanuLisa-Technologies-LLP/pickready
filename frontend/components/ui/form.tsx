@@ -77,7 +77,7 @@ export function FormField({
       </Label>
       {control}
       {showHint ? (
-        <p id={hintId} className="text-xs text-muted-foreground">
+        <p id={hintId} className="max-w-prose text-body-sm text-muted-foreground">
           {hint}
         </p>
       ) : null}
@@ -85,7 +85,7 @@ export function FormField({
         <p
           id={errorId}
           role="alert"
-          className="text-xs font-medium text-destructive"
+          className="text-body-sm font-medium text-destructive"
         >
           {error}
         </p>
@@ -139,9 +139,9 @@ export function FormSection({
   return (
     <section className={cn("space-y-4", className)}>
       <div>
-        <h3 className="text-base font-semibold">{title}</h3>
+        <h3 className="text-subheading font-semibold">{title}</h3>
         {description ? (
-          <p className="text-sm text-muted-foreground">{description}</p>
+          <p className="mt-1 max-w-prose text-body text-muted-foreground">{description}</p>
         ) : null}
       </div>
       {children}

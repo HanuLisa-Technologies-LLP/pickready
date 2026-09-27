@@ -82,9 +82,9 @@ export function Section({
       {title || actions || description ? (
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
           <div className="min-w-0 space-y-1">
-            <CardTitle className="text-base">{title}</CardTitle>
+            <CardTitle>{title}</CardTitle>
             {description ? (
-              <p className="text-sm">{description}</p>
+              <p className="max-w-prose text-body">{description}</p>
             ) : null}
           </div>
           {actions ? (
@@ -130,9 +130,9 @@ export function EmptyState({
       <span className="grid h-12 w-12 place-items-center rounded-xl bg-brand-100 text-accent-foreground">
         <Icon className="h-6 w-6" aria-hidden="true" />
       </span>
-      <p className="mt-4 text-base font-semibold">{title}</p>
+      <p className="mt-4 text-subheading font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm">
+        <p className="mt-1.5 max-w-sm text-pretty text-body">
           {description}
         </p>
       ) : null}
@@ -168,9 +168,9 @@ export function ErrorState({
       <span className="grid h-12 w-12 place-items-center rounded-xl bg-destructive/10 text-destructive">
         <AlertCircle className="h-6 w-6" aria-hidden="true" />
       </span>
-      <p className="mt-4 text-base font-semibold">{title}</p>
+      <p className="mt-4 text-subheading font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm">
+        <p className="mt-1.5 max-w-sm text-pretty text-body">
           {description}
         </p>
       ) : null}
@@ -290,7 +290,7 @@ export function Field({
     <div className={cn("space-y-1.5", className)}>
       <label
         htmlFor={htmlFor}
-        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed"
+        className="text-label font-medium peer-disabled:cursor-not-allowed"
       >
         {label}
         {required ? (
@@ -300,7 +300,7 @@ export function Field({
         ) : null}
       </label>
       {children}
-      {hint ? <p className="text-xs">{hint}</p> : null}
+      {hint ? <p className="max-w-prose text-body-sm">{hint}</p> : null}
     </div>
   );
 }
@@ -321,10 +321,8 @@ export function DetailItem({
 }) {
   return (
     <div className={cn("min-w-0 space-y-1", className)}>
-      <dt className="text-xs font-medium uppercase tracking-[0.08em]">
-        {label}
-      </dt>
-      <dd className="break-words text-sm">{children}</dd>
+      <dt className="type-eyebrow">{label}</dt>
+      <dd className="break-words text-body">{children}</dd>
     </div>
   );
 }
@@ -366,8 +364,8 @@ export function RowCard({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{title}</p>
-          {meta ? <div className="mt-1 text-xs">{meta}</div> : null}
+          <p className="truncate text-subheading font-semibold">{title}</p>
+          {meta ? <div className="mt-0.5 text-body-sm">{meta}</div> : null}
         </div>
         {actions ? (
           <div className="flex shrink-0 items-center gap-2">{actions}</div>

@@ -247,18 +247,46 @@
   body {
     @apply bg-background text-foreground;
     overflow-x: hidden;
+    /* Kerning and contextual alternates are the face's own defaults; saying
+       so pins them on in every engine. Fraunces has an optical-size axis and
+       `auto` lets it pick the display cut at display sizes. */
+    font-kerning: normal;
+    font-feature-settings: "kern", "calt";
+    font-optical-sizing: auto;
+    text-rendering: optimizeLegibility;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
-  /* Headings carry the display tracking from the brief. */
+  /* HEADINGS: a light default, never the old blanket `tracking-tight`.
+     -0.025em suits a 32px title and crowds a 15px card heading, and it was
+     applied to both. Every step from `lg` up now carries its own tracking in
+     `tailwind.config.ts`, which wins over this rule, so this only governs the
+     small headings that have no tracking of their own. `balance` stops a
+     two-line heading ending on one orphaned word. */
   h1,
   h2,
   h3,
-  h4 {
-    @apply tracking-tight;
+  h4,
+  h5,
+  h6 {
+    letter-spacing: -0.011em;
+    text-wrap: balance;
   }
 
-  /* Numbers line up in a column wherever a table is rendered. */
-  table {
+  /* Running text never ends a paragraph on a single stranded word. `pretty`
+     only touches the last lines, so a dense block keeps its rag. */
+  p,
+  li,
+  dd,
+  blockquote,
+  figcaption {
+    text-wrap: pretty;
+  }
+
+  /* Numbers line up in a column wherever a table or a time is rendered. */
+  table,
+  time {
     font-variant-numeric: tabular-nums;
   }
 
@@ -292,6 +320,42 @@
     50% {
       opacity: 1;
     }
+  }
+}
+
+/* ===========================================================================
+   TYPE ROLES THAT NEED MORE THAN A SIZE (DESIGN.md section 3)
+   ---------------------------------------------------------------------------
+   The size roles (`text-title`, `text-heading`, `text-subheading`,
+   `text-body`, `text-body-sm`, `text-label`, `text-meta`, `text-eyebrow`,
+   `text-table`, `text-table-head`) live in `tailwind.config.ts`. These classes
+   exist only where a role is more than size, line height, tracking and weight:
+   a responsive switch, a case transform or a measure. They sit in the
+   COMPONENTS layer on purpose, so any utility at a call site still wins.
+   =========================================================================== */
+@layer components {
+  /* The one h1 of an app screen. 24px on a phone, 28px from `sm` up. */
+  .type-page-title {
+    @apply text-title-sm sm:text-title;
+  }
+
+  /* Marketing display type. Fraunces, where the product gets one chance to
+     look designed (DESIGN.md section 3), never below a page title. */
+  .type-display {
+    @apply font-display text-[2.25rem] font-semibold leading-[2.625rem] tracking-[-0.02em] sm:text-[2.75rem] sm:leading-[3.125rem] lg:text-[3.25rem] lg:leading-[3.5rem];
+  }
+
+  /* The small uppercase kicker above a title or a group of fields. One
+     tracking value for every overline in the product; there were eight. */
+  .type-eyebrow {
+    @apply text-eyebrow uppercase;
+  }
+
+  /* Running text: body size, a readable measure, a pretty rag. 65 characters
+     is where a line stops being scannable; a report remark or a description
+     wider than that reads as a wall. */
+  .type-prose {
+    @apply max-w-prose text-body;
   }
 }
 
