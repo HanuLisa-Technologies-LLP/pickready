@@ -151,14 +151,70 @@ rather than drifting toward a generic blue.
 
 ## 3. Typography Rules
 
-| Role | Family | Weight | Size / leading |
-|---|---|---|---|
-| Display | Fraunces | 600 | 40/44, −0.02em |
-| Page title | Inter Tight | 620 | 28/34, −0.015em |
-| Section | Inter Tight | 600 | 20/28 |
-| Body | Inter Tight | 400 | 15/26 |
-| Small / label | Inter Tight | 500 | 13/20, +0.01em |
-| Reference code, IDs | JetBrains Mono | 500 | 13/20 |
+### The system (2026-09-28)
+
+**One typographic system, stated once, as tokens.** Every row below is a
+Tailwind font-size ROLE in `tailwind.config.ts` that carries its size, line
+height, tracking and weight together, or a component class in
+`app/globals.css` where a role needs more than that. Write the ROLE at a call
+site, never the four properties by hand: a heading spelled out by hand is how
+the product came to have eight different overline trackings and page titles
+at two sizes and two weights.
+
+| Role | Token | Family | Size / leading | Tracking | Weight |
+|---|---|---|---|---|---|
+| Display (marketing hero only) | `font-display` + arbitrary size | Fraunces | 34 to 54 / 1.06 | −0.02em | 600 |
+| Page title (the one h1 of a screen) | `type-page-title` | Inter Tight | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
+| Section heading (page h2, dialog and sheet title) | `text-heading` | Inter Tight | 20/28 | −0.012em | 600 |
+| Subsection heading, card title (h3) | `text-subheading` | Inter Tight | 16/24 | −0.006em | 600 |
+| Eyebrow / overline | `type-eyebrow` | Inter Tight | 12/16, uppercase | +0.08em | 600 |
+| Form label | `text-label` | Inter Tight | 14/20 | 0 | 500 |
+| Body, descriptions | `text-body` (= `text-sm`) | Inter Tight | 15/26 | 0 | 400 |
+| Body small, helper text | `text-body-sm` (= `text-xs`) | Inter Tight | 13/20 | 0 | 400 |
+| Metadata (timestamps, secondary lines) | `text-meta` | Inter Tight | 12/18 | +0.01em | 400 |
+| Table cell | `text-table` | Inter Tight | 14/20 | 0 | 400 |
+| Table header | `text-table-head` + `uppercase` | Inter Tight | 12/16 | +0.06em | 600 |
+| Reference code, IDs, code | `font-mono` | JetBrains Mono | 13/20 | 0 | 500 |
+| Figures (stats, money, counts) | `tabular-nums` | Inter Tight | the step it sits on | the step's | 600 |
+
+- **Hierarchy is carried by size AND weight, never by colour.** Text is never
+  grey (below), so a helper line differs from body by being a step smaller, a
+  label from a value by being a step smaller and heavier, and a heading from a
+  label by size. Headings are 600, not 700: bold at 28px on Inter Tight reads
+  as shouting, and the old page title was exactly that.
+- **Tracking follows size.** The raw steps `lg` to `5xl` carry negative
+  tracking that grows with the size (−0.006em at 18px to −0.028em at 64px);
+  text sizes keep the face's own spacing; uppercase gets positive tracking
+  (+0.06em to +0.08em) because capitals set tight collide. The old blanket
+  `tracking-tight` on every h1 to h4 crowded a 15px card heading to give a
+  32px title its spacing, and is gone: the base heading rule is −0.011em and
+  every sized step overrides it.
+- **A measure for running text.** Descriptions, report remarks, transcripts,
+  helper text and dialog descriptions stop at `max-w-prose` (65ch). Past that a
+  line stops being scannable and a paragraph reads as a wall. Tables, forms and
+  grids are not running text and are not capped.
+- **Headings balance, paragraphs are pretty.** `text-wrap: balance` on h1 to
+  h6 and `pretty` on paragraphs, list items, `dd` and captions, set once in the
+  base layer, so a two-line heading never ends on one orphaned word.
+- **Figures line up.** `table` and `time` are tabular by default; a stat, a
+  price or a count outside a table says `tabular-nums`.
+- **Density is a property of the role, not of the page.** Prose leading is
+  generous (15/26) because a remark is read; table leading is tight (14/20 in
+  a `py-3` cell, the 44px row of section 4) because a table is scanned. The
+  same page can and should carry both.
+- **tailwind-merge knows the roles.** `lib/utils.ts` registers them as SIZES;
+  otherwise `cn("text-label", "text-ink")` would file both as colours and keep
+  only the colour. `lib/utils.test.ts` reads the config and fails when a role
+  is added in one place and not the other.
+- **Vertical rhythm is the 8px grid of section 5**: 32px (`mb-8` or
+  `space-y-8`) between a page header and its content and between the sections
+  of a page, 24px (`space-y-6`) between the cards of one section, 16px
+  (`space-y-4`) between the blocks inside a card, and 8px or less inside a
+  block. A heading sits closer to what it introduces than to what precedes it.
+
+The raw steps (`text-2xs` to `text-5xl`) remain for dense bespoke surfaces,
+the candidate dashboard's own cell sizes and marketing layouts. New work reaches
+for a role first.
 
 **The leading lives in the scale, not at the call site (2026-09-19).** Body was
 15/24 and small 13/18, and read congested in anything longer than a label. The
@@ -170,7 +226,11 @@ DELIBERATE: it is tighter or looser than the scale on purpose, and the dense
 candidate tables keep their density. The same pass gave prose a little more
 air: the page-header description sits at `mt-3` and `CardHeader` at
 `space-y-2`. Letter spacing did not move, body copy nowhere used
-`tracking-tight`; it stays a heading treatment.
+`tracking-tight`; it stays a heading treatment. (AMENDED 2026-09-28 by the
+system above: `lg` is 28px, because it is overwhelmingly a heading size and a
+wrapped 18px heading at 30px read as two separate lines; the page-header
+description sits at `mt-2.5` under the smaller, lighter title; and heading
+tracking now follows size instead of one blanket `tracking-tight`.)
 
 **Not Inter-as-default.** Impeccable flags default Inter as a slop tell and it is
 right about the reason: it is the typeface a UI reaches for when nobody chose
@@ -222,7 +282,8 @@ borders 16px apart read as a rendering fault. A grouping inside a card is a
 horizontal rule and a heading.
 
 **Tables.** The densest surface in the product and the one recruiters live in.
-Row height 44, 13px label header in ink, `navy-50` on hover, `navy-100` on
+Row height 44 (14/20 `text-table` in a `py-3` cell), a 12px uppercase
+`text-table-head` header in ink, `navy-50` on hover, `navy-100` on
 selected. Sorted in SQL, never in JavaScript, and the header reflects the
 server's order.
 
@@ -359,7 +420,10 @@ For an agent generating or modifying a Vivekium surface:
 > corroborated, what is cited. Never purple, never violet, never a two-hue
 > gradient. Teal text on white must be `#096C64`, because the brand teal
 > measures 3.65:1 and fails AA for body text. Inter Tight for UI, Fraunces for
-> display, JetBrains Mono for reference codes — never default Inter. Text is
+> display, JetBrains Mono for reference codes — never default Inter. Set type
+> through the roles (`type-page-title`, `text-heading`, `text-subheading`,
+> `type-eyebrow`, `text-label`, `text-body`, `text-body-sm`, `text-meta`,
+> `text-table`), headings at 600, running text capped at `max-w-prose`. Text is
 > never grey; grey is for borders and muted backgrounds only. Cards are a 1px
 > border and no shadow at rest, and never nested. No icon tile above a heading.
 > No `border-l-4` unless it is semantic and documented. 8px spacing scale, 1280
