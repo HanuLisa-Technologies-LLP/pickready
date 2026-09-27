@@ -37,17 +37,22 @@ const PAGE = {
       experience_max_years: 6,
       apply_path: "/apply/r1",
       apply_url: "https://readypick.ai/apply/r1",
-      skills: {
-        must_have: ["Python"],
-        nice_to_have: ["Terraform"],
-        behavioural: ["Owns incidents to closure"],
-      },
+      skill_buckets: [
+        { bucket: "must_have", label: "Must-have skills", names: ["Python"] },
+        { bucket: "nice_to_have", label: "Nice-to-have skills", names: ["Terraform"] },
+        {
+          bucket: "behavioural",
+          label: "Behavioural competencies",
+          names: ["Owns incidents to closure"],
+        },
+      ],
     },
     {
       id: "r2",
       title: "Legacy Analyst",
       apply_path: "/apply/r2",
       apply_url: "https://readypick.ai/apply/r2",
+      skill_buckets: [],
     },
   ],
 };

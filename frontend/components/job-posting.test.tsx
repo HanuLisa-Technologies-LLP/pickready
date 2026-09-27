@@ -1,99 +1,116 @@
 // @vitest-environment jsdom
 //
-// The job posting as a candidate reads it (CONTRACT v10). What is pinned:
+// The job posting as a candidate reads it (CONTRACT v10; shapes in
+// docs/release/2026-09-vivekium/s4-api-shapes.md). What is pinned:
 //
-// * a skill reaches a candidate as its NAME under its bucket's heading, and
-//   nothing else: a payload carrying an evidence line or a priority still
-//   renders the name only;
-// * a legacy job whose skills were never saved renders no skills section at
-//   all, not three empty headings;
-// * the recruiter's Final Job Posting shows the title, the band, the JD, the
-//   three buckets and the company narrative, with the grade said to be
-//   outside the posting.
+// * a skill reaches a candidate as its NAME under its bucket's server label,
+//   and nothing else: an entry carrying more still renders the name only;
+// * a legacy job with no saved skills (`skill_buckets: []`, or an older
+//   server sending nothing) renders no skills section, not empty headings;
+// * the recruiter's Final Job Posting renders the server's preview: title,
+//   band, the JD document, the three buckets and the company narrative, with
+//   the grade said to be outside the posting.
 
 import * as React from "react";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Job } from "@/lib/types";
+import type { PostingPreview, PostingSkillBucket } from "@/lib/types";
+
+const http = vi.hoisted(() => ({ apiGet: vi.fn() }));
+vi.mock("@/lib/api", () => http);
+
 import {
   FinalJobPostingPreview,
-  POSTING_BUCKETS,
   PostingSkillsList,
   experienceBandText,
   postingSkillsFrom,
 } from "./job-posting";
 
 afterEach(cleanup);
+beforeEach(() => http.apiGet.mockReset());
 
-const SKILLS = {
-  must_have: ["Python", "SQL"],
-  nice_to_have: ["Terraform"],
-  behavioural: ["Owns incidents to closure"],
-};
+const BUCKETS: PostingSkillBucket[] = [
+  { bucket: "must_have", label: "Must-have skills", names: ["Python", "SQL"] },
+  { bucket: "nice_to_have", label: "Nice-to-have skills", names: ["Terraform"] },
+  {
+    bucket: "behavioural",
+    label: "Behavioural competencies",
+    names: ["Owns incidents to closure"],
+  },
+];
 
-function job(overrides: Partial<Job> = {}): Job {
+function preview(overrides: Partial<PostingPreview> = {}): PostingPreview {
   return {
-    id: "job-1",
+    job_id: "job-1",
     title: "Backend Engineer",
     department: "Platform",
-    requirement_period: "",
     grade: "managerial",
-    status: "draft",
-    experience_min_years: 3,
-    experience_max_years: 6,
-    jd: {
-      description: "Build the ingestion services.",
-      responsibilities: ["Own the event pipeline", "Review designs"],
-    },
+    grade_label: "Managerial",
+    experience_band: "3 to 6 years",
+    jd_markdown: "Build the ingestion services.\n\nOwn the event pipeline.",
+    company_name: "Acrm Corp",
     about_company: "We build payroll software.",
     work_life: "Hybrid, three days in the office.",
     benefits: null,
+    skill_buckets: BUCKETS,
+    skills_saved: true,
+    published: false,
+    public_application_url: null,
+    publish_blocked_reason: null,
+    frozen: false,
+    frozen_at: null,
+    frozen_reason: null,
     ...overrides,
-  } as unknown as Job;
+  };
 }
 
 describe("postingSkillsFrom", () => {
-  it("keeps names by bucket, trimmed and without repeats", () => {
+  it("keeps the server's label and the names, in posting order, skipping empty buckets", () => {
     expect(
-      postingSkillsFrom({
-        must_have: [" Python ", "Python", "SQL"],
-        nice_to_have: [],
-        behavioural: ["Owns incidents to closure"],
-      })
-    ).toEqual({
-      must_have: ["Python", "SQL"],
-      nice_to_have: [],
-      behavioural: ["Owns incidents to closure"],
-    });
+      postingSkillsFrom([
+        { bucket: "behavioural", label: "Behavioural competencies", names: ["Owns incidents"] },
+        { bucket: "nice_to_have", label: "Nice-to-have skills", names: [] },
+        { bucket: "must_have", label: "Must-have skills", names: [" Python ", "Python", "SQL"] },
+      ])
+    ).toEqual([
+      { bucket: "must_have", label: "Must-have skills", names: ["Python", "SQL"] },
+      { bucket: "behavioural", label: "Behavioural competencies", names: ["Owns incidents"] },
+    ]);
   });
 
-  it("keeps the name ONLY when an entry carries more", () => {
-    const skills = postingSkillsFrom({
-      must_have: [
-        { id: "s1", name: "Python", priority: 1, evidence_line: "Ships typed services." },
-      ],
-    });
-    expect(skills).toEqual({ must_have: ["Python"], nice_to_have: [], behavioural: [] });
+  it("keeps the names ONLY when an entry carries more", () => {
+    const buckets = postingSkillsFrom([
+      {
+        bucket: "must_have",
+        label: "Must-have skills",
+        names: ["Python", { name: "Hidden", priority: 1 }],
+        evidence_lines: ["Ships typed services."],
+      },
+    ]);
+    expect(buckets).toEqual([
+      { bucket: "must_have", label: "Must-have skills", names: ["Python"] },
+    ]);
   });
 
-  it("reads a legacy job without skills as null", () => {
+  it("reads a legacy job without saved skills as null", () => {
+    expect(postingSkillsFrom([])).toBeNull();
     expect(postingSkillsFrom(undefined)).toBeNull();
     expect(postingSkillsFrom(null)).toBeNull();
-    expect(postingSkillsFrom({ must_have: [], nice_to_have: [], behavioural: [] })).toBeNull();
-    expect(postingSkillsFrom(["Python"])).toBeNull();
-    expect(postingSkillsFrom("Python")).toBeNull();
+    expect(
+      postingSkillsFrom([
+        { bucket: "must_have", label: "Must-have skills", names: [] },
+        { bucket: "nice_to_have", label: "Nice-to-have skills", names: [] },
+        { bucket: "behavioural", label: "Behavioural competencies", names: [] },
+      ])
+    ).toBeNull();
+    expect(postingSkillsFrom({ must_have: ["Python"] })).toBeNull();
   });
 });
 
 describe("PostingSkillsList", () => {
-  it("shows each bucket under the heading a candidate reads", () => {
-    render(<PostingSkillsList skills={SKILLS} />);
-    expect(POSTING_BUCKETS.map((bucket) => bucket.heading)).toEqual([
-      "Must-have skills",
-      "Nice-to-have skills",
-      "Behavioural competencies",
-    ]);
+  it("shows each bucket under its label, names only", () => {
+    render(<PostingSkillsList buckets={BUCKETS} />);
     const mustHave = screen.getByRole("region", { name: "Must-have skills" });
     expect(within(mustHave).getByText("Python")).toBeTruthy();
     expect(within(mustHave).getByText("SQL")).toBeTruthy();
@@ -105,19 +122,13 @@ describe("PostingSkillsList", () => {
     expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(3);
   });
 
-  it("omits an empty bucket and renders nothing for a job with no skills", () => {
-    const { container, rerender } = render(
-      <PostingSkillsList skills={{ ...SKILLS, nice_to_have: [] }} />
-    );
-    expect(screen.queryByText("Nice-to-have skills")).toBeNull();
-    expect(screen.getByText("Must-have skills")).toBeTruthy();
-
-    rerender(<PostingSkillsList skills={null} />);
+  it("renders nothing for a job with no skills", () => {
+    const { container } = render(<PostingSkillsList buckets={null} />);
     expect(container.innerHTML).toBe("");
   });
 
   it("uses the heading level the surrounding outline needs", () => {
-    render(<PostingSkillsList skills={SKILLS} headingLevel={4} />);
+    render(<PostingSkillsList buckets={BUCKETS} headingLevel={4} />);
     expect(screen.getAllByRole("heading", { level: 4 })).toHaveLength(3);
     expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
   });
@@ -133,21 +144,18 @@ describe("experienceBandText", () => {
 });
 
 describe("FinalJobPostingPreview", () => {
-  it("renders the posting a candidate reads: title, band, JD, skills by name, narrative", () => {
-    render(
-      <FinalJobPostingPreview
-        job={job()}
-        skills={SKILLS}
-        skillsSaved
-        companyName="Acrm Corp"
-      />
+  it("reads the server's preview and renders the posting a candidate reads", async () => {
+    http.apiGet.mockResolvedValue(preview());
+    render(<FinalJobPostingPreview jobId="job-1" />);
+
+    const posting = await screen.findByRole("article", { name: "Posting preview" });
+    expect(http.apiGet).toHaveBeenCalledWith(
+      "/api/v2/assessments/jobs/job-1/posting-preview"
     );
-    const posting = screen.getByRole("article", { name: "Posting preview" });
     expect(within(posting).getByText("Backend Engineer")).toBeTruthy();
     expect(within(posting).getByText("Acrm Corp")).toBeTruthy();
-    expect(within(posting).getByText("Platform · 3 to 6 years experience")).toBeTruthy();
-    expect(within(posting).getByText("Build the ingestion services.")).toBeTruthy();
-    expect(within(posting).getByText("Own the event pipeline")).toBeTruthy();
+    expect(within(posting).getByText("Platform · 3 to 6 years")).toBeTruthy();
+    expect(within(posting).getByText(/Build the ingestion services\./)).toBeTruthy();
     expect(within(posting).getByText("Must-have skills")).toBeTruthy();
     expect(within(posting).getByText("Terraform")).toBeTruthy();
     expect(within(posting).getByText("About the company")).toBeTruthy();
@@ -157,26 +165,46 @@ describe("FinalJobPostingPreview", () => {
     expect(within(posting).queryByText(/not saved yet/)).toBeNull();
   });
 
-  it("says the grade sets the assessment and keeps it OUT of the posting", () => {
-    render(<FinalJobPostingPreview job={job()} skills={SKILLS} skillsSaved />);
+  it("says the grade sets the assessment and keeps it OUT of the posting", async () => {
+    http.apiGet.mockResolvedValue(preview());
+    render(<FinalJobPostingPreview jobId="job-1" />);
+
+    const posting = await screen.findByRole("article", { name: "Posting preview" });
     expect(
       screen.getByText(/It sets the assessment and is not shown on the posting\./)
     ).toBeTruthy();
-    const posting = screen.getByRole("article", { name: "Posting preview" });
     expect(within(posting).queryByText(/Managerial/)).toBeNull();
     expect(posting.textContent).not.toMatch(/Grade/);
   });
 
-  it("says unsaved skills are unsaved", () => {
-    render(<FinalJobPostingPreview job={job()} skills={SKILLS} skillsSaved={false} />);
+  it("says unsaved skills are unsaved", async () => {
+    http.apiGet.mockResolvedValue(preview({ skills_saved: false }));
+    render(<FinalJobPostingPreview jobId="job-1" />);
     expect(
-      screen.getByText("These skills are not saved yet. Save them above before publishing.")
+      await screen.findByText(
+        "These skills are not saved yet. Save them above before publishing."
+      )
     ).toBeTruthy();
   });
 
-  it("shows a job with no skills honestly, with no empty bucket headings", () => {
-    render(<FinalJobPostingPreview job={job()} skills={null} skillsSaved={false} />);
-    expect(screen.getByText(/No skills yet\. The skills you add above appear here by name/)).toBeTruthy();
+  it("shows a job with no skills honestly, with no empty bucket headings", async () => {
+    http.apiGet.mockResolvedValue(preview({ skill_buckets: [], skills_saved: false }));
+    render(<FinalJobPostingPreview jobId="job-1" />);
+    expect(
+      await screen.findByText(/No skills yet\. The skills you add above appear here by name/)
+    ).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Must-have skills" })).toBeNull();
+  });
+
+  it("re-reads when its key changes, and says a failed read with a retry", async () => {
+    http.apiGet.mockRejectedValueOnce(new Error("Service unavailable"));
+    const { rerender } = render(<FinalJobPostingPreview jobId="job-1" reloadKey="a" />);
+    expect(await screen.findByText("The posting preview could not be loaded")).toBeTruthy();
+    expect(screen.getByText("Service unavailable")).toBeTruthy();
+
+    http.apiGet.mockResolvedValue(preview());
+    rerender(<FinalJobPostingPreview jobId="job-1" reloadKey="b" />);
+    await screen.findByRole("article", { name: "Posting preview" });
+    await waitFor(() => expect(http.apiGet).toHaveBeenCalledTimes(2));
   });
 });

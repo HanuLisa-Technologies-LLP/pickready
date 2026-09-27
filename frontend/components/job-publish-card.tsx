@@ -79,10 +79,13 @@ export interface JobSetupStatus {
   ready_for_candidates: boolean;
   /** Every missing step, in order, in the server's words. Null when none. */
   publish_blocked_reason: string | null;
-  /** When the first genuine application froze the JD and the skills
-   *  (CONTRACT v10). Absent from a server that does not send it. */
+  /** A snapshot row exists: the first genuine application froze the JD and
+   *  the skills (CONTRACT v10). Equal to `skills_locked`; optional so a
+   *  server without it still reads through `skills_locked`. */
+  frozen?: boolean;
+  /** When the FIRST snapshot was taken, or null. */
   frozen_at?: string | null;
-  /** The server's own sentence saying what is frozen and why. */
+  /** The server's banner sentence, verbatim; null when not frozen. */
   frozen_reason?: string | null;
 }
 

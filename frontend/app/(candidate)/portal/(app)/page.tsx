@@ -313,7 +313,7 @@ export default function PortalJobsPage() {
           {/* The job's skills by bucket name, when the payload carries them
               (CONTRACT v10); nothing at all for a job with none saved. */}
           {!jdLoading ? (
-            <PostingSkillsList skills={postingSkillsFrom(dialogJob?.skills)} />
+            <PostingSkillsList buckets={postingSkillsFrom(dialogJob?.skill_buckets)} />
           ) : null}
           {jdError ? (
             <InlineError>

@@ -328,16 +328,17 @@ describe("a user who may edit every bucket", () => {
 });
 
 describe("the freeze", () => {
-  it("is a state sentence with no edit or save controls and no permission copy", async () => {
-    apiGet.mockResolvedValue(skills({ locked: true, saved: true }));
+  const FROZEN =
+    "The job description and skills are frozen because a candidate has applied. Frozen since 28 Sep 2026.";
+
+  it("is the server's state sentence with no edit or save controls and no permission copy", async () => {
+    apiGet.mockResolvedValue(skills({ locked: true, saved: true, frozen_reason: FROZEN }));
     render(<JobSkillsPanel jobId="job-1" />);
     await screen.findByText("Python");
 
-    expect(
-      screen.getByText(
-        "Frozen: a candidate has applied. The skills and the grade can no longer change."
-      )
-    ).toBeTruthy();
+    expect(screen.getByText(FROZEN)).toBeTruthy();
+    // The retired assessment-start sentence is never hard-coded again.
+    expect(screen.queryByText(/started the assessment/)).toBeNull();
     expect(screen.queryByRole("button", { name: /Rename/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Move/ })).toBeNull();
@@ -346,11 +347,12 @@ describe("the freeze", () => {
     expect(screen.queryByText(READ_ONLY_TITLE)).toBeNull();
   });
 
-  it("wins over a stale can_edit answer", async () => {
+  it("wins over a stale can_edit answer, and says frozen even without a sentence", async () => {
     apiGet.mockResolvedValue(skills({ locked: true }));
     render(<JobSkillsPanel jobId="job-1" />);
     await screen.findByText("Python");
     expect(screen.queryByRole("button", { name: "Rename Python" })).toBeNull();
+    expect(screen.getByText("Frozen. These skills can no longer change.")).toBeTruthy();
   });
 
   it("withholds the re-draft call to action and every draft control once frozen", async () => {
@@ -438,6 +440,34 @@ describe("drafting without a SWOT (CONTRACT v10)", () => {
       "No skills yet. Draft them from the JD, or add them yourself. A SWOT is optional."
     );
     expect(screen.queryByRole("button", { name: "Draft skills" })).toBeNull();
+  });
+
+  it("shows why a draft cannot run yet, in the server's words, and offers no draft", async () => {
+    const thin =
+      "Write the job description first. The skills are drafted from it, so it needs a title and a few paragraphs describing the role.";
+    apiGet.mockResolvedValue({ ...empty(), draft_blocked_reason: thin });
+    render(<JobSkillsPanel jobId="job-1" />);
+
+    expect(await screen.findByText(thin)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Draft skills" })).toBeNull();
+    // Adding by hand is still open.
+    expect(screen.getByLabelText("Add a Must-have skill")).toBeTruthy();
+  });
+
+  it("does not offer Draft again after a thin-JD failure", async () => {
+    const thin =
+      "Write the job description first. The skills are drafted from it, so it needs a title and a few paragraphs describing the role.";
+    apiGet.mockResolvedValue({
+      ...empty(),
+      draft_status: "failed",
+      draft_error: thin,
+      draft_blocked_reason: thin,
+    });
+    render(<JobSkillsPanel jobId="job-1" />);
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(thin)).toBeTruthy();
+    expect(within(alert).queryByRole("button", { name: "Draft again" })).toBeNull();
   });
 
   it("hands every view to the page for the Final Job Posting preview", async () => {

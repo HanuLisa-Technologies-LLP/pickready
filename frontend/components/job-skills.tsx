@@ -17,8 +17,11 @@
  * ------------------------------------------------------------------
  * A SWOT save never drafts skills. While the job is unfrozen a newer saved
  * SWOT only makes a re-draft AVAILABLE, and the call to action for it exists
- * only while unfrozen. `onLoaded` hands every view to the page so the Final
- * Job Posting preview shows the same names this panel shows.
+ * only while unfrozen. `onLoaded` hands every view to the page, which
+ * re-reads the Final Job Posting preview whenever the names or the saved
+ * state move (a draft landing by poll calls no `onChanged`). Every sentence
+ * about the freeze and about a draft that cannot run yet is the server's
+ * (`frozen_reason`, `draft_blocked_reason`), verbatim.
  *
  * WHAT THIS SCREEN DELIBERATELY DOES NOT SHOW
  * -------------------------------------------
@@ -164,6 +167,12 @@ export interface SkillsOut {
   buckets: Record<SkillBucket, SkillOut[]>;
   can_edit: Record<SkillBucket, boolean>;
   can_save: boolean;
+  /** Why the skills are frozen, verbatim (`s4-api-shapes.md` section 6);
+   *  null when not frozen. Optional so an older server still reads. */
+  frozen_reason?: string | null;
+  /** Why a draft cannot be asked for now (a JD too thin), verbatim; null when
+   *  it can. */
+  draft_blocked_reason?: string | null;
 }
 
 /** How often a drafting job is re-read, and for how long. The server serves a
@@ -171,8 +180,12 @@ export interface SkillsOut {
 const DRAFT_POLL_MS = 3000;
 const DRAFT_POLL_LIMIT = 300;
 
-export const FROZEN_SENTENCE =
-  "Frozen: a candidate has applied. The skills and the grade can no longer change.";
+/**
+ * The state word for a frozen list when the server sent no sentence of its
+ * own. `frozen_reason` wins whenever it is present; the retired "locked
+ * because a candidate has started" sentences are deliberately not repeated.
+ */
+const FROZEN_STATE = "Frozen. These skills can no longer change.";
 
 const DRAFTING_SENTENCE =
   "Sutra is drafting the skills from the JD and the Company Profile, and from the saved SWOT when there is one.";
@@ -744,25 +757,31 @@ export function JobSkillsPanel({
 
   const anyEditable = BUCKETS.some((bucket) => bucketEditable(bucket));
   const controlsBusy = busy || saving || drafting;
-  // The first draft, offered on an empty list whether or not a SWOT exists.
-  // A failed draft has its own "Draft again" in the alert below.
+  const frozenSentence = view?.frozen_reason?.trim() || FROZEN_STATE;
+  // Why a draft cannot be asked for now (a JD too thin), in the server's words.
+  const draftBlocked = view?.draft_blocked_reason?.trim() || null;
+  // The first draft, offered on an empty list whether or not a SWOT exists,
+  // and never when the server has said a draft cannot run yet. A failed
+  // draft has its own "Draft again" in the alert below.
   const offerFirstDraft =
     !!view &&
     canRedraft &&
     total === 0 &&
     !drafting &&
+    !draftBlocked &&
     view.draft_status !== "failed";
 
   let stateSentence: string | null = null;
   if (view) {
-    if (view.locked) stateSentence = FROZEN_SENTENCE;
+    if (view.locked) stateSentence = frozenSentence;
     else if (drafting) stateSentence = DRAFTING_SENTENCE;
     else if (view.saved)
       stateSentence = "Saved. Every candidate on this job is assessed against these skills.";
-    else if (view.blocking_reason) stateSentence = view.blocking_reason;
     else if (view.draft_status === "not_started" && total === 0)
       stateSentence =
+        draftBlocked ??
         "No skills yet. Draft them from the JD, or add them yourself. A SWOT is optional.";
+    else if (view.blocking_reason) stateSentence = view.blocking_reason;
     else stateSentence = "Not saved yet. Candidates cannot be invited until the skills are saved.";
   }
 
@@ -859,7 +878,9 @@ export function JobSkillsPanel({
               <div role="alert" className="space-y-2 border border-destructive/40 p-4">
                 <p className="font-medium">The skills draft did not finish</p>
                 {view.draft_error ? <p>{view.draft_error}</p> : null}
-                {canRedraft ? (
+                {/* A draft the server says cannot run yet (the JD is too
+                    thin) is not offered again until the JD changes. */}
+                {canRedraft && !draftBlocked ? (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1021,7 +1042,7 @@ export function JobSkillsPanel({
               resource="this job's skill list"
             />
           ) : null}
-          {view?.locked ? <p className="text-sm">{FROZEN_SENTENCE}</p> : null}
+          {view?.locked ? <p className="text-sm">{frozenSentence}</p> : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmRedraft(false)}>
               Keep the current skills

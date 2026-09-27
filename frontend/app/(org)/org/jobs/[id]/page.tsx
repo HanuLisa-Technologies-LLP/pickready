@@ -21,9 +21,14 @@
 // FROZEN (v10 point 4). The first genuine application snapshots the skills,
 // and from then on the JD document, the title, the experience band, the grade
 // and the skills are read-only; the company sections and the monitoring
-// setting stay editable. `setup.skills_locked` is that snapshot's existence,
-// read from the table by the server, so the banner and every read-only
-// control hang off one server answer.
+// setting stay editable. `setup.frozen` (equal to `skills_locked`) is that
+// snapshot's existence, read from the table by the server, so the banner and
+// every read-only control hang off one server answer, and every sentence
+// about it is the server's `frozen_reason`, verbatim.
+//
+// THE FINAL JOB POSTING READS `GET .../posting-preview`, so the preview is
+// the server's statement of the posting; it re-reads whenever the checklist
+// does and whenever the Skills panel's names or saved state move.
 //
 // The CANDIDATES tab carries the databank upload, AI matching, invitations
 // and the ranked table.
@@ -74,10 +79,7 @@ import { AssessmentRetentionPanel } from "@/components/assessment-retention-pane
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
 import { JobSkillsPanel, type SkillsOut } from "@/components/job-skills";
-import {
-  FinalJobPostingPreview,
-  postingSkillsFrom,
-} from "@/components/job-posting";
+import { FinalJobPostingPreview } from "@/components/job-posting";
 import {
   JobPublishCard,
   type JobSetupStatus,
@@ -125,25 +127,23 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-/**
- * Why the grade field is disabled. The grade freezes with the skills at the
- * first genuine application (CONTRACT v10, superseding D5's assessment
- * start), because it decides the question budget every candidate on the job
- * receives.
+/*
+ * WHY A FROZEN FIELD IS DISABLED IS THE SERVER'S SENTENCE. `frozen_reason`
+ * from `/setup` is rendered verbatim in the banner and as the hint on every
+ * frozen field. The retired GRADE_LOCKED and SKILLS_LOCKED sentences are not
+ * hard-coded here any more (`s4-api-shapes.md` section 5): a paraphrase is a
+ * second author for a rule, and the two drift.
  */
-const GRADE_LOCKED_SENTENCE =
-  "The grade is frozen because a candidate has applied. It decides the question budget every candidate on this job receives.";
 
-/** Why the title and the experience band are disabled once frozen. */
-const FIELD_FROZEN_SENTENCE =
-  "Frozen because a candidate has applied to the posting as it stands.";
-
-/**
- * The banner's sentence when the server sends none of its own. The server's
- * `frozen_reason` wins whenever it is present.
- */
-const FROZEN_FALLBACK_SENTENCE =
-  "A candidate has applied, so the job description, the title, the experience band, the grade and the skills are frozen. The company sections, the monitoring setting and the SWOT can still be edited.";
+/** What about the skills the preview shows: the names per bucket and whether
+ *  they are saved. Nothing numeric, only a change detector. */
+function skillsSignature(view: SkillsOut | null): string {
+  if (!view) return "";
+  const names = (["must_have", "nice_to_have", "behavioural"] as const)
+    .map((bucket) => (view.buckets[bucket] ?? []).map((skill) => skill.name).join("|"))
+    .join("/");
+  return `${view.saved}:${view.locked}:${view.draft_status}:${names}`;
+}
 
 function readableDate(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -287,8 +287,10 @@ export default function OrgJobDetailPage() {
   // The Skills panel's latest view, for the Final Job Posting preview.
   const [skillsView, setSkillsView] = React.useState<SkillsOut | null>(null);
   // One server answer drives every frozen control: the snapshot exists.
-  const frozen = Boolean(setup?.skills_locked);
+  const frozen = Boolean(setup?.frozen ?? setup?.skills_locked);
   const gradeLocked = frozen || Boolean(setup?.grade_locked);
+  /** The server's sentence for every frozen control, verbatim. */
+  const frozenReason = setup?.frozen_reason?.trim() || undefined;
   // Bumped when a SWOT save may have made a skills re-draft available.
   const [skillsReloadKey, setSkillsReloadKey] = React.useState(0);
   // Bumped whenever anything the publish checklist reads may have changed.
@@ -446,6 +448,9 @@ export default function OrgJobDetailPage() {
       acceptJob(updated);
       setEditingDoc(false);
       refreshChecklist();
+      // A JD save on a job with no skill row of any kind dispatches Sutra's
+      // draft (v10), so the Skills panel re-reads to show it drafting.
+      setSkillsReloadKey((key) => key + 1);
       toast({ title: "Job description updated" });
     } catch (e) {
       toast({
@@ -692,7 +697,10 @@ export default function OrgJobDetailPage() {
   const overridden = new Set(job?.overridden_sections ?? []);
   const jd = job ? jobJd(job) : {};
   const frozenDate = readableDate(setup?.frozen_at);
-  const postingSkills = postingSkillsFrom(skillsView?.buckets);
+  // The preview re-reads whenever the checklist would, and whenever the
+  // Skills panel's names or saved state move (a draft landing by poll calls
+  // no onChanged).
+  const previewKey = `${checklistReloadKey}:${skillsSignature(skillsView)}`;
 
   return (
     <div>
@@ -829,10 +837,12 @@ export default function OrgJobDetailPage() {
           <Lock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="min-w-0 space-y-1">
             <p className="font-semibold">
-              {frozenDate ? `Frozen on ${frozenDate}` : "Frozen"}
+              This job is frozen
             </p>
             <p className="max-w-prose">
-              {setup?.frozen_reason?.trim() || FROZEN_FALLBACK_SENTENCE}
+              {/* The server's sentence carries its own date; only a server
+                  that sent no sentence gets the bare date from frozen_at. */}
+              {frozenReason ?? (frozenDate ? `Frozen on ${frozenDate}.` : null)}
             </p>
           </div>
         </div>
@@ -942,7 +952,7 @@ export default function OrgJobDetailPage() {
                   label="Title"
                   htmlFor="job-title"
                   required
-                  hint={frozen ? FIELD_FROZEN_SENTENCE : undefined}
+                  hint={frozen ? frozenReason : undefined}
                 >
                   <Input
                     id="job-title"
@@ -965,7 +975,7 @@ export default function OrgJobDetailPage() {
                   htmlFor="job-grade"
                   hint={
                     gradeLocked
-                      ? GRADE_LOCKED_SENTENCE
+                      ? frozenReason ?? "Decides which assessment applicants receive."
                       : "Decides which assessment applicants receive."
                   }
                 >
@@ -994,7 +1004,7 @@ export default function OrgJobDetailPage() {
                 <FormField
                   label="Experience from (years)"
                   htmlFor="job-exp-min"
-                  hint={frozen ? FIELD_FROZEN_SENTENCE : undefined}
+                  hint={frozen ? frozenReason : undefined}
                 >
                   <Input
                     id="job-exp-min"
@@ -1011,7 +1021,7 @@ export default function OrgJobDetailPage() {
                 <FormField
                   label="Experience to (years)"
                   htmlFor="job-exp-max"
-                  hint={frozen ? FIELD_FROZEN_SENTENCE : undefined}
+                  hint={frozen ? frozenReason : undefined}
                 >
                   <Input
                     id="job-exp-max"
@@ -1110,7 +1120,6 @@ export default function OrgJobDetailPage() {
                   <dd>{job.requirement_period || "-"}</dd>
                 </div>
               </dl>
-              {gradeLocked ? <p className="text-xs">{GRADE_LOCKED_SENTENCE}</p> : null}
               <NarrativeSection
                 label="About company"
                 value={job.about_company}
@@ -1148,10 +1157,8 @@ export default function OrgJobDetailPage() {
       {/* The posting exactly as candidates will read it, before Publish. */}
       {job ? (
         <FinalJobPostingPreview
-          job={job}
-          skills={postingSkills}
-          skillsSaved={Boolean(skillsView?.saved)}
-          companyName={company?.company_name ?? null}
+          jobId={job.id}
+          reloadKey={previewKey}
           className={cn(tab !== "jd" && "hidden")}
         />
       ) : null}

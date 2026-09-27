@@ -42,9 +42,9 @@ interface OpenRole {
   experience_max_years?: number | null;
   apply_path: string;
   apply_url: string;
-  /** The role's skills by bucket, names only (CONTRACT v10). Absent on a job
-   *  whose skills were never saved; read through `postingSkillsFrom`. */
-  skills?: unknown;
+  /** The role's skills by bucket, names only (CONTRACT v10): an empty list
+   *  on a job with no saved skills; read through `postingSkillsFrom`. */
+  skill_buckets?: unknown;
 }
 
 /** Mirrors `schemas.employer_pages.EmployerPageOut`. */
@@ -289,7 +289,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
                 role.experience_min_years,
                 role.experience_max_years
               );
-              const skills = postingSkillsFrom(role.skills);
+              const skills = postingSkillsFrom(role.skill_buckets);
               return (
                 <StaggerItem key={role.id}>
                   <Card className="h-full shadow-card transition-shadow duration-150 hover:shadow-card-hover">
@@ -310,7 +310,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
                       {/* The role's skills by bucket name (CONTRACT v10);
                           nothing for a role with none saved. */}
                       <PostingSkillsList
-                        skills={skills}
+                        buckets={skills}
                         headingLevel={4}
                         className="space-y-3"
                       />

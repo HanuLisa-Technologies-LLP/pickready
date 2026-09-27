@@ -2,7 +2,7 @@
 
 /**
  * The job posting as a candidate reads it (CONTRACT v10, owner ruling
- * 2026-09-28).
+ * 2026-09-28; shapes in `docs/release/2026-09-vivekium/s4-api-shapes.md`).
  *
  *     JD -> Skills -> Final Job Posting -> Publish
  *
@@ -13,25 +13,27 @@
  * page's open roles, and the recruiter's Final Job Posting preview. One
  * renderer, so the preview cannot promise a posting the candidate never sees.
  *
- * `FinalJobPostingPreview` is the recruiter's last look before Publish. It is
- * built from the SAME candidate-facing pieces (`JobDescriptionSummary`, the
- * narrative blocks, `PostingSkillsList`), not from the recruiter's editors.
+ * `FinalJobPostingPreview` is the recruiter's last look before Publish. It
+ * reads `GET .../posting-preview`, so every word it shows (the grade label,
+ * the experience band, the skill names and their order, the narrative) is the
+ * server's, and it renders the JD with the same `JdDocument` the public apply
+ * page uses for the same markdown.
  *
  * NAMES ONLY
  * ----------
- * A skill reaches a candidate as its name under its bucket's heading. The
- * hidden evidence line, the per-bucket priority and the role summary are what
- * the assessment knows about each skill, and they never ride this shape:
- * `postingSkillsFrom` keeps a name and drops everything else, so a payload
- * that carried more still renders less.
+ * A skill reaches a candidate as its name under its bucket's label. The
+ * hidden evidence line, the per-bucket priority and the role summary never
+ * ride `skill_buckets`, and `postingSkillsFrom` keeps a label and names and
+ * drops anything else, so a payload that carried more still renders less.
  */
 
 import * as React from "react";
 
-import type { Job, PostingSkills } from "@/lib/types";
-import { jobGradeLabel, jobJd } from "@/lib/types";
+import { apiGet } from "@/lib/api";
+import type { PostingPreview, PostingSkillBucket } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -39,82 +41,81 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { JdBlock, JobDescriptionSummary } from "@/components/job-description";
+import { JdBlock } from "@/components/job-description";
+import { JdDocument } from "@/components/jd-document";
+import { ErrorState, LoadingRows } from "@/components/page-primitives";
 
-export type PostingBucket = keyof PostingSkills;
+type BucketKey = PostingSkillBucket["bucket"];
 
-/** The three buckets in posting order, with the heading a candidate reads. */
-export const POSTING_BUCKETS: { key: PostingBucket; heading: string }[] = [
-  { key: "must_have", heading: "Must-have skills" },
-  { key: "nice_to_have", heading: "Nice-to-have skills" },
-  { key: "behavioural", heading: "Behavioural competencies" },
+/** Posting order, and the heading used only if the server sent no label. */
+const BUCKET_ORDER: { key: BucketKey; label: string }[] = [
+  { key: "must_have", label: "Must-have skills" },
+  { key: "nice_to_have", label: "Nice-to-have skills" },
+  { key: "behavioural", label: "Behavioural competencies" },
 ];
 
 function namesFrom(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const names = value
-    .map((item) => {
-      if (typeof item === "string") return item.trim();
-      if (item && typeof item === "object" && "name" in item) {
-        const name = (item as { name: unknown }).name;
-        return typeof name === "string" ? name.trim() : "";
-      }
-      return "";
-    })
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter(Boolean);
   return Array.from(new Set(names));
 }
 
 /**
- * A payload's skills as names by bucket, or null when there are none.
+ * A payload's `skill_buckets` as the buckets worth rendering, or null.
  *
- * Null is the honest reading of a legacy job whose skills were never saved:
- * the surface then renders no skills section at all rather than three empty
- * headings. Accepts a bucket list of names or of objects carrying a `name`,
- * and keeps the name ONLY.
+ * Null is the honest reading of a legacy job with no saved skills (the server
+ * sends `[]`, or an older server sends nothing): the surface then renders no
+ * skills section at all. A bucket with no names is skipped. Only the label
+ * and the names are kept, in posting order.
  */
-export function postingSkillsFrom(value: unknown): PostingSkills | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const skills: PostingSkills = {
-    must_have: namesFrom(record.must_have),
-    nice_to_have: namesFrom(record.nice_to_have),
-    behavioural: namesFrom(record.behavioural),
-  };
-  const any = POSTING_BUCKETS.some((bucket) => skills[bucket.key].length > 0);
-  return any ? skills : null;
+export function postingSkillsFrom(value: unknown): PostingSkillBucket[] | null {
+  if (!Array.isArray(value)) return null;
+  const buckets: PostingSkillBucket[] = [];
+  for (const { key, label } of BUCKET_ORDER) {
+    const entry = value.find(
+      (item) =>
+        item && typeof item === "object" && (item as { bucket?: unknown }).bucket === key
+    ) as { label?: unknown; names?: unknown } | undefined;
+    if (!entry) continue;
+    const names = namesFrom(entry.names);
+    if (names.length === 0) continue;
+    buckets.push({
+      bucket: key,
+      label: typeof entry.label === "string" && entry.label.trim() ? entry.label : label,
+      names,
+    });
+  }
+  return buckets.length > 0 ? buckets : null;
 }
 
 /**
- * The job's skills under their bucket headings, names only. Renders nothing
- * for a job with no skills, and omits an empty bucket.
+ * The job's skills under their bucket labels, names only, in the order the
+ * server sent them. Renders nothing for a job with no skills.
  */
 export function PostingSkillsList({
-  skills,
+  buckets,
   headingLevel = 3,
   headingClassName,
   className,
 }: {
-  skills: PostingSkills | null | undefined;
+  buckets: PostingSkillBucket[] | null | undefined;
   /** The heading level that fits the surrounding document outline. */
   headingLevel?: 3 | 4;
   headingClassName?: string;
   className?: string;
 }) {
   const id = React.useId();
-  if (!skills) return null;
-  const buckets = POSTING_BUCKETS.filter(
-    (bucket) => (skills[bucket.key] ?? []).length > 0
-  );
-  if (buckets.length === 0) return null;
+  if (!buckets || buckets.length === 0) return null;
   const Heading = headingLevel === 4 ? "h4" : "h3";
   return (
     <div className={cn("space-y-4", className)}>
       {buckets.map((bucket) => {
-        const headingId = `${id}-${bucket.key}`;
+        const headingId = `${id}-${bucket.bucket}`;
         return (
           <section
-            key={bucket.key}
+            key={bucket.bucket}
             aria-labelledby={headingId}
             className="space-y-2"
           >
@@ -124,10 +125,10 @@ export function PostingSkillsList({
                 headingClassName ?? "text-xs font-semibold uppercase tracking-wide"
               }
             >
-              {bucket.heading}
+              {bucket.label}
             </Heading>
             <ul className="flex flex-wrap gap-1.5">
-              {skills[bucket.key].map((name) => (
+              {bucket.names.map((name) => (
                 <li key={name}>
                   <Badge variant="secondary">{name}</Badge>
                 </li>
@@ -154,40 +155,65 @@ export function experienceBandText(
 
 /** The company narrative in posting order, shared by the preview and the
  *  public apply page so the two cannot disagree. */
-export const POSTING_NARRATIVE: { key: "about_company" | "work_life" | "benefits"; title: string }[] = [
+export const POSTING_NARRATIVE: {
+  key: "about_company" | "work_life" | "benefits";
+  title: string;
+}[] = [
   { key: "about_company", title: "About the company" },
   { key: "work_life", title: "Work life" },
   { key: "benefits", title: "Benefits" },
 ];
+
+const PREVIEW_BASE = "/api/v2/assessments/jobs";
 
 /**
  * The recruiter's Final Job Posting: the posting exactly as candidates will
  * read it, placed between the Skills step and Publish.
  *
  * Everything inside the bordered sheet is what a candidate sees. The grade is
- * shown OUTSIDE it, labelled as such: it sizes the assessment and no candidate
- * surface prints it.
+ * shown OUTSIDE it, labelled as such: it sizes the assessment and no
+ * candidate surface prints it.
  */
 export function FinalJobPostingPreview({
-  job,
-  skills,
-  skillsSaved,
-  companyName,
+  jobId,
+  reloadKey = "",
   className,
 }: {
-  job: Job;
-  /** The job's current skills, names by bucket; null when there are none. */
-  skills: PostingSkills | null;
-  /** Whether the skills shown are the saved set. */
-  skillsSaved: boolean;
-  companyName?: string | null;
+  jobId: string;
+  /** Changes whenever the JD, the job's details or the skills may have. */
+  reloadKey?: string | number;
   className?: string;
 }) {
-  const band = experienceBandText(job.experience_min_years, job.experience_max_years);
-  const meta = [job.department, band].filter(Boolean).join(" · ");
-  // The job-side JD object, read the way every other job screen reads it.
-  const jd = { ...jobJd(job) } as Record<string, unknown>;
-  const narrative = POSTING_NARRATIVE.filter((section) => (job[section.key] ?? "").trim());
+  const [preview, setPreview] = React.useState<PostingPreview | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+
+  const load = React.useCallback(async () => {
+    setLoadError(null);
+    try {
+      setPreview(
+        await apiGet<PostingPreview>(`${PREVIEW_BASE}/${jobId}/posting-preview`)
+      );
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : "The posting preview could not be loaded."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [jobId]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load, reloadKey]);
+
+  const buckets = postingSkillsFrom(preview?.skill_buckets);
+  const meta = [preview?.department, preview?.experience_band]
+    .filter(Boolean)
+    .join(" · ");
+  const narrative = POSTING_NARRATIVE.filter((section) =>
+    (preview?.[section.key] ?? "").trim()
+  );
 
   return (
     <Card id="final-job-posting" className={cn("mb-6 scroll-mt-6", className)}>
@@ -199,59 +225,79 @@ export function FinalJobPostingPreview({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        <p>
-          <span className="font-semibold">Grade:</span> {jobGradeLabel(job.grade)}.
-          It sets the assessment and is not shown on the posting.
-        </p>
-
-        <article
-          aria-label="Posting preview"
-          className="space-y-6 rounded-xl border border-border p-5 sm:p-6"
-        >
-          <header className="space-y-1.5">
-            {companyName ? (
-              <p className="text-xs font-semibold uppercase tracking-wide">
-                {companyName}
-              </p>
-            ) : null}
-            <p className="text-balance text-lg font-semibold leading-snug">
-              {job.title}
-            </p>
-            {meta ? <p>{meta}</p> : null}
-          </header>
-
-          <JobDescriptionSummary jd={jd} />
-
-          {skills ? (
-            <div className="space-y-2">
-              <PostingSkillsList skills={skills} />
-              {!skillsSaved ? (
-                <p className="text-xs">
-                  These skills are not saved yet. Save them above before
-                  publishing.
-                </p>
-              ) : null}
-            </div>
-          ) : (
+        {loading ? (
+          <LoadingRows rows={4} label="Loading the posting preview" />
+        ) : loadError || !preview ? (
+          <ErrorState
+            title="The posting preview could not be loaded"
+            description={loadError ?? undefined}
+            action={
+              <Button variant="outline" onClick={() => void load()}>
+                Try again
+              </Button>
+            }
+          />
+        ) : (
+          <>
             <p>
-              No skills yet. The skills you add above appear here by name,
-              under Must-have skills, Nice-to-have skills and Behavioural
-              competencies.
+              <span className="font-semibold">Grade:</span> {preview.grade_label}.
+              It sets the assessment and is not shown on the posting.
             </p>
-          )}
 
-          {narrative.length > 0 ? (
-            <div className="space-y-4">
-              {narrative.map((section) => (
-                <JdBlock
-                  key={section.key}
-                  title={section.title}
-                  value={job[section.key]}
-                />
-              ))}
-            </div>
-          ) : null}
-        </article>
+            <article
+              aria-label="Posting preview"
+              className="space-y-6 rounded-xl border border-border p-5 sm:p-6"
+            >
+              <header className="space-y-1.5">
+                {preview.company_name ? (
+                  <p className="text-xs font-semibold uppercase tracking-wide">
+                    {preview.company_name}
+                  </p>
+                ) : null}
+                <p className="text-balance text-lg font-semibold leading-snug">
+                  {preview.title}
+                </p>
+                {meta ? <p>{meta}</p> : null}
+              </header>
+
+              {(preview.jd_markdown ?? "").trim() ? (
+                <JdDocument markdown={preview.jd_markdown ?? ""} />
+              ) : (
+                <p>No job description has been written for this job yet.</p>
+              )}
+
+              {buckets ? (
+                <div className="space-y-2">
+                  <PostingSkillsList buckets={buckets} />
+                  {!preview.skills_saved ? (
+                    <p className="text-xs">
+                      These skills are not saved yet. Save them above before
+                      publishing.
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p>
+                  No skills yet. The skills you add above appear here by name,
+                  under Must-have skills, Nice-to-have skills and Behavioural
+                  competencies.
+                </p>
+              )}
+
+              {narrative.length > 0 ? (
+                <div className="space-y-4">
+                  {narrative.map((section) => (
+                    <JdBlock
+                      key={section.key}
+                      title={section.title}
+                      value={preview[section.key]}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          </>
+        )}
       </CardContent>
     </Card>
   );

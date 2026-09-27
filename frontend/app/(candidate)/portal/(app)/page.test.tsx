@@ -53,7 +53,11 @@ describe("the apply dialog", () => {
   it("lists the job's skills by bucket name", async () => {
     serve({
       jd_json: { description: "Build the warehouse." },
-      skills: { must_have: ["Python"], nice_to_have: ["Terraform"], behavioural: [] },
+      skill_buckets: [
+        { bucket: "must_have", label: "Must-have skills", names: ["Python"] },
+        { bucket: "nice_to_have", label: "Nice-to-have skills", names: ["Terraform"] },
+        { bucket: "behavioural", label: "Behavioural competencies", names: [] },
+      ],
     });
     const dialog = await openApply();
 
@@ -64,7 +68,7 @@ describe("the apply dialog", () => {
   });
 
   it("shows no skills section for a legacy job without saved skills", async () => {
-    serve({ jd_json: { description: "Build the warehouse." } });
+    serve({ jd_json: { description: "Build the warehouse." }, skill_buckets: [] });
     const dialog = await openApply();
 
     await within(dialog).findByText("Build the warehouse.");

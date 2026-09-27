@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PublicNotice, PublicShell } from "@/components/public-shell";
 import { JsonLd, compact } from "@/components/json-ld";
+import { JdDocument } from "@/components/jd-document";
 import {
   POSTING_NARRATIVE,
   PostingSkillsList,
@@ -62,9 +63,11 @@ interface PublicJob {
   jd_json?: Record<string, unknown> | null;
   jd?: Record<string, unknown> | null;
   created_at?: string | null;
-  /** The job's skills by bucket, names only (CONTRACT v10). Absent on a job
-   *  whose skills were never saved; read through `postingSkillsFrom`. */
-  skills?: unknown;
+  /** The canonical candidate-facing document (PublicJobOut.jd_markdown). */
+  jd_markdown?: string | null;
+  /** The job's skills by bucket, names only (CONTRACT v10): an empty list on
+   *  a job with no saved skills; read through `postingSkillsFrom`. */
+  skill_buckets?: unknown;
   /** The company narrative, resolved by the server through the per-job
    *  override and the company profile. Written for the applicant. */
   about_company?: string | null;
@@ -335,9 +338,11 @@ export default function PublicApplyPage() {
     [companyName, job.department].filter(Boolean).join(" · ") || "Open role";
 
   const readMinutes = readTimeMinutes(jd);
-  const hasJdContent = Object.values(jd).some((v) => asLines(v).length > 0);
-  // Null for a legacy job whose skills were never saved: no skills section.
-  const postingSkills = postingSkillsFrom(job.skills);
+  const jdMarkdown = (job.jd_markdown ?? "").trim();
+  const hasJdContent =
+    Boolean(jdMarkdown) || Object.values(jd).some((v) => asLines(v).length > 0);
+  // Null for a legacy job with no saved skills: no skills section at all.
+  const postingSkills = postingSkillsFrom(job.skill_buckets);
   const narrative = POSTING_NARRATIVE.filter((section) =>
     (job[section.key] ?? "").trim()
   );
@@ -413,15 +418,28 @@ export default function PublicApplyPage() {
             <Section title="About this role" description={subtitle} contentClassName="space-y-7">
                 {hasJdContent ? (
                   <>
-                    <JdBlock title="Job description" value={jd.description} />
-                    <JdBlock title="Role" value={jd.role} />
-                    <JdBlock title="Responsibilities" value={jd.responsibilities} />
-                    <JdBlock
-                      title="Accountabilities"
-                      value={jd.accountabilities}
-                    />
-                    <JdBlock title="Education" value={jd.education} />
-                    {asLines(jd.skills).length > 0 ? (
+                    {/* The canonical document, rendered the way the recruiter's
+                        Final Job Posting preview renders it. The per-section
+                        blocks below are the fallback for a job written before
+                        the one-document JD (2026-07-28). */}
+                    {jdMarkdown ? (
+                      <JdDocument markdown={jdMarkdown} />
+                    ) : (
+                      <>
+                        <JdBlock title="Job description" value={jd.description} />
+                        <JdBlock title="Role" value={jd.role} />
+                        <JdBlock
+                          title="Responsibilities"
+                          value={jd.responsibilities}
+                        />
+                        <JdBlock
+                          title="Accountabilities"
+                          value={jd.accountabilities}
+                        />
+                        <JdBlock title="Education" value={jd.education} />
+                      </>
+                    )}
+                    {!jdMarkdown && asLines(jd.skills).length > 0 ? (
                       <section className="space-y-2">
                         <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
                           Skills
@@ -436,7 +454,7 @@ export default function PublicApplyPage() {
                       </section>
                     ) : null}
                     <PostingSkillsList
-                      skills={postingSkills}
+                      buckets={postingSkills}
                       headingClassName={SECTION_HEADING}
                       className="space-y-7"
                     />
@@ -476,7 +494,7 @@ export default function PublicApplyPage() {
                       context before applying.
                     </p>
                     <PostingSkillsList
-                      skills={postingSkills}
+                      buckets={postingSkills}
                       headingClassName={SECTION_HEADING}
                       className="space-y-7"
                     />
