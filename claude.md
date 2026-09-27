@@ -808,6 +808,11 @@ Full rules in `docs/spec/PROCTORING.md`.
 Full rules in `docs/spec/CODE_EXECUTION.md`; operations in
 `docs/operations/JUDGE0_RUNBOOK.md`.
 
+**ON HOLD (owner, 2026-09-28): stage A resources destroyed; nothing
+provisioned; `judge0_enabled` must stay false.** The code and the Terraform
+module stay, disabled by default, and no public copy may claim coding runs in
+a sandbox or is tested.
+
 - **A port and one adapter**: domain code calls `code_execution.get_provider()`;
   only `code_execution/judge0.py` knows Judge0. Five operations
   (`run/submit/collect/discard/health`); four errors (`ExecutionUnavailable`,

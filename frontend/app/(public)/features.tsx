@@ -32,7 +32,7 @@ const FEATURES = [
     icon: Layers,
     title: "One assessment, every skill asked",
     description:
-      "One proctored session asks about every skill the team saved, in a fixed order the server times. Answers are typed or spoken, with multiple choice, fill in the blank and coding run in a sandbox where the role calls for it.",
+      "One proctored session asks about every skill the team saved, in a fixed order the server times. Answers are typed or spoken prose, with multiple choice and fill in the blank questions beside them.",
   },
   {
     icon: FileCheck2,

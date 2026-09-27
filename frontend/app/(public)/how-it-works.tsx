@@ -17,7 +17,7 @@ const STEPS = [
   {
     icon: ScanSearch,
     title: "AI matches, then assesses",
-    body: "AI Match reads every resume against those skills and ranks applicants with the evidence it found and a grade in words. The candidates you invite take one proctored assessment built from the same skills: typed or spoken answers, multiple choice, fill in the blank, and coding run in a sandbox.",
+    body: "AI Match reads every resume against those skills and ranks applicants with the evidence it found and a grade in words. The candidates you invite take one proctored assessment built from the same skills: typed or spoken answers, multiple choice and fill in the blank.",
   },
   {
     icon: UserCheck,

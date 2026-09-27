@@ -122,7 +122,7 @@ const INCLUDED = [
   "AI Match on resume evidence, in words",
   "Questions written per candidate from the job's skills",
   "One proctored assessment, every skill asked",
-  "Coding questions run in a sandbox",
+  "Typed or spoken answers, multiple choice, fill in the blank",
   "Full PRISM Report",
   "Three radar charts, no numbers on them",
   "Proctoring Report",

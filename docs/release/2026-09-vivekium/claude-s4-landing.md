@@ -21,7 +21,8 @@ landing page for readypick.ai". No migration, no backend behaviour change.
   intelligence and is never sold as a step); AI Match reads resumes against
   the saved skills and shows evidence tags and a word grade; one proctored
   assessment asks about every skill (typed or spoken prose, multiple choice,
-  fill in the blank, coding run in a sandbox); the team reads a PRISM Report
+  fill in the blank; no coding or sandbox claim, AMENDED 2026-09-28 because
+  Judge0 is on hold); the team reads a PRISM Report
   and a Proctoring Report. The product tour's ranking bar (a score with its
   digits removed) became the evidence each resume shows.
 - **An employer is GIVEN a workspace, so every employer call to action is
@@ -72,10 +73,12 @@ landing page for readypick.ai". No migration, no backend behaviour change.
 
 ## Open
 
-- The landing page states coding runs in a sandbox and answers may be spoken,
-  as the owner instructed. Pilot ships `CODE_EXECUTION_BACKEND=disabled` and
-  `transcribe_enabled` off until the deploy stage turns them on; until then
-  those two lines describe a capability the pilot does not yet run.
+- ~~The landing page states coding runs in a sandbox~~ SUPERSEDED 2026-09-28
+  (owner: Judge0 is ON HOLD and its AWS resources are destroyed): the hero,
+  features, how-it-works and pricing lines that said coding runs in a sandbox
+  now name what ships (typed or spoken prose, multiple choice, fill in the
+  blank). Spoken answers still depend on `transcribe_enabled`, which the
+  deploy stage turns on.
 - Request access is a `mailto:` to the published personal mailbox; a mailbox
   on the product's own domain is still the open `pickready.app` owner
   question.

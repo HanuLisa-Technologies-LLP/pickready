@@ -28,7 +28,7 @@ const CAPABILITIES = [
   "JD and Skills",
   "AI Match on resume evidence",
   "Proctored assessment",
-  "Coding run in a sandbox",
+  "Typed or spoken answers",
   "PRISM Report",
   "Proctoring Report",
   "Candidate databank",
