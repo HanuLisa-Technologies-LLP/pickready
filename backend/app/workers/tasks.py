@@ -1147,7 +1147,14 @@ def reconcile_job_setup():
                             )
                         ),
                     )
-                    .order_by(Job.created_at)
+                    # NEWEST first. Every job this tick examines leaves the
+                    # selectable set (it is `drafting`, or `failed` with a
+                    # sentence), so no job is starved; newest first means a
+                    # job whose create-time draft was lost is repaired on the
+                    # next tick even while an older backlog (the published
+                    # jobs that predate CONTRACT v10) is still being worked
+                    # through, BATCH at a time.
+                    .order_by(Job.created_at.desc(), Job.id)
                     .limit(BATCH)
                 )
             ).scalars().all()
