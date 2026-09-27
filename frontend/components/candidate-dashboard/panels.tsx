@@ -139,7 +139,7 @@ export function ReadyPickProfilePanel({
                 ) : null}
 
                 <section>
-                  <h3 className="text-xs font-semibold uppercase tracking-wide">
+                  <h3 className="type-eyebrow">
                     Why this candidate
                   </h3>
                   <p className="mt-2 text-sm leading-6">
@@ -149,7 +149,7 @@ export function ReadyPickProfilePanel({
                 </section>
 
                 <section>
-                  <h3 className="text-xs font-semibold uppercase tracking-wide">
+                  <h3 className="type-eyebrow">
                     Dimension ratings
                   </h3>
                   {/* NAMED ratings, never raw numbers (spec-doc6 D8 / C2). No
@@ -181,7 +181,7 @@ export function ReadyPickProfilePanel({
 
                 {profile.open_flags.length ? (
                   <section>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide">
+                    <h3 className="type-eyebrow">
                       Open flags
                     </h3>
                     <ul className="mt-2 space-y-2">
@@ -203,7 +203,7 @@ export function ReadyPickProfilePanel({
                 ) : null}
 
                 <section className="text-[12px] leading-5">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide">
+                  <h3 className="type-eyebrow">
                     Configuration
                   </h3>
                   <p className="mt-2">
@@ -216,7 +216,7 @@ export function ReadyPickProfilePanel({
           </PanelState>
           {row ? (
             <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide">
+              <h3 className="type-eyebrow">
                 Follow-up
               </h3>
               <div className="mt-2">
@@ -327,7 +327,7 @@ export function TeamReviewSheet({
                 {panel.can_write ? (
                   <section className="space-y-3">
                     <fieldset>
-                      <legend className="text-xs font-semibold uppercase tracking-wide">
+                      <legend className="type-eyebrow">
                         Your verdict
                       </legend>
                       <div className="mt-2 flex flex-wrap gap-2">
@@ -354,7 +354,7 @@ export function TeamReviewSheet({
                         ))}
                       </div>
                     </fieldset>
-                    <label className="block text-xs font-semibold uppercase tracking-wide">
+                    <label className="block type-eyebrow">
                       What you saw
                       <Textarea
                         className="mt-2"
@@ -378,7 +378,7 @@ export function TeamReviewSheet({
                 )}
 
                 <section>
-                  <h3 className="text-xs font-semibold uppercase tracking-wide">
+                  <h3 className="type-eyebrow">
                     The panel
                   </h3>
                   {panel.entries.length ? (
@@ -547,7 +547,7 @@ export function StageSheet({
 
                 {row?.under_integrity_review && canDisposition ? (
                   <section className="space-y-2 border-t pt-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide">
+                    <h3 className="type-eyebrow">
                       Integrity disposition
                     </h3>
                     <p className="text-[12px] leading-5">

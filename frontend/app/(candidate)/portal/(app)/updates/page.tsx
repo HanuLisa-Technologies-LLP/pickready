@@ -144,7 +144,7 @@ export default function UpdatesPage() {
                           most recognisable tell in the language, and the dot
                           loses nothing -- which is the repository's stated bar
                           for keeping one (.impeccable-exceptions.md). */}
-                      <h2 className="flex items-baseline gap-2 text-base font-semibold">
+                      <h2 className="flex items-baseline gap-2 text-subheading font-semibold">
                         {update.unread ? (
                           <span
                             className="h-2 w-2 shrink-0 translate-y-[-0.1em] rounded-full bg-navy-600"

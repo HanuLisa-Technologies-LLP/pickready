@@ -225,7 +225,7 @@ export function CustomerActivitySection({ customerId }: { customerId: string }) 
         ) : (
           <ChevronRight className="h-4 w-4" aria-hidden />
         )}
-        <h3 className="text-base font-semibold">Activity</h3>
+        <h3 className="text-subheading font-semibold">Activity</h3>
       </button>
       <p className="ml-6 text-xs">
         Who changed what, when, and what it was before.

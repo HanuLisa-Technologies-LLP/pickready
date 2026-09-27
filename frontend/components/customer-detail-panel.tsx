@@ -94,7 +94,7 @@ export function CustomerDetailPanel({
         ) : (
           <div className="space-y-6">
             <section>
-              <h3 className="mb-2 text-base font-semibold">Basic Info</h3>
+              <h3 className="mb-2 text-subheading font-semibold">Basic Info</h3>
               <dl className="grid gap-3 sm:grid-cols-2">
                 <Field label="Company Name" value={customer.name} />
                 <Field label="Industry" value={customer.industry} />
@@ -133,7 +133,7 @@ export function CustomerDetailPanel({
             <Separator />
 
             <section>
-              <h3 className="mb-2 text-base font-semibold">
+              <h3 className="mb-2 text-subheading font-semibold">
                 Primary Contact (HR Head)
               </h3>
               <dl className="grid gap-3 sm:grid-cols-2">
@@ -165,7 +165,7 @@ export function CustomerDetailPanel({
             <Separator />
 
             <section>
-              <h3 className="mb-2 text-base font-semibold">
+              <h3 className="mb-2 text-subheading font-semibold">
                 Team ({customer.team_size}{" "}
                 {customer.team_size === 1 ? "member" : "members"})
               </h3>
@@ -208,7 +208,7 @@ export function CustomerDetailPanel({
             <Separator />
 
             <section>
-              <h3 className="mb-2 text-base font-semibold">Analytics</h3>
+              <h3 className="mb-2 text-subheading font-semibold">Analytics</h3>
               <div className="grid gap-3 sm:grid-cols-3">
                 <Stat
                   label="Jobs Posted (All Time)"

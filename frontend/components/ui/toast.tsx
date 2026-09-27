@@ -90,11 +90,11 @@ function ToastViewport() {
           )}
         >
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-semibold leading-none">{t.title}</p>
+            <p className="text-sm font-semibold leading-5">{t.title}</p>
             {/* House rule: hierarchy from weight, never from a dimmed text
                 colour. The title above is semibold, so this needs no opacity
                 to read as the secondary line. */}
-            {t.description ? <p className="text-sm">{t.description}</p> : null}
+            {t.description ? <p className="text-body-sm">{t.description}</p> : null}
           </div>
           <button
             type="button"

@@ -79,7 +79,7 @@ export function AssessmentProgress({
       >
         <div className="grid h-24 w-24 place-items-center rounded-full bg-surface">
           <div>
-            <p className="text-2xl font-bold">{percent}%</p>
+            <p className="text-2xl font-semibold tabular-nums">{percent}%</p>
             <p className="text-xs">Completed</p>
           </div>
         </div>

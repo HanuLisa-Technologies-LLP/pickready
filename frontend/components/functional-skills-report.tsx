@@ -325,7 +325,7 @@ function DimensionSection({
           <Card key={`${title}-${dimension.name}`}>
             <CardHeader className="pb-2">
               <div className="flex items-start justify-between gap-3">
-                <CardTitle className="text-base">{dimension.name}</CardTitle>
+                <CardTitle>{dimension.name}</CardTitle>
                 <RatingLabel label={dimension.grade} />
               </div>
               {dimension.description ? (
@@ -540,13 +540,13 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
           <div className="space-y-5">
             {groups.map((group) => (
               <div key={group.title}>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <h4 className="mb-2 type-eyebrow text-muted-foreground">
                   {group.title}
                 </h4>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {group.items.map((field) => (
                     <div key={field.key} className="rounded-md border p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide">{field.label}</p>
+                      <p className="type-eyebrow">{field.label}</p>
                       <p className="mt-1 text-sm">{field.value || "Not stated"}</p>
                     </div>
                   ))}
@@ -659,7 +659,7 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
       {snapshot ? (
         <div className="rounded-lg border p-4">
           <RatingLabel label={snapshot.grade ?? NOT_ASSESSED_WORD} />
-          {snapshot.header ? <p className="mt-2 text-sm">{snapshot.header}</p> : null}
+          {snapshot.header ? <p className="mt-2 max-w-prose text-body">{snapshot.header}</p> : null}
           {snapshot.tags && snapshot.tags.length > 0 ? (
             <ul className="mt-3 flex flex-wrap gap-2" aria-label="Evidence tags">
               {snapshot.tags.map((tag) => (
@@ -687,7 +687,7 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
             <Card key={`ai-${dimension.name}`}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-3">
-                  <CardTitle className="text-base">{dimension.name}</CardTitle>
+                  <CardTitle>{dimension.name}</CardTitle>
                   <RatingLabel label={dimension.grade} />
                 </div>
                 {dimension.description ? (
@@ -696,7 +696,7 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
                 <EvidenceConfidence dimension={dimension} />
               </CardHeader>
               <CardContent>
-                <p className="text-sm">{dimension.remark}</p>
+                <p className="max-w-prose text-body">{dimension.remark}</p>
               </CardContent>
             </Card>
           ))}
@@ -728,10 +728,10 @@ function OverallSection({
         <h3 className="mb-1 text-lg font-semibold">Overall Assessment</h3>
         <div className="rounded-lg border bg-muted/30 p-5">
           <div className="mb-2 flex items-center gap-3">
-            <p className="text-xs font-semibold uppercase tracking-wide">Overall</p>
+            <p className="type-eyebrow">Overall</p>
             <RatingLabel label={report.overall_grade} />
           </div>
-          <p className="leading-7">{report.overall_summary}</p>
+          <p className="max-w-prose leading-7">{report.overall_summary}</p>
         </div>
         {chart ? (
           <div className="mt-4">
@@ -773,7 +773,7 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
       <div className="space-y-6">
         {gaps.groups.map((group) => (
           <div key={group.category}>
-            <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">
+            <h4 className="mb-2 type-eyebrow">
               {group.label}
             </h4>
             {group.cap_statement ? (
@@ -792,7 +792,7 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
                       <RatingLabel label={item.grade} />
                     </div>
                     {item.remark ? (
-                      <p className="mb-3 text-sm leading-7">{item.remark}</p>
+                      <p className="mb-3 max-w-prose text-sm leading-7">{item.remark}</p>
                     ) : null}
                     <ul className="space-y-2">
                       {item.probes.map((probe, index) => (
@@ -848,10 +848,10 @@ function ClaimEvidenceSection({ summary }: { summary?: ClaimEvidence }) {
           {entries.map((entry, index) => (
             <li key={`${entry.claim}-${index}`} className="rounded-md border p-4">
               {entry.area ? (
-                <p className="mb-1 text-xs uppercase tracking-wide">{entry.area}</p>
+                <p className="mb-1 type-eyebrow">{entry.area}</p>
               ) : null}
-              <p className="font-medium leading-7">{entry.claim}</p>
-              <p className="mt-2 text-sm leading-7">{entry.evidence}</p>
+              <p className="max-w-prose font-medium leading-7">{entry.claim}</p>
+              <p className="mt-2 max-w-prose text-sm leading-7">{entry.evidence}</p>
               {entry.confidence ? (
                 <p className="mt-2 text-xs">Evidence confidence: {entry.confidence}</p>
               ) : null}
@@ -899,7 +899,7 @@ function ValidationPointsSection({ points }: { points?: ValidationPoints }) {
                   </span>
                 ) : null}
               </div>
-              <p className="text-sm leading-7">{point.reason}</p>
+              <p className="max-w-prose text-sm leading-7">{point.reason}</p>
               <p className="mt-2 rounded-md border border-dashed p-3 text-sm">
                 {point.probe}
               </p>
@@ -949,14 +949,14 @@ function ProctoringSection({ report }: { report: ProctoringReport | null }) {
         <div className="space-y-5">
           <div className="rounded-md border p-4">
             <p className="text-xs">{report.date_line}</p>
-            <p className="mt-2 font-medium leading-7">{report.outcome}</p>
-            <p className="mt-2 text-sm leading-7">{report.summary}</p>
+            <p className="mt-2 max-w-prose font-medium leading-7">{report.outcome}</p>
+            <p className="mt-2 max-w-prose text-sm leading-7">{report.summary}</p>
           </div>
 
           <div className="space-y-4">
             {FINDING_GROUPS.map((group) => (
               <div key={group.key}>
-                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">{group.label}</h4>
+                <h4 className="mb-2 type-eyebrow">{group.label}</h4>
                 <ul className="space-y-2">
                   {report.findings[group.key].map((sentence, index) => (
                     <li key={`${group.key}-${index}`} className="text-sm leading-7">
@@ -970,7 +970,7 @@ function ProctoringSection({ report }: { report: ProctoringReport | null }) {
 
           {report.activity_log.length > 0 ? (
             <div>
-              <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">Activity Log</h4>
+              <h4 className="mb-2 type-eyebrow">Activity Log</h4>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[36rem] border-collapse text-sm">
                   <thead>

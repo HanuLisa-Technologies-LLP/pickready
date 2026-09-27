@@ -143,7 +143,7 @@ export function SupportCustomerPanel() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink">Support</h1>
+          <h1 className="type-page-title text-ink">Support</h1>
           <p className="text-sm text-ink">
             Questions about your account, your billing, or anything that is not
             working. Vivekium replies here and by email.
@@ -163,7 +163,7 @@ export function SupportCustomerPanel() {
       <div className="grid gap-6 lg:grid-cols-[22rem_1fr]">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Your conversations</CardTitle>
+            <CardTitle>Your conversations</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {loadError ? (
@@ -221,7 +221,7 @@ export function SupportCustomerPanel() {
           {composing ? (
             <>
               <CardHeader>
-                <CardTitle className="text-base">New conversation</CardTitle>
+                <CardTitle>New conversation</CardTitle>
                 <CardDescription>
                   Tell us what is happening and what you expected instead. Please
                   do not include a candidate&rsquo;s personal details here.
@@ -266,7 +266,7 @@ export function SupportCustomerPanel() {
             <>
               <CardHeader>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <CardTitle className="text-base">{detail.subject}</CardTitle>
+                  <CardTitle>{detail.subject}</CardTitle>
                   <SupportStatusBadge status={detail.status} />
                 </div>
                 <CardDescription>

@@ -236,7 +236,7 @@ function FillBlankDetail({ detail }: { detail: TranscriptAnswerDetail }) {
           {CORRECTNESS_COPY[detail.correctness] ?? detail.correctness}
         </p>
       ) : null}
-      <p className="whitespace-pre-wrap text-sm leading-7">
+      <p className="max-w-prose whitespace-pre-wrap text-sm leading-7">
         {segments.map((segment, index) => (
           <React.Fragment key={index}>
             {segment}
@@ -274,9 +274,9 @@ function Reasoning({ detail }: { detail: TranscriptAnswerDetail }) {
   if (!detail.evaluation_reasoning && detail.evaluation_citations.length === 0) return null;
   return (
     <div className="mt-3 space-y-2" data-testid="evaluation-reasoning">
-      <p className="text-xs font-semibold uppercase tracking-wide">How this answer was read</p>
+      <p className="type-eyebrow">How this answer was read</p>
       {detail.evaluation_reasoning ? (
-        <p className="whitespace-pre-wrap text-sm">{detail.evaluation_reasoning}</p>
+        <p className="max-w-prose whitespace-pre-wrap text-body">{detail.evaluation_reasoning}</p>
       ) : null}
       {detail.evaluation_citations.length > 0 ? (
         // Teal: these are the words the reading rests on.
@@ -316,13 +316,13 @@ function CodingDetail({ detail }: { detail: TranscriptAnswerDetail }) {
         // First, ahead of any reading of the code: what the tests showed is
         // the evidence this answer is graded on.
         <div data-testid="coding-outcome">
-          <p className="text-xs font-semibold uppercase tracking-wide">What the tests showed</p>
+          <p className="type-eyebrow">What the tests showed</p>
           <p className="mt-1 text-sm">{detail.coding_outcome}</p>
         </div>
       ) : null}
       {detail.compile_error ? (
         <div data-testid="coding-compile-error">
-          <p className="text-xs font-semibold uppercase tracking-wide">Compiler output</p>
+          <p className="type-eyebrow">Compiler output</p>
           <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words border border-border bg-muted p-2 font-mono text-xs">
             {detail.compile_error}
           </pre>
@@ -330,9 +330,9 @@ function CodingDetail({ detail }: { detail: TranscriptAnswerDetail }) {
       ) : null}
       {detail.review_reasoning || citations.length > 0 ? (
         <div className="space-y-2" data-testid="coding-review">
-          <p className="text-xs font-semibold uppercase tracking-wide">Code quality review</p>
+          <p className="type-eyebrow">Code quality review</p>
           {detail.review_reasoning ? (
-            <p className="whitespace-pre-wrap text-sm">{detail.review_reasoning}</p>
+            <p className="max-w-prose whitespace-pre-wrap text-body">{detail.review_reasoning}</p>
           ) : null}
           {citations.length > 0 ? (
             <ul className="space-y-1 border-l border-teal-600 pl-3 font-mono text-xs">
@@ -379,7 +379,7 @@ function ProbeAnchor({ anchor }: { anchor: string }) {
     // Teal fill: the anchor is the piece of the candidate's own resume this
     // question exists to test, which is exactly what teal means here.
     <div className="mb-3 border border-teal-600/40 bg-teal-50 p-3" data-testid="resume-anchor">
-      <p className="text-xs font-semibold uppercase tracking-wide">What was being probed</p>
+      <p className="type-eyebrow">What was being probed</p>
       <p className="mt-1 whitespace-pre-wrap text-sm">{anchor}</p>
     </div>
   );
@@ -410,7 +410,7 @@ function Exchange({ exchange }: { exchange: TranscriptExchange }) {
   return (
     <li className="rounded-lg border p-4" data-question-type={exchange.question_type ?? undefined}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide">
+        <span className="type-eyebrow">
           {exchange.follow_up ? "Follow-up" : `Question ${exchange.ordinal}`}
         </span>
         {exchange.criterion ? (
@@ -433,7 +433,7 @@ function Exchange({ exchange }: { exchange: TranscriptExchange }) {
 
       <div className="flex gap-2.5">
         <MessageSquare className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-        <p className="text-sm font-medium">{exchange.question}</p>
+        <p className="max-w-prose text-sm font-medium">{exchange.question}</p>
       </div>
 
       <div className="mt-3 border-t pt-3">

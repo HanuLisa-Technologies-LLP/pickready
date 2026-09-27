@@ -70,7 +70,7 @@ export function ComplianceDocumentsSection({
         if (groupSlots.length === 0) return null;
         return (
           <div key={group} className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">
+            <h3 className="type-eyebrow text-brand-600">
               {GROUP_TITLES[group]}
             </h3>
             <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface shadow-card">

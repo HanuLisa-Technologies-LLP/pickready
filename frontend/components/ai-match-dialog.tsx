@@ -87,7 +87,7 @@ export function AiMatchDialog({
               <div className="space-y-3">
                 {positives.length ? (
                   <div>
-                    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide">
+                    <h4 className="mb-1 type-eyebrow">
                       Shown in the resume
                     </h4>
                     <EvidenceTags tags={positives} />
@@ -95,7 +95,7 @@ export function AiMatchDialog({
                 ) : null}
                 {negatives.length ? (
                   <div>
-                    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide">
+                    <h4 className="mb-1 type-eyebrow">
                       Must-have skills not shown
                     </h4>
                     <EvidenceTags tags={negatives} />

@@ -116,10 +116,10 @@ function AccountBlock({ compact = false }: { compact?: boolean }) {
               {(user.full_name || user.email || "?").slice(0, 1).toUpperCase()}
             </span>
             <div className="min-w-0">
-              <p className="truncate text-xs font-semibold">
+              <p className="truncate text-body-sm font-semibold">
                 {user.full_name || user.email}
               </p>
-              <p className="truncate text-xs">{user.email}</p>
+              <p className="truncate text-meta">{user.email}</p>
             </div>
           </div>
           <WorkspaceSwitcher />
@@ -248,7 +248,7 @@ export function AppShell({
           ) : (
             <>
               <Logo variant="full" height={34} href="/" />
-              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
+              <p className="mt-3 type-eyebrow">
                 {title}
               </p>
               {user ? (
@@ -258,10 +258,10 @@ export function AppShell({
                 >
                   <Building2 className="h-4 w-4 shrink-0 text-brand-600" aria-hidden="true" />
                   <div className="min-w-0">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">
+                    <p className="text-[0.6875rem] font-semibold uppercase leading-4 tracking-[0.08em]">
                       Active workspace
                     </p>
-                    <p className="truncate text-sm font-bold">{user.workspace_name}</p>
+                    <p className="truncate text-sm font-semibold leading-5">{user.workspace_name}</p>
                   </div>
                 </div>
               ) : null}
@@ -325,7 +325,7 @@ export function AppShell({
               <SheetTitle className="sr-only">{title}</SheetTitle>
               <div className="px-5 py-6">
                 <Logo variant="full" height={32} />
-                <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
+                <p className="mt-3 type-eyebrow">
                   {title}
                 </p>
               </div>
@@ -411,20 +411,18 @@ export function PageHeader({
     >
       <div className="min-w-0">
         {eyebrow ? (
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-600">
-            {eyebrow}
-          </p>
+          <p className="type-eyebrow text-brand-600">{eyebrow}</p>
         ) : null}
         <h1
           className={cn(
-            "text-balance text-xl font-bold tracking-tight sm:text-2xl",
+            "type-page-title text-balance",
             eyebrow && "mt-2"
           )}
         >
           {title}
         </h1>
         {description ? (
-          <p className="mt-3 max-w-2xl text-pretty text-sm">
+          <p className="mt-2.5 max-w-prose text-pretty text-body">
             {description}
           </p>
         ) : null}

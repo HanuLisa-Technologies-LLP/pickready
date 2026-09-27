@@ -47,9 +47,9 @@ export function JdBlock({ title, value }: { title: string; value: unknown }) {
   if (lines.length === 0) return null;
   return (
     <section className="space-y-1.5">
-      <h3 className="text-xs font-semibold uppercase tracking-wide">{title}</h3>
+      <h3 className="type-eyebrow">{title}</h3>
       {lines.length === 1 ? (
-        <p className="whitespace-pre-line text-sm leading-relaxed">{lines[0]}</p>
+        <p className="max-w-prose whitespace-pre-line text-body">{lines[0]}</p>
       ) : (
         <ul className="list-[circle] space-y-1 pl-5 text-sm leading-relaxed">
           {lines.map((line, i) => (
@@ -144,7 +144,7 @@ export function JobDescriptionSummary({
         {experience ? <JdBlock title="Experience" value={experience} /> : null}
         {skills.length > 0 ? (
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide">
+            <h3 className="type-eyebrow">
               Skills
             </h3>
             <div className="flex flex-wrap gap-1.5">

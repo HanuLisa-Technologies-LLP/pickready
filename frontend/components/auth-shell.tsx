@@ -56,11 +56,9 @@ export function AuthShell({
         <Card className="shadow-pop">
           <CardContent className="space-y-6 p-6 sm:p-8">
             <div className="space-y-2 text-center">
-              <h1 className="text-balance text-xl font-bold tracking-tight">
-                {title}
-              </h1>
+              <h1 className="text-title-sm">{title}</h1>
               {description ? (
-                <p className="text-pretty text-sm">{description}</p>
+                <p className="text-pretty text-body">{description}</p>
               ) : null}
             </div>
             {children}
@@ -80,7 +78,7 @@ export function AuthDivider({ label = "or" }: { label?: string }) {
   return (
     <div className="flex items-center gap-3">
       <span className="h-px flex-1 bg-border" />
-      <span className="text-xs font-medium uppercase tracking-[0.12em]">
+      <span className="type-eyebrow">
         {label}
       </span>
       <span className="h-px flex-1 bg-border" />

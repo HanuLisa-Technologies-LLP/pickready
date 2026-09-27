@@ -112,7 +112,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
           <div className="mt-3 space-y-3 text-sm">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide">
+              <p className="type-eyebrow">
                 Candidate&apos;s description (their claim)
               </p>
               <p className="mt-1">{project.candidate_description}</p>
@@ -120,7 +120,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.technologies.length > 0 ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   Observed stack
                 </p>
                 <div className="mt-1 flex flex-wrap gap-1.5">
@@ -135,7 +135,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.observed_evidence.length > 0 ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   System-observed evidence
                 </p>
                 <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -148,7 +148,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.synthesis ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   Assessment
                 </p>
                 <p className="mt-1">{project.synthesis}</p>
@@ -157,7 +157,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.claim_assessments.length > 0 ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   Claims against evidence
                 </p>
                 <div className="mt-1 space-y-2">
@@ -188,7 +188,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.potential_gaps.length > 0 ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   Evidence gaps
                 </p>
                 <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -201,7 +201,7 @@ export function ProjectEvidencePanel({ candidateId }: { candidateId: string }) {
 
             {project.validation_areas.length > 0 ? (
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide">
+                <p className="type-eyebrow">
                   Worth validating in interview
                 </p>
                 <ul className="mt-1 list-disc space-y-0.5 pl-5">

@@ -97,7 +97,7 @@ export function ConsentHistoryCard() {
       <CardHeader>
         <div className="flex items-center gap-2">
           <History className="h-4 w-4" aria-hidden="true" />
-          <CardTitle className="text-base">My consents</CardTitle>
+          <CardTitle>My consents</CardTitle>
         </div>
         <CardDescription>
           Everything you have been asked to agree to, where you stand on each,

@@ -153,7 +153,7 @@ function CompletedRun({
 function OutputBlock({ label, text }: { label: string; text: string }) {
   return (
     <div className="min-w-0">
-      <p className="text-xs font-semibold uppercase tracking-wide">{label}</p>
+      <p className="type-eyebrow">{label}</p>
       {text.length > 0 ? (
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words border border-border bg-muted p-2 font-mono text-xs">
           {text}
