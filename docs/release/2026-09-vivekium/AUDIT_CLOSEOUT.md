@@ -169,14 +169,14 @@ next release PR.
 | 3. `PUT /admin/permissions` never invalidated its cache | RBD on main: the permission-template editor routes are deleted (`tests/test_dead_routes_removed.py`, `admin/permissions`). |
 | 4. `POST /admin/tenants` crashed on every call | main: `rbac.invalidate_role_permissions(tenant.id)`, `tests/test_admin_create_tenant.py` (bcd99ca), which also moved the invitation dispatch after commit. |
 | 5. Invitation status stuck at Pending | This branch, 2d82fcd, plus the /join second step (the page signs in BEFORE it posts the acceptance, so the port also admits "already accepted by this same user" there; PR #5 as written would have made /join report its own link as spent). |
-| B. The AI brief's lost zero | **Not applied here**: the Create Job page and `lib/job-payload.ts` are job setup files owned by the v10 package. The adapted patch and its tests are `docs/release/2026-09-vivekium/hunks/pr5-jd-brief-zero.md` (65c0752). Still broken on main. |
+| B. The AI brief's lost zero | **Applied at integration** (`wip/s4-int`): `optionalNumber` is exported and `buildJdGeneratePayload` builds the brief; the Create Job page validates the band before the call. The hunk is `docs/release/2026-09-vivekium/hunks/pr5-jd-brief-zero.md` (65c0752); its tests are in `lib/job-payload.test.ts` and the mutation (putting `Number(value) \|\| null` back) fails two of them. |
 | Dashboard test race | This branch, 0ef8898. |
 | `test_yukti_live` float comparison | RBD: the module and `prescreen` are deleted. |
 
 ## Still open, in one place
 
 1. **Branch protection on main**: an admin runs `docs/operations/BRANCH_PROTECTION.md`.
-2. **The JD brief zero** (PR #5 item B): apply the hunk with the v10 work.
+2. ~~**The JD brief zero** (PR #5 item B)~~: applied at integration.
 3. **Retrieval-time injection screen** not in force: owner decision.
 4. **The request coalescer**: delete the four uncalled functions or correct the KEPT sentence (above).
 5. **`pickready.app` mailboxes**: owner question.
