@@ -139,9 +139,9 @@ class ApplyContextOut(BaseModel):
 def _portal_job_out(
     job: Job,
     tenant: Tenant | None,
-    company: Company | None = None,
-    application_id: uuid.UUID | None = None,
-    skills: "tuple[assessment_contract.PostingBucket, ...]" = (),
+    company: Company | None,
+    application_id: uuid.UUID | None,
+    skills: "tuple[assessment_contract.PostingBucket, ...]",
 ) -> PortalJobOut:
     """One place where a Job becomes the candidate-facing job payload.
 
