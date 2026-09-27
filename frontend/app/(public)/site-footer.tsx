@@ -1,33 +1,40 @@
 import Link from "next/link";
 
 import { Logo } from "@/components/brand";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 
 /**
- * Product links that are anchors into the landing page. Same rule as the
- * header: they render only when `/` serves the landing page, because on the
- * holding page every one of them is a link to nowhere. See site-header.tsx for
- * the full note.
+ * The footer's links. Every internal one is a route under `app/` that the
+ * proxy admits without a session, or an anchor `landing-page.tsx` mounts;
+ * `lib/landing-links.test.ts` holds that for every public link on the page.
+ *
+ * TWO LINKS LEFT, AND WHY:
+ *
+ *  - "Join with an invite" opened `/join` with no token, which is a page that
+ *    can only say "This invitation link is incomplete." The invitation email
+ *    carries the real link, token included, so the footer has nothing to
+ *    offer there.
+ *  - "For employers" named `/employers` as though it were a page for buyers.
+ *    It is the public directory of companies hiring through Vivekium, which is
+ *    a page for job seekers, so it is labelled as what it is.
  */
-const LANDING_LINKS = [
-  { label: "How it works", href: "/#how-it-works" },
-  { label: "Platform", href: "/#features" },
-  { label: "Pricing", href: "/#pricing" },
-];
-
-/** Product links that resolve to a real route in either state. */
-const PRODUCT_LINKS = [
-  { label: "For employers", href: "/employers" },
-  { label: "Docs", href: "/docs" },
-];
-
 const COLUMNS = [
+  {
+    heading: "Product",
+    links: [
+      { label: "How it works", href: "/#how-it-works" },
+      { label: "Platform", href: "/#features" },
+      { label: "Pricing", href: "/#pricing" },
+      { label: "Docs", href: "/docs" },
+    ],
+  },
   {
     heading: "Get access",
     links: [
-      { label: "Log in", href: "/login?initial_context=all" },
-      { label: "Create an account", href: "/register?role=candidate" },
-      { label: "Join with an invite", href: "/join" },
-      { label: "Contact us", href: "mailto:manjuchro@gmail.com" },
+      { label: "Log in", href: "/login" },
+      { label: "Request access for your company", href: REQUEST_ACCESS_HREF },
+      { label: "Employers hiring now", href: "/employers" },
+      { label: "Create a candidate account", href: "/register" },
     ],
   },
   {
@@ -40,25 +47,7 @@ const COLUMNS = [
   },
 ];
 
-export interface SiteFooterProps {
-  /**
-   * Whether `/` is serving the landing page. Defaults to false so a caller
-   * that forgets it renders no dead anchor.
-   */
-  landingLive?: boolean;
-}
-
-export function SiteFooter({ landingLive = false }: SiteFooterProps) {
-  const columns = [
-    {
-      heading: "Product",
-      links: landingLive
-        ? [...LANDING_LINKS, ...PRODUCT_LINKS]
-        : PRODUCT_LINKS,
-    },
-    ...COLUMNS,
-  ];
-
+export function SiteFooter() {
   return (
     <footer className="border-t border-border bg-surface/60">
       <div className="mx-auto max-w-6xl px-6 py-14 lg:px-10">
@@ -67,7 +56,7 @@ export function SiteFooter({ landingLive = false }: SiteFooterProps) {
             <Logo variant="full" height={38} href="/" />
           </div>
 
-          {columns.map((column) => (
+          {COLUMNS.map((column) => (
             <nav key={column.heading} aria-label={column.heading}>
               {/* Full ink at 13px. The heading used to be `opacity-70`, which
                   is grey text by another name, and DESIGN.md section 3 admits

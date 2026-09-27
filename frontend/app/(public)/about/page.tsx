@@ -11,6 +11,15 @@ export const metadata: Metadata = publicPageMetadata({
     "The experience, philosophy and people behind Vivekium's evidence-led candidate profiles.",
 });
 
+/**
+ * The three principles, each a claim about the product as it ships
+ * (2026-09-28). "Human validation" promised a final check by somebody at
+ * Vivekium before every profile reached a customer; no such step exists, and
+ * the human in the loop is the customer's own team, which the product
+ * enforces (no flag rejects anybody, a person decides). "A flat job
+ * subscription" was the pricing model before credits: a customer buys credits
+ * and spends them per completed PRISM Report.
+ */
 const PRINCIPLES = [
   {
     icon: BrainCircuit,
@@ -19,13 +28,13 @@ const PRINCIPLES = [
   },
   {
     icon: UsersRound,
-    title: "Human validation",
-    body: "Every profile deserves a final human check before it becomes a customer decision input.",
+    title: "Human decisions",
+    body: "The AI reads, assesses and explains. A person on your team decides, and no flag ever rejects a candidate on its own.",
   },
   {
     icon: Handshake,
     title: "Aligned commercial model",
-    body: "A flat job subscription keeps our incentive on profile quality, not on a percentage of compensation.",
+    body: "Credits spent per completed PRISM Report keep our incentive on report quality, not on a percentage of compensation.",
   },
 ] as const;
 
@@ -60,7 +69,7 @@ export default function AboutPage() {
               The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. Vivekium takes the practical lessons from that journey and rebuilds the operating model from first principles.
             </p>
             <p>
-              Vivekium turns role requirements, candidate evidence and structured conversation into one clear assessment trail, so teams can spend interview time on the questions that matter.
+              Vivekium turns the job&apos;s skills, the evidence in each resume and one proctored assessment into one clear assessment trail, so teams can spend interview time on the questions that matter.
             </p>
           </FadeIn>
         </div>
@@ -72,7 +81,7 @@ export default function AboutPage() {
             <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">How we work</p>
             <h2 className="mt-3 text-3xl font-bold">Lean by design, accountable by default</h2>
             <p className="mt-5 text-lg leading-8">
-              A small, high-leverage team combines AI-driven discovery and screening with dedicated human validation on every profile. The structure is deliberate: enough process for consistency, without layers that slow a customer down.
+              A small, high-leverage team builds AI that reads, assesses and explains, and leaves every decision about a person with the customer&apos;s own team. The structure is deliberate: enough process for consistency, without layers that slow a customer down.
             </p>
           </FadeIn>
           <Stagger className="mt-10 grid gap-5 md:grid-cols-3">

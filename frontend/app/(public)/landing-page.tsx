@@ -56,9 +56,16 @@ import {
  * WHY THE HEADER AND FOOTER ARE HERE RATHER THAN IN A LAYOUT. This component
  * is rendered by `app/page.tsx`, which is at the app root and therefore does
  * not get `app/(public)/layout.tsx`. Two routes cannot both own `/`, so the
- * frame is repeated here deliberately, and `landingLive` is passed as `true`
- * because this component only renders when the landing page is what `/`
- * serves.
+ * frame is repeated here deliberately.
+ *
+ * WHAT THE PAGE DESCRIBES IS THE PRODUCT AS IT SHIPS (2026-09-28 rewire). The
+ * flow is JD, then Skills, then the final job posting, then publish; the SWOT
+ * is internal hiring intelligence and is never a step a reader is sold. AI
+ * Match reads resumes against the saved skills and reports evidence tags and a
+ * word grade. One proctored assessment asks about every skill. The team reads
+ * a PRISM Report and a Proctoring Report. Every link on this page resolves to
+ * a route the proxy admits signed-out, an anchor this page mounts, or the one
+ * request-access mailbox, and `lib/landing-links.test.ts` holds that.
  */
 export function LandingPage() {
   return (
@@ -70,7 +77,7 @@ export function LandingPage() {
         Skip to content
       </a>
 
-      <SiteHeader landingLive />
+      <SiteHeader />
 
       <main id="main" className="flex-1 pt-16">
         <Hero />
@@ -85,7 +92,7 @@ export function LandingPage() {
         <CallToAction />
       </main>
 
-      <SiteFooter landingLive />
+      <SiteFooter />
       <LandingTelemetry />
     </div>
   );

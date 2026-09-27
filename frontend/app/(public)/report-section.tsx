@@ -17,18 +17,25 @@ import { Badge } from "@/components/ui/badge";
  * its own job's locked contract, so there is no retake to describe, and the
  * resume check is named AI Match here as it is everywhere else a reader meets
  * it.
+ *
+ * THE PROCTORING REPORT IS NAMED (2026-09-28). It is the second document a
+ * team reads for an assessed candidate, it is written in words, and it moves
+ * no grade; a page that sold the PRISM Report alone described half of what is
+ * delivered. "The conversation" became the candidate's own answers, because
+ * the assessment is one proctored session, not an adaptive chat.
  */
 const POINTS = [
-  "An AI Match from the resume, then a Tatva Assessment from the conversation. Shown side by side, never merged.",
-  "Must-have, Nice-to-have and Behavioural, each with a 45 to 50 word remark.",
+  "The AI Match from the resume comes first, then the Tatva Assessment grades every skill from the candidate's own answers. Each keeps its own section.",
+  "Must-have, Nice-to-have and Behavioural, each skill with a remark that says what it rests on.",
   "Three radar charts, each plotting what the job needs against what the candidate showed.",
+  "A Proctoring Report beside it, in words, that never moves a grade.",
   "Reports are immutable.",
 ];
 
 /** Rated items from the sample card. Word labels only, never a number. */
 const SAMPLE = [
   {
-    dimension: "AI Match, skills",
+    dimension: "AI Match",
     label: "Highly Matching",
     tone: "rating1",
   },

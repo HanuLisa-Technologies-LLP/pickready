@@ -57,8 +57,11 @@ export default function OpengraphImage() {
             color: "#FFFFFF",
           }}
         >
-          <span>Ready</span>
-          <span style={{ color: TEAL }}>Pick</span>
+          {/* The product name, split where the site wordmark splits it
+              (`components/brand/logo.tsx`). The card spelled the previous
+              name, so every share of readypick.ai carried it. */}
+          <span>Vivek</span>
+          <span style={{ color: TEAL }}>ium</span>
         </div>
         <div
           style={{
