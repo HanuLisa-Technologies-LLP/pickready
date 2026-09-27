@@ -545,7 +545,7 @@ export function JobSwotAnalysisPanel({
                   return (
                     <div key={section.key} className="border p-4">
                       <div className="flex items-baseline justify-between gap-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide">
+                        <p className="type-eyebrow">
                           {section.label}
                         </p>
                         <p className="shrink-0 text-xs">

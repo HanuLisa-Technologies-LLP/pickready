@@ -122,7 +122,7 @@ export function PostingSkillsList({
             <Heading
               id={headingId}
               className={
-                headingClassName ?? "text-xs font-semibold uppercase tracking-wide"
+                headingClassName ?? "type-eyebrow"
               }
             >
               {bucket.label}
@@ -250,7 +250,7 @@ export function FinalJobPostingPreview({
             >
               <header className="space-y-1.5">
                 {preview.company_name ? (
-                  <p className="text-xs font-semibold uppercase tracking-wide">
+                  <p className="type-eyebrow">
                     {preview.company_name}
                   </p>
                 ) : null}

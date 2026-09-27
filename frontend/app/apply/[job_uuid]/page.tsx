@@ -76,7 +76,7 @@ interface PublicJob {
 }
 
 const SECTION_HEADING =
-  "text-xs font-semibold uppercase tracking-[0.14em] text-brand-600";
+  "type-eyebrow text-brand-600";
 
 function unwrapJob(res: unknown): PublicJob | null {
   if (!res || typeof res !== "object") return null;
@@ -368,10 +368,10 @@ export default function PublicApplyPage() {
                 .toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+              <p className="type-eyebrow text-brand-600">
                 {companyName ?? "Hiring company"}
               </p>
-              <h1 className="mt-1.5 text-balance text-2xl font-bold tracking-tight sm:text-3xl">
+              <h1 className="mt-1.5 text-2xl font-semibold sm:text-3xl">
                 {job.title}
               </h1>
               <p className="mt-2 text-sm">{subtitle}</p>
@@ -441,7 +441,7 @@ export default function PublicApplyPage() {
                     )}
                     {!jdMarkdown && asLines(jd.skills).length > 0 ? (
                       <section className="space-y-2">
-                        <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+                        <h3 className="type-eyebrow text-brand-600">
                           Skills
                         </h3>
                         <div className="flex flex-wrap gap-1.5">
@@ -466,7 +466,7 @@ export default function PublicApplyPage() {
                       />
                     ))}
                     <section className="space-y-3">
-                      <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+                      <h3 className="type-eyebrow text-brand-600">
                         At a glance
                       </h3>
                       <dl className="grid gap-x-6 gap-y-3 rounded-xl border border-border bg-secondary p-4 text-sm sm:grid-cols-2">
