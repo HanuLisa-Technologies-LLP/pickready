@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence, cast
 
 from app.services.siddhi import citations, support, synthesis
 from app.services.siddhi.evidence import (
@@ -348,7 +348,8 @@ async def compose_prism(
     verdicts = await support.assess_many(
         requests, embed=embed, threshold=threshold, passage_source=passage_source
     )
-    for (section_index, statement_index), verdict in verdicts.items():
+    for key, verdict in verdicts.items():
+        section_index, statement_index = cast(tuple[int, int], key)
         sections[section_index]["statements"][statement_index]["support"] = (
             verdict.as_dict()
         )

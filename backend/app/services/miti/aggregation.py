@@ -694,10 +694,13 @@ def _bucket_score(grades: Sequence[SkillGrade]) -> float:
     is not a finding about a candidate, and averaging a missing score as zero
     would be exactly that.
     """
+    if any(grade.score is None for grade in grades):
+        raise ValueError("A bucket score requires assessed skills")
     total = sum(priority_weight(grade.priority) for grade in grades)
     return sum(
-        float(grade.score) * priority_weight(grade.priority)  # type: ignore[arg-type]
+        float(grade.score) * priority_weight(grade.priority)
         for grade in grades
+        if grade.score is not None
     ) / total
 
 

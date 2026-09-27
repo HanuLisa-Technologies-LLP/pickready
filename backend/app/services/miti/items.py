@@ -395,13 +395,13 @@ def _question_weight(question: Any) -> float:
 
 def _weighted_mean(items: Sequence[ItemEvaluation]) -> int:
     """The weighted mean of the SCORED items (graded and unanswered)."""
-    scored = [item for item in items if item.score is not None]
-    total = sum(max(0.0, item.weight) for item in scored)
+    scored = [(item.score, item.weight) for item in items if item.score is not None]
+    total = sum(max(0.0, weight) for _, weight in scored)
     if total <= 0:
-        return int(round(sum(item.score for item in scored) / len(scored)))  # type: ignore[misc]
+        return int(round(sum(score for score, _ in scored) / len(scored)))
     return int(
         round(
-            sum(float(item.score) * max(0.0, item.weight) for item in scored)  # type: ignore[arg-type]
+            sum(float(score) * max(0.0, weight) for score, weight in scored)
             / total
         )
     )
@@ -666,7 +666,7 @@ async def _rubric_scored(
         used.append(answer)
         await _record_evidence(session, context, skill, question, locators.get(key, ()))
         if question_type == question_types.EVIDENCE_BASED:
-            score, failure = await _format_evaluation(
+            score, prose_failure = await _format_evaluation(
                 session, skill=skill, question=question, answer=answer, record=record
             )
             method = METHOD_EVIDENCE
@@ -690,7 +690,7 @@ async def _rubric_scored(
                     locators=locators,
                     passages=passages,
                 )
-            score, failure = await _rubric_score(
+            score, prose_failure = await _rubric_score(
                 session,
                 framing=question.prompt,
                 rubric=rubric,
@@ -699,8 +699,8 @@ async def _rubric_scored(
                 related=retrieval.text,
             )
         if score is None:
-            _log_not_assessed(context, skill, question.id, failure or FAILURE_EVALUATION_DEGRADED)
-            items.append(ItemEvaluation(question.id, ANSWER_NOT_ASSESSED, None, weight, method, failure))
+            _log_not_assessed(context, skill, question.id, prose_failure or FAILURE_EVALUATION_DEGRADED)
+            items.append(ItemEvaluation(question.id, ANSWER_NOT_ASSESSED, None, weight, method, prose_failure))
         else:
             items.append(ItemEvaluation(question.id, ANSWER_GRADED, score, weight, method))
     return _grade_skill(skill, items, used, retrieval or _NOT_REQUESTED)

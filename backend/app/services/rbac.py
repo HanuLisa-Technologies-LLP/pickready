@@ -739,7 +739,8 @@ async def assign_creator(
             "CAST(:arole AS varchar), true "
             "WHERE NOT EXISTS (SELECT 1 FROM job_assignments "
             "WHERE job_id = CAST(:jid AS uuid) "
-            "AND assignment_role = CAST(:arole AS varchar) AND active)"
+            "AND assignment_role = CAST(:arole AS varchar) AND active) "
+            "RETURNING 1"
         ),
         {
             "tid": str(job.tenant_id),
@@ -748,7 +749,7 @@ async def assign_creator(
             "arole": assignment,
         },
     )
-    return bool(written.rowcount)
+    return written.scalar_one_or_none() is not None
 
 
 async def authorize(
