@@ -142,6 +142,9 @@ def test_response_schemas_are_closed_allowlists() -> None:
         "id", "title", "department",
         "experience_min_years", "experience_max_years",
         "apply_path", "apply_url",
+        # CONTRACT v10: the posting's skills by NAME, never an evidence line,
+        # a priority or the role summary (`PostingSkillBucketOut`).
+        "skill_buckets",
     }
     assert set(EmployerPageOut.model_fields) == {
         "slug", "name", "industry", "website_domain",
@@ -366,6 +369,8 @@ async def test_careers_list_shows_only_currently_live_published_jobs() -> None:
         assert [role.id for role in page.open_roles] == [live_id]
         assert page.open_roles[0].apply_path == f"/apply/{live_id}"
         assert page.open_roles[0].apply_url.endswith(f"/apply/{live_id}")
+        # No saved skills: the posting shows no skills section at all.
+        assert page.open_roles[0].skill_buckets == []
         assert page.name == f"Liveboard {marker}"
     finally:
         await _delete_tenants(factory, [tenant.id])

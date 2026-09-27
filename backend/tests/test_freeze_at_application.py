@@ -29,8 +29,8 @@ dependency overrides on the candidate side.
 
 MUTATION CHECKS, recorded: removing the `freeze_at_application` call from
 `api/portal.apply_to_job` fails
-`test_the_first_application_freezes_the_job_in_its_own_transaction`; moving
-it to a separate committed session fails
+`test_the_first_application_freezes_the_job_in_its_own_transaction` and the
+one-caller sweep; committing the session straight after it fails
 `test_a_rolled_back_application_leaves_no_snapshot`; dropping the nested
 SET NULL branch from 0131's trigger fails
 `test_erasing_the_application_keeps_the_snapshot`.
