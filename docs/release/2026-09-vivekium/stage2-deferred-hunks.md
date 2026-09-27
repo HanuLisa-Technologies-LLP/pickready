@@ -12,6 +12,11 @@
 > the read-only coding evaluation deleted; the dashboard stage control routed
 > through the invitation service; `scoring_hold` called before scoring. This
 > file and `hunks/` are provenance, not a to-do list.
+>
+> **2026-09-28, package `s4-audit-close`**: p3-w4 hunk 4 is CLOSED
+> (`turns.current_question_id`, resolved by the audio route and carried by
+> both server-derived audio events; `tests/test_proctoring_audio_question_id.py`).
+> p3-w5 hunk 3 stays a deploy-stage setting.
 
 Branch `wip/stage2-int`, built from `release/vivekium` (5bc4efb) by merging,
 in order, `wip/p2-a`, `wip/p4-4b1`, `wip/p3-w1`, `wip/p3-w4`, `wip/p4-4d`,
