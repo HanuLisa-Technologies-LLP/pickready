@@ -9,6 +9,14 @@ import pytest
 from app.services.hiring import department_models, layers, pipeline_halt, runbook_data
 
 
+@pytest.fixture
+def uncached_runbook():
+    """Keep a substituted data directory out of the process-wide loader cache."""
+    runbook_data.load.cache_clear()
+    yield
+    runbook_data.load.cache_clear()
+
+
 def test_unknown_seniority_uses_the_documented_default() -> None:
     department = department_models.DEPARTMENTS["engineering"]
     default = department_models.SENIORITIES[0]
@@ -54,14 +62,14 @@ def test_unknown_department_has_no_seniority_emphasis() -> None:
 
 
 @pytest.mark.parametrize("content", ["broken: [", "[]"])
-def test_corrupt_runbook_data_is_refused(tmp_path, monkeypatch, content: str) -> None:
+def test_corrupt_runbook_data_is_refused(tmp_path, monkeypatch, uncached_runbook, content: str) -> None:
     monkeypatch.setattr(runbook_data, "_DIR", tmp_path)
     (tmp_path / "bands.yaml").write_text(content, encoding="utf-8")
     with pytest.raises(runbook_data.RunbookDataError):
         runbook_data.load("bands")
 
 
-def test_missing_runbook_data_file_is_refused(tmp_path, monkeypatch) -> None:
+def test_missing_runbook_data_file_is_refused(tmp_path, monkeypatch, uncached_runbook) -> None:
     monkeypatch.setattr(runbook_data, "_DIR", tmp_path)
     with pytest.raises(runbook_data.RunbookDataError, match="cannot read"):
         runbook_data.load("bands")
