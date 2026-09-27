@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 //
 // The Publish card (Vivekium release, Phase 1). The gate itself is the API's
-// (PUBLISH_JOB plus a saved JD, SWOT and skills); what the card owns is that
-// it reads the checklist from the server, shows the server's blocking
+// (PUBLISH_JOB plus a saved JD and saved skills; since CONTRACT v10 the SWOT
+// is not a prerequisite); what the card owns is that it reads the checklist
+// from the server, shows the server's blocking
 // sentence as written, offers Publish only to somebody holding the
 // capability, and calls the ONE publish route.
 
@@ -68,15 +69,27 @@ describe("JobPublishCard", () => {
     await screen.findByText("Skills saved");
     expect(apiGet).toHaveBeenCalledWith("/api/v2/assessments/jobs/job-1/setup");
     expect(onSetup).toHaveBeenCalledWith(expect.objectContaining({ skills_saved: false }));
-    expect(screen.getAllByText("Done")).toHaveLength(2);
+    expect(screen.getAllByText("Done")).toHaveLength(1);
     expect(screen.getAllByText("Not yet")).toHaveLength(1);
   });
 
+  it("names the JD and the skills only: the SWOT is never a publish prerequisite", async () => {
+    // A job with no SWOT at all publishes once its JD and skills are saved.
+    apiGet.mockResolvedValue(setup({ swot_status: "not_started", swot_saved: false }));
+    render(<JobPublishCard jobId="job-1" job={JOB} />);
+
+    const checklist = await screen.findByRole("list", { name: "Publishing checklist" });
+    const items = Array.from(checklist.querySelectorAll("li")).map((li) => li.textContent);
+    expect(items).toEqual(["Job descriptionDone", "Skills savedDone"]);
+    expect(checklist.textContent).not.toMatch(/SWOT/);
+    const button = screen.getByRole("button", { name: /Publish job/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
   it("shows the server's blocking sentence verbatim and does not offer a publish it would refuse", async () => {
-    const reason =
-      "Publishing needs a saved SWOT. Publishing needs saved skills.";
+    const reason = "Before this job can be published, save its skills.";
     apiGet.mockResolvedValue(
-      setup({ swot_saved: false, skills_saved: false, publish_blocked_reason: reason })
+      setup({ skills_saved: false, publish_blocked_reason: reason })
     );
     render(<JobPublishCard jobId="job-1" job={JOB} />);
 

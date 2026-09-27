@@ -327,7 +327,7 @@ describe("a user who may edit every bucket", () => {
   });
 });
 
-describe("the lock", () => {
+describe("the freeze", () => {
   it("is a state sentence with no edit or save controls and no permission copy", async () => {
     apiGet.mockResolvedValue(skills({ locked: true, saved: true }));
     render(<JobSkillsPanel jobId="job-1" />);
@@ -335,7 +335,7 @@ describe("the lock", () => {
 
     expect(
       screen.getByText(
-        "Locked: a candidate has started the assessment. The skills and the grade can no longer change."
+        "Frozen: a candidate has applied. The skills and the grade can no longer change."
       )
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Rename/ })).toBeNull();
@@ -351,6 +351,105 @@ describe("the lock", () => {
     render(<JobSkillsPanel jobId="job-1" />);
     await screen.findByText("Python");
     expect(screen.queryByRole("button", { name: "Rename Python" })).toBeNull();
+  });
+
+  it("withholds the re-draft call to action and every draft control once frozen", async () => {
+    // A stale redraft_available must not reopen a frozen contract (v10).
+    apiGet.mockResolvedValue(
+      skills({ locked: true, saved: true, redraft_available: true })
+    );
+    render(<JobSkillsPanel jobId="job-1" redraftSignal={0} />);
+    await screen.findByText("Python");
+
+    expect(screen.getByText("Frozen")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /Re-draft skills from the updated SWOT/ })
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Draft skills/ })).toBeNull();
+  });
+
+  it("does not draft even when the SWOT panel signals after the freeze", async () => {
+    apiGet.mockResolvedValue(skills({ locked: true, redraft_available: true }));
+    const { rerender } = render(<JobSkillsPanel jobId="job-1" redraftSignal={0} />);
+    await screen.findByText("Python");
+
+    rerender(<JobSkillsPanel jobId="job-1" redraftSignal={1} />);
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).queryByRole("button", { name: "Replace with a new draft" })
+    ).toBeNull();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+});
+
+describe("drafting without a SWOT (CONTRACT v10)", () => {
+  const empty = () =>
+    skills({
+      draft_status: "not_started",
+      buckets: { must_have: [], nice_to_have: [], behavioural: [] },
+    });
+
+  it("offers Draft skills on an empty list and says the SWOT is optional", async () => {
+    apiGet.mockResolvedValue(empty());
+    render(<JobSkillsPanel jobId="job-1" />);
+
+    expect(
+      await screen.findByText(
+        "No skills yet. Draft them from the JD, or add them yourself. A SWOT is optional."
+      )
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Draft skills" })).toBeTruthy();
+    // Nothing on the list is a SWOT prerequisite.
+    expect(screen.queryByText(/Save the SWOT/)).toBeNull();
+  });
+
+  it("drafts on the click, with no confirmation, because nothing would be replaced", async () => {
+    apiGet.mockResolvedValue(empty());
+    apiPost.mockResolvedValue({ ...empty(), draft_status: "drafting" });
+    render(<JobSkillsPanel jobId="job-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Draft skills" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(`${MOUNT}/job-1/skills/draft`, {
+        confirm_overwrite: false,
+      })
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      await screen.findByText(
+        "Sutra is drafting the skills from the JD and the Company Profile, and from the saved SWOT when there is one."
+      )
+    ).toBeTruthy();
+  });
+
+  it("offers no Draft skills once there are skills, or to somebody who cannot edit every list", async () => {
+    apiGet.mockResolvedValue(skills({ draft_status: "not_started" }));
+    const { unmount } = render(<JobSkillsPanel jobId="job-1" />);
+    await screen.findByText("Python");
+    expect(screen.queryByRole("button", { name: "Draft skills" })).toBeNull();
+    unmount();
+
+    apiGet.mockResolvedValue({
+      ...empty(),
+      can_edit: { must_have: true, nice_to_have: true, behavioural: false },
+    });
+    render(<JobSkillsPanel jobId="job-1" />);
+    await screen.findByText(
+      "No skills yet. Draft them from the JD, or add them yourself. A SWOT is optional."
+    );
+    expect(screen.queryByRole("button", { name: "Draft skills" })).toBeNull();
+  });
+
+  it("hands every view to the page for the Final Job Posting preview", async () => {
+    apiGet.mockResolvedValue(skills());
+    const onLoaded = vi.fn();
+    render(<JobSkillsPanel jobId="job-1" onLoaded={onLoaded} />);
+    await screen.findByText("Python");
+    await waitFor(() =>
+      expect(onLoaded).toHaveBeenCalledWith(
+        expect.objectContaining({ job_id: "job-1", saved: false })
+      )
+    );
   });
 });
 
@@ -477,7 +576,7 @@ describe("a draft in progress", () => {
 
     expect(
       await screen.findByText(
-        "Sutra is drafting the skills from the JD, the saved SWOT and the Company Profile."
+        "Sutra is drafting the skills from the JD and the Company Profile, and from the saved SWOT when there is one."
       )
     ).toBeTruthy();
     expect(screen.queryByLabelText(/Add a/)).toBeNull();

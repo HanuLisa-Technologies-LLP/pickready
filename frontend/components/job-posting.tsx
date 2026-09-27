@@ -184,7 +184,7 @@ export function FinalJobPostingPreview({
   className?: string;
 }) {
   const band = experienceBandText(job.experience_min_years, job.experience_max_years);
-  const meta = [job.department, band].filter(Boolean).join(" Ã‚Â· ");
+  const meta = [job.department, band].filter(Boolean).join(" · ");
   // The job-side JD object, read the way every other job screen reads it.
   const jd = { ...jobJd(job) } as Record<string, unknown>;
   const narrative = POSTING_NARRATIVE.filter((section) => (job[section.key] ?? "").trim());
