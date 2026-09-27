@@ -153,10 +153,22 @@ misconfigurations:
     paths:
       - "infra/modules/s3/main.tf"
       - "infra/modules/alb/main.tf"
+      - "infra/modules/image_builder/main.tf"
     statement: >-
-      CloudTrail S3 data events are the right instrument for "who read which
-      resume" and are an account-level owner step recorded in DEPLOY_AWS.md.
-      This is the honest record of that gap, not a claim that logging exists.
+      CloudTrail S3 data events identify who read an object in the resume or
+      build-source bucket. This account-level owner step is in DEPLOY_AWS.md;
+      this entry records that the event trail is not yet configured.
+
+  # AWS-0066 "Lambda functions should have X-Ray tracing enabled"
+  # The worker functions use structured logs with request and task identifiers.
+  # X-Ray tracing is deliberately PassThrough in modules/lambda/main.tf, where
+  # the owner cost decision is recorded. This exception applies only there.
+  - id: AWS-0066
+    paths:
+      - "infra/modules/lambda/main.tf"
+    statement: >-
+      Worker diagnostics use structured logs and correlation identifiers.
+      X-Ray tracing remains PassThrough as an explicit owner cost decision.
 
   # DS-0026 "Add HEALTHCHECK instruction in your Dockerfile"
   # All three images. This platform health-checks containers where the platform
