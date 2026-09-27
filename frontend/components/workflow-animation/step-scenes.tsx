@@ -181,7 +181,10 @@ export function Step3JobCreation() {
         className="h-full p-4 sm:p-6"
       >
         <SceneHeader eyebrow="New role" title="JD, then Skills" action={<TinyBadge>AI drafted, team decided</TinyBadge>} />
-        <div className="mt-3 grid grid-cols-2 gap-2">
+        {/* minmax(0, 1fr) columns and truncated values: a nowrap value in a
+            plain `1fr` column sets that column's minimum to its full width,
+            which pushed the scene past the frame on a phone. */}
+        <div className="mt-3 grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
           {fields.map(([label, value], index) => (
             <div key={label} className="rounded-lg border border-white/10 bg-white/[0.035] p-2">
               <p className="text-[8px] text-white/40">{label}</p>
@@ -189,7 +192,7 @@ export function Step3JobCreation() {
                 initial={{ clipPath: "inset(0 100% 0 0)" }}
                 animate={{ clipPath: "inset(0 0% 0 0)" }}
                 transition={{ delay: 0.2 + index * 0.22, duration: 0.48 }}
-                className="mt-1 whitespace-nowrap text-[9px] font-medium"
+                className="mt-1 truncate text-[9px] font-medium"
               >
                 {value}
               </motion.p>
@@ -219,7 +222,7 @@ export function Step3JobCreation() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 1.7 }}
-          className="mt-2 grid grid-cols-3 gap-2"
+          className="mt-2 grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2"
         >
           {skills.map(([bucket, names]) => (
             <div key={bucket} className="rounded-lg border border-white/10 bg-white/[0.035] p-2">
@@ -328,7 +331,7 @@ export function Step6AiMatching() {
               initial={{ opacity: 0, x: index % 2 ? 16 : -16 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: index * 0.12, ...SPRING }}
-              className="grid grid-cols-[1.25fr_1fr_auto] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2"
+              className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2"
             >
               <div className="min-w-0">
                 <p className="truncate text-[9px] font-medium">{candidate.name}</p>

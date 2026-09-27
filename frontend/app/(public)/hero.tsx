@@ -63,7 +63,7 @@ export function Hero() {
 
       <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 sm:pt-20 lg:px-10 lg:pb-24">
         <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-14">
-          <FadeIn className="max-w-2xl">
+          <FadeIn className="min-w-0 max-w-2xl">
             {/* Master directive section 0: no 3D model or brand mark may sit
                 over or above the hero headline. The headline leads; the brand
                 mark lives in the site header only.
@@ -148,7 +148,12 @@ export function Hero() {
             </p>
           </FadeIn>
 
-          <FadeIn delay={0.08} className="relative">
+          {/* `min-w-0` on both grid items: the panel's evidence line is
+              truncated text, and a truncated line's min-content is its FULL
+              width, so without it the single mobile column grew to fit the
+              longest evidence line and pushed the whole hero past a 390px
+              screen. */}
+          <FadeIn delay={0.08} className="relative min-w-0">
             <HeroPanel />
           </FadeIn>
         </div>
