@@ -8,9 +8,17 @@
  * The old criteria editor and the resume-ranking category editor are gone.
  * What a recruiter reviews now is one list of skills in three buckets,
  * Must-have, Nice-to-have and Behavioural, at most five each. Sutra drafts it
- * from the JD, the saved SWOT and the Company Profile; the team adds, pastes,
- * renames, moves and removes; Save Skills writes the hidden assessment context
- * and makes the job invitable.
+ * from the JD and the Company Profile, with the saved SWOT as optional extra
+ * context (CONTRACT v10: "Draft skills" works with no SWOT at all); the team
+ * adds, pastes, renames, moves and removes; Save Skills writes the hidden
+ * assessment context and makes the job publishable and invitable.
+ *
+ * SKILLS SIT BETWEEN THE JD AND THE FINAL JOB POSTING (CONTRACT v10)
+ * ------------------------------------------------------------------
+ * A SWOT save never drafts skills. While the job is unfrozen a newer saved
+ * SWOT only makes a re-draft AVAILABLE, and the call to action for it exists
+ * only while unfrozen. `onLoaded` hands every view to the page so the Final
+ * Job Posting preview shows the same names this panel shows.
  *
  * WHAT THIS SCREEN DELIBERATELY DOES NOT SHOW
  * -------------------------------------------
@@ -28,10 +36,13 @@
  * for a rule, and the two drift. An outage on Save names no skill, because the
  * provider being down is not something the reviewer can fix by editing one.
  *
- * LOCKED IS A STATE, NOT A PERMISSION
+ * FROZEN IS A STATE, NOT A PERMISSION
  * -----------------------------------
- * Once a candidate starts the assessment (D5) the skills and the grade are
- * read-only for everybody. That is said in a plain state sentence. The
+ * From the first genuine application (CONTRACT v10, superseding D5's
+ * assessment-start lock) the skills and the grade are read-only for everybody:
+ * the payload's `locked` is the snapshot's existence, which the freeze takes.
+ * That is said in a plain state sentence; the page's banner carries the
+ * server's sentence and the date. The
  * read-only sentence of `<ReadOnlyNotice>` is reserved for a person who lacks
  * the capability on a bucket that is still editable, which is a different
  * fact and must not be told the same way.
@@ -47,6 +58,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Sparkles,
   X,
 } from "lucide-react";
 
@@ -159,8 +171,11 @@ export interface SkillsOut {
 const DRAFT_POLL_MS = 3000;
 const DRAFT_POLL_LIMIT = 300;
 
-const LOCKED_SENTENCE =
-  "Locked: a candidate has started the assessment. The skills and the grade can no longer change.";
+export const FROZEN_SENTENCE =
+  "Frozen: a candidate has applied. The skills and the grade can no longer change.";
+
+const DRAFTING_SENTENCE =
+  "Sutra is drafting the skills from the JD and the Company Profile, and from the saved SWOT when there is one.";
 
 const NUMBER_WORDS = [
   "None",
@@ -537,16 +552,21 @@ export function JobSkillsPanel({
   reloadKey = 0,
   redraftSignal = 0,
   onChanged,
+  onLoaded,
   className,
 }: {
   jobId: string;
-  /** Bump to re-read the skills, e.g. after a SWOT save dispatched a draft. */
+  /** Bump to re-read the skills, e.g. after a SWOT save made a re-draft
+   *  available. */
   reloadKey?: number;
   /** Bump to open the re-draft confirmation, e.g. from the SWOT panel's
    *  "Re-draft skills from the updated SWOT". Never acts without a click. */
   redraftSignal?: number;
   /** Told after every successful write, so the publish checklist re-reads. */
   onChanged?: () => void;
+  /** Every view the server answered, so the page's Final Job Posting preview
+   *  renders the same skill names this panel shows. */
+  onLoaded?: (view: SkillsOut) => void;
   className?: string;
 }) {
   const { toast } = useToast();
@@ -562,6 +582,12 @@ export function JobSkillsPanel({
   const [pollExhausted, setPollExhausted] = React.useState(false);
   const polls = React.useRef(0);
   const panelRef = React.useRef<HTMLDivElement>(null);
+
+  const onLoadedRef = React.useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
+  React.useEffect(() => {
+    if (view) onLoadedRef.current?.(view);
+  }, [view]);
 
   const load = React.useCallback(
     async (quiet = false) => {
@@ -680,6 +706,21 @@ export function JobSkillsPanel({
     );
   };
 
+  const total = view
+    ? BUCKETS.reduce((sum, bucket) => sum + view.buckets[bucket].length, 0)
+    : 0;
+
+  /** "Draft skills" and "Draft again". With nothing on the list there is
+   *  nothing a draft could replace, so the click IS the request; otherwise
+   *  the confirmation names what would be replaced first. */
+  const requestDraft = () => {
+    if (total === 0 && (view?.human_authored_names.length ?? 0) === 0) {
+      void redraft();
+      return;
+    }
+    setConfirmRedraft(true);
+  };
+
   const save = async () => {
     setSaving(true);
     setRefusal(null);
@@ -701,23 +742,27 @@ export function JobSkillsPanel({
     }
   };
 
-  const total = view
-    ? BUCKETS.reduce((sum, bucket) => sum + view.buckets[bucket].length, 0)
-    : 0;
   const anyEditable = BUCKETS.some((bucket) => bucketEditable(bucket));
   const controlsBusy = busy || saving || drafting;
+  // The first draft, offered on an empty list whether or not a SWOT exists.
+  // A failed draft has its own "Draft again" in the alert below.
+  const offerFirstDraft =
+    !!view &&
+    canRedraft &&
+    total === 0 &&
+    !drafting &&
+    view.draft_status !== "failed";
 
   let stateSentence: string | null = null;
   if (view) {
-    if (view.locked) stateSentence = LOCKED_SENTENCE;
-    else if (drafting)
-      stateSentence =
-        "Sutra is drafting the skills from the JD, the saved SWOT and the Company Profile.";
+    if (view.locked) stateSentence = FROZEN_SENTENCE;
+    else if (drafting) stateSentence = DRAFTING_SENTENCE;
     else if (view.saved)
       stateSentence = "Saved. Every candidate on this job is assessed against these skills.";
     else if (view.blocking_reason) stateSentence = view.blocking_reason;
     else if (view.draft_status === "not_started" && total === 0)
-      stateSentence = "Save the SWOT to draft skills, or add them yourself.";
+      stateSentence =
+        "No skills yet. Draft them from the JD, or add them yourself. A SWOT is optional.";
     else stateSentence = "Not saved yet. Candidates cannot be invited until the skills are saved.";
   }
 
@@ -732,17 +777,29 @@ export function JobSkillsPanel({
           <CardTitle className="flex items-center gap-2">
             Skills
             {view?.locked ? (
-              <Badge variant="secondary">Locked</Badge>
+              <Badge variant="secondary">Frozen</Badge>
             ) : view?.saved ? (
               <Badge variant="secondary">Saved</Badge>
             ) : null}
           </CardTitle>
           <CardDescription>
-            What every candidate on this job is assessed against. At most five
-            in each list.
+            What every candidate on this job is assessed against, and what the
+            posting lists by name. At most five in each list.
           </CardDescription>
         </div>
-        {view && canRedraft && view.redraft_available && !drafting ? (
+        {offerFirstDraft ? (
+          <Button
+            size="sm"
+            className="gap-1.5"
+            disabled={controlsBusy}
+            onClick={requestDraft}
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+            Draft skills
+          </Button>
+        ) : view && canRedraft && view.redraft_available && !drafting ? (
+          // `canRedraft` is false once frozen, so this call to action exists
+          // only while the skills can still change (CONTRACT v10).
           <Button
             size="sm"
             variant="outline"
@@ -807,7 +864,7 @@ export function JobSkillsPanel({
                     size="sm"
                     variant="outline"
                     disabled={controlsBusy}
-                    onClick={() => setConfirmRedraft(true)}
+                    onClick={requestDraft}
                   >
                     Draft again
                   </Button>
@@ -939,9 +996,10 @@ export function JobSkillsPanel({
           <DialogHeader>
             <DialogTitle>Re-draft the skills?</DialogTitle>
             <DialogDescription>
-              Sutra replaces the current skills with a fresh draft from the JD,
-              the saved SWOT and the Company Profile. The new draft has to be
-              saved again before candidates can be invited.
+              Sutra replaces the current skills with a fresh draft from the JD
+              and the Company Profile, and from the saved SWOT when there is
+              one. The new draft has to be saved again before candidates can
+              be invited.
             </DialogDescription>
           </DialogHeader>
           {view && view.human_authored_names.length > 0 ? (
@@ -963,7 +1021,7 @@ export function JobSkillsPanel({
               resource="this job's skill list"
             />
           ) : null}
-          {view?.locked ? <p className="text-sm">{LOCKED_SENTENCE}</p> : null}
+          {view?.locked ? <p className="text-sm">{FROZEN_SENTENCE}</p> : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmRedraft(false)}>
               Keep the current skills

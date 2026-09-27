@@ -861,6 +861,20 @@ export interface PortalJob {
   company_culture?: string | null;
   company_industry?: string | null;
   company_benefits?: string | null;
+  /** The job's skills by bucket, names only (CONTRACT v10). Absent or null on
+   *  a job whose skills were never saved; read through `postingSkillsFrom`. */
+  skills?: PostingSkills | null;
+}
+
+/**
+ * A published job's skills as a candidate reads them (CONTRACT v10, point 2):
+ * the three buckets, by NAME only. The hidden evidence line, the priority and
+ * the role summary are assessment context and never ride this shape.
+ */
+export interface PostingSkills {
+  must_have: string[];
+  nice_to_have: string[];
+  behavioural: string[];
 }
 
 export interface PortalApplication {

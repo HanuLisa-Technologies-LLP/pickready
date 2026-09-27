@@ -38,6 +38,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PublicNotice, PublicShell } from "@/components/public-shell";
 import { JsonLd, compact } from "@/components/json-ld";
+import {
+  POSTING_NARRATIVE,
+  PostingSkillsList,
+  postingSkillsFrom,
+} from "@/components/job-posting";
 import { Section } from "@/components/page-primitives";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -57,7 +62,18 @@ interface PublicJob {
   jd_json?: Record<string, unknown> | null;
   jd?: Record<string, unknown> | null;
   created_at?: string | null;
+  /** The job's skills by bucket, names only (CONTRACT v10). Absent on a job
+   *  whose skills were never saved; read through `postingSkillsFrom`. */
+  skills?: unknown;
+  /** The company narrative, resolved by the server through the per-job
+   *  override and the company profile. Written for the applicant. */
+  about_company?: string | null;
+  work_life?: string | null;
+  benefits?: string | null;
 }
+
+const SECTION_HEADING =
+  "text-xs font-semibold uppercase tracking-[0.14em] text-brand-600";
 
 function unwrapJob(res: unknown): PublicJob | null {
   if (!res || typeof res !== "object") return null;
@@ -164,9 +180,7 @@ function JdBlock({ title, value }: { title: string; value: unknown }) {
   if (lines.length === 0) return null;
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
-        {title}
-      </h3>
+      <h3 className={SECTION_HEADING}>{title}</h3>
       {lines.length === 1 ? (
         <p className="whitespace-pre-line text-pretty text-sm leading-7">
           {lines[0]}
@@ -322,6 +336,11 @@ export default function PublicApplyPage() {
 
   const readMinutes = readTimeMinutes(jd);
   const hasJdContent = Object.values(jd).some((v) => asLines(v).length > 0);
+  // Null for a legacy job whose skills were never saved: no skills section.
+  const postingSkills = postingSkillsFrom(job.skills);
+  const narrative = POSTING_NARRATIVE.filter((section) =>
+    (job[section.key] ?? "").trim()
+  );
 
   return (
     <PublicShell>
@@ -416,6 +435,18 @@ export default function PublicApplyPage() {
                         </div>
                       </section>
                     ) : null}
+                    <PostingSkillsList
+                      skills={postingSkills}
+                      headingClassName={SECTION_HEADING}
+                      className="space-y-7"
+                    />
+                    {narrative.map((section) => (
+                      <JdBlock
+                        key={section.key}
+                        title={section.title}
+                        value={job[section.key]}
+                      />
+                    ))}
                     <section className="space-y-3">
                       <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
                         At a glance
@@ -438,11 +469,25 @@ export default function PublicApplyPage() {
                     </section>
                   </>
                 ) : (
-                  <p className="text-sm">
-                    The employer has not published a detailed description for
-                    this role yet. Reach out to them if you need more context
-                    before applying.
-                  </p>
+                  <>
+                    <p className="text-sm">
+                      The employer has not published a detailed description
+                      for this role yet. Reach out to them if you need more
+                      context before applying.
+                    </p>
+                    <PostingSkillsList
+                      skills={postingSkills}
+                      headingClassName={SECTION_HEADING}
+                      className="space-y-7"
+                    />
+                    {narrative.map((section) => (
+                      <JdBlock
+                        key={section.key}
+                        title={section.title}
+                        value={job[section.key]}
+                      />
+                    ))}
+                  </>
                 )}
                 <Separator />
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

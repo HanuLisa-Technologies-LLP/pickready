@@ -27,6 +27,11 @@ import { EmptyState, ErrorState, LoadingCards } from "@/components/page-primitiv
 import { JsonLd, compact } from "@/components/json-ld";
 import { SITE_URL } from "@/lib/site";
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import {
+  PostingSkillsList,
+  experienceBandText,
+  postingSkillsFrom,
+} from "@/components/job-posting";
 
 /** Mirrors `schemas.employer_pages.EmployerOpenRoleOut`. */
 interface OpenRole {
@@ -37,6 +42,9 @@ interface OpenRole {
   experience_max_years?: number | null;
   apply_path: string;
   apply_url: string;
+  /** The role's skills by bucket, names only (CONTRACT v10). Absent on a job
+   *  whose skills were never saved; read through `postingSkillsFrom`. */
+  skills?: unknown;
 }
 
 /** Mirrors `schemas.employer_pages.EmployerPageOut`. */
@@ -84,14 +92,6 @@ function organizationSchema(
     description: data.about_company ?? undefined,
     knowsAbout: data.industry ?? undefined,
   });
-}
-
-function experienceBand(role: OpenRole): string | null {
-  const { experience_min_years: min, experience_max_years: max } = role;
-  if (min == null && max == null) return null;
-  if (min != null && max != null) return `${min} to ${max} years experience`;
-  if (min != null) return `${min}+ years experience`;
-  return `Up to ${max} years experience`;
 }
 
 const SECTIONS = [
@@ -285,7 +285,11 @@ export function EmployerProfile({ slug }: { slug: string }) {
         ) : (
           <Stagger className="mt-6 grid gap-4 sm:grid-cols-2">
             {data.open_roles.map((role) => {
-              const band = experienceBand(role);
+              const band = experienceBandText(
+                role.experience_min_years,
+                role.experience_max_years
+              );
+              const skills = postingSkillsFrom(role.skills);
               return (
                 <StaggerItem key={role.id}>
                   <Card className="h-full shadow-card transition-shadow duration-150 hover:shadow-card-hover">
@@ -303,6 +307,13 @@ export function EmployerProfile({ slug }: { slug: string }) {
                           band, and the grade sizes the assessment rather than
                           describing the role to a candidate. */}
                       {band ? <p className="text-sm">{band}</p> : null}
+                      {/* The role's skills by bucket name (CONTRACT v10);
+                          nothing for a role with none saved. */}
+                      <PostingSkillsList
+                        skills={skills}
+                        headingLevel={4}
+                        className="space-y-3"
+                      />
                       <div className="mt-auto pt-2">
                         <Button asChild className="w-full">
                           <Link href={role.apply_path}>Apply</Link>
