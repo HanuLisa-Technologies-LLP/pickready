@@ -477,6 +477,26 @@ def _read_job_setup(app_client: Application, ctx: ScenarioContext) -> None:
         ctx.facts["setup_publish_blocked_reason"] = (
             observed.body.get("publish_blocked_reason") or ""
         )
+        ctx.facts["setup_frozen"] = observed.body.get("frozen")
+        ctx.facts["setup_frozen_reason"] = observed.body.get("frozen_reason") or ""
+
+
+def _edit_the_frozen_jd(app_client: Application, ctx: ScenarioContext) -> None:
+    """The team tries to change the JD a candidate applied to (CONTRACT v10).
+
+    Records the answer and the sentence; the scenario asserts the 409 and
+    that the stored JD did not move."""
+    app_client.as_staff()
+    observed = app_client.request(
+        ctx,
+        "edit_the_frozen_jd",
+        "PATCH",
+        f"{V1}/jobs/{ctx.world.id('job')}/jd",
+        json={"jd_markdown": "## The role\nA different role altogether, rewritten."},
+    )
+    ctx.stage("frozen_jd_edit_attempted")
+    if isinstance(observed.body, Mapping):
+        ctx.facts["frozen_jd_edit_detail"] = str(observed.body.get("detail") or "")
 
 
 def _empty_the_skills(app_client: Application, ctx: ScenarioContext) -> None:
@@ -1626,6 +1646,11 @@ def _drive_the_golden_journey(app_client: Application, ctx: ScenarioContext) -> 
     after = [row["link_id"] for row in state.responses["ranked_after"]["results"]]
     ctx.facts["golden_rival_ranked_first_before"] = before[:1] == [str(state.rival_link)]
     ctx.facts["golden_assessed_ranked_first_after"] = after[:1] == [str(state.link)]
+    # CONTRACT v10: the posting was previewed by name, and the first genuine
+    # application (not the invitation, not the start) froze the job.
+    ctx.facts["golden_frozen_at_application"] = bool(
+        state.responses["frozen_setup"].get("frozen")
+    )
 
 
 _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
@@ -1676,6 +1701,7 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     ),
     "weigh_the_coding_evidence_over_the_wait": _weigh_the_coding_evidence_over_the_wait,
     "drive_the_golden_journey": _drive_the_golden_journey,
+    "edit_the_frozen_jd": _edit_the_frozen_jd,
 }
 
 

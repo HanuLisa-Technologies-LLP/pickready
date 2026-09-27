@@ -2,7 +2,9 @@
 
 One customer, one job, two applicants (one assessed, one rival who only
 applies), from an empty funded tenant to the recruiter reading the executive
-profile, over the real routes, with exactly three services faked at their
+profile, over the real routes, in CONTRACT v10's order (JD, skills drafted
+from it, the SWOT as separate intelligence, Save Skills, the Final Job Posting
+preview, publish, and the first application freezing the JD and skills), with exactly three services faked at their
 boundaries: the model (at the router), the code execution provider
 (`override_provider(FakeProvider())`) and speech to text
 (`transcribe.run_transcription`), plus the in-memory object store standing in
@@ -11,7 +13,7 @@ this module and the harness scenario drive the same journey.
 
 WHAT IT PROVES, GATE BY GATE: job setup to publish, two applications, AI
 Matching, the batch invitation, questions written in every format, the
-proctoring session and consent, the start that locks the contract, typed
+proctoring session and consent, the start that binds the frozen contract, typed
 prose, a spoken answer, a multiple choice, a fill-in-the-blank and a coding
 Run and Submit, completion, the sandbox execution of the coding answer, Miti's
 evaluation and Siddhi's report (neither templated), the proctoring report,
@@ -159,17 +161,31 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
     elif name == "jd_saved":
         rows = await _rows("SELECT jd_markdown FROM jobs WHERE id = :j", j=job)
         assert rows[0].jd_markdown.strip() == journey.JD_MARKDOWN.strip()
-    elif name == "swot_saved":
-        rows = await _rows(
-            "SELECT weaknesses, version FROM job_swot_analyses WHERE job_id = :j", j=job
-        )
-        assert rows and rows[0].weaknesses == journey.SWOT["weaknesses"]
     elif name == "skills_drafted":
         rows = await _rows(
             "SELECT category, name FROM job_competencies WHERE job_id = :j AND is_active",
             j=job,
         )
         assert {row.category for row in rows} >= {"must_have", "behavioural"}
+        # CONTRACT v10: drafted from the JD, before any SWOT existed.
+        drafted = await _rows(
+            "SELECT skills_draft_status, skills_drafted_swot_version FROM jobs WHERE id = :j",
+            j=job,
+        )
+        assert drafted[0].skills_draft_status == "drafted"
+        assert drafted[0].skills_drafted_swot_version is None
+        assert not await _rows("SELECT id FROM job_swot_analyses WHERE job_id = :j", j=job)
+    elif name == "swot_saved":
+        rows = await _rows(
+            "SELECT weaknesses, version FROM job_swot_analyses WHERE job_id = :j", j=job
+        )
+        assert rows and rows[0].weaknesses == journey.SWOT["weaknesses"]
+        # The save drafted nothing: the skills are exactly what the JD drafted.
+        still = await _rows(
+            "SELECT skills_draft_status, skills_drafted_swot_version FROM jobs WHERE id = :j",
+            j=job,
+        )
+        assert tuple(still[0]) == ("drafted", None)
     elif name == "skills_saved":
         rows = await _rows(
             "SELECT framework_approved_at FROM jobs WHERE id = :j", j=job
@@ -181,6 +197,21 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
             j=job,
         )
         assert not missing, f"saved skills without hidden context: {missing}"
+    elif name == "posting_previewed":
+        preview = state.responses["posting_preview"]
+        buckets = {bucket["bucket"]: bucket["names"] for bucket in preview["skill_buckets"]}
+        names = await _rows(
+            "SELECT category, name FROM job_competencies WHERE job_id = :j AND is_active",
+            j=job,
+        )
+        for bucket in ("must_have", "nice_to_have", "behavioural"):
+            assert buckets[bucket] == sorted(
+                (row.name for row in names if row.category == bucket), key=str.casefold
+            )
+        assert "evidence" not in str(preview).lower()
+        assert not await _rows(
+            "SELECT id FROM job_skill_snapshots WHERE job_id = :j", j=job
+        ), "the preview froze the job"
     elif name == "job_published":
         rows = await _rows("SELECT ratified_at, posting_start_date FROM jobs WHERE id = :j", j=job)
         assert rows[0].ratified_at is not None and rows[0].posting_start_date is not None
@@ -196,6 +227,16 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
             "SELECT id FROM assessment_conversations WHERE job_candidate_link_id = :l",
             l=str(state.link),
         ), "applying created an assessment"
+        # CONTRACT v10: the FIRST genuine application froze the job, in its own
+        # transaction; the rival's added nothing.
+        snapshots = await _rows(
+            "SELECT id, source, locked_by_link_id FROM job_skill_snapshots WHERE job_id = :j",
+            j=job,
+        )
+        assert [(row.source, row.locked_by_link_id) for row in snapshots] == [
+            ("application", state.link)
+        ], snapshots
+        state.responses["frozen_snapshot"] = snapshots[0].id
     elif name == "matched":
         rows = await _rows(
             "SELECT id, yukti_status, yukti_pre_score FROM job_candidate_links WHERE job_id = :j",
@@ -257,7 +298,12 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
             c=str(state.conversation),
         )
         row = rows[0]
-        assert row.started_at is not None and row.skill_snapshot_id is not None
+        assert row.started_at is not None
+        # The start BINDS the snapshot the application took; it writes none.
+        assert row.skill_snapshot_id == state.responses["frozen_snapshot"]
+        assert len(await _rows(
+            "SELECT id FROM job_skill_snapshots WHERE job_id = :j", j=job
+        )) == 1
         assert row.contract_digest == row.questions_contract_digest, (
             "the questions were not written against the contract the start locked"
         )
