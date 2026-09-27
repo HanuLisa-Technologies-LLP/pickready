@@ -17,10 +17,10 @@ import { WORKFLOW_SCENES } from "./step-scenes";
 const STEPS = [
   { short: "Login", title: "Secure sign in", duration: 2600 },
   { short: "Workspace", title: "Workspace comes alive", duration: 2000 },
-  { short: "Create", title: "Create the role", duration: 3400 },
+  { short: "Create", title: "Write the JD and its Skills", duration: 3400 },
   { short: "Publish", title: "Publish for 30 days", duration: 1900 },
   { short: "Profiles", title: "Candidate evidence arrives", duration: 2400 },
-  { short: "Match", title: "AI matching settles", duration: 3000 },
+  { short: "Match", title: "AI Match settles", duration: 3000 },
   { short: "Assess", title: "Invite the strongest profiles", duration: 2800 },
   { short: "PRISM", title: "Read the PRISM Report", duration: 3500 },
   { short: "Decide", title: "Shortlist and communicate", duration: 2700 },
@@ -61,7 +61,12 @@ export function WorkflowAnimation() {
   return (
     <div ref={viewportRef} className="relative">
       <div className="overflow-hidden rounded-none border border-white/10 bg-[#050610] p-2 sm:p-3">
-        <div className="relative aspect-[16/10] min-h-[340px] overflow-hidden rounded-none sm:aspect-[16/9] sm:min-h-0">
+        {/* A FIXED height below `sm`, never an aspect ratio with a minimum
+            height: `aspect-[16/10] min-h-[340px]` made the box 544px WIDE on
+            a 390px phone (the minimum height drags the width up through the
+            ratio), and the frame's overflow clip cut every scene's right
+            third off. */}
+        <div className="relative h-[420px] overflow-hidden rounded-none sm:aspect-[16/9] sm:h-auto">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={`${step}-${cycle}`}

@@ -29,7 +29,46 @@ export const SITE_NAME = "Vivekium";
  * The `ppi` identifiers in CODE stay exactly as they are; this is copy.
  */
 export const SITE_DESCRIPTION =
-  "Vivekium ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PRISM Report per candidate.";
+  "Vivekium ranks applicants on resume evidence against the job's skills, runs one proctored assessment, and gives your team a PRISM Report per candidate.";
+
+/**
+ * How a company gets a Vivekium workspace: it asks for one.
+ *
+ * There is no employer self sign-up. A customer IS a tenant, and a tenant is
+ * created when Vivekium's own team records a signed agreement (the Business
+ * Development portal), after which the customer's first user is invited.
+ * `/register` creates a CANDIDATE account (or binds an already invited staff
+ * email), so a public "Get started" pointing there turned an employer into a
+ * candidate. Every employer call to action on the public site points here
+ * instead: the mailbox the site already publishes as its contact, with a
+ * subject line that says what the message is.
+ */
+export const REQUEST_ACCESS_HREF =
+  "mailto:manjuchro@gmail.com?subject=Vivekium%20access%20request";
+
+/**
+ * The home page's title, which is also the site-wide default title and the
+ * default share title. One constant, read by `app/layout.tsx` and
+ * `app/page.tsx`, so the tab, the search result and the share card cannot
+ * name the product three ways. It is the product tagline the hero sets as
+ * its h1.
+ */
+export const LANDING_TITLE = "Vivekium, know every candidate before you meet them";
+
+/**
+ * The generated share card, `app/opengraph-image.tsx`, named explicitly.
+ *
+ * Any page that sets its own `openGraph` REPLACES the inherited object, and
+ * the file-convention image goes with it (see `publicPageMetadata` below), so
+ * every page that restates Open Graph restates this too. The path is the
+ * generated route, a real 200, and the size is the one that file exports.
+ */
+export const SHARE_CARD = {
+  url: "/opengraph-image",
+  width: 1200,
+  height: 630,
+  alt: "Vivekium, the candidate intelligence platform",
+};
 
 /**
  * Metadata for one public page.
@@ -78,12 +117,7 @@ export function publicPageMetadata({
   description: string;
 }): Metadata {
   const shareTitle = `${title} | ${SITE_NAME}`;
-  const card = {
-    url: "/opengraph-image",
-    width: 1200,
-    height: 630,
-    alt: "Vivekium, the candidate intelligence platform",
-  };
+  const card = SHARE_CARD;
   return {
     title,
     description,

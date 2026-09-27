@@ -66,7 +66,7 @@ function AlertsPanel() {
 
   return (
     <section aria-label="Alerts" className="mb-8">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">
+      <h2 className="mb-3 type-eyebrow">
         Alerts
       </h2>
       {failed ? (
@@ -156,7 +156,7 @@ export default function IntelligenceIndexPage() {
       ) : (
         index.tiers.map((tier) => (
           <section key={tier.tier} className="mb-8" aria-label={tier.title}>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">
+            <h2 className="mb-3 type-eyebrow">
               Tier {tier.tier}: {tier.title}
             </h2>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

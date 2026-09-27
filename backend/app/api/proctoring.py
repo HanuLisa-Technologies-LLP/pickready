@@ -54,6 +54,7 @@ from app.schemas.proctoring import (
 )
 from app.services import candidate_identity, job_assessment_retention
 from app.services import capabilities as caps
+from app.services.assessment_conversation import turns as assessment_turns
 from app.services.proctoring import audio as proctoring_audio
 from app.services.proctoring import catalog
 from app.services.proctoring import gate as proctoring_gate
@@ -347,9 +348,19 @@ async def post_audio_chunk(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="This audio chunk is larger than the assessment accepts.",
         )
+    # The question on screen now, from the engine that owns turn identity, so a
+    # derived event (speaking during a non-spoken question, a second voice) is
+    # filed against it. Resolved here rather than inside the proctoring
+    # package, which reads no question-writing code.
+    question_id = (
+        await assessment_turns.current_question_id(session, ps.conversation_id)
+        if ps.outcome == OUTCOME_ACTIVE
+        else None
+    )
     try:
         result = await proctoring_audio.analyse_chunk(
-            session, ps, job.proctoring_warning_policy, data, content_type, now=_now()
+            session, ps, job.proctoring_warning_policy, data, content_type, now=_now(),
+            question_id=question_id,
         )
     except proctoring_state.StateUnavailable as exc:
         raise _state_unavailable(exc) from exc

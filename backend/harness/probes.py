@@ -572,6 +572,48 @@ async def _coding_key_holds_the_sentinels(
     return bool(rows) and all(sentinel in dumped for sentinel in _coding_sentinels(world))
 
 
+async def _snapshots_for_job(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """How many contract snapshots the job holds. One is the freeze
+    (CONTRACT v10); a second would be a contract that moved."""
+    return await reader.scalar(
+        "SELECT count(*) FROM job_skill_snapshots WHERE job_id = :j",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _snapshot_sources(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """What took each snapshot, oldest first: `application` is the freeze at
+    the first genuine application, `lock` the start's backstop."""
+    return await reader.column(
+        "SELECT source FROM job_skill_snapshots WHERE job_id = :j ORDER BY version",
+        {"j": str(world.id("job"))},
+    )
+
+
+async def _snapshot_names_the_application(
+    reader: StateReader, world: World, arg: str | None
+) -> Any:
+    """Whether the snapshot names the application the candidate's own apply
+    produced (`locked_by_link_id`), read from the link that application
+    wrote rather than from anything the world seeded."""
+    return await reader.scalar(
+        "SELECT EXISTS (SELECT 1 FROM job_skill_snapshots s "
+        " JOIN job_candidate_links l ON l.id = s.locked_by_link_id "
+        " WHERE s.job_id = :j AND l.candidate_id = :c)",
+        {"j": str(world.id("job")), "c": str(world.id("candidate"))},
+    )
+
+
+async def _job_jd_markdown(reader: StateReader, world: World, arg: str | None) -> Any:
+    return await reader.scalar(
+        "SELECT jd_markdown FROM jobs WHERE id = :j", {"j": str(world.id("job"))}
+    )
+
+
 _STATE: dict[str, StateProbe] = {
     "jobs.count_for_tenant": _jobs_count,
     "jobs.lifecycle_state": _job_lifecycle,
@@ -584,6 +626,10 @@ _STATE: dict[str, StateProbe] = {
     "job_competencies.with_evidence_count": _competency_with_evidence_count,
     "jobs.skills_draft_status": _job_skills_draft_status,
     "jobs.assessment_context_writer": _job_assessment_context_writer,
+    "jobs.jd_markdown": _job_jd_markdown,
+    "job_skill_snapshots.count_for_job": _snapshots_for_job,
+    "job_skill_snapshots.sources": _snapshot_sources,
+    "job_skill_snapshots.names_the_application": _snapshot_names_the_application,
     "job_candidate_links.count_for_job": _links_for_job,
     "job_candidate_links.status": _link_status,
     "job_candidate_links.status_for_candidate": _link_status_for_candidate,

@@ -1,5 +1,16 @@
 # Judge0 code sandbox: topology, cost, rollout and outage runbook
 
+> **ON HOLD (owner, 2026-09-28): stage A resources destroyed; nothing
+> provisioned; `judge0_enabled` must stay false.** The stage A1 surroundings
+> that had been applied to pilot are being destroyed so the sandbox costs
+> nothing. The code (`backend/app/services/code_execution`, the
+> `infra/modules/code_sandbox` module) stays in the repository, disabled by
+> default: `CODE_EXECUTION_BACKEND=disabled`, and `judge0_enabled`,
+> `judge0_instance_enabled` and `judge0_clients_enabled` all false in every
+> environment, pilot included. No public copy may say coding questions run in
+> a sandbox or are tested. Resuming is an owner decision, and it starts again
+> from stage A1 below with a zero-destroy plan.
+
 Owner of the code: `infra/modules/code_sandbox` (the host) and
 `backend/app/services/code_execution` (the port and the one adapter). The
 application ships with `CODE_EXECUTION_BACKEND=disabled`, and every Terraform

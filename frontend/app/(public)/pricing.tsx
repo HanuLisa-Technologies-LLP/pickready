@@ -4,7 +4,8 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Check } from "lucide-react";
 
-import { useAuth } from "@/lib/auth-context";
+import { homePathForRole, useAuth } from "@/lib/auth-context";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 import {
   Reveal,
   RevealStagger,
@@ -18,9 +19,9 @@ import { cn } from "@/lib/utils";
  * Public pricing (Master Directive Part 5).
  *
  * The model this section sells is the credit model and nothing else: Rs. 600
- * per credit, purchased in packs, consumed per completed Vivekium
- * Intelligence Report - 1.0 credit for a Non-STEM role, 1.5 for a STEM role,
- * classified by the platform. No monthly subscription exists, no annual plan
+ * per credit, purchased in packs, consumed per completed PRISM Report, 1.0
+ * credit for a Non-STEM role and 1.5 for a STEM role, classified by the
+ * platform. No monthly subscription exists, no annual plan
  * exists. Credits bought now stay valid for three months from purchase
  * (change request 25, new grants only); credits granted before expiry was
  * introduced keep the never-expire promise their invoices printed, and the
@@ -32,7 +33,10 @@ import { cn } from "@/lib/utils";
  * The transactional truth (setup-fee waiver state, trial availability for the
  * signed-in account) lives on the portal's billing page, which is where every
  * card routes: purchase is an in-portal act, and a public page that opened a
- * checkout would have to guess at account state it cannot see.
+ * checkout would have to guess at account state it cannot see. A signed-out
+ * visitor is sent to sign in with billing as the destination, never to
+ * `/register`: that is candidate sign-up, and a company is given its
+ * workspace by Vivekium (the request-access line under the packs).
  *
  * Bonus credits are a GIFT, never a discount (Rule 3): each card quotes the
  * same Rs. 600 rate and shows the bonus as extra credits, so the reader is
@@ -85,7 +89,7 @@ const MODEL_COPY = [
   {
     title: "How credits work",
     body: [
-      "One credit costs Rs. 600, plus 18% GST. A completed Vivekium Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
+      "One credit costs Rs. 600, plus 18% GST. A completed PRISM Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role. Technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
       "A candidate who starts an assessment and never finishes consumes a third of the role's rate. A candidate who never opens the invitation consumes a fifteenth of a credit. Reviewing a profile carried over from an earlier posting uses a twentieth.",
       "Credits you buy stay valid for three months from purchase, and credits granted before expiry was introduced never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and use them on any role while they are valid.",
     ],
@@ -94,26 +98,37 @@ const MODEL_COPY = [
     title: "Jobs and renewals",
     body: [
       "Post as many roles as you like. A job stays live for thirty days, then allows five more days in which people who already applied can still update what they sent.",
-      "When a posting closes you can renew it for another thirty days. Everyone who applied the first time round stays in your dashboard, fully readable, marked as an earlier applicant. Their profiles do not leave when the posting does.",
+      // "When a posting closes" read as the Close action, which withholds a
+      // job's assessment records and has no reopen. Renewal is what follows
+      // the end of the thirty day window, so that is what this says.
+      "When the thirty day window ends you can renew the posting for another thirty days. Everyone who applied the first time round stays in your dashboard, fully readable, marked as an earlier applicant. Their profiles do not leave when the window does.",
     ],
   },
 ];
 
-/** The shared feature strip. Identical whatever you buy, said once. */
+/**
+ * The shared feature strip. Identical whatever you buy, said once.
+ *
+ * REWIRED 2026-09-28. Four parameter matching, the per-candidate technical
+ * bank, the "Profile Intelligence" name, the continuous conversation and the
+ * ten stage count all described a product that no longer ships, and "stays
+ * exportable" named an export no screen offers. Each line is now something a
+ * customer can find in the product.
+ */
 const INCLUDED = [
   "Unlimited jobs, drawing on one credit pool",
   "Unlimited team members, no per seat fee",
-  "Four parameter AI matching",
-  "Technical questions written per candidate",
-  "Vivekium Profile Intelligence",
-  "One continuous candidate conversation",
+  "Skills drafted from your JD, decided by your team",
+  "AI Match on resume evidence, in words",
+  "Questions written per candidate from the job's skills",
+  "One proctored assessment, every skill asked",
+  "Typed or spoken answers, multiple choice, fill in the blank",
   "Full PRISM Report",
   "Three radar charts, no numbers on them",
+  "Proctoring Report",
   "Candidate databank",
-  "Ten stage hiring pipeline",
-  "AI drafted lifecycle emails",
+  "Validated hiring pipeline",
   "Compliance document vault",
-  "Every profile stays yours, and stays exportable",
 ];
 
 function formatInr(value: number): string {
@@ -129,10 +144,13 @@ export function Pricing() {
   const { user } = useAuth();
 
   // Purchase happens inside the portal, where the account's trial and
-  // setup-fee state are known. Signed out, the card carries the visitor
-  // through sign-up and lands them on billing.
+  // setup-fee state are known. A customer's team goes straight to billing;
+  // anybody else signs in first with billing as the destination. It used to
+  // send a signed-out visitor through `/register`, which creates a CANDIDATE
+  // account, and send a signed-in candidate to a portal they cannot open.
   const goToBilling = React.useCallback(() => {
-    router.push(user ? "/org/billing" : "/register?next=/org/billing");
+    const onCustomerTeam = user ? homePathForRole(user.role) === "/org" : false;
+    router.push(onCustomerTeam ? "/org/billing" : "/login?next=%2Forg%2Fbilling");
   }, [router, user]);
 
   return (
@@ -152,9 +170,13 @@ export function Pricing() {
           >
             One rate. {formatInr(PRICE_PER_CREDIT_INR)} per credit.
           </h2>
+          {/* It said "no expiry" while the card below it states the three
+              month validity of new credits; the qualified promise lives in
+              "How credits work", where lib/credit-expiry-copy.test.ts reads
+              it. */}
           <p className="mt-5 text-pretty text-lg leading-8">
-            Buy credits when you hire, spend one per candidate report, and keep
-            what you do not use. No subscription, no expiry, no per-seat fees.
+            Buy credits when you hire and spend them per completed candidate
+            report. No subscription and no per-seat fees.
           </p>
         </Reveal>
 
@@ -226,7 +248,7 @@ export function Pricing() {
                 variant={pack.recommended ? "default" : "outline"}
                 onClick={goToBilling}
               >
-                Get started
+                Buy credits
                 <ArrowRight
                   className="transition-transform duration-150 group-hover:translate-x-0.5"
                   aria-hidden="true"
@@ -241,7 +263,16 @@ export function Pricing() {
             Prices exclude 18% GST. A one-time account setup fee of{" "}
             {formatInr(5000)} applies to your first purchase and is currently
             waived for early accounts. One report consumes 1.0 credit for a
-            Non-STEM role and 1.5 credits for a STEM role.
+            Non-STEM role and 1.5 credits for a STEM role. New to Vivekium?{" "}
+            <a
+              href={REQUEST_ACCESS_HREF}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium underline underline-offset-4 hover:text-brand-600"
+            >
+              Request access
+            </a>{" "}
+            and we set up your company&apos;s workspace.
           </p>
         </Reveal>
 

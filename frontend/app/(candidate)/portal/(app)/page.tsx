@@ -34,6 +34,7 @@ import {
   hasCompanyContent,
   pickJd,
 } from "@/components/job-description";
+import { PostingSkillsList, postingSkillsFrom } from "@/components/job-posting";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -230,7 +231,7 @@ export default function PortalJobsPage() {
               <Card className="flex h-full flex-col shadow-card transition-shadow duration-150 hover:shadow-card-hover">
                 <CardContent className="flex flex-1 flex-col gap-4 p-6">
                   <div className="min-w-0 space-y-2">
-                    <h2 className="text-balance text-base font-semibold">
+                    <h2 className="text-subheading font-semibold">
                       {job.title}
                     </h2>
                     <p className="flex items-center gap-1.5 text-sm">
@@ -309,6 +310,11 @@ export default function PortalJobsPage() {
           {/* The role AND the employer are stated in full before anything is
               asked of the candidate. */}
           <JobDescriptionSummary jd={pickJd(dialogJob)} loading={jdLoading} />
+          {/* The job's skills by bucket name, when the payload carries them
+              (CONTRACT v10); nothing at all for a job with none saved. */}
+          {!jdLoading ? (
+            <PostingSkillsList buckets={postingSkillsFrom(dialogJob?.skill_buckets)} />
+          ) : null}
           {jdError ? (
             <InlineError>
               The full job description could not be loaded. {jdError}

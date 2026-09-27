@@ -8,16 +8,18 @@
  * which is the rule this product breaks least willingly, and it contradicted
  * the hero's own promise of plain language and no scores to argue about. The
  * section was left unmounted rather than deleted until the data shape was
- * fixed. `step-scenes.tsx` now carries the four grade WORDS, with the bar's
- * width as an undisplayed rendering coordinate, so it is composed again.
+ * fixed. `step-scenes.tsx` now carries the four grade WORDS and, since
+ * 2026-09-28, the evidence each resume shows instead of a bar whose length
+ * was the score. The tour follows the flow the product ships: JD, Skills,
+ * publish, AI Match, invitation, PRISM Report, decision.
  */
-import Link from "next/link";
 import { ArrowRight, PlayCircle } from "lucide-react";
 
 import { WorkflowAnimation } from "@/components/workflow-animation";
 import { Reveal } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 
 export function WorkflowShowcase() {
   return (
@@ -39,8 +41,9 @@ export function WorkflowShowcase() {
             Watch the work move. Your team keeps the decision.
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-pretty text-base sm:text-lg">
-            From a live role to AI matching, structured assessment, the PRISM
-            Report and a clear shortlist, one continuous evidence trail.
+            From the JD and its skills to AI Match, one proctored assessment,
+            the PRISM Report and a clear shortlist, one continuous evidence
+            trail.
           </p>
         </Reveal>
 
@@ -52,11 +55,14 @@ export function WorkflowShowcase() {
           delay={0.12}
           className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row"
         >
+          {/* It read "Get started free" and opened candidate sign-up. Nothing
+              about a workspace is free (the first purchase is a paid trial
+              pack), and an employer does not sign up: it asks. */}
           <Button asChild size="lg" className="group">
-            <Link href="/register">
-              Get started free
+            <a href={REQUEST_ACCESS_HREF} target="_blank" rel="noopener noreferrer">
+              Request access
               <ArrowRight className="transition-transform group-hover:translate-x-0.5" />
-            </Link>
+            </a>
           </Button>
           <Button
             asChild

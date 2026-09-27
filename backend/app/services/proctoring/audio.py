@@ -246,8 +246,13 @@ async def _speech_during_non_audio(
     config: ProctoringConfig,
     probe: VoiceProbe,
     enqueue: ingestion.Enqueue | None,
+    question_id: uuid.UUID | None,
 ) -> None:
-    """Rule 2. One event per run of speaking chunks; its duration grows."""
+    """Rule 2. One event per run of speaking chunks; its duration grows.
+
+    The event names the question on screen when the run STARTED, and a run
+    that continues into the next question stays one occurrence of the first:
+    extending a row never rewrites which question it is about."""
     speaking = analysis.speech_seconds >= config.speech_min_seconds
     if speaking and await probe(session, ps.conversation_id, now, config):
         speaking = False
@@ -273,7 +278,7 @@ async def _speech_during_non_audio(
     event_id = uuid.uuid4()
     await ingestion.apply_server_event(
         session, ps, policy, "SPEECH_DURING_NON_AUDIO_QUESTION",
-        now=now, duration_ms=heard_ms,
+        now=now, duration_ms=heard_ms, question_id=question_id,
         metadata={"speech_seconds": round(analysis.speech_seconds, 1)},
         enqueue=enqueue, event_id=event_id,
     )
@@ -291,8 +296,16 @@ async def analyse_chunk(
     post: Poster = post_chunk,
     probe: VoiceProbe = voice_capture_open,
     enqueue: ingestion.Enqueue | None = None,
+    question_id: uuid.UUID | None = None,
 ) -> AudioChunkOut:
-    """Analyse one chunk in memory and apply both audio rules."""
+    """Analyse one chunk in memory and apply both audio rules.
+
+    `question_id` is the question on screen when the chunk arrived, resolved
+    by the ROUTE from the conversation engine (`turns.current_question_id`)
+    and handed in, so this package reads no question-writing code. None means
+    no turn was open (or the caller did not know), and the derived events are
+    then stored without a question, exactly as a client event with none is.
+    """
     config = get_config()
     if ps.outcome != "active":
         del chunk
@@ -322,7 +335,8 @@ async def analyse_chunk(
         del chunk
 
     await _speech_during_non_audio(
-        session, ps, policy, analysis, now=now, config=config, probe=probe, enqueue=enqueue
+        session, ps, policy, analysis, now=now, config=config, probe=probe,
+        enqueue=enqueue, question_id=question_id,
     )
     if ps.outcome != "active":
         # Settling an expired device pause inside the speech rule's batch can
@@ -343,6 +357,7 @@ async def analyse_chunk(
         session, ps, policy, "SECOND_VOICE_DETECTED",
         now=now,
         duration_ms=int(config.audio_chunk_seconds * consecutive) * _MS_PER_SECOND,
+        question_id=question_id,
         metadata={
             "consecutive_chunks": consecutive,
             "speakers": analysis.speaker_count,

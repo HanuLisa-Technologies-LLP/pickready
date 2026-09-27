@@ -324,10 +324,17 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "without its key."
     ),
     ("app/services/assessment_contract.py", "lock_contract"): (
-        "app/api/assessment_conversation.py, the first start. The only writer "
-        "of job_skill_snapshots after migration 0118, in the transaction that "
-        "stamps started_at; without it no skill ever locks (D5) and Miti has "
-        "no snapshot to grade against."
+        "app/api/assessment_conversation.py, the first start. It binds the "
+        "conversation to the frozen snapshot in the transaction that stamps "
+        "started_at, and is the BACKSTOP writer of one for a job whose first "
+        "application predated its saved skills; without it Miti has no bound "
+        "snapshot to grade against."
+    ),
+    ("app/services/assessment_contract.py", "freeze_at_application"): (
+        "app/api/portal.py, the ONE apply path (CONTRACT v10). The writer of "
+        "the snapshot at the first genuine application, in the application's "
+        "transaction; without it nothing freezes the JD and the skills and a "
+        "team could change what a candidate applied to."
     ),
     ("app/services/rag/index.py", "index_source"): (
         "app/workers/tasks.py, from pickready.index_document, and "
@@ -362,9 +369,10 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "app/workers/tasks.py, pickready.generate_job_swot. The only writer of "
         "a generated SWOT draft."
     ),
-    ("app/services/skills.py", "after_swot_saved"): (
-        "app/api/job_setup.py, the SWOT save and restore routes. The first "
-        "human SWOT save is what starts the skills draft."
+    ("app/services/skills.py", "after_jd_saved"): (
+        "app/api/jobs.py, Create Job and the JD document save (CONTRACT v10). "
+        "A JD on a job with no skill row is what starts the skills draft; a "
+        "SWOT save no longer does."
     ),
     ("app/services/skills.py", "request_draft"): (
         "app/workers/tasks.py, pickready.reconcile_job_setup. The repair path "

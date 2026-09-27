@@ -4,13 +4,31 @@
 // there is no separate one any more.
 //
 // Two tabs. The JOB DESCRIPTION tab is the job's setup, in the order the work
-// happens (Vivekium release, Phase 1, owner ruling D1):
+// happens (CONTRACT v10, owner ruling 2026-09-28, superseding D1's order):
 //
+//   [ Frozen banner, once the first genuine application froze the job     ]
 //   [ JD: the one markdown document + the job's details (grade, band, ...) ]
-//   [ SWOT analysis (Bodha)                                                ]
 //   [ Skills: Must-have / Nice-to-have / Behavioural, at most five each    ]
+//   [ Final Job Posting: the posting exactly as candidates will read it    ]
+//   [ Publish: the checklist (JD + Skills) and the one publish action      ]
 //   [ Assessment monitoring                                                ]
-//   [ Publish: the checklist and the one publish action                    ]
+//   [ Hiring intelligence (internal): the SWOT, outside the setup chain    ]
+//
+// THE SWOT IS NOT A SETUP STEP ANY MORE. It is internal hiring intelligence:
+// candidates never see it, publishing never waits on it, and it stays
+// editable after the freeze, when an edit changes nothing frozen.
+//
+// FROZEN (v10 point 4). The first genuine application snapshots the skills,
+// and from then on the JD document, the title, the experience band, the grade
+// and the skills are read-only; the company sections and the monitoring
+// setting stay editable. `setup.frozen` (equal to `skills_locked`) is that
+// snapshot's existence, read from the table by the server, so the banner and
+// every read-only control hang off one server answer, and every sentence
+// about it is the server's `frozen_reason`, verbatim.
+//
+// THE FINAL JOB POSTING READS `GET .../posting-preview`, so the preview is
+// the server's statement of the posting; it re-reads whenever the checklist
+// does and whenever the Skills panel's names or saved state move.
 //
 // The CANDIDATES tab carries the databank upload, AI matching, invitations
 // and the ranked table.
@@ -31,7 +49,7 @@
 // JD-edits card.
 
 import * as React from "react";
-import { Loader2, Pencil, Send, Sparkles } from "lucide-react";
+import { Loader2, Lock, Pencil, Send, Sparkles } from "lucide-react";
 import { useParams } from "next/navigation";
 
 import { apiGet, apiPatch, apiPost } from "@/lib/api";
@@ -60,7 +78,8 @@ import { PostingWindowBanner } from "@/components/posting-window";
 import { AssessmentRetentionPanel } from "@/components/assessment-retention-panel";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
-import { JobSkillsPanel } from "@/components/job-skills";
+import { JobSkillsPanel, type SkillsOut } from "@/components/job-skills";
+import { FinalJobPostingPreview } from "@/components/job-posting";
 import {
   JobPublishCard,
   type JobSetupStatus,
@@ -108,14 +127,34 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-/**
- * Why the grade field is disabled. The grade locks with the skills the moment
- * a candidate starts the assessment (D5), because it decides the question
- * budget every candidate on the job receives. Same words the server refuses a
- * grade change with.
+/*
+ * WHY A FROZEN FIELD IS DISABLED IS THE SERVER'S SENTENCE. `frozen_reason`
+ * from `/setup` is rendered verbatim in the banner and as the hint on every
+ * frozen field. The retired GRADE_LOCKED and SKILLS_LOCKED sentences are not
+ * hard-coded here any more (`s4-api-shapes.md` section 5): a paraphrase is a
+ * second author for a rule, and the two drift.
  */
-const GRADE_LOCKED_SENTENCE =
-  "The grade is locked because a candidate has started the assessment. It decides the question budget every candidate on this job receives.";
+
+/** What about the skills the preview shows: the names per bucket and whether
+ *  they are saved. Nothing numeric, only a change detector. */
+function skillsSignature(view: SkillsOut | null): string {
+  if (!view) return "";
+  const names = (["must_have", "nice_to_have", "behavioural"] as const)
+    .map((bucket) => (view.buckets[bucket] ?? []).map((skill) => skill.name).join("|"))
+    .join("/");
+  return `${view.saved}:${view.locked}:${view.draft_status}:${names}`;
+}
+
+function readableDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
 
 /** What the Close Job toast says. Closing withholds the assessment records
  *  from the team at once (2026-09-22); the pipeline is NOT unchanged. */
@@ -245,7 +284,14 @@ export default function OrgJobDetailPage() {
   // The setup answer the Publish card reads, shared so the grade field locks
   // from the same server answer the checklist shows.
   const [setup, setSetup] = React.useState<JobSetupStatus | null>(null);
-  // Bumped when a SWOT save may have started a skills draft.
+  // The Skills panel's latest view, for the Final Job Posting preview.
+  const [skillsView, setSkillsView] = React.useState<SkillsOut | null>(null);
+  // One server answer drives every frozen control: the snapshot exists.
+  const frozen = Boolean(setup?.frozen ?? setup?.skills_locked);
+  const gradeLocked = frozen || Boolean(setup?.grade_locked);
+  /** The server's sentence for every frozen control, verbatim. */
+  const frozenReason = setup?.frozen_reason?.trim() || undefined;
+  // Bumped when a SWOT save may have made a skills re-draft available.
   const [skillsReloadKey, setSkillsReloadKey] = React.useState(0);
   // Bumped whenever anything the publish checklist reads may have changed.
   const [checklistReloadKey, setChecklistReloadKey] = React.useState(0);
@@ -402,6 +448,9 @@ export default function OrgJobDetailPage() {
       acceptJob(updated);
       setEditingDoc(false);
       refreshChecklist();
+      // A JD save on a job with no skill row of any kind dispatches Sutra's
+      // draft (v10), so the Skills panel re-reads to show it drafting.
+      setSkillsReloadKey((key) => key + 1);
       toast({ title: "Job description updated" });
     } catch (e) {
       toast({
@@ -414,19 +463,25 @@ export default function OrgJobDetailPage() {
     }
   };
 
-  /** Save the job's details. The grade is sent only when it changed, so a
-   *  locked job can still have its title or narrative sections edited. */
+  /** Save the job's details. The grade is sent only when it changed, and a
+   *  frozen job sends none of the frozen fields (title, experience band,
+   *  grade), so its company sections stay editable without the server having
+   *  to refuse a field nobody changed. */
   const saveDetails = async () => {
     if (!details || !job) return;
     setSavingDetails(true);
     try {
       const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
-        title: details.title.trim(),
         department: details.department.trim() || null,
         requirement_period: details.requirement_period.trim() || null,
-        experience_min_years: yearsOrNull(details.experience_min_years),
-        experience_max_years: yearsOrNull(details.experience_max_years),
-        ...(details.grade && details.grade !== job.grade
+        ...(frozen
+          ? {}
+          : {
+              title: details.title.trim(),
+              experience_min_years: yearsOrNull(details.experience_min_years),
+              experience_max_years: yearsOrNull(details.experience_max_years),
+            }),
+        ...(!gradeLocked && details.grade && details.grade !== job.grade
           ? { grade: details.grade }
           : {}),
         // Sending null (not "") clears the per-job override so the section
@@ -641,7 +696,11 @@ export default function OrgJobDetailPage() {
 
   const overridden = new Set(job?.overridden_sections ?? []);
   const jd = job ? jobJd(job) : {};
-  const gradeLocked = Boolean(setup?.grade_locked);
+  const frozenDate = readableDate(setup?.frozen_at);
+  // The preview re-reads whenever the checklist would, and whenever the
+  // Skills panel's names or saved state move (a draft landing by poll calls
+  // no onChanged).
+  const previewKey = `${checklistReloadKey}:${skillsSignature(skillsView)}`;
 
   return (
     <div>
@@ -766,6 +825,29 @@ export default function OrgJobDetailPage() {
         ))}
       </div>
 
+      {/* ── Frozen: the first genuine application froze the posting ─────── */}
+      {job && frozen ? (
+        <div
+          role="status"
+          className={cn(
+            "mb-6 flex items-start gap-3 rounded-xl border border-border bg-secondary p-4 text-sm",
+            tab !== "jd" && "hidden"
+          )}
+        >
+          <Lock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="min-w-0 space-y-1">
+            <p className="font-semibold">
+              This job is frozen
+            </p>
+            <p className="max-w-prose">
+              {/* The server's sentence carries its own date; only a server
+                  that sent no sentence gets the bare date from frozen_at. */}
+              {frozenReason ?? (frozenDate ? `Frozen on ${frozenDate}.` : null)}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {/* ── Job description: the one document ───────────────────────────── */}
       <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
@@ -775,7 +857,8 @@ export default function OrgJobDetailPage() {
               Reporting to {String(jd.reporting_to || "-")}
             </CardDescription>
           </div>
-          {job && canEditJd && !editingDoc ? (
+          {/* Frozen means read-only for everybody: no Edit at all. */}
+          {job && canEditJd && !frozen && !editingDoc ? (
             <Button
               variant="outline"
               size="sm"
@@ -802,7 +885,7 @@ export default function OrgJobDetailPage() {
             />
           ) : !job ? (
             <LoadingRows rows={4} label="Loading the job description" />
-          ) : editingDoc ? (
+          ) : editingDoc && !frozen ? (
             <div className="space-y-3">
               <Textarea
                 aria-label="Job description document"
@@ -865,10 +948,16 @@ export default function OrgJobDetailPage() {
           ) : editingDetails && details ? (
             <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Title" htmlFor="job-title" required>
+                <FormField
+                  label="Title"
+                  htmlFor="job-title"
+                  required
+                  hint={frozen ? frozenReason : undefined}
+                >
                   <Input
                     id="job-title"
                     value={details.title}
+                    disabled={frozen}
                     onChange={(e) => setDetails({ ...details, title: e.target.value })}
                   />
                 </FormField>
@@ -886,7 +975,7 @@ export default function OrgJobDetailPage() {
                   htmlFor="job-grade"
                   hint={
                     gradeLocked
-                      ? GRADE_LOCKED_SENTENCE
+                      ? frozenReason ?? "Decides which assessment applicants receive."
                       : "Decides which assessment applicants receive."
                   }
                 >
@@ -912,24 +1001,34 @@ export default function OrgJobDetailPage() {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Experience from (years)" htmlFor="job-exp-min">
+                <FormField
+                  label="Experience from (years)"
+                  htmlFor="job-exp-min"
+                  hint={frozen ? frozenReason : undefined}
+                >
                   <Input
                     id="job-exp-min"
                     type="number"
                     min={0}
                     max={60}
+                    disabled={frozen}
                     value={details.experience_min_years}
                     onChange={(e) =>
                       setDetails({ ...details, experience_min_years: e.target.value })
                     }
                   />
                 </FormField>
-                <FormField label="Experience to (years)" htmlFor="job-exp-max">
+                <FormField
+                  label="Experience to (years)"
+                  htmlFor="job-exp-max"
+                  hint={frozen ? frozenReason : undefined}
+                >
                   <Input
                     id="job-exp-max"
                     type="number"
                     min={0}
                     max={60}
+                    disabled={frozen}
                     value={details.experience_max_years}
                     onChange={(e) =>
                       setDetails({ ...details, experience_max_years: e.target.value })
@@ -988,7 +1087,7 @@ export default function OrgJobDetailPage() {
 
               <div className="flex gap-2">
                 <Button
-                  disabled={savingDetails || !details.title.trim()}
+                  disabled={savingDetails || (!frozen && !details.title.trim())}
                   onClick={() => void saveDetails()}
                 >
                   {savingDetails ? "Saving" : "Save details"}
@@ -1021,7 +1120,6 @@ export default function OrgJobDetailPage() {
                   <dd>{job.requirement_period || "-"}</dd>
                 </div>
               </dl>
-              {gradeLocked ? <p className="text-xs">{GRADE_LOCKED_SENTENCE}</p> : null}
               <NarrativeSection
                 label="About company"
                 value={job.about_company}
@@ -1042,42 +1140,27 @@ export default function OrgJobDetailPage() {
         </CardContent>
       </Card>
 
-      {/* The SWOT analysis sits under the JD because that is what it is about:
-          this role's hiring position, drafted from this JD. It renders its own
-          permission-aware states, so there is no capability check here. Its
-          first save starts the skills draft on the server; a later one can
-          only OFFER a re-draft, which opens the Skills panel's confirmation. */}
-      {job ? (
-        <JobSwotAnalysisPanel
-          jobId={job.id}
-          className={cn(tab !== "jd" && "hidden")}
-          onSaved={() => {
-            setSkillsReloadKey((key) => key + 1);
-            refreshChecklist();
-          }}
-          canRedraftSkills={canRedraftSkills}
-          onRequestSkillsRedraft={() => setRedraftSignal((n) => n + 1)}
-        />
-      ) : null}
-
-      {/* The Skills step (D1): what every candidate is assessed against. It
-          replaced the old criteria editor and the ranking category card. */}
+      {/* The Skills step: what every candidate is assessed against and what
+          the posting lists by name. Drafted from the JD; a SWOT is optional
+          context. Read-only for everybody once frozen. */}
       {job ? (
         <JobSkillsPanel
           jobId={job.id}
           reloadKey={skillsReloadKey}
           redraftSignal={redraftSignal}
           onChanged={refreshChecklist}
+          onLoaded={setSkillsView}
           className={cn(tab !== "jd" && "hidden")}
         />
       ) : null}
 
-      {/* The one monitoring setting, moved here from the deleted setup review:
-          it is part of setting the job up, not of reviewing candidates. */}
+      {/* The posting exactly as candidates will read it, before Publish. */}
       {job ? (
-        <div className={cn("mb-6", tab !== "jd" && "hidden")}>
-          <MonitoringPolicyCard jobId={job.id} />
-        </div>
+        <FinalJobPostingPreview
+          jobId={job.id}
+          reloadKey={previewKey}
+          className={cn(tab !== "jd" && "hidden")}
+        />
       ) : null}
 
       {/* The one place a job goes live. */}
@@ -1092,6 +1175,45 @@ export default function OrgJobDetailPage() {
           }}
           className={cn(tab !== "jd" && "hidden")}
         />
+      ) : null}
+
+      {/* The one monitoring setting. It stays editable after the freeze
+          (CONTRACT v10), so it sits after the posting chain, not inside it. */}
+      {job ? (
+        <div className={cn("mb-6", tab !== "jd" && "hidden")}>
+          <MonitoringPolicyCard jobId={job.id} />
+        </div>
+      ) : null}
+
+      {/* Hiring intelligence (internal): the SWOT, outside the setup chain.
+          It renders its own permission-aware states, so there is no
+          capability check here. A save never drafts skills; while unfrozen
+          it may OFFER a re-draft, which opens the Skills panel's own
+          confirmation, and once frozen the offer is withheld. */}
+      {job ? (
+        <section
+          aria-labelledby="hiring-intelligence-heading"
+          className={cn("mt-10 border-t border-border pt-8", tab !== "jd" && "hidden")}
+        >
+          <div className="mb-4 space-y-1">
+            <h2 id="hiring-intelligence-heading" className="text-lg font-semibold">
+              Hiring intelligence (internal)
+            </h2>
+            <p className="max-w-prose text-sm">
+              Candidates never see this section, and it can be edited at any
+              time, including after the job is frozen.
+            </p>
+          </div>
+          <JobSwotAnalysisPanel
+            jobId={job.id}
+            onSaved={() => {
+              setSkillsReloadKey((key) => key + 1);
+              refreshChecklist();
+            }}
+            canRedraftSkills={canRedraftSkills && !frozen}
+            onRequestSkillsRedraft={() => setRedraftSignal((n) => n + 1)}
+          />
+        </section>
       ) : null}
 
       {/* Everything below is the Candidates screen. Hidden rather than

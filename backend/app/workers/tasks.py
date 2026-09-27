@@ -1008,11 +1008,14 @@ def draft_job_skills(
     confirm_overwrite: bool = False,
     requested_by: str | None = None,
 ):
-    """Sutra: draft a job's skills from its JD and its saved SWOT.
+    """Sutra: draft a job's skills from its JD, with the saved SWOT as
+    optional context (CONTRACT v10).
 
-    Dispatched after the commit by `skills.request_draft`: the first human SWOT
-    save on a job with no skill rows of any kind, an explicit re-draft the team
-    confirmed, or `pickready.reconcile_job_setup` repairing a lost one.
+    Dispatched after the commit by `skills.request_draft`: a job created with
+    a JD, a JD saved while the job has no skill rows of any kind, the "Draft
+    skills" action (or a re-draft the team confirmed), or
+    `pickready.reconcile_job_setup` repairing a lost one. A SWOT save never
+    dispatches it.
 
     ONE model call, no lock held across it, then the writes under the skills
     lock after re-checking everything the call may have raced (a candidate
@@ -1075,12 +1078,19 @@ def reconcile_job_setup():
     THE RULE THIS ENFORCES: a timestamp is not evidence that work happened, and
     neither is the ABSENCE of rows, because deletion here is soft.
 
-    It selects a job only when its SWOT is SAVED and either
+    It selects a job only when it HAS A JD (CONTRACT v10: the skills are
+    drafted from the JD, and the SWOT is optional context, so a saved SWOT is
+    no longer asked for) and either
 
       * no draft was ever asked for (`skills_draft_status = 'not_started'`) and
         it has ZERO `job_competencies` rows of ANY kind, active or not; or
       * a draft was asked for and never reported back (`drafting`, requested
         longer ago than `skills.DRAFT_STALE_AFTER`).
+
+    A FROZEN JOB IS NEVER SELECTED: its skills are the contract, and a draft
+    would be refused anyway. A JD too thin to draft from is recorded as the
+    draft's failed state (`skills.after_jd_saved`'s rule), so the job stops
+    being selected until somebody saves a JD.
 
     A JOB WHOSE ROWS ARE ALL SOFT-DELETED IS NEVER SELECTED. The previous
     version asked for jobs with no ACTIVE row, so a hiring manager who removed
@@ -1096,8 +1106,10 @@ def reconcile_job_setup():
     """
     from app.models.assessment import JobCompetency
     from app.models.job import SKILLS_DRAFT_DRAFTING, SKILLS_DRAFT_NOT_STARTED, Job
-    from app.models.job_setup import JobSwotAnalysis
-    from app.services import skills, swot_analysis
+    from sqlalchemy import func
+
+    from app.models.job_skill_snapshot import JobSkillSnapshot
+    from app.services import skills
 
     #: Bounded per tick. Each selected job costs one dispatch here and at most
     #: one model call in its own invocation.
@@ -1108,20 +1120,19 @@ def reconcile_job_setup():
             any_row = (
                 select(JobCompetency.id).where(JobCompetency.job_id == Job.id).exists()
             )
-            has_swot = (
-                select(JobSwotAnalysis.id)
-                .where(
-                    JobSwotAnalysis.job_id == Job.id,
-                    JobSwotAnalysis.human_edited.is_(True),
-                )
-                .exists()
+            frozen = (
+                select(JobSkillSnapshot.id).where(JobSkillSnapshot.job_id == Job.id).exists()
             )
             jobs = (
                 await session.execute(
                     select(Job)
                     .where(
                         Job.archived_at.is_(None),
-                        has_swot,
+                        # A JD to draft from. The SQL asks only that the
+                        # document is not blank; whether it is long enough is
+                        # the ONE Python gate below, never restated here.
+                        func.length(func.btrim(func.coalesce(Job.jd_markdown, ""))) > 0,
+                        ~frozen,
                         (
                             (Job.skills_draft_status == SKILLS_DRAFT_NOT_STARTED) & ~any_row
                         )
@@ -1136,7 +1147,14 @@ def reconcile_job_setup():
                             )
                         ),
                     )
-                    .order_by(Job.created_at)
+                    # NEWEST first. Every job this tick examines leaves the
+                    # selectable set (it is `drafting`, or `failed` with a
+                    # sentence), so no job is starved; newest first means a
+                    # job whose create-time draft was lost is repaired on the
+                    # next tick even while an older backlog (the published
+                    # jobs that predate CONTRACT v10) is still being worked
+                    # through, BATCH at a time.
+                    .order_by(Job.created_at.desc(), Job.id)
                     .limit(BATCH)
                 )
             ).scalars().all()
@@ -1146,11 +1164,13 @@ def reconcile_job_setup():
             queued = 0
             skipped: dict[str, int] = {}
             for job in jobs:
-                # The SQL above asks for a human-edited row; `is_saved` is the
-                # one definition of a SAVED SWOT, and it is asked here rather
-                # than restated in SQL.
-                if not swot_analysis.is_saved(await swot_analysis.get(session, job)):
-                    skipped["swot_not_saved"] = skipped.get("swot_not_saved", 0) + 1
+                # The one definition of "a JD to draft from"
+                # (`generation_sufficiency.skills_draft_input_state`). A thin
+                # JD is RECORDED as the draft's failed state with the fixed
+                # sentence, which is also what stops this sweep selecting the
+                # job again every tick.
+                if await skills.record_thin_jd(session, job):
+                    skipped["jd_too_thin"] = skipped.get("jd_too_thin", 0) + 1
                     continue
                 try:
                     handle = await skills.request_draft(

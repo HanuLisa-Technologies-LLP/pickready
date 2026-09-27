@@ -59,7 +59,7 @@ export function CandidateConversationCard({
       <CardHeader>
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4" aria-hidden="true" />
-          <CardTitle className="text-base">Messages</CardTitle>
+          <CardTitle>Messages</CardTitle>
         </div>
         <CardDescription>
           {candidateName

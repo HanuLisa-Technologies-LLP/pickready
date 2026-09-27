@@ -98,7 +98,7 @@ export function PublicNotice({
             {icon}
           </span>
         ) : null}
-        <h1 className="mt-5 text-balance text-lg font-bold tracking-tight">
+        <h1 className="mt-5 text-heading font-semibold">
           {title}
         </h1>
         {description ? (

@@ -477,7 +477,7 @@ export const VoiceAnswer = React.forwardRef<VoiceAnswerHandle, Props>(function V
   if (phase === "transcribed" && voice?.transcript) {
     return (
       <div className="space-y-2" data-testid="voice-transcript">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em]">
+        <p className="type-eyebrow">
           Your spoken answer, as transcribed
         </p>
         <blockquote className="whitespace-pre-wrap border-l-2 border-teal-600 bg-surface p-4 text-sm leading-7">

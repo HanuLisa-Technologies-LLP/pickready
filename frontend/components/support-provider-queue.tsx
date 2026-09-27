@@ -148,7 +148,7 @@ export function SupportProviderQueue() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink">Support</h1>
+          <h1 className="type-page-title text-ink">Support</h1>
           <p className="text-sm text-ink">
             Conversations from every customer. Replying claims the thread.
           </p>
@@ -180,7 +180,7 @@ export function SupportProviderQueue() {
       <div className="grid gap-6 lg:grid-cols-[24rem_1fr]">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Queue</CardTitle>
+            <CardTitle>Queue</CardTitle>
           </CardHeader>
           <CardContent>
             {loadError ? (
@@ -237,7 +237,7 @@ export function SupportProviderQueue() {
             <>
               <CardHeader>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <CardTitle className="text-base">{detail.subject}</CardTitle>
+                  <CardTitle>{detail.subject}</CardTitle>
                   <SupportStatusBadge status={detail.status} staff />
                 </div>
                 <CardDescription>

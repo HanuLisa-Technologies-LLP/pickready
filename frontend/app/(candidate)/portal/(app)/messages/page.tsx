@@ -277,7 +277,7 @@ function MessagesView() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-semibold">Messages</h1>
+        <h1 className="type-page-title">Messages</h1>
         <p className="text-sm">
           Conversations with the companies you have applied to.
         </p>
@@ -338,7 +338,7 @@ function MessagesView() {
           <Card>
             <CardHeader>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <CardTitle className="text-base">
+                <CardTitle>
                   {active?.company_name ?? "Conversation"}
                 </CardTitle>
                 <Button

@@ -136,7 +136,7 @@ export function CitedRemark({
       </button>
       {open ? (
         <div id={panelId} className="mt-3 border-l-2 border-teal-600 pl-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-300">
+          <p className="mb-2 type-eyebrow text-teal-700 dark:text-teal-300">
             What this rests on
           </p>
           <CitationPanel state={state} section={section} item={item} />

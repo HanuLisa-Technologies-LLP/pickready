@@ -1,11 +1,16 @@
-"""The Sutra skills draft: dispatched after the SWOT save, written from the
-JD and the saved SWOT, never a template, never over the team's own skills
-without their word.
+"""The Sutra skills draft: dispatched from the JD, written from the JD with the
+saved SWOT as optional context, never a template, never over the team's own
+skills without their word.
 
-What each test pins, in the plan's terms (PLAN-p1 test 4):
+What each test pins, in the plan's terms (PLAN-p1 test 4, CONTRACT v10):
 
-* the first human SWOT save dispatches `pickready.draft_job_skills` only AFTER
-  its commit, and a rolled-back save dispatches nothing (`record` backend);
+* a job created with a JD, or a JD saved, with no skill row of any kind,
+  dispatches `pickready.draft_job_skills` only AFTER its commit, and a
+  rolled-back save dispatches nothing (`record` backend);
+* the draft needs NO SWOT: the `swot` key is absent from the payload and a
+  "swot" source is reflected on; a JD too thin to draft from is refused by the
+  explicit action and RECORDED as the failed state by the automatic askers;
+* a JD save never re-drafts skills that exist, nor a set the team emptied;
 * a draft writes at most five per bucket, `authored_by='sutra'`, and a SWOT
   quotation only when it is VERBATIM in the saved SWOT (else NULL);
 * the JD's required skills and the SWOT Weaknesses both reach Must-have: an
@@ -35,7 +40,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.db import superadmin_scope
-from app.services import llm_router, skills, swot_analysis
+from app.services import generation_sufficiency, llm_router, skills, swot_analysis
 from app.workers import dispatch
 from tests import skills_fixtures as fx
 
@@ -96,57 +101,142 @@ async def _request(w: fx.World, *, confirm: bool = False, commit: bool = True):
     )
 
 
-# ── The hand-off ─────────────────────────────────────────────────────────────
+# ── The hand-off (CONTRACT v10: from the JD) ─────────────────────────────────
+
+#: A JD that is only a title's worth of words: below the skills gate.
+THIN_JD = "## Description\nOwns the pipelines."
 
 
-async def test_the_first_swot_save_dispatches_the_draft_only_after_its_commit(world) -> None:
+def _after_jd(w: fx.World):
+    return lambda s, j: skills.after_jd_saved(s, j, actor_user_id=w.client)
+
+
+async def test_a_jd_save_dispatches_the_draft_only_after_its_commit(world) -> None:
     w = await world()
 
-    await fx.run_as(
-        w, lambda s, j: skills.after_swot_saved(s, j, actor_user_id=w.client), commit=False
-    )
+    await fx.run_as(w, _after_jd(w), commit=False)
     assert _drafts() == [], "a rolled-back save dispatches nothing"
     assert (await fx.committed_job(w))["skills_draft_status"] == "not_started"
 
-    await fx.run_as(w, lambda s, j: skills.after_swot_saved(s, j, actor_user_id=w.client))
+    await fx.run_as(w, _after_jd(w))
     (sent,) = _drafts()
     assert sent.args == (str(w.job),)
     assert sent.kwargs["mode"] == "initial"
+    # The saved SWOT the draft may read, as optional context.
     assert sent.kwargs["requested_swot_version"] == 2
     assert (await fx.committed_job(w))["skills_draft_status"] == "drafting"
 
 
-async def test_a_later_swot_save_offers_a_redraft_and_never_performs_one(world) -> None:
+async def test_the_draft_is_requested_and_written_with_no_swot_at_all(world, monkeypatch) -> None:
+    """The JD is the one required input. With no SWOT the request names none,
+    the payload carries NO `swot` key, the Weaknesses rule does not apply, and
+    the draft records that it read no SWOT."""
+    w = await world(swot_row=False)
+    jd_only = _draft_answer(
+        must_have=[
+            {"name": "Kafka stream processing", "source": "jd", "swot_quote": ""},
+            {"name": "Python data engineering", "source": "jd", "swot_quote": ""},
+        ],
+        behavioural=[{"name": "Production incident ownership", "source": "jd", "swot_quote": ""}],
+    )
+    router = fx.install(monkeypatch, fx.FakeRouter(jd_only))
+
+    await fx.run_as(w, _after_jd(w))
+    (sent,) = _drafts()
+    assert sent.kwargs["requested_swot_version"] is None
+    await _run_draft_task()
+
+    assert len(router.calls) == 1
+    assert "swot" not in router.payload(0)
+    job = await fx.committed_job(w)
+    assert job["skills_draft_status"] == "drafted"
+    assert job["skills_drafted_swot_version"] is None
+    rows = await fx.committed_skills(w)
+    assert fx.active(rows, MUST) == ["Kafka stream processing", "Python data engineering"]
+    assert all(row["swot_origin"] is None for row in rows)
+    assert all(row["provenance_json"]["swot_version"] is None for row in rows)
+
+
+async def test_a_swot_source_is_refused_when_no_swot_was_given(world, monkeypatch) -> None:
+    """A skill attributed to a SWOT nobody wrote is provenance nobody wrote:
+    the evaluator reflects on it and the model is asked again."""
+    w = await world(swot_row=False)
+    claims_swot = _draft_answer(
+        must_have=[{"name": "Kafka stream processing", "source": "swot", "swot_quote": ""}],
+        behavioural=[{"name": "Production incident ownership", "source": "jd", "swot_quote": ""}],
+    )
+    jd_only = _draft_answer(
+        must_have=[{"name": "Kafka stream processing", "source": "jd", "swot_quote": ""}],
+        behavioural=[{"name": "Production incident ownership", "source": "jd", "swot_quote": ""}],
+    )
+    router = fx.install(monkeypatch, fx.FakeRouter(claims_swot, jd_only))
+    await _request(w)
+
+    await _run_draft_task()
+
+    assert len(router.calls) == 2
+    assert "no SWOT was given" in router.calls[1][1][-1]["content"]
+    assert fx.active(await fx.committed_skills(w), MUST) == ["Kafka stream processing"]
+
+
+async def test_a_jd_save_never_redrafts_skills_that_exist(world) -> None:
     w = await world(
         skills=[(MUST, "Kafka", True, "sutra", None, None)],
         draft_status="drafted", drafted_swot_version=1, swot_version=2,
     )
 
-    handle = await fx.run_as(w, lambda s, j: skills.after_swot_saved(s, j, actor_user_id=w.client))
+    handle = await fx.run_as(w, _after_jd(w))
 
     assert handle is None and _drafts() == []
+
+
+async def test_a_swot_save_only_offers_a_redraft(world) -> None:
+    """A SWOT save never drafts (CONTRACT v10): a SWOT newer than the draft is
+    an OFFER the team accepts by asking, and `skills` has no SWOT hook left."""
+    w = await world(
+        skills=[(MUST, "Kafka", True, "sutra", None, None)],
+        draft_status="drafted", drafted_swot_version=1, swot_version=2,
+    )
 
     async def _offer(session, job):
         swot = await swot_analysis.get(session, job)
         return skills.redraft_available(job, swot, locked=False, any_row=True)
 
     assert await fx.run_as(w, _offer, commit=False) is True
+    assert not hasattr(skills, "after_swot_saved")
 
 
-async def test_an_emptied_set_is_never_redrafted_by_a_save(world) -> None:
+async def test_an_emptied_set_is_never_redrafted_by_a_jd_save(world) -> None:
     """A set the team emptied is a decision, not a missing draft (2026-09-21)."""
     w = await world(skills=[(MUST, "Kafka", False, "sutra", None, None)])
 
-    await fx.run_as(w, lambda s, j: skills.after_swot_saved(s, j, actor_user_id=w.client))
+    await fx.run_as(w, _after_jd(w))
 
     assert _drafts() == []
 
 
-async def test_an_unsaved_swot_is_refused_as_a_draft_source(world) -> None:
-    w = await world(swot_saved=False)
+async def test_a_thin_jd_is_refused_by_the_draft_action(world) -> None:
+    w = await world(jd_markdown=THIN_JD)
     with pytest.raises(skills.DraftRefused) as refused:
         await _request(w)
-    assert refused.value.detail == skills.SWOT_NOT_SAVED_DETAIL
+    assert refused.value.detail == generation_sufficiency.EMPTY_STATE_COPY["skills.jd_too_thin"]
+    assert _drafts() == []
+    assert (await fx.committed_job(w))["skills_draft_status"] == "not_started"
+
+
+async def test_a_thin_jd_is_recorded_not_dispatched_by_a_jd_save(world) -> None:
+    """The automatic asker records the state (the save itself succeeded), so
+    the reconcile sweep stops selecting the job; nothing is dispatched."""
+    w = await world(jd_markdown=THIN_JD)
+
+    handle = await fx.run_as(w, _after_jd(w))
+
+    assert handle is None and _drafts() == []
+    job = await fx.committed_job(w)
+    assert job["skills_draft_status"] == "failed"
+    assert job["skills_draft_error"] == generation_sufficiency.EMPTY_STATE_COPY[
+        "skills.jd_too_thin"
+    ]
 
 
 # ── The draft itself ─────────────────────────────────────────────────────────

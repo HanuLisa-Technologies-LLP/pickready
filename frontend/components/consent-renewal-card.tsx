@@ -96,7 +96,7 @@ export function ConsentRenewalCard() {
       <CardHeader>
         <div className="flex items-center gap-2">
           <CalendarCheck2 className="h-4 w-4" aria-hidden="true" />
-          <CardTitle className="text-base">Keep my profile</CardTitle>
+          <CardTitle>Keep my profile</CardTitle>
         </div>
         <CardDescription>
           We ask you from time to time whether you want us to keep your

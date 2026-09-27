@@ -133,7 +133,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Background verification</CardTitle>
+          <CardTitle>Background verification</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-sm">{loadError}</p>
@@ -148,7 +148,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Background verification</CardTitle>
+          <CardTitle>Background verification</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm">Loading.</p>
@@ -167,7 +167,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
             ) : (
               <ShieldAlert className="h-4 w-4" aria-hidden="true" />
             )}
-            <CardTitle className="text-base">Background verification</CardTitle>
+            <CardTitle>Background verification</CardTitle>
           </div>
           <span className="text-sm font-medium">
             {STATUS_WORD[data.status] ?? data.status}

@@ -35,7 +35,9 @@ const INSIGHTS = [
     body: "How clear purpose, retention and withdrawal language improves the candidate experience.",
   },
   {
-    tag: "Operating model",
+    // The tag /insights files this article under, so the preview and the page
+    // it links to do not disagree about what the article is.
+    tag: "Interviews",
     title: "The interview should begin where the report ends",
     body: "Use structured probes to spend conversation time on the uncertainties that matter.",
   },
@@ -71,11 +73,14 @@ export function EvidenceProfile() {
             >
               AI can rank. A PRISM Report helps your team understand.
             </h2>
+            {/* The SWOT is internal hiring intelligence (2026-09-28): the
+                assessment is built from the JD and the skills the team saved,
+                so that is what the page says it is built from. */}
             <p className="mt-4 text-pretty text-base">
-              The Tatva Assessment connects role match, behavioural evidence,
-              technical depth and validation into one readable decision
-              profile. It is our own, built from your JD and SWOT, not a
-              generic score pasted onto a resume.
+              The Tatva Assessment grades every skill your team saved, from
+              the candidate&apos;s own answers, and the PRISM Report says what
+              each grade rests on. It is our own, built from your JD and its
+              skills, not a generic score pasted onto a resume.
             </p>
             {/* Flat rows on a hairline grid, not four bordered boxes inside a
                 bordered panel. DESIGN.md section 4: no card inside a card. */}
@@ -83,7 +88,7 @@ export function EvidenceProfile() {
               {[
                 "Three radar charts, and not one number on them",
                 "Remarks tied to what the candidate actually said",
-                "One conversation, not four separate bot threads",
+                "One proctored session, every skill asked",
                 "Interview probes aimed at what stayed uncertain",
               ].map((item) => (
                 <li
@@ -117,9 +122,11 @@ export function EvidenceProfile() {
                   </li>
                 ))}
               </ul>
+              {/* "and in the email" is gone: a candidate email names evidenced
+                  skills and nothing else, so no grade word is ever in one. */}
               <p className="border-t border-border px-6 py-4 text-xs font-medium">
-                No percentage, no rank, no letter. The same four words on the
-                screen, in the PDF and in the email.
+                No percentage, no rank, no letter. The same four words in AI
+                Match, on the report screen and in the PDF.
               </p>
             </div>
           </Reveal>
@@ -168,10 +175,16 @@ export function AboutPreview() {
             disconnected sourcing, repetitive screening, opaque scoring and
             systems that move the administrative load instead of removing it.
           </p>
+          {/* It used to promise "human validation before a profile reaches
+              the customer", which is an agency's workflow: no Vivekium person
+              sits between a candidate and a customer in the product. The
+              human in the loop is the customer's own team, and that is
+              enforced (no flag rejects anybody, a person decides). */}
           <p className="mt-4 text-pretty text-base">
-            We combine AI-driven discovery and assessment with human validation
-            before a profile reaches the customer. The result is not more
-            activity. It is a profile the team can act on.
+            We combine AI reading and assessment with a human decision at every
+            step: the AI proposes, your team decides, and every decision is
+            recorded. The result is not more activity. It is a profile the team
+            can act on.
           </p>
           <Button asChild variant="outline" className="group mt-7">
             <Link href="/about">

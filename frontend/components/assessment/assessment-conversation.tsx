@@ -540,7 +540,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
             {loadError ? (
               <Card className="shadow-card" data-testid="load-error">
                 <CardContent className="p-8 text-center">
-                  <h2 className="text-base font-semibold">This assessment could not be opened</h2>
+                  <h2 className="text-subheading font-semibold">This assessment could not be opened</h2>
                   <p className="mt-2 text-sm">{loadError}</p>
                   <Button className="mt-5" variant="outline" asChild>
                     <Link href="/portal/applications">Back to Applied Jobs</Link>
@@ -574,7 +574,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
             {conversation?.status === "terminated" ? (
               <Card className="shadow-card" data-testid="termination-notice">
                 <CardContent className="p-8 text-center">
-                  <h2 className="text-base font-semibold">This assessment has ended</h2>
+                  <h2 className="text-subheading font-semibold">This assessment has ended</h2>
                   <p className="mt-2 max-w-md text-pretty text-sm sm:mx-auto">
                     {conversation.termination_message ??
                       "The assessment was ended before its final question. The answers you had already sent were kept."}
@@ -590,7 +590,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                   <span className="grid h-14 w-14 place-items-center rounded-2xl bg-rating-1-bg text-rating-1">
                     <CheckCircle2 className="h-7 w-7" aria-hidden="true" />
                   </span>
-                  <h2 className="mt-4 text-base font-semibold">Assessment complete</h2>
+                  <h2 className="mt-4 text-subheading font-semibold">Assessment complete</h2>
                   <p className="mt-1 max-w-sm text-pretty text-sm">
                     Your responses were saved and your report is being compiled.
                   </p>
@@ -622,7 +622,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                         />
                       </span>
                     </div>
-                    <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">
+                    <p className="mt-3 type-eyebrow text-brand-600">
                       {conversation.is_reask
                         ? `Re-asking ${conversation.progress_label}`
                         : conversation.progress_label}

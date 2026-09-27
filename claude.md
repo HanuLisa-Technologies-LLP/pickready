@@ -20,7 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
-| The Vivekium simplification release (2026-09-25) | The Skills step and the locked contract; Yukti and one blended rank; no number with no exception; the server-timed assessment; Path P pauses; recording retention; the Judge0 sandbox; Miti the sole grader; the insert-only report; Evidence RAG through tools; candidate identity; dispatch after commit; task RLS; the legacy scrap |
+| The Vivekium simplification release (2026-09-25) | CONTRACT v10 (2026-09-28): JD, Skills, the Final Job Posting, publish, and the freeze at the first application; the Skills step and the locked contract; Yukti and one blended rank; no number with no exception; the server-timed assessment; Path P pauses; recording retention; the Judge0 sandbox; Miti the sole grader; the insert-only report; Evidence RAG through tools; candidate identity; dispatch after commit; task RLS; the legacy scrap |
 | Tatva human authority (2026-09-23) | Sutra proposes; the Hiring Manager owns criteria; Save Matrix freezes the approved version; Company Profile is current company context |
 | The twenty two change requests and the harness (2026-09-22) | The four owner rulings; media IS stored now; one authority per consent; the harness and its three exit codes |
 | The thirty day soft deletion (2026-09-22) | Job closure withholds instead of deleting; the assessment dispute path; objects before rows |
@@ -123,18 +123,18 @@ how the product works today.
 ## Current hard rules, the Vivekium simplification release (2026-09-25)
 
 The owner brief is `vivekium_fix_prompt.md` (the MASTER PROMPT), and the
-cross-phase design contract is `.claude/vivekium-release/CONTRACT.md` v1 to v9
+cross-phase design contract is `.claude/vivekium-release/CONTRACT.md` v1 to v10
 (gitignored working files, summarised here). Seven phases were built as work
 packages in parallel and integrated in stages onto one release branch. This
 section is the ONE place their rules are written down; the per-package drafts
 it was assembled from are deleted. Where a rule here touches an older section,
 the older section carries a SUPERSEDED or AMENDED marker in place.
 
-**Migrations 0118 to 0130**: 0118 skills contract, 0119 approval chain
+**Migrations 0118 to 0131**: 0118 skills contract, 0119 approval chain
 removed, 0120 candidate identity, 0121 candidate communications, 0122 Yukti,
 0123 assessment conversation, 0124 coding execution, 0125 proctoring pause,
 0126 recording retention, 0128 legacy scrap, 0129 route scrap, 0130 report
-immutability. 0127 was reserved for chunk provenance and NOT used (the columns
+immutability, 0131 freeze at application (CONTRACT v10). 0127 was reserved for chunk provenance and NOT used (the columns
 existed since 0062). The chain is linear; `alembic heads` is one.
 
 **Normative documents written or rewritten for this release**:
@@ -145,9 +145,86 @@ Miti and Siddhi interface records), `docs/spec/CODE_EXECUTION.md`,
 `docs/operations/INFRA_TOPOLOGY.md`, `docs/operations/JUDGE0_RUNBOOK.md`,
 `docs/operations/LEGACY_TABLES.md`.
 
+### CONTRACT v10: JD, SKILLS, THE POSTING, PUBLISH, AND THE FREEZE AT THE FIRST APPLICATION (2026-09-28)
+
+Owner ruling, in chat, and it SUPERSEDES D1's ORDER and D5's LOCK POINT
+(both marked in place below). `docs/spec/JOB_SETUP_FLOW.md` is normative and
+`docs/release/2026-09-vivekium/s4-api-shapes.md` is the API contract the
+frontend builds against.
+
+```
+JD ──→ Skills ──→ Final Job Posting ──→ Publish
+SWOT ──→ separate internal hiring intelligence, editable independently
+First genuine application ──→ FREEZE JD + Skills
+```
+
+- **Skills are drafted from the JD.** `skills.after_jd_saved` dispatches
+  Sutra's draft after the commit at Create Job and on a JD save while the job
+  has NO skill row of any kind (an emptied set is a decision, still); "Draft
+  skills" asks explicitly. The draft's ONE required input is the JD, gated by
+  `generation_sufficiency.skills_draft_input_state` (its own gate, not the
+  SWOT's). An automatic asker RECORDS a thin JD as the `failed` state with the
+  fixed sentence (the create or save itself succeeded, and a recorded state
+  stops the sweep re-selecting the job); the explicit action refuses with it.
+  `sutra_skills_draft` is version 2: with no saved SWOT the `swot` key is
+  ABSENT and a `swot` source is reflected on and refused.
+- **The SWOT is internal hiring intelligence**: optional context for Sutra
+  and Yukti's company-need fit, never a publication step, never shown to a
+  candidate, editable at any time including after the freeze. **A SWOT save
+  never drafts skills**; while unfrozen it can only make a redraft AVAILABLE.
+- **Publish needs the JD and saved skills ONLY** (`PUBLISH_STEP_SWOT` is
+  deleted). The recruiter previews the **Final Job Posting**
+  (`GET /api/v2/assessments/jobs/{id}/posting-preview`); the public apply
+  page, the portal job payloads and the employer page carry `skill_buckets`,
+  skill NAMES under "Must-have skills", "Nice-to-have skills" and "Behavioural
+  competencies", alphabetical (an ordered list would publish the hidden
+  priority), from ONE builder (`assessment_contract.posting_skills`): the
+  saved set, the frozen snapshot's, or an EMPTY list. Never an evidence line,
+  a priority or the role summary.
+- **FREEZE AT THE FIRST GENUINE APPLICATION.** The one apply path calls
+  `assessment_contract.freeze_at_application` after the link is written (or a
+  sourced link converted), in the SAME transaction, under the SKILLS advisory
+  lock: a snapshot with `source='application'` and `locked_by_link_id`. A
+  rolled-back application leaves no snapshot (pinned from a second connection).
+  A sourced upload, a databank link, the matching run's links and an
+  invitation NEVER freeze, and an AST sweep pins the apply route as the one
+  caller. A legacy job with no saved skills takes the application and freezes
+  nothing; the next genuine application after the skills are saved does.
+  `lock_contract` at the START is the idempotent backstop that binds the
+  conversation to the existing snapshot.
+- **Frozen fields**: the JD document, the title, the experience band, the
+  grade and the skills, each refused with 409 and ONE dated sentence
+  (`assessment_contract.FROZEN_DETAIL`: "The job description and skills are
+  frozen because a candidate has applied. Frozen since 28 Sep 2026."), under
+  the same advisory lock. `SKILLS_LOCKED_DETAIL` and `GRADE_LOCKED_DETAIL` are
+  DELETED; `SkillsLocked` carries the date and has no default. The company
+  narrative, the proctoring policy, the department, the requirement period and
+  the SWOT stay editable. `/setup` reports `frozen`, `frozen_at` and the
+  verbatim `frozen_reason`.
+- **0131 keeps the immutability trigger and admits ONE update**: the
+  ON DELETE SET NULL of `locked_by_link_id` when the application is erased,
+  nested (`pg_trigger_depth() > 1`) and changing no other column (compared as
+  the whole row), so an erasure keeps the snapshot every other candidate is
+  assessed against. A direct UPDATE, even one only clearing the link, is
+  refused as before. **A foreign key onto an insert-only table is an UPDATE
+  waiting for the day the parent is deleted**: the trigger must name the
+  referential action or the parent's delete fails.
+- **`pickready.reconcile_job_setup` selects on a JD, not a saved SWOT**, skips
+  a frozen job, still never refills an emptied set, and runs NEWEST first.
+  **Its first run after the v10 deploy drafts skills for every existing job
+  with a JD and no skill row** (at most 25 per fifteen minutes): model spend,
+  and drafts nobody asked for, on pilot's legacy jobs.
+- Pinned by `test_freeze_at_application.py`, `test_posting_preview.py`,
+  `test_grade_lock.py`, `test_job_publish_gate.py`,
+  `test_job_skills_draft.py`, `test_reconcile_job_setup.py`,
+  `test_setup_order_v10_removed.py`, the golden journey in the new order, and
+  `regression.the_first_application_freezes_the_job`.
+
 ### THE OWNER RULINGS, AND THE WIDTH OF EACH
 
-- **D1, the Skills step.** JD, then the Job SWOT, then Skills: Sutra drafts
+- **D1, the Skills step.** (ORDER SUPERSEDED 2026-09-28 by CONTRACT v10: JD,
+  then Skills drafted from the JD, the SWOT separate and optional; see
+  above.) JD, then the Job SWOT, then Skills: Sutra drafts
   Must-have, Nice-to-have and Behavioural from the JD, the SAVED SWOT and the
   Company Profile; the team adds, pastes, renames, moves and removes, at most
   five per bucket, and saves. The recruiter never sees a matrix, a weight, a
@@ -162,9 +239,12 @@ Miti and Siddhi interface records), `docs/spec/CODE_EXECUTION.md`,
   candidate (CONTRACT v5).
 - **D4, recording retention**: a session recording is purged at whichever
   comes first, ninety days after the session or the job-closure purge.
-- **D5, the skill lock**: skills AND the job's grade lock when the first
+- ~~**D5, the skill lock**: skills AND the job's grade lock when the first
   candidate actually STARTS (a stamped `started_at`). Applying, a sourced link
-  or a databank link never locks anything.
+  or a databank link never locks anything.~~ **SUPERSEDED 2026-09-28 by
+  CONTRACT v10: the JD, the title, the band, the grade and the skills FREEZE
+  at the first GENUINE APPLICATION; a sourced link, a databank link and an
+  invitation still never freeze anything. See the v10 subsection above.**
 - **S4, no irreversible drop of a table that may hold customer rows**, narrowed
   by the pilot probe (CONTRACT v3): a table proven EMPTY may be dropped by a
   migration that counts first and RAISES when anything is there. See
@@ -192,7 +272,9 @@ carries `job_id, version, locked, locked_at, grade, skills, role_summary,
 digest`; a `ContractSkill` carries `id, name, bucket, priority,
 evidence_line`.
 
-- **Live until the first START, a snapshot for ever after.** Before a start the
+- **Live until the first START, a snapshot for ever after.** (AMENDED
+  2026-09-28, CONTRACT v10: until the first genuine APPLICATION, whose
+  `freeze_at_application` writes the snapshot; the start binds it.) Before a start the
   contract is the active `job_competencies` rows plus
   `jobs.assessment_context_json` and `jobs.assessment_grade` (`version=0`).
   `lock_contract` writes `job_skill_snapshots` version N and binds the
@@ -256,8 +338,9 @@ remove, draft and save; `services/hiring/sutra.py` is the model half;
 checklist, the Skills routes and the SWOT routes.
 
 - **Every write takes the SKILLS lock and then `require_unlocked`.** After the
-  first start every write answers 409 `SKILLS_LOCKED_DETAIL`: a lock is a STATE
-  of the job, not a missing grant, so it is never a 403.
+  freeze every write answers 409 with the dated frozen sentence (AMENDED
+  2026-09-28: it was `SKILLS_LOCKED_DETAIL` after the first start): a lock is
+  a STATE of the job, not a missing grant, so it is never a 403.
 - **Every edit makes the skills UNSAVED again** (the stamp cleared, status back
   to pending). A published job keeps taking applications and cannot invite
   until they are saved again.
@@ -316,9 +399,11 @@ DRAFT to FINALIZED and two audit rows, each in ONE insert.
 
 ### THE SKILLS DRAFT AND THE SWOT ARE DISPATCHED, AND NEITHER OVERWRITES THE TEAM SILENTLY
 
-- **The first human SWOT save on a job with no skill row of ANY kind** asks
-  for a draft (`pickready.draft_job_skills`, Route.LAMBDA, after commit).
-  Later saves only OFFER a re-draft (`skills_redraft_available`); a re-draft
+- ~~**The first human SWOT save on a job with no skill row of ANY kind** asks
+  for a draft~~ **SUPERSEDED 2026-09-28 (CONTRACT v10): a JD on a job with no
+  skill row asks** (`pickready.draft_job_skills`, Route.LAMBDA, after commit),
+  and a SWOT save asks for nothing.
+  SWOT saves only OFFER a re-draft (`skills_redraft_available`); a re-draft
   over `authored_by = 'human'` rows is refused until confirmed, and the screen
   confirms by LISTING the team's skills.
 - **The draft is ONE call** (`skills_drafting`, Terra) with a deterministic
@@ -338,7 +423,8 @@ DRAFT to FINALIZED and two audit rows, each in ONE insert.
   after `SWOT_GENERATION_STALE_MINUTES`. The prompt reads the GRADE, never
   `jobs.level`.
 - **`pickready.reconcile_job_setup` never refills what a person emptied.** It
-  selects a job only when its SWOT is SAVED and either no draft was ever asked
+  selects a job only when its SWOT is SAVED (AMENDED 2026-09-28: when it has
+  a JD and is not frozen) and either no draft was ever asked
   and it has zero rows of ANY kind, or a draft was asked and never reported
   back. The old sweep asked for ACTIVE rows and put back skills a hiring
   manager had removed.
@@ -352,12 +438,14 @@ DRAFT to FINALIZED and two audit rows, each in ONE insert.
 
 ### A JOB GOES LIVE THROUGH ONE ROUTE, AND THE APPROVAL CHAIN IS DELETED
 
-- **`POST /jobs` saves a DRAFT, always**, and dispatches nothing. `publish:
+- **`POST /jobs` saves a DRAFT, always**, and dispatches nothing (AMENDED
+  2026-09-28: except Sutra's skills draft from its JD, after the commit). `publish:
   true` is a 422 naming the new flow. `jd_markdown` is required and may not be
   headings only; `level` and the per-section `jd` input are gone.
 - **`POST /jobs/{id}/publish` is the only way live.** `_publication_blocked`
   names EVERY missing step in one sentence, asked of the rows: the JD, the SWOT
-  saved by a human, the skills saved. Authorization runs RBAC 3's chain in the
+  saved by a human, the skills saved (AMENDED 2026-09-28: the JD and the
+  skills only; the SWOT is never a step). Authorization runs RBAC 3's chain in the
   handler so a caller stopped by the job's STATE is told the missing steps; a
   scope refusal is never told them. `run_matching` and `index_document` are
   dispatched after commit.
@@ -370,6 +458,8 @@ DRAFT to FINALIZED and two audit rows, each in ONE insert.
 - **THE GRADE LOCKS WITH THE SKILLS**: a grade CHANGE after a snapshot exists
   is a 409 (`GRADE_LOCKED_DETAIL`), under the same lock; the screen reads
   `grade_locked` from the same `/setup` answer the publish card shows.
+  (AMENDED 2026-09-28: the title, the band and the JD freeze with it, and the
+  refusal is the dated frozen sentence; `GRADE_LOCKED_DETAIL` is deleted.)
 - **The approval chain is deleted, code and database together** (0119, 0129):
   the hand-off to the Hiring Manager, submit, approve, the approvals list,
   `send_jd_to_hiring_manager`, `approve_job`, `configure_approval_levels`,
@@ -589,7 +679,9 @@ pause record. Full flow in `docs/spec/ASSESSMENT_FLOW.md`.
   way to finish (`end_reason = prompts_exhausted`); the early close and the
   extension are gone.
 - **The start re-checks credit, locks the contract and logs Vaada's digest in
-  the transaction that stamps `started_at`.** Questions written against
+  the transaction that stamps `started_at`.** (AMENDED 2026-09-28: it BINDS
+  the snapshot the first application took, and writes one only as the
+  backstop for a job frozen by nothing yet.) Questions written against
   another contract are rewritten BEFORE the first answer
   (`questions_contract_digest`); only a STAMPED mismatch re-dispatches at
   once. Missing questions answer `preparing`, dispatched after commit: never
@@ -715,6 +807,11 @@ Full rules in `docs/spec/PROCTORING.md`.
 
 Full rules in `docs/spec/CODE_EXECUTION.md`; operations in
 `docs/operations/JUDGE0_RUNBOOK.md`.
+
+**ON HOLD (owner, 2026-09-28): stage A resources destroyed; nothing
+provisioned; `judge0_enabled` must stay false.** The code and the Terraform
+module stay, disabled by default, and no public copy may claim coding runs in
+a sandbox or is tested.
 
 - **A port and one adapter**: domain code calls `code_execution.get_provider()`;
   only `code_execution/judge0.py` knows Judge0. Five operations

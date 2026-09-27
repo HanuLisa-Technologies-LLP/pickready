@@ -187,18 +187,65 @@ const config: Config = {
         display: ["var(--font-display)", "var(--font-sans)", "Georgia", "serif"],
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
+      // THE TYPE SYSTEM (DESIGN.md section 3). Two layers, one scale.
+      //
+      // 1. The STEPS: 12 / 13 / 15 / 16 / 18 / 24 / 32 / 40 / 48 / 64. Their
+      //    line heights are unchanged from 2026-09-19 except `lg`, which is
+      //    overwhelmingly a heading size and read gappy at 30px when it wrapped.
+      //    What is new is TRACKING THAT FOLLOWS SIZE: Inter Tight is already
+      //    tight, so the text sizes keep their natural spacing and every step
+      //    from `lg` up closes a little more as it grows. Large type set at body
+      //    spacing is what makes a heading look typed rather than set.
+      //
+      // 2. The ROLES: named for what the text IS, each carrying its size, line
+      //    height, tracking and weight, so a page title or a table header cannot
+      //    drift one call site at a time. `lib/utils.ts` teaches tailwind-merge
+      //    these names; without that, `cn("text-label", "text-ink")` would treat
+      //    both as colours and silently drop the size.
+      //
+      // An explicit `leading-*`, `tracking-*` or `font-*` at a call site still
+      // wins (those utilities are emitted after `fontSize`), so a deliberate
+      // exception stays expressible and stays visible in the diff.
       fontSize: {
-        // The scale from the brief: 12 / 13 / 15 / 18 / 24 / 32 / 48 / 64.
+        // --- steps ---------------------------------------------------------
         "2xs": ["0.75rem", { lineHeight: "1rem" }],
         xs: ["0.8125rem", { lineHeight: "1.25rem" }],
         sm: ["0.9375rem", { lineHeight: "1.625rem" }],
         base: ["1rem", { lineHeight: "1.75rem" }],
-        lg: ["1.125rem", { lineHeight: "1.875rem" }],
-        xl: ["1.5rem", { lineHeight: "2rem" }],
-        "2xl": ["2rem", { lineHeight: "2.375rem" }],
-        "3xl": ["2.5rem", { lineHeight: "2.875rem" }],
-        "4xl": ["3rem", { lineHeight: "3.25rem" }],
-        "5xl": ["4rem", { lineHeight: "4.25rem" }],
+        lg: ["1.125rem", { lineHeight: "1.75rem", letterSpacing: "-0.006em" }],
+        xl: ["1.5rem", { lineHeight: "2rem", letterSpacing: "-0.014em" }],
+        "2xl": ["2rem", { lineHeight: "2.375rem", letterSpacing: "-0.018em" }],
+        "3xl": ["2.5rem", { lineHeight: "2.875rem", letterSpacing: "-0.022em" }],
+        "4xl": ["3rem", { lineHeight: "3.25rem", letterSpacing: "-0.024em" }],
+        "5xl": ["4rem", { lineHeight: "4.25rem", letterSpacing: "-0.028em" }],
+
+        // --- roles ---------------------------------------------------------
+        // Page title: the one h1 of an app screen (PageHeader). 24px under
+        // `sm`, 28px from `sm` up; `.type-page-title` carries the switch.
+        title: ["1.75rem", { lineHeight: "2.125rem", letterSpacing: "-0.02em", fontWeight: "600" }],
+        "title-sm": ["1.5rem", { lineHeight: "1.875rem", letterSpacing: "-0.018em", fontWeight: "600" }],
+        // Section heading: a page-level h2, a dialog or sheet title.
+        heading: ["1.25rem", { lineHeight: "1.75rem", letterSpacing: "-0.012em", fontWeight: "600" }],
+        // Subsection heading and card title: an h3 inside a page or a card.
+        subheading: ["1rem", { lineHeight: "1.5rem", letterSpacing: "-0.006em", fontWeight: "600" }],
+        // Body: running text and descriptions. The same metrics as `sm`.
+        body: ["0.9375rem", { lineHeight: "1.625rem" }],
+        // Body small and helper text: hints under a field, secondary lines.
+        "body-sm": ["0.8125rem", { lineHeight: "1.25rem" }],
+        // Form label: sits above a 15px value, so it is a step smaller and
+        // heavier. 14px rather than 13 because the same primitive labels an
+        // inline checkbox or radio, where it is the only text the option has.
+        label: ["0.875rem", { lineHeight: "1.25rem", fontWeight: "500" }],
+        // Metadata: timestamps, counts, reference lines. Pair with tabular-nums.
+        meta: ["0.75rem", { lineHeight: "1.125rem", letterSpacing: "0.01em" }],
+        // Eyebrow / overline: the small uppercase kicker. `.type-eyebrow`
+        // adds the uppercase; the tracking is here so it is one value.
+        eyebrow: ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.08em", fontWeight: "600" }],
+        // Table cell and table header. 14/20 in a py-3 cell is the 44px row
+        // DESIGN.md section 4 specifies; 15/26 made every row 54px and wrapped
+        // a job title onto three loose lines.
+        table: ["0.875rem", { lineHeight: "1.25rem" }],
+        "table-head": ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.06em", fontWeight: "600" }],
       },
       boxShadow: {
         // ELEVATION IS FOR THINGS THAT FLOAT, AND FOR NOTHING ELSE.

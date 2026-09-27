@@ -161,7 +161,7 @@ export function EmploymentHistoryCard() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Employment history</CardTitle>
+          <CardTitle>Employment history</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <InlineError>
@@ -178,7 +178,7 @@ export function EmploymentHistoryCard() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Employment history</CardTitle>
+          <CardTitle>Employment history</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm">Loading.</p>
@@ -194,7 +194,7 @@ export function EmploymentHistoryCard() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Lock className="h-4 w-4" aria-hidden="true" />
-            <CardTitle className="text-base">Employment history</CardTitle>
+            <CardTitle>Employment history</CardTitle>
           </div>
           <CardDescription>
             Submitted on{" "}
@@ -289,7 +289,7 @@ export function EmploymentHistoryCard() {
       <CardHeader>
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-          <CardTitle className="text-base">Employment history</CardTitle>
+          <CardTitle>Employment history</CardTitle>
         </div>
         <CardDescription>
           Employers verify previous employment before making an offer. Tell us

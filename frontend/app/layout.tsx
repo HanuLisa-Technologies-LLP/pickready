@@ -6,7 +6,12 @@ import { ChunkRecovery } from "@/components/chunk-recovery";
 import { AuthProvider } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-provider";
 import { ToastProvider } from "@/components/ui/toast";
-import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
+import {
+  LANDING_TITLE,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_URL,
+} from "@/lib/site";
 
 /**
  * Three faces, each with one job (DESIGN.md section 3).
@@ -61,7 +66,7 @@ export const metadata: Metadata = {
    */
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "Vivekium, know every candidate before you meet them",
+    default: LANDING_TITLE,
     template: "%s | Vivekium",
   },
   description: SITE_DESCRIPTION,
@@ -75,9 +80,11 @@ export const metadata: Metadata = {
     type: "website",
     siteName: SITE_NAME,
     url: "/",
-    title: "Vivekium, know every candidate before you meet them",
-    description:
-      "Rank every applicant against the role, run a structured AI assessment, and read one clear report per candidate.",
+    // The same title and description the home page states, from `lib/site`,
+    // so a page that inherits this card and the home page describe the
+    // product in one sentence rather than two.
+    title: LANDING_TITLE,
+    description: SITE_DESCRIPTION,
     // No `images` entry here on purpose. `app/opengraph-image.tsx` generates
     // the card, and file-based metadata takes precedence over this object in
     // Next, so a path written here would either be ignored or would have to
@@ -86,9 +93,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Vivekium, know every candidate before you meet them",
-    description:
-      "Rank every applicant against the role, run a structured AI assessment, and read one clear report per candidate.",
+    title: LANDING_TITLE,
+    description: SITE_DESCRIPTION,
     // `twitter:image` is deliberately absent for the same reason: X falls back
     // to og:image, which the generated card supplies.
   },

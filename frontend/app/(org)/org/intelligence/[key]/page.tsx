@@ -71,7 +71,7 @@ function MetricCard({ metric }: { metric: IntelligenceMetric }) {
           No data yet: {metric.status_reason}
         </p>
       ) : (
-        <p className="mt-3 text-2xl font-bold tracking-tight">
+        <p className="mt-3 text-2xl font-semibold tabular-nums">
           {formatValue(metric)}
         </p>
       )}

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildJobCreatePayload, type JobFormValues } from "./job-payload";
+import {
+  buildJdGeneratePayload,
+  buildJobCreatePayload,
+  type JobFormValues,
+  optionalNumber,
+} from "./job-payload";
 
 const JD = `## Description
 Build reliable recruitment platform services.
@@ -69,5 +74,36 @@ describe("buildJobCreatePayload", () => {
     expect(payload.experience_min_years).toBeNull();
     expect(payload.experience_max_years).toBeNull();
     expect(payload.jd_markdown).toBeNull();
+  });
+});
+
+describe("optionalNumber", () => {
+  it("keeps a zero instead of turning it into null", () => {
+    expect(optionalNumber("0")).toBe(0);
+  });
+  it("returns null only for a genuinely empty box", () => {
+    expect(optionalNumber("")).toBeNull();
+    expect(optionalNumber("   ")).toBeNull();
+  });
+  it("returns null rather than NaN for text that is not a number", () => {
+    expect(optionalNumber("four")).toBeNull();
+  });
+});
+
+describe("buildJdGeneratePayload", () => {
+  it("sends a zero-year minimum and maximum as 0, not null", () => {
+    const payload = buildJdGeneratePayload(
+      { ...completeForm, experience_min_years: "0", experience_max_years: "0" },
+      "a short brief",
+    );
+    expect(payload.experience_min_years).toBe(0);
+    expect(payload.experience_max_years).toBe(0);
+  });
+  it("agrees with the create payload about the band", () => {
+    const form = { ...completeForm, experience_min_years: "0", experience_max_years: "5" };
+    const generate = buildJdGeneratePayload(form, "");
+    const create = buildJobCreatePayload(form);
+    expect(generate.experience_min_years).toBe(create.experience_min_years);
+    expect(generate.experience_max_years).toBe(create.experience_max_years);
   });
 });

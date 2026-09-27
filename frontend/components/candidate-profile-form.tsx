@@ -435,7 +435,7 @@ export function CandidateProfileForm({
       {payload.definition.sections.map((section) => (
         <Card key={section.key}>
           <CardHeader>
-            <CardTitle className="text-base">{section.title}</CardTitle>
+            <CardTitle>{section.title}</CardTitle>
             {section.description ? (
               <CardDescription>{section.description}</CardDescription>
             ) : null}
@@ -464,7 +464,7 @@ export function CandidateProfileForm({
         // wording is the server's, verbatim.
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Your consent</CardTitle>
+            <CardTitle>Your consent</CardTitle>
             <CardDescription>
               Your profile is complete once you have agreed to the required
               items. Each one is recorded separately with the date you agreed.

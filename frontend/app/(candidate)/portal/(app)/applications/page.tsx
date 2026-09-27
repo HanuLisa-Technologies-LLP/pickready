@@ -405,7 +405,7 @@ function ApplicationsView() {
             if (rows.length === 0) return null;
             return (
               <section key={group.key} aria-label={group.title}>
-                <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+                <h2 className="type-eyebrow text-brand-600">
                   {group.title}
                 </h2>
                 <p className="mb-4 mt-1.5 text-sm">{group.blurb}</p>

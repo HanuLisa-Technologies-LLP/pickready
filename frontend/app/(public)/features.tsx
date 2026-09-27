@@ -10,24 +10,35 @@ import {
 import { Reveal, RevealStagger, StaggerItem } from "@/components/motion";
 import { FeatureCard } from "./feature-card";
 
+/**
+ * Six capabilities, each one a claim about the product as it ships.
+ *
+ * REWIRED 2026-09-28. Three cards had stopped being true: the "one
+ * conversation" card described the retired adaptive interview rather than the
+ * one proctored, server-timed assessment; the profile card promised a profile
+ * "theirs to take elsewhere", which was the cross-employer reuse layer that is
+ * now deleted; and the drafts card promised every email is edited before it is
+ * sent, while the invitation is drafted and sent by a worker. Each now says
+ * what the product does.
+ */
 const FEATURES = [
   {
     icon: Database,
     title: "Candidate databank",
     description:
-      "Applied, sourced and uploaded candidates share one pool. Everyone is parsed and matched the same way, whichever door they came through.",
+      "Applicants, sourced resumes and databank uploads are all read against the same skills. A candidate who has not applied is labelled as not having applied, until they do.",
   },
   {
     icon: Layers,
-    title: "One conversation, not four bots",
+    title: "One assessment, every skill asked",
     description:
-      "Technical depth and behavioural evidence come out of a single interview that follows what the candidate says. Nobody is handed four separate threads to finish.",
+      "One proctored session asks about every skill the team saved, in a fixed order the server times. Answers are typed or spoken prose, with multiple choice and fill in the blank questions beside them.",
   },
   {
     icon: FileCheck2,
-    title: "One profile, many applications",
+    title: "One resume, many applications",
     description:
-      "A candidate keeps a main resume and a profile they fill in once, and it stays theirs to take elsewhere. Each application is an immutable snapshot of what was actually sent.",
+      "A candidate keeps a main resume and reuses it on every application. Each application is a snapshot of what was actually sent, and a job's skills hold still once real applications arrive.",
   },
   {
     icon: GitBranch,
@@ -37,9 +48,9 @@ const FEATURES = [
   },
   {
     icon: MessagesSquare,
-    title: "Drafted, then edited by you",
+    title: "Drafted, then decided by you",
     description:
-      "Job descriptions and lifecycle emails arrive as drafts. Your team edits before anything is published or sent, and every send is logged.",
+      "The job description and its skills arrive as drafts, and nothing is published until your team has edited and saved them. Every email and message to a candidate is logged.",
   },
   {
     icon: ShieldCheck,

@@ -5,6 +5,7 @@ import { DotPattern } from "@/components/magicui";
 import { FadeIn, Pressable, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 
 /**
  * The capabilities under the hero. Words, never client names, and never a
@@ -15,14 +16,21 @@ import { Button } from "@/components/ui/button";
  * decoration: it carries no transition and it asks the reader to wait for a
  * word to come round again. The same eight words in a hairline grid say more,
  * hold still, and read at 375px.
+ *
+ * REWIRED 2026-09-28 onto the product as it ships. "Semantic matching" became
+ * AI Match on resume evidence, "Structured assessment" the one proctored
+ * assessment, "Ten stage pipeline" a count the pipeline no longer has (the
+ * sourced stage and hold sit beside the ten), and "Interview probes" moved
+ * into the PRISM Report's gap analysis where they now live. The Skills step
+ * and the Proctoring Report joined, because they are what a buyer meets.
  */
 const CAPABILITIES = [
-  "Resume parsing",
-  "Semantic matching",
-  "Structured assessment",
+  "JD and Skills",
+  "AI Match on resume evidence",
+  "Proctored assessment",
+  "Typed or spoken answers",
   "PRISM Report",
-  "Ten stage pipeline",
-  "Interview probes",
+  "Proctoring Report",
   "Candidate databank",
   "Compliance vault",
 ];
@@ -55,7 +63,7 @@ export function Hero() {
 
       <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 sm:pt-20 lg:px-10 lg:pb-24">
         <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-14">
-          <FadeIn className="max-w-2xl">
+          <FadeIn className="min-w-0 max-w-2xl">
             {/* Master directive section 0: no 3D model or brand mark may sit
                 over or above the hero headline. The headline leads; the brand
                 mark lives in the site header only.
@@ -80,30 +88,55 @@ export function Hero() {
             </h1>
 
             <p className="mt-6 max-w-xl text-pretty text-lg leading-8">
-              Vivekium reads every applicant against the role, runs a
-              structured assessment built from the job itself, and hands your
-              team one readable report per candidate. Plain language, no scores
-              to argue about.
+              Vivekium reads every resume against the skills your team saved
+              for the role, assesses the candidates you invite in one proctored
+              session built from those skills, and hands you a PRISM Report per
+              candidate. Plain language, no scores to argue about.
             </p>
 
+            {/* An employer is GIVEN a workspace, so the primary action asks
+                for one; `/register` is candidate sign-up and used to sit
+                here under "Get started". */}
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Pressable>
                 <Button asChild size="xl" className="group">
-                  <Link href="/register?role=candidate">
-                    Get started
+                  <a
+                    href={REQUEST_ACCESS_HREF}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Request access
                     <ArrowRight
                       className="transition-transform duration-150 group-hover:translate-x-0.5"
                       aria-hidden="true"
                     />
-                  </Link>
+                  </a>
                 </Button>
               </Pressable>
               <Pressable>
                 <Button asChild size="xl" variant="outline">
-                  <Link href="/login?initial_context=all">Log in</Link>
+                  <Link href="/login">Log in</Link>
                 </Button>
               </Pressable>
             </div>
+
+            <p className="mt-5 text-sm">
+              Looking for a role?{" "}
+              <Link
+                href="/employers"
+                className="font-medium underline underline-offset-4 hover:text-brand-600"
+              >
+                See the employers hiring now
+              </Link>{" "}
+              or{" "}
+              <Link
+                href="/register"
+                className="font-medium underline underline-offset-4 hover:text-brand-600"
+              >
+                create a candidate account
+              </Link>
+              .
+            </p>
 
             <p className="mt-7 flex items-start gap-2 text-sm">
               <ShieldCheck
@@ -115,7 +148,12 @@ export function Hero() {
             </p>
           </FadeIn>
 
-          <FadeIn delay={0.08} className="relative">
+          {/* `min-w-0` on both grid items: the panel's evidence line is
+              truncated text, and a truncated line's min-content is its FULL
+              width, so without it the single mobile column grew to fit the
+              longest evidence line and pushed the whole hero past a 390px
+              screen. */}
+          <FadeIn delay={0.08} className="relative min-w-0">
             <HeroPanel />
           </FadeIn>
         </div>
@@ -155,12 +193,36 @@ export function Hero() {
  * The hero's product panel: a stylised candidate list. It is illustrative, so
  * every value is a word label, exactly as the real product renders it. No
  * number appears here, by design.
+ *
+ * Each row carries the AI Match word AND the skills its resume evidences,
+ * because that pair is what the ranked table actually shows: a grade is never
+ * presented without the evidence it rests on.
  */
 const PANEL_ROWS = [
-  { name: "Priya N.", rating: "Highly Matching", tone: "rating1" },
-  { name: "Daniel A.", rating: "Matching", tone: "rating2" },
-  { name: "Sofia R.", rating: "Matching", tone: "rating2" },
-  { name: "Tomas K.", rating: "Moderately Matching", tone: "rating3" },
+  {
+    name: "Priya N.",
+    rating: "Highly Matching",
+    tone: "rating1",
+    evidence: "Spark, Airflow, Data modelling",
+  },
+  {
+    name: "Daniel A.",
+    rating: "Matching",
+    tone: "rating2",
+    evidence: "Kafka, SQL",
+  },
+  {
+    name: "Sofia R.",
+    rating: "Matching",
+    tone: "rating2",
+    evidence: "Airflow, Python",
+  },
+  {
+    name: "Tomas K.",
+    rating: "Moderately Matching",
+    tone: "rating3",
+    evidence: "SQL",
+  },
 ] as const;
 
 function HeroPanel() {
@@ -178,7 +240,7 @@ function HeroPanel() {
             {/* No `opacity-*` on text anywhere in this file. Hierarchy is
                 size and weight; DESIGN.md section 3 keeps every text token at
                 full ink. */}
-            <p className="text-xs">Applicants ranked by fit</p>
+            <p className="text-xs">Applicants ranked by AI Match</p>
           </div>
           <Badge variant="brand">Live</Badge>
         </div>
@@ -196,8 +258,13 @@ function HeroPanel() {
                   >
                     {row.name.slice(0, 1)}
                   </span>
-                  <span className="truncate text-sm font-medium">
-                    {row.name}
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">
+                      {row.name}
+                    </span>
+                    <span className="block truncate text-xs">
+                      Evidence: {row.evidence}
+                    </span>
                   </span>
                 </div>
                 <Badge variant={row.tone} className="shrink-0">
@@ -209,7 +276,7 @@ function HeroPanel() {
         </Stagger>
 
         <div className="border-t border-border px-5 py-4 text-xs font-medium">
-          Rated in words, never in numbers.
+          Rated in words and backed by resume evidence, never a number.
         </div>
       </div>
     </div>

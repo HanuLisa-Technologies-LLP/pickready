@@ -3,8 +3,10 @@
 WHY A ROW, AND WHY INSERT-ONLY
 ------------------------------
 The skills of a job (`job_competencies`) stay editable until the first
-candidate STARTS the assessment. At that instant `assessment_contract.
-lock_contract` writes one of these rows: the full skill list with each skill's
+candidate genuinely APPLIES (CONTRACT v10; it was the first START until
+2026-09-28). In that application's transaction `assessment_contract.
+freeze_at_application` writes one of these rows (`lock_contract` at a start
+is the backstop for a job that had no saved skills when it was applied to): the full skill list with each skill's
 hidden priority and evidence line, the hidden role summary, the grade, and a
 sha256 digest over that content. From then on Vaada (the conversation) and Miti
 (the grade) read THIS row for every conversation bound to it
@@ -19,8 +21,10 @@ so the answer no longer depends on rows nobody froze.
 
 IMMUTABILITY IS IN THE DATABASE, NOT IN THIS FILE. Migration 0118 revokes
 UPDATE from the application role and installs `job_skill_snapshot_is_immutable`,
-a BEFORE UPDATE OR DELETE trigger: an UPDATE always raises, and a DELETE raises
-unless it is the cascade of the job or tenant being deleted (a nested trigger).
+a BEFORE UPDATE OR DELETE trigger: an UPDATE raises (0131 admits exactly one,
+the ON DELETE SET NULL of `locked_by_link_id`, nested and changing nothing
+else), and a DELETE raises unless it is the cascade of the job or tenant being
+deleted (a nested trigger).
 A rule enforced only in a service is a rule the next writer does not know
 about; the BGV employment table taught that and this follows it.
 
@@ -40,18 +44,28 @@ from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 
 __all__ = [
     "JobSkillSnapshot",
+    "SNAPSHOT_SOURCE_APPLICATION",
     "SNAPSHOT_SOURCE_LOCK",
     "SNAPSHOT_SOURCE_MIGRATION",
     "SNAPSHOT_SOURCES",
 ]
 
-#: Written by `assessment_contract.lock_contract` at a candidate's start.
+#: Written by `assessment_contract.lock_contract` at a candidate's start: the
+#: idempotent backstop since CONTRACT v10, which takes a snapshot only for a
+#: job whose first application predated its saved skills.
 SNAPSHOT_SOURCE_LOCK = "lock"
 #: Written by migration 0118 for a job that already had a started assessment,
 #: from the exact rows those candidates were questioned against.
 SNAPSHOT_SOURCE_MIGRATION = "migration"
+#: Written by `assessment_contract.freeze_at_application` in the transaction of
+#: the first GENUINE application (CONTRACT v10, migration 0131).
+SNAPSHOT_SOURCE_APPLICATION = "application"
 #: Mirrored by `ck_job_skill_snapshots_source`.
-SNAPSHOT_SOURCES: tuple[str, ...] = (SNAPSHOT_SOURCE_LOCK, SNAPSHOT_SOURCE_MIGRATION)
+SNAPSHOT_SOURCES: tuple[str, ...] = (
+    SNAPSHOT_SOURCE_LOCK,
+    SNAPSHOT_SOURCE_MIGRATION,
+    SNAPSHOT_SOURCE_APPLICATION,
+)
 
 
 class JobSkillSnapshot(Base, UUIDPKMixin, CreatedAtMixin):
@@ -62,6 +76,7 @@ class JobSkillSnapshot(Base, UUIDPKMixin, CreatedAtMixin):
         UniqueConstraint("job_id", "version", name="uq_job_skill_snapshots_version"),
         Index("ix_job_skill_snapshots_tenant", "tenant_id"),
         Index("ix_job_skill_snapshots_job", "job_id"),
+        Index("ix_job_skill_snapshots_locked_by_link", "locked_by_link_id"),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -88,8 +103,21 @@ class JobSkillSnapshot(Base, UUIDPKMixin, CreatedAtMixin):
     #: equals this one. `assessment_contract.compute_digest` is the formula.
     digest: Mapped[str] = mapped_column(String(64), nullable=False)
     #: One of `SNAPSHOT_SOURCES`.
-    source: Mapped[str] = mapped_column(String(10), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
     #: The conversation whose start took the lock. NULL for a migrated
-    #: snapshot, which several started conversations may share.
+    #: snapshot, which several started conversations may share, and for one
+    #: frozen at an application.
     locked_by_conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    #: The application whose write took the freeze (`source='application'`).
+    #: SET NULL when that application is deleted (a candidate's erasure): the
+    #: snapshot is every other candidate's contract and outlives it. Migration
+    #: 0131's trigger admits exactly that one referential UPDATE.
+    locked_by_link_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "job_candidate_links.id",
+            ondelete="SET NULL",
+            name="fk_job_skill_snapshots_locked_by_link",
+        ),
+    )
     locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

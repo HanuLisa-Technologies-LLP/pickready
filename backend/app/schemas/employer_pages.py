@@ -13,6 +13,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.jobs import PostingSkillBucketOut
+
 
 class EmployerCardOut(BaseModel):
     """One search result on the public employer directory."""
@@ -53,6 +55,10 @@ class EmployerOpenRoleOut(BaseModel):
     #: Absolute form of the same link, from the one builder
     #: (api/jobs.public_job_url), for sharing off-site.
     apply_url: str
+    #: The posting's skills by NAME (CONTRACT v10), three buckets in order, or
+    #: EMPTY when the job has no saved skills. Names only: never an evidence
+    #: line, a priority or the role summary.
+    skill_buckets: list[PostingSkillBucketOut] = []
 
 
 class EmployerPageOut(BaseModel):

@@ -109,9 +109,10 @@ async def assign(world: fx.World, key: str, assignment_role: str) -> None:
 
 
 async def lock(world: fx.World) -> None:
-    """A snapshot row, which IS the lock (D5). Written directly: this is the
-    state a candidate's first start leaves, and the tests here are about what
-    the routes do with it, not about how the start takes it."""
+    """A snapshot row, which IS the freeze (CONTRACT v10). Written directly:
+    this is the state a candidate's first genuine application leaves, and the
+    tests here are about what the routes do with it, not about how the apply
+    path takes it (`tests/test_freeze_at_application.py` is about that)."""
     async with fx.sessions()() as session:
         async with session.begin():
             async with superadmin_scope(session):
@@ -119,7 +120,7 @@ async def lock(world: fx.World) -> None:
                     text(
                         "INSERT INTO job_skill_snapshots (id, tenant_id, job_id, version, "
                         "skills_json, grade, digest, source, locked_at) VALUES (:i, :t, :j, "
-                        "1, '[]'::jsonb, 'managerial', :d, 'lock', now())"
+                        "1, '[]'::jsonb, 'managerial', :d, 'application', now())"
                     ),
                     {"i": uuid.uuid4(), "t": world.tenant, "j": world.job, "d": "a" * 64},
                 )

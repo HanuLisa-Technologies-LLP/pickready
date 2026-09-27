@@ -52,6 +52,7 @@ from app.schemas.auth import (
 from app.services import auth_sessions, candidate_identity, login_context
 from app.services import firebase_auth
 from app.services import rbac
+from app.services import staff_invites
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
@@ -171,6 +172,10 @@ async def _finalize_single(
     # flips invited -> active).
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    # ...and the INVITATION row learns about it too, or the staff table reports
+    # "Pending" for ever beside an account that is signed in and working
+    # (services/staff_invites carries the full account of why).
+    await staff_invites.accept_pending_invite(session, user.id)
     # EVERY candidate sign-in makes sure the person has exactly one candidate
     # record, through the one resolver. Idempotent: a linked record is returned
     # untouched. It also repairs an account whose record was erased, and it is

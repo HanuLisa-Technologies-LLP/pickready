@@ -33,7 +33,14 @@ export type JobFormValues = {
   jd_markdown: string;
 };
 
-const optionalNumber = (value: string): number | null => {
+/**
+ * A numeric form field as the API wants it: the number, or null when the box
+ * is empty. Exported because the AI brief hand-rolled `Number(value) || null`,
+ * and `0 || null` is null: a recruiter who typed 0 (legal, `ge=0`) sent
+ * nothing and got a 422 under a toast blaming the AI. One coercion, used by
+ * both payloads, is what stops that coming back (PR #5).
+ */
+export const optionalNumber = (value: string): number | null => {
   const text = value.trim();
   if (!text) return null;
   const number = Number(text);
@@ -83,5 +90,25 @@ export function buildJobCreatePayload(form: JobFormValues) {
     experience_max_years: optionalNumber(form.experience_max_years),
     jd_markdown: form.jd_markdown.trim() || null,
     reporting_to: form.reporting_to.trim() || null,
+  };
+}
+
+/**
+ * The Create-JD brief sent to `POST /jobs/generate-jd`. Lives beside
+ * `buildJobCreatePayload` because the two carry the same experience band, and
+ * when only one was built here the other drifted into a coercion that lost
+ * zero. `brief` is the free-text Brief box; the API takes it as the
+ * `key_requirements` alias it folds into `skills`.
+ */
+export function buildJdGeneratePayload(form: JobFormValues, brief: string) {
+  return {
+    title: form.title,
+    department: form.department || null,
+    grade: form.grade || null,
+    skills: skillsToArray(form.skills),
+    key_requirements: brief,
+    reporting_to: form.reporting_to || null,
+    experience_min_years: optionalNumber(form.experience_min_years),
+    experience_max_years: optionalNumber(form.experience_max_years),
   };
 }

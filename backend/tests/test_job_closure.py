@@ -266,7 +266,7 @@ async def _close(monkeypatch, job, reason=None):
 
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api, "_get_visible_job", _fake_visible)
-    monkeypatch.setattr(jobs_api, "_invalidate_public_job", _fake_invalidate)
+    monkeypatch.setattr(jobs_api, "invalidate_public_job", _fake_invalidate)
     monkeypatch.setattr(
         jobs_api, "get_settings",
         lambda: SimpleNamespace(frontend_url="https://readypick.ai"),

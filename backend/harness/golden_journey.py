@@ -96,13 +96,18 @@ SWOT = {
 }
 
 #: The ordered gates. The pytest module judges state at every one of these,
-#: the harness records each as a trajectory stage.
+#: the harness records each as a trajectory stage. CONTRACT v10's order: the
+#: JD, the skills drafted from it, the SWOT as separate intelligence (its save
+#: drafts nothing), Save Skills, the Final Job Posting preview, publish, and
+#: the first genuine application FREEZES the JD and skills; the start binds
+#: the snapshot the application took.
 GATES = (
     "job_created",
     "jd_saved",
-    "swot_saved",
     "skills_drafted",
+    "swot_saved",
     "skills_saved",
+    "posting_previewed",
     "job_published",
     "applied",
     "matched",
@@ -578,6 +583,18 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
     _expect("save_jd", status, body, 200)
     gate("jd_saved", state)
 
+    # Create asked Sutra for a draft from the JD, after its commit; the JD save
+    # found it already running and asked for nothing more. No SWOT exists yet.
+    _run_dispatched(state, "pickready.draft_job_skills")
+    status, body = client.call("read_skills", "GET", f"{ASSESS}/jobs/{state.job}/skills")
+    _expect("read_skills", status, body, 200)
+    if body.get("draft_status") != "drafted":
+        raise JourneyError(f"the skills draft did not land: {body}")
+    state.responses["skills_drafted"] = body
+    gate("skills_drafted", state)
+
+    # The SWOT: separate internal intelligence, saved independently. Its save
+    # drafts nothing; it may only OFFER a re-draft, which nobody asks for here.
     status, body = client.call("read_swot", "GET", f"{ASSESS}/jobs/{state.job}/swot-analysis")
     _expect("read_swot", status, body, 200)
     status, body = client.call(
@@ -587,20 +604,23 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
         json={**SWOT, "expected_version": int(body.get("version") or 0)},
     )
     _expect("save_swot", status, body, 200)
+    if dispatch_mod.recorded_names().count("pickready.draft_job_skills") != 1:
+        raise JourneyError("a SWOT save asked for a skills draft")
     gate("swot_saved", state)
-
-    _run_dispatched(state, "pickready.draft_job_skills")
-    status, body = client.call("read_skills", "GET", f"{ASSESS}/jobs/{state.job}/skills")
-    _expect("read_skills", status, body, 200)
-    if body.get("draft_status") != "drafted":
-        raise JourneyError(f"the skills draft did not land: {body}")
-    state.responses["skills_drafted"] = body
-    gate("skills_drafted", state)
 
     status, body = client.call("save_skills", "POST", f"{ASSESS}/jobs/{state.job}/skills/save")
     _expect("save_skills", status, body, 200)
     state.responses["skills_saved"] = body
     gate("skills_saved", state)
+
+    status, body = client.call(
+        "posting_preview", "GET", f"{ASSESS}/jobs/{state.job}/posting-preview"
+    )
+    _expect("posting_preview", status, body, 200)
+    if not body.get("skills_saved") or body.get("publish_blocked_reason") is not None:
+        raise JourneyError(f"the Final Job Posting is not ready to publish: {body}")
+    state.responses["posting_preview"] = body
+    gate("posting_previewed", state)
 
     status, body = client.call("publish", "POST", f"{V1}/jobs/{state.job}/publish")
     _expect("publish", status, body, 200)
@@ -610,10 +630,17 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
     # ── Two candidates upload a resume and apply ──────────────────────────
     state.link = _apply(client, state, "candidate", RESUME_LINES, RESUME_FILENAME)
     state.rival_link = _apply(client, state, "rival", RIVAL_RESUME_LINES, RIVAL_RESUME_FILENAME)
+    # CONTRACT v10: the FIRST genuine application froze the JD and the skills
+    # in its own transaction; the second added nothing. The team sees it.
+    client.as_staff()
+    status, body = client.call("setup_after_apply", "GET", f"{ASSESS}/jobs/{state.job}/setup")
+    _expect("setup_after_apply", status, body, 200)
+    if not body.get("frozen") or not body.get("frozen_reason"):
+        raise JourneyError(f"the first application did not freeze the job: {body}")
+    state.responses["frozen_setup"] = body
     gate("applied", state)
 
     # ── AI Matching (Yukti, the resume stage) ─────────────────────────────
-    client.as_staff()
     status, body = client.call("run_matching", "POST", f"{V1}/matching/jobs/{state.job}/run")
     _expect("run_matching", status, body, 202)
     # Publish asked for a run too; both read the same saved skills.

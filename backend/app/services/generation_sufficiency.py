@@ -56,7 +56,7 @@ on a public page, neutral and precise in an internal report.
 | services/jd_generation        | jd_document.txt                 | jd_generation             | public           | `jd_document_states` |
 | services/jd_generation        | jd_generation_system.txt        | jd_generation             | public           | `jd_json_states` |
 | services/gap_analysis         | report_gap_probes.txt           | report_synthesis          | internal         | `gap_probe_state` |
-| services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `swot_analysis.is_saved` (a saved SWOT) |
+| services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `skills_draft_input_state` (a JD to draft from; the SWOT is optional since CONTRACT v10) |
 | services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
 | assessment_formats/coding_generation | coding_question_generation.txt | coding_question_generation | candidate-facing | `code_execution.is_enabled()` and a skill name and evidence line |
 | services/yukti/judge          | yukti_matching_system.txt       | yukti_matching            | internal         | `grounding` over every tag and quote; a failure is `not_assessed`, never a default |
@@ -114,7 +114,9 @@ __all__ = [
     "EXAMPLES_HEADING",
     "GATED_PROMPTS",
     "strip_bad_examples",
+    "SKILLS_DRAFT_MIN_JD_WORDS",
     "SWOT_MIN_JD_WORDS",
+    "skills_draft_input_state",
     "swot_input_state",
     "GENERIC_STRENGTHS_PLACEHOLDER",
     "META_COMMENTARY_PHRASES",
@@ -292,6 +294,11 @@ EMPTY_STATE_COPY: dict[str, str] = {
     "job_description.skills.no_brief_detail": "To be confirmed by the hiring team.",
     "job_description.experience.no_brief_detail": (
         "To be confirmed by the hiring team."
+    ),
+    # job skills, internal: refused before the draft is dispatched
+    "skills.jd_too_thin": (
+        "Write the job description first. The skills are drafted from it, so "
+        "it needs a title and a few paragraphs describing the role."
     ),
     # job SWOT, internal: refused before the model is called
     "swot.jd_too_thin": (
@@ -845,22 +852,56 @@ SWOT_MIN_JD_WORDS = 60
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s.*$", re.MULTILINE)
 
 
+#: The JD body the Skills draft may be written from (CONTRACT v10: the JD is
+#: its one required input; the SWOT is optional context). Half of what a SWOT
+#: needs, because a draft names capabilities the JD already states rather than
+#: analysing the role, but still more than a title and its headings: a skills
+#: list proposed from nothing is a set of invented requirements every
+#: candidate would be assessed against.
+SKILLS_DRAFT_MIN_JD_WORDS = 30
+
+
+def _jd_body_words(jd_markdown: str | None) -> int:
+    """Words in the JD body with every markdown heading line removed: the
+    seven fixed section headings are structure, not description. The ONE
+    count both job gates below share."""
+    body = _HEADING_RE.sub(" ", str(jd_markdown or ""))
+    return len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'+#./-]*", body))
+
+
 def swot_input_state(title: str | None, jd_markdown: str | None) -> Sufficiency:
     """Whether a Job SWOT may be drafted from this job's title and JD document.
 
     Decided BEFORE the dispatch, so a refused request spends no model call and
-    leaves the SWOT row exactly as it was. Counts words in the body with every
-    markdown heading line removed: the seven fixed section headings are
-    structure, not description.
+    leaves the SWOT row exactly as it was.
     """
     if not _has_text(title):
         return _no("swot.jd_too_thin", "the job has no title")
-    body = _HEADING_RE.sub(" ", str(jd_markdown or ""))
-    words = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'+#./-]*", body))
+    words = _jd_body_words(jd_markdown)
     if words < SWOT_MIN_JD_WORDS:
         return _no(
             "swot.jd_too_thin",
             f"jd_body_words={words} below {SWOT_MIN_JD_WORDS}",
+        )
+    return _ok()
+
+
+def skills_draft_input_state(title: str | None, jd_markdown: str | None) -> Sufficiency:
+    """Whether Sutra may draft skills from this job's title and JD document.
+
+    Its OWN gate, separate from the SWOT's: since CONTRACT v10 the skills are
+    drafted from the JD whether or not a SWOT exists, so the SWOT's gate (and
+    the saved-SWOT requirement it used to stand behind) no longer decides it.
+    Decided BEFORE the dispatch and again in the worker before the model call,
+    over `jobs.jd_markdown`, the same text `sutra._payload` sends.
+    """
+    if not _has_text(title):
+        return _no("skills.jd_too_thin", "the job has no title")
+    words = _jd_body_words(jd_markdown)
+    if words < SKILLS_DRAFT_MIN_JD_WORDS:
+        return _no(
+            "skills.jd_too_thin",
+            f"jd_body_words={words} below {SKILLS_DRAFT_MIN_JD_WORDS}",
         )
     return _ok()
 

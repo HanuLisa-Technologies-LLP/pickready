@@ -177,7 +177,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
     <TooltipProvider delayDuration={150}>
       <div className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs font-semibold uppercase tracking-wide">
+          <label className="type-eyebrow">
             Sort by
             <select
               className="ml-2 h-9 rounded-md border border-input bg-background px-2 text-sm"
@@ -199,7 +199,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
             </select>
           </label>
 
-          <label className="text-xs font-semibold uppercase tracking-wide">
+          <label className="type-eyebrow">
             Source
             <select
               className="ml-2 h-9 rounded-md border border-input bg-background px-2 text-sm"
@@ -220,7 +220,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
             </select>
           </label>
 
-          <label className="text-xs font-semibold uppercase tracking-wide">
+          <label className="type-eyebrow">
             AI Match
             <select
               className="ml-2 h-9 rounded-md border border-input bg-background px-2 text-sm"

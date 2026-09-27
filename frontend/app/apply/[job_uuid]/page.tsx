@@ -38,6 +38,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PublicNotice, PublicShell } from "@/components/public-shell";
 import { JsonLd, compact } from "@/components/json-ld";
+import { JdDocument } from "@/components/jd-document";
+import {
+  POSTING_NARRATIVE,
+  PostingSkillsList,
+  postingSkillsFrom,
+} from "@/components/job-posting";
 import { Section } from "@/components/page-primitives";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -57,7 +63,20 @@ interface PublicJob {
   jd_json?: Record<string, unknown> | null;
   jd?: Record<string, unknown> | null;
   created_at?: string | null;
+  /** The canonical candidate-facing document (PublicJobOut.jd_markdown). */
+  jd_markdown?: string | null;
+  /** The job's skills by bucket, names only (CONTRACT v10): an empty list on
+   *  a job with no saved skills; read through `postingSkillsFrom`. */
+  skill_buckets?: unknown;
+  /** The company narrative, resolved by the server through the per-job
+   *  override and the company profile. Written for the applicant. */
+  about_company?: string | null;
+  work_life?: string | null;
+  benefits?: string | null;
 }
+
+const SECTION_HEADING =
+  "type-eyebrow text-brand-600";
 
 function unwrapJob(res: unknown): PublicJob | null {
   if (!res || typeof res !== "object") return null;
@@ -164,9 +183,7 @@ function JdBlock({ title, value }: { title: string; value: unknown }) {
   if (lines.length === 0) return null;
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
-        {title}
-      </h3>
+      <h3 className={SECTION_HEADING}>{title}</h3>
       {lines.length === 1 ? (
         <p className="whitespace-pre-line text-pretty text-sm leading-7">
           {lines[0]}
@@ -321,7 +338,14 @@ export default function PublicApplyPage() {
     [companyName, job.department].filter(Boolean).join(" · ") || "Open role";
 
   const readMinutes = readTimeMinutes(jd);
-  const hasJdContent = Object.values(jd).some((v) => asLines(v).length > 0);
+  const jdMarkdown = (job.jd_markdown ?? "").trim();
+  const hasJdContent =
+    Boolean(jdMarkdown) || Object.values(jd).some((v) => asLines(v).length > 0);
+  // Null for a legacy job with no saved skills: no skills section at all.
+  const postingSkills = postingSkillsFrom(job.skill_buckets);
+  const narrative = POSTING_NARRATIVE.filter((section) =>
+    (job[section.key] ?? "").trim()
+  );
 
   return (
     <PublicShell>
@@ -344,10 +368,10 @@ export default function PublicApplyPage() {
                 .toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+              <p className="type-eyebrow text-brand-600">
                 {companyName ?? "Hiring company"}
               </p>
-              <h1 className="mt-1.5 text-balance text-2xl font-bold tracking-tight sm:text-3xl">
+              <h1 className="mt-1.5 text-2xl font-semibold sm:text-3xl">
                 {job.title}
               </h1>
               <p className="mt-2 text-sm">{subtitle}</p>
@@ -394,17 +418,30 @@ export default function PublicApplyPage() {
             <Section title="About this role" description={subtitle} contentClassName="space-y-7">
                 {hasJdContent ? (
                   <>
-                    <JdBlock title="Job description" value={jd.description} />
-                    <JdBlock title="Role" value={jd.role} />
-                    <JdBlock title="Responsibilities" value={jd.responsibilities} />
-                    <JdBlock
-                      title="Accountabilities"
-                      value={jd.accountabilities}
-                    />
-                    <JdBlock title="Education" value={jd.education} />
-                    {asLines(jd.skills).length > 0 ? (
+                    {/* The canonical document, rendered the way the recruiter's
+                        Final Job Posting preview renders it. The per-section
+                        blocks below are the fallback for a job written before
+                        the one-document JD (2026-07-28). */}
+                    {jdMarkdown ? (
+                      <JdDocument markdown={jdMarkdown} />
+                    ) : (
+                      <>
+                        <JdBlock title="Job description" value={jd.description} />
+                        <JdBlock title="Role" value={jd.role} />
+                        <JdBlock
+                          title="Responsibilities"
+                          value={jd.responsibilities}
+                        />
+                        <JdBlock
+                          title="Accountabilities"
+                          value={jd.accountabilities}
+                        />
+                        <JdBlock title="Education" value={jd.education} />
+                      </>
+                    )}
+                    {!jdMarkdown && asLines(jd.skills).length > 0 ? (
                       <section className="space-y-2">
-                        <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+                        <h3 className="type-eyebrow text-brand-600">
                           Skills
                         </h3>
                         <div className="flex flex-wrap gap-1.5">
@@ -416,8 +453,20 @@ export default function PublicApplyPage() {
                         </div>
                       </section>
                     ) : null}
+                    <PostingSkillsList
+                      buckets={postingSkills}
+                      headingClassName={SECTION_HEADING}
+                      className="space-y-7"
+                    />
+                    {narrative.map((section) => (
+                      <JdBlock
+                        key={section.key}
+                        title={section.title}
+                        value={job[section.key]}
+                      />
+                    ))}
                     <section className="space-y-3">
-                      <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
+                      <h3 className="type-eyebrow text-brand-600">
                         At a glance
                       </h3>
                       <dl className="grid gap-x-6 gap-y-3 rounded-xl border border-border bg-secondary p-4 text-sm sm:grid-cols-2">
@@ -438,11 +487,25 @@ export default function PublicApplyPage() {
                     </section>
                   </>
                 ) : (
-                  <p className="text-sm">
-                    The employer has not published a detailed description for
-                    this role yet. Reach out to them if you need more context
-                    before applying.
-                  </p>
+                  <>
+                    <p className="text-sm">
+                      The employer has not published a detailed description
+                      for this role yet. Reach out to them if you need more
+                      context before applying.
+                    </p>
+                    <PostingSkillsList
+                      buckets={postingSkills}
+                      headingClassName={SECTION_HEADING}
+                      className="space-y-7"
+                    />
+                    {narrative.map((section) => (
+                      <JdBlock
+                        key={section.key}
+                        title={section.title}
+                        value={job[section.key]}
+                      />
+                    ))}
+                  </>
                 )}
                 <Separator />
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
