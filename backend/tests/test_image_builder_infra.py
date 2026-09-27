@@ -106,6 +106,7 @@ def test_the_role_grants_exactly_these_actions_and_nothing_else() -> None:
             "secretsmanager:GetSecretValue",
             "kms:Decrypt",
             "kms:Decrypt",
+            "kms:Decrypt",
             "kms:GenerateDataKey",
         ]
     )
@@ -149,10 +150,16 @@ def test_logs_go_to_its_own_group_and_the_secret_is_the_one_token() -> None:
 
 def test_every_decrypt_is_conditioned_on_the_service_it_passes_through() -> None:
     kms = [norm(body) for body in BUILD_STATEMENTS if any(a.startswith("kms:") for a in listed(body, "actions"))]
-    assert len(kms) == 2
+    assert len(kms) == 3
     for body in kms:
-        assert "resources = [var.kms_key_arn]" in body
         assert 'variable = "kms:ViaService"' in body
+    source = _statement("DecryptBuildArchivesThroughS3Only")
+    assert listed(source, "actions") == ["kms:Decrypt"]
+    assert "resources = [aws_kms_key.source.arn]" in source
+    assert 'values = ["s3.${var.region}.amazonaws.com"]' in source
+    for body in kms:
+        if body != source:
+            assert "resources = [var.kms_key_arn]" in body
     token = _statement("DecryptThatTokenThroughSecretsManagerOnly")
     assert 'variable = "kms:EncryptionContext:SecretARN"' in token
     assert "values = [var.huggingface_token_secret_arn]" in token
