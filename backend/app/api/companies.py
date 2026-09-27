@@ -45,6 +45,7 @@ from app.models.compliance import (
 )
 from app.models.enums import Role, UserStatus
 from app.models.invite import (
+    INVITE_ACCEPTED,
     INVITE_PENDING,
     INVITE_TTL_DAYS,
     StaffInvite,
@@ -808,7 +809,17 @@ async def deactivate_staff(
 # unknown until the token resolves, so these run under get_public_db and MUST
 # filter by the exact token hash and expose nothing beyond that one row.
 
-async def _resolve_invite(session: AsyncSession, token: str) -> StaffInvite:
+async def _resolve_invite(
+    session: AsyncSession, token: str, *, accepted_by: uuid.UUID | None = None
+) -> StaffInvite:
+    """The pending invitation behind a token, or the refusal a person reads.
+
+    `accepted_by` admits ONE non-pending state: an invitation already accepted
+    by that very user. Signing in as the invited user accepts the invitation
+    (`services/staff_invites`), and the /join page signs the invitee in BEFORE
+    it posts the acceptance, so without this the page's own second step would
+    be told its link "has already been used".
+    """
     invite = (
         await session.execute(
             select(StaffInvite).where(StaffInvite.token_hash == hash_invite_token(token))
@@ -821,6 +832,12 @@ async def _resolve_invite(session: AsyncSession, token: str) -> StaffInvite:
         revoked_at=invite.revoked_at,
         expires_at=invite.expires_at,
     )
+    if (
+        accepted_by is not None
+        and state == INVITE_ACCEPTED
+        and invite.user_id == accepted_by
+    ):
+        return invite
     if state != INVITE_PENDING:
         raise HTTPException(
             status_code=410,
@@ -867,11 +884,19 @@ async def accept_invite(
     and only by the very user it was issued to — a signed-in member of the
     tenant cannot burn someone else's invite.
     """
-    invite = await _resolve_invite(session, token)
+    invite = await _resolve_invite(session, token, accepted_by=user.user_id)
     if invite.user_id != user.user_id:
         raise HTTPException(
             status_code=403,
             detail="You're signed in as someone else. Sign out and use the invited email address.",
+        )
+    if invite.accepted_at is not None:
+        # The sign-in this page just performed accepted it already, and wrote
+        # the audit row then. Re-stamping would move the FIRST acceptance.
+        return InviteAcceptOut(
+            accepted=True,
+            role=invite.role,
+            company_name=await _tenant_name(session, invite.tenant_id),
         )
     invite.accepted_at = datetime.now(timezone.utc)
     await session.flush()

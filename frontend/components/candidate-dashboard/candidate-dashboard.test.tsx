@@ -79,10 +79,13 @@ describe("the candidate dashboard table", () => {
   it("renders the eight columns in the specified scanning order", async () => {
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
-    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    // Wait for the RENDERED headers, not merely for the call: `apiGet` has
+    // been called by the time the effect returns, before the response lands,
+    // so waiting on the call alone asserts against a table that has not
+    // received its data yet (PR #5, found failing on CI).
+    await waitFor(() => expect(screen.getAllByRole("columnheader")).toHaveLength(8));
 
     const headers = screen.getAllByRole("columnheader");
-    expect(headers).toHaveLength(8);
     // The order is the tab order and the decision order, both. Asserted as a
     // list rather than as a count, because eight columns in the wrong order is
     // still eight columns and breaks the triage read.
@@ -146,9 +149,14 @@ describe("the candidate dashboard table", () => {
     // candidate, so the list comes from the server and is never hardcoded.
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
-    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    // The options are rendered from `data.source_types`, which is null until
+    // the fetch RESOLVES, while the call itself happens before that. Waiting
+    // on the call raced one microtask and failed on CI with "Unable to find
+    // an accessible element with the role option and name Applied".
     for (const label of ["Applied", "Sourced", "Databank"]) {
-      expect(screen.getByRole("option", { name: label })).toBeTruthy();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: label })).toBeTruthy(),
+      );
     }
   });
 
@@ -222,9 +230,12 @@ describe("the candidate dashboard table", () => {
     // options are the server's grade words, and the request names the word.
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
-    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    // Served words, so wait for the RESPONSE to render them (the same race
+    // as the source filter above).
     for (const label of ["Highly Matching", "Matching", "Moderately Matching", "Not Matching"]) {
-      expect(screen.getByRole("option", { name: label })).toBeTruthy();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: label })).toBeTruthy(),
+      );
     }
     expect(screen.queryByRole("option", { name: "Hold" })).toBeNull();
 

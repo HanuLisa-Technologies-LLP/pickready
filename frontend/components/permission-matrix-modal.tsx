@@ -19,6 +19,7 @@ import { Loader2, Save } from "lucide-react";
 
 import { apiGet, apiPatch } from "@/lib/api";
 import type { StaffPermissions } from "@/lib/types";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +76,7 @@ export function PermissionMatrixModal({
   onSaved?: () => void;
 }) {
   const { toast } = useToast();
+  const { user, refresh } = useAuth();
   const [data, setData] = React.useState<StaffPermissions | null>(null);
   const [overrides, setOverrides] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(false);
@@ -124,7 +126,21 @@ export function PermissionMatrixModal({
       );
       setData(res);
       setOverrides({ ...res.overrides });
-      toast({ title: "Permissions saved", description: res.full_name ?? undefined });
+      // Editing YOUR OWN row changes what this very tab may do, and the auth
+      // context would otherwise keep the capability list it holds until its
+      // next revalidation, so the screen you just granted yourself stays
+      // locked in front of you (PR #5 item 2). A colleague's tab picks their
+      // change up on their next navigation (lib/auth-context).
+      const isSelf = !!user && res.user_id === user.id;
+      if (isSelf) await refresh();
+      toast({
+        title: "Permissions saved",
+        description: isSelf
+          ? "Your own access is updated."
+          : res.full_name
+            ? `${res.full_name} sees this within a minute, on their next page.`
+            : undefined,
+      });
       onOpenChange(false);
       onSaved?.();
     } catch (e) {
