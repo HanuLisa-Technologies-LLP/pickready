@@ -289,6 +289,40 @@ def has_open_turn(conversation: AssessmentConversation, prompts: list[Prompt]) -
     )
 
 
+async def current_question_id(
+    session: AsyncSession, conversation_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The question row the conversation's OPEN turn is about, or None.
+
+    The turn identity other packages may read, so they never re-derive "which
+    question is on screen" from the conversation columns themselves. None
+    before the first turn opens, once every item is asked, and for an unknown
+    conversation. A follow-up or re-ask names its parent question, the row an
+    answer to it is filed under (`current_row`).
+
+    Its caller is the proctoring audio route, which files a server-derived
+    event (speaking during a question that takes no spoken answer, a second
+    voice) against the question on screen when the chunk ARRIVED. A chunk
+    covers the seconds before it arrived, so a run of speech that straddles a
+    turn change is filed against the later question; the event's own time is
+    the record of when it happened.
+    """
+    conversation = await session.get(AssessmentConversation, conversation_id)
+    if conversation is None:
+        return None
+    link = await session.get(JobCandidateLink, conversation.job_candidate_link_id)
+    if link is None:
+        return None
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        return None
+    prompts = as_prompts(await conversation_prompts(session, job, link))
+    if not has_open_turn(conversation, prompts):
+        return None
+    row = current_row(conversation, prompts)
+    return row.id if row is not None else None
+
+
 async def open_turn(
     session: AsyncSession, conversation: AssessmentConversation, prompts: list[Prompt]
 ) -> None:
