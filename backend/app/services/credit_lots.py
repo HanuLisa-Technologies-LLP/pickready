@@ -149,9 +149,20 @@ async def open_lot(
             # uuid: the same inputs would spend different batches on different
             # runs. clock_timestamp() advances within the transaction, which
             # makes the order total and reproducible.
-            "VALUES (:id, :tid, :entry, clock_timestamp(), "
-            "CASE WHEN :expires THEN clock_timestamp() "
-            "+ make_interval(months => :months) END, :units, :units, :source)"
+            #
+            # ONE clock reading, taken once in the derived table. Two calls to
+            # clock_timestamp() in one statement are two readings, so the
+            # expiry was occasionally a microsecond past issued_at plus three
+            # months: a lot promised to expire at one instant expired at
+            # another (caught by test_credit_lots under full-suite load).
+            # INSERT ... SELECT gives the parameters no target column to infer
+            # a type from, so each one is cast (asyncpg would otherwise deduce
+            # text for a uuid column).
+            "SELECT CAST(:id AS uuid), CAST(:tid AS uuid), CAST(:entry AS uuid), "
+            "c.t, CASE WHEN CAST(:expires AS boolean) THEN c.t "
+            "+ make_interval(months => CAST(:months AS integer)) END, "
+            "CAST(:units AS integer), CAST(:units AS integer), CAST(:source AS text) "
+            "FROM (SELECT clock_timestamp() AS t) AS c"
         ),
         {
             "id": str(lot_id),

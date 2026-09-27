@@ -374,6 +374,40 @@ async def test_a_new_grant_opens_a_lot_that_expires_and_the_balance_matches() ->
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_every_lot_expires_exactly_three_months_after_it_was_issued() -> None:
+    """`issued_at` and `expires_at` come from ONE clock reading.
+
+    The insert used to call clock_timestamp() twice, and two calls are two
+    readings, so under load a lot expired a microsecond after the instant it
+    was promised (the full suite caught it once, 2026-09-28). Many grants in
+    one transaction give the clock every chance to move between the two.
+    """
+    engine, factory = await _factory_or_skip()
+    try:
+        async with factory() as session:
+            await _bypass(session)
+            tenant_id = await _tenant(session)
+            await session.commit()
+            for index in range(60):
+                assert await credits.grant(
+                    session,
+                    tenant_id=tenant_id,
+                    subunits=SUBUNITS_PER_CREDIT,
+                    idempotency_key=f"one-clock:{tenant_id}:{index}",
+                )
+            await session.commit()
+            lots = await credit_lots.live_lots(session, tenant_id)
+            assert len(lots) == 60
+            drifted = [
+                lot for lot in lots
+                if lot.expires_at != credit_lots.expiry_for(lot.issued_at)
+            ]
+            assert not drifted, f"{len(drifted)} lots expire off their promised instant"
+    finally:
+        await engine.dispose()
+
+
 # ── Concurrency ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
