@@ -6,61 +6,39 @@ import { Menu, X } from "lucide-react";
 
 import { Logo } from "@/components/brand";
 import { Button } from "@/components/ui/button";
+import { REQUEST_ACCESS_HREF } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
 /**
- * Nav items that are ANCHORS INTO THE LANDING PAGE. Every one of these needs
- * a section mounted at `/` to land on.
- *
- * THE BUG THIS FIXES: the header is rendered on about, insights, docs,
- * employers, privacy and terms, and it linked to `/#workflow`, `/#features`
- * and `/#pricing` while `/` served the holding page. Every one of those items
- * navigated to the construction screen and stopped there, site wide, with
- * nothing to tell the visitor that the target did not exist. They now render
- * only when the landing page is the thing being served.
- *
- * `#workflow` is not in this list even though the section exists: it is not
- * composed into the page (see workflow-showcase.tsx for why), so linking to it
- * would be the same dead end in a new place. A nav item is added back here
- * when something mounts its target, never in anticipation of one.
+ * The header's sections. The first three are ANCHORS INTO THE LANDING PAGE,
+ * and each names a section id that `landing-page.tsx` mounts;
+ * `lib/landing-links.test.ts` fails if one of them stops resolving. The rest
+ * are routes under `app/(public)/` that the proxy admits without a session.
  */
-const LANDING_NAV = [
+const NAV = [
   { href: "/#how-it-works", label: "How it works" },
   { href: "/#features", label: "Platform" },
   { href: "/#pricing", label: "Pricing" },
-];
-
-/** Items that resolve to a real route whatever `/` is currently serving. */
-const PAGE_NAV = [
   { href: "/about", label: "About" },
   { href: "/insights", label: "Insights" },
   { href: "/docs", label: "Docs" },
 ];
 
-const CONTACT_HREF = "mailto:manjuchro@gmail.com?subject=Vivekium%20enquiry";
-
-export interface SiteHeaderProps {
-  /**
-   * Whether `/` is serving the landing page rather than the holding page.
-   * Resolved from `NEXT_PUBLIC_LANDING_LIVE` by whoever renders the header,
-   * and defaulting to false so a caller that forgets it renders no dead link.
-   */
-  landingLive?: boolean;
-}
-
 /**
  * Public site header. Glass is used here and in the hero only, per
  * the public design system, and only once the page has scrolled so the top of
  * the page reads as one uninterrupted surface.
+ *
+ * TWO ACTIONS, NOT THREE. It carried Contact, Log in and "Get started", and
+ * "Get started" opened CANDIDATE sign-up: an employer who clicked it came out
+ * the other side as a candidate with no workspace. A company is given a
+ * workspace by Vivekium, so the primary action is Request access, and it is
+ * the same mailbox Contact opened, which is why Contact is not repeated beside
+ * it.
  */
-export function SiteHeader({ landingLive = false }: SiteHeaderProps) {
+export function SiteHeader() {
   const [scrolled, setScrolled] = React.useState(false);
   const [open, setOpen] = React.useState(false);
-
-  const nav = React.useMemo(
-    () => (landingLive ? [...LANDING_NAV, ...PAGE_NAV] : PAGE_NAV),
-    [landingLive]
-  );
 
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -85,7 +63,7 @@ export function SiteHeader({ landingLive = false }: SiteHeaderProps) {
           className="hidden items-center gap-1 md:flex"
           aria-label="Site sections"
         >
-          {nav.map((item) => (
+          {NAV.map((item) => (
             <a
               key={item.href}
               href={item.href}
@@ -98,15 +76,12 @@ export function SiteHeader({ landingLive = false }: SiteHeaderProps) {
 
         <div className="hidden items-center gap-2 md:flex">
           <Button asChild variant="ghost" size="sm">
-            <a href={CONTACT_HREF} target="_blank" rel="noopener noreferrer">
-              Contact
-            </a>
-          </Button>
-          <Button asChild variant="ghost" size="sm">
-            <Link href="/login?initial_context=all">Log in</Link>
+            <Link href="/login">Log in</Link>
           </Button>
           <Button asChild size="sm">
-            <Link href="/register?role=candidate">Get started</Link>
+            <a href={REQUEST_ACCESS_HREF} target="_blank" rel="noopener noreferrer">
+              Request access
+            </a>
           </Button>
         </div>
 
@@ -132,7 +107,7 @@ export function SiteHeader({ landingLive = false }: SiteHeaderProps) {
           className="glass border-t px-6 pb-6 pt-2 md:hidden"
         >
           <nav className="flex flex-col" aria-label="Site sections">
-            {nav.map((item) => (
+            {NAV.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
@@ -144,16 +119,13 @@ export function SiteHeader({ landingLive = false }: SiteHeaderProps) {
             ))}
           </nav>
           <div className="mt-4 flex flex-col gap-2">
-            <Button asChild variant="ghost">
-              <a href={CONTACT_HREF} target="_blank" rel="noopener noreferrer">
-                Contact us
-              </a>
-            </Button>
             <Button asChild variant="outline">
-              <Link href="/login?initial_context=all">Log in</Link>
+              <Link href="/login">Log in</Link>
             </Button>
             <Button asChild>
-              <Link href="/register?role=candidate">Get started</Link>
+              <a href={REQUEST_ACCESS_HREF} target="_blank" rel="noopener noreferrer">
+                Request access
+              </a>
             </Button>
           </div>
         </div>

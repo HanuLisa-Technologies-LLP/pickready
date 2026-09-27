@@ -50,7 +50,6 @@ EXTERNAL: dict[str, str] = {
     "OTEL_SERVICE_NAME": "read by the OpenTelemetry SDK",
     "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "read by third-party GenAI instrumentation",
     "BACKEND_INTERNAL_URL": "read by the frontend's same-origin API proxy, per request",
-    "NEXT_PUBLIC_LANDING_LIVE": "inlined into the frontend bundle at build time",
 }
 
 #: `Settings` fields deliberately NOT in `.env.example`, grouped by the reason.
