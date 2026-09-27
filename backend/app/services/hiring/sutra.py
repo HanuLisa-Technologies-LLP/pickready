@@ -4,10 +4,12 @@ WHAT SUTRA IS NOW (Vivekium release, owner decision D1)
 -------------------------------------------------------
 Two model calls and nothing else:
 
-    draft_skills      ONE call, task type `skills_drafting`, dispatched after the
-                      team first saves the Job SWOT. Proposes at most five
-                      skills per bucket (Must-have, Nice-to-have, Behavioural)
-                      from the JD, the saved SWOT and the Company Profile.
+    draft_skills      ONE call, task type `skills_drafting`, dispatched after a
+                      job is created with a JD, a JD is saved while the job
+                      has no skill row, or the team asks (CONTRACT v10).
+                      Proposes at most five skills per bucket (Must-have,
+                      Nice-to-have, Behavioural) from the JD and the Company
+                      Profile, with the SAVED SWOT as optional extra context.
     build_context     ONE call, task type `assessment_context`, made at Save
                       Skills BEFORE any row changes. Writes, per skill, one line
                       of what good evidence looks like and a priority inside its
@@ -26,7 +28,8 @@ WHAT THE MODEL IS GIVEN, AND WHAT IT IS NOT
 -------------------------------------------
 `_payload` is the one function that decides, so a reviewer reads it in one
 place: the title, the grade, the experience band, the JD document (capped), the
-JD's own required skills, the saved SWOT's four sections, the Company Profile
+JD's own required skills, the saved SWOT's four sections when the team has
+saved one (the key is ABSENT otherwise), the Company Profile
 narrative as copied onto the job (capped, and marked UNTRUSTED DATA in the
 instruction) and, only when the job's function has a Drishti profile, its
 derived context lines. A key is ABSENT rather than present and empty when there
@@ -475,6 +478,17 @@ def _evaluate_draft(
                         f'the source of {name!r} must be one of "jd", "swot" or "company"',
                     )
                 )
+            elif source == SOURCE_SWOT and not swot:
+                # No SWOT was given (CONTRACT v10: it is optional), so a skill
+                # attributed to it would be provenance nobody wrote.
+                defects.append(
+                    Defect(
+                        "source",
+                        location,
+                        f'no SWOT was given, so the source of {name!r} must be "jd" '
+                        'or "company"',
+                    )
+                )
     for bucket in (ppi.CATEGORY_MUST_HAVE, ppi.CATEGORY_BEHAVIOURAL):
         entries = candidate.get(bucket)
         if isinstance(entries, list) and not entries:
@@ -514,11 +528,14 @@ def _evaluate_draft(
 
 
 async def draft_skills(
-    session: AsyncSession, job: Job, swot: Mapping[str, str]
+    session: AsyncSession, job: Job, swot: Mapping[str, str] | None
 ) -> DraftResult:
     """ONE model call proposing the three buckets. Raises, never invents.
 
-    `swot` is the SAVED SWOT's sections. The operator kill switch
+    `swot` is the SAVED SWOT's sections, or None when the team has saved
+    none: the JD is the draft's one required input (CONTRACT v10), and with
+    no SWOT the `swot` key is ABSENT from the payload and the draft's
+    Weaknesses rule does not apply. The operator kill switch
     (`pipeline_halt`, stage `sutra_matrix`) runs first, so a halted stage
     spends nothing.
 

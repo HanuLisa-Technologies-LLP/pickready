@@ -68,6 +68,7 @@ from app.schemas.portal import (
 )
 from app.services import account_deletion
 from app.services import application_validation
+from app.services import assessment_contract
 from app.services import candidate_identity
 from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
@@ -138,8 +139,9 @@ class ApplyContextOut(BaseModel):
 def _portal_job_out(
     job: Job,
     tenant: Tenant | None,
-    company: Company | None = None,
-    application_id: uuid.UUID | None = None,
+    company: Company | None,
+    application_id: uuid.UUID | None,
+    skills: "tuple[assessment_contract.PostingBucket, ...]",
 ) -> PortalJobOut:
     """One place where a Job becomes the candidate-facing job payload.
 
@@ -148,8 +150,11 @@ def _portal_job_out(
     `/jobs/public/{id}`, plus the employer's About/Culture prose — a candidate
     deciding whether to apply is choosing the company as much as the role.
     Internal ATS fields (compensation, created_by, approval state, match
-    scores) are deliberately not carried over.
+    scores) are deliberately not carried over. The skills travel by NAME
+    only (CONTRACT v10), from `assessment_contract.posting_skills`.
     """
+    from app.api.jobs import posting_skill_buckets  # noqa: PLC0415
+
     return PortalJobOut(
         id=job.id,
         title=job.title,
@@ -171,6 +176,7 @@ def _portal_job_out(
         company_benefits=company.benefits_text if company else None,
         already_applied=application_id is not None,
         application_id=application_id,
+        skill_buckets=posting_skill_buckets(skills),
     )
 
 
@@ -399,12 +405,14 @@ async def portal_jobs(
     applications = await _applications_by_job(
         session, candidate.id, [job.id for job in jobs]
     )
+    postings = await assessment_contract.posting_skills(session, jobs)
     return PortalJobsOut(jobs=[
         _portal_job_out(
             job,
             tenants.get(job.tenant_id),
             companies.get(job.tenant_id),
             applications.get(job.id),
+            postings[job.id],
         )
         for job in jobs
     ])
@@ -428,7 +436,8 @@ async def portal_job(
         await session.execute(select(Company).where(Company.tenant_id == job.tenant_id))
     ).scalars().first()
     applications = await _applications_by_job(session, candidate.id, [job.id])
-    return _portal_job_out(job, tenant, company, applications.get(job.id))
+    postings = await assessment_contract.posting_skills(session, [job])
+    return _portal_job_out(job, tenant, company, applications.get(job.id), postings[job.id])
 
 
 # ── Self-service profile CRUD (Settings & Profile) ──────────────────────────
@@ -1733,6 +1742,18 @@ async def apply_to_job(
       were written and read by nothing; the name and city belong to the
       profile form, which this snapshots.
 
+    APPLYING FREEZES THE JOB (CONTRACT v10). This is the FIRST GENUINE
+    APPLICATION's transaction, so once the link is written (or a sourced link
+    converted), `assessment_contract.freeze_at_application` snapshots the
+    saved skills, the hidden context and the grade in the SAME transaction:
+    the application and the snapshot commit together, and a rolled-back
+    application leaves no snapshot. From then on the JD, the title, the
+    experience band, the grade and the skills are read-only. A legacy job with
+    no saved skills is not frozen and the application still succeeds; the
+    next genuine application after the skills are saved freezes them. This is
+    the ONE caller: a sourced upload, a databank link, the matching run's
+    links and an invitation are not applications.
+
     A SOURCED LINK IS CONVERTED, NEVER DUPLICATED (Gate 5). A recruiter's
     databank entry on this job is not an application, so it is not a
     duplicate: it moves `sourced -> applied` through the FSM. When the entry
@@ -1911,6 +1932,10 @@ async def apply_to_job(
             company_name=tenant_name,
             emailed=True,
         )
+
+    # CONTRACT v10: the first genuine application freezes the JD and skills,
+    # in THIS transaction. Idempotent: a job already frozen is left as it is.
+    await assessment_contract.freeze_at_application(session, job.id, link.id)
 
     # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT, the profile
     # entering this job's pipeline. `source_type` was derived by the link's

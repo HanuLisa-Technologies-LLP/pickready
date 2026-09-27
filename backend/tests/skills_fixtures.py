@@ -74,6 +74,8 @@ async def seed(
     skills: Sequence[Skill] = (),
     swot_saved: bool = True,
     swot_version: int = 2,
+    swot_row: bool = True,
+    jd_markdown: str = JD_MARKDOWN,
     saved: bool = False,
     draft_status: str = "not_started",
     draft_requested_at: datetime | None = None,
@@ -84,7 +86,11 @@ async def seed(
     extra_users: Sequence[tuple[str, str]] = (),
     lifecycle_state: str = "DRAFT",
 ) -> World:
-    """One tenant, one client super admin, one job, its SWOT and skills."""
+    """One tenant, one client super admin, one job, its SWOT and skills.
+
+    `swot_row=False` seeds a job with NO SWOT at all, which is a normal state
+    since CONTRACT v10: the SWOT is optional context for the skills draft.
+    """
     w = World()
     async with sessions()() as session:
         async with session.begin():
@@ -123,7 +129,7 @@ async def seed(
                     ),
                     {
                         "j": w.job, "t": w.tenant, "dept": department,
-                        "jd": json.dumps({"skills": JD_SKILLS}), "md": JD_MARKDOWN,
+                        "jd": json.dumps({"skills": JD_SKILLS}), "md": jd_markdown,
                         "life": lifecycle_state,
                         "comp": json.dumps(compensation) if compensation else None,
                         "approved": datetime.now(timezone.utc) if saved else None,
@@ -135,23 +141,24 @@ async def seed(
                         "dsv": drafted_swot_version, "creator": w.client,
                     },
                 )
-                await session.execute(
-                    text(
-                        "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, "
-                        "strengths, weaknesses, opportunities, threats, human_edited, "
-                        "version, last_modified_at, last_modified_by) VALUES (:i, :t, :j, "
-                        ":s, :st, :we, :op, :th, :he, :v, :lm, :lb)"
-                    ),
-                    {
-                        "i": uuid.uuid4(), "t": w.tenant, "j": w.job,
-                        "s": "edited" if swot_saved else "generated",
-                        "st": SWOT["strengths"], "we": SWOT["weaknesses"],
-                        "op": SWOT["opportunities"], "th": SWOT["threats"],
-                        "he": swot_saved, "v": swot_version,
-                        "lm": datetime.now(timezone.utc) if swot_saved else None,
-                        "lb": w.client if swot_saved else None,
-                    },
-                )
+                if swot_row:
+                    await session.execute(
+                        text(
+                            "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, "
+                            "strengths, weaknesses, opportunities, threats, human_edited, "
+                            "version, last_modified_at, last_modified_by) VALUES (:i, :t, :j, "
+                            ":s, :st, :we, :op, :th, :he, :v, :lm, :lb)"
+                        ),
+                        {
+                            "i": uuid.uuid4(), "t": w.tenant, "j": w.job,
+                            "s": "edited" if swot_saved else "generated",
+                            "st": SWOT["strengths"], "we": SWOT["weaknesses"],
+                            "op": SWOT["opportunities"], "th": SWOT["threats"],
+                            "he": swot_saved, "v": swot_version,
+                            "lm": datetime.now(timezone.utc) if swot_saved else None,
+                            "lb": w.client if swot_saved else None,
+                        },
+                    )
                 for ordinal, (bucket, name, active, authored, origin, evidence) in enumerate(
                     skills, 1
                 ):
@@ -230,6 +237,23 @@ async def committed_job(w: World) -> dict:
                 )
             ).mappings().one()
             return dict(row)
+
+
+async def frozen_sentence(w: World) -> str:
+    """The frozen sentence the job answers with, built from the COMMITTED first
+    snapshot, read on a second connection (CONTRACT v10)."""
+    from app.services import assessment_contract
+
+    async with sessions()() as session:
+        async with superadmin_scope(session):
+            frozen_at = (
+                await session.execute(
+                    text("SELECT min(locked_at) FROM job_skill_snapshots WHERE job_id = :j"),
+                    {"j": w.job},
+                )
+            ).scalar_one()
+    assert frozen_at is not None, "the job is not frozen"
+    return assessment_contract.frozen_detail(frozen_at)
 
 
 async def committed_audit(w: World, action: str) -> list[dict]:

@@ -3,9 +3,10 @@ emptied set.
 
 Audit #8: the previous sweep selected jobs with no ACTIVE competency, so a
 hiring manager who removed every generated item had Sutra put them back fifteen
-minutes later. The rewrite selects a job only when its SWOT is SAVED and either
-no draft was ever asked for and it has ZERO rows of ANY kind, or a draft was
-asked for and never reported back.
+minutes later. The rewrite selects a job only when it HAS A JD (CONTRACT v10:
+the skills are drafted from the JD; it asked for a saved SWOT until
+2026-09-28) and is not frozen, and either no draft was ever asked for and it
+has ZERO rows of ANY kind, or a draft was asked for and never reported back.
 
 The real task body runs against Postgres under the `record` dispatch backend,
 and the assertions are about THIS test's jobs only: the sweep is platform-wide,
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.services import skills
+from app.services import generation_sufficiency, skills
 from app.workers import dispatch
 from tests import skills_fixtures as fx
 
@@ -62,8 +63,13 @@ async def test_an_emptied_set_is_never_redrafted_and_nothing_is_dispatched(world
     assert (await fx.committed_job(w))["skills_draft_status"] == "not_started"
 
 
-async def test_a_never_drafted_job_with_a_saved_swot_is_drafted(world) -> None:
-    w = await world()
+@pytest.mark.parametrize(
+    "swot", [{}, {"swot_saved": False}, {"swot_row": False}],
+    ids=["saved_swot", "unsaved_swot", "no_swot"],
+)
+async def test_a_never_drafted_job_with_a_jd_is_drafted_whatever_its_swot(world, swot) -> None:
+    """The JD is the input; a saved SWOT is no longer asked for."""
+    w = await world(**swot)
 
     await _sweep()
 
@@ -95,12 +101,50 @@ async def test_a_draft_still_running_is_left_alone(world) -> None:
     assert str(w.job) not in _drafted_jobs()
 
 
-async def test_an_unsaved_swot_is_ignored(world) -> None:
-    w = await world(swot_saved=False)
+async def test_a_thin_jd_is_recorded_once_and_never_dispatched(world) -> None:
+    """A JD too thin to draft from becomes the failed state with the fixed
+    sentence, so the next tick does not select the job again."""
+    w = await world(jd_markdown="## Description\nOwns the pipelines.")
 
     await _sweep()
 
     assert str(w.job) not in _drafted_jobs()
+    job = await fx.committed_job(w)
+    assert job["skills_draft_status"] == "failed"
+    assert job["skills_draft_error"] == generation_sufficiency.EMPTY_STATE_COPY[
+        "skills.jd_too_thin"
+    ]
+
+
+async def test_a_job_with_no_jd_is_never_selected(world) -> None:
+    w = await world(jd_markdown="   ")
+
+    await _sweep()
+
+    assert str(w.job) not in _drafted_jobs()
+    assert (await fx.committed_job(w))["skills_draft_status"] == "not_started"
+
+
+async def test_a_frozen_job_is_never_selected(world) -> None:
+    """A lost draft on a job that froze meanwhile is left alone: the skills are
+    the contract, and a draft would be refused anyway."""
+    from tests.test_job_skills_service import _lock, _saved_and_ready
+
+    w = await world(
+        skills=[
+            (MUST, "Kafka", True, "sutra", None, "Ran Kafka in production."),
+            ("behavioural", "Ownership", True, "sutra", None, "Owned a migration."),
+        ],
+        draft_status="drafting",
+        draft_requested_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    await _saved_and_ready(w)
+    await _lock(w)
+
+    await _sweep()
+
+    assert str(w.job) not in _drafted_jobs()
+    assert (await fx.committed_job(w))["skills_draft_status"] == "drafting"
 
 
 async def test_a_lost_redraft_over_the_teams_skills_is_finished_as_failed(world) -> None:

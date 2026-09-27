@@ -18,6 +18,23 @@ from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 JobGrade = Literal["non_managerial", "managerial", "leadership", "cxo"]
 
 
+class PostingSkillBucketOut(BaseModel):
+    """One bucket of a job posting's skills, by NAME only (CONTRACT v10).
+
+    The public posting (apply page, portal job view, employer page) and the
+    recruiter's Final Job Posting preview show the skills under three headings.
+    Nothing else about a skill crosses: never its evidence line, its priority
+    or the role summary, which are the hidden half of the assessment contract.
+    Names are in alphabetical order, so the order does not reveal the hidden
+    priority either. Built by `assessment_contract.posting_skills`.
+    """
+
+    bucket: Literal["must_have", "nice_to_have", "behavioural"]
+    #: "Must-have skills", "Nice-to-have skills" or "Behavioural competencies".
+    label: str
+    names: list[str] = []
+
+
 # `JDIn`, the per-section JD input, is DELETED (Vivekium release). The
 # document (`jd_markdown`) is the one canonical JD and its three writers are
 # now one (`PATCH /jobs/{id}/jd`); the sections on `jd_json` are derived from
@@ -389,6 +406,9 @@ class PublicJobOut(BaseModel):
     about_company: str | None = None
     work_life: str | None = None
     benefits: str | None = None
+    #: The posting's skills by name, three buckets in order, or EMPTY when the
+    #: job has no saved skills (CONTRACT v10). Frozen jobs read the snapshot.
+    skill_buckets: list[PostingSkillBucketOut] = []
     created_at: datetime
 
     @computed_field  # type: ignore[prop-decorator]

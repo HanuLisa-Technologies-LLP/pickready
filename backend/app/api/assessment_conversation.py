@@ -16,10 +16,13 @@ WHAT CHANGED, IN ONE PLACE
   answer is replaced by what the server holds.
 - NO EDITING. The answer-edit route is deleted; past exchanges come back
   read-only on every response.
-- THE FIRST START re-checks credit, locks the contract in the same transaction
-  that stamps `started_at` (`assessment_contract.lock_contract`) and logs the
-  `stage=vaada` digest; questions written against a different contract are
-  regenerated before anything is asked.
+- THE FIRST START re-checks credit, binds the conversation to the frozen
+  contract in the same transaction that stamps `started_at`
+  (`assessment_contract.lock_contract`: since CONTRACT v10 the job was frozen
+  at its first genuine application, and the start is the idempotent backstop
+  that freezes only a job whose first application predated its saved skills)
+  and logs the `stage=vaada` digest; questions written against a different
+  contract are regenerated before anything is asked.
 - SPOKEN ANSWERS, transcribed server-side with the clock paused, and final.
 - Work about a committed row is dispatched AFTER the commit.
 """
@@ -483,10 +486,11 @@ async def _lock_and_start(
     the conversation started.
 
     Under the SKILLS advisory lock a skills edit also takes, so the contract
-    read here is the contract `lock_contract` freezes: the comparison and the
-    lock cannot be split by an edit. The digest the questions carry is compared
-    with it BEFORE locking, so a start that has to regenerate locks nothing
-    (D5: skills lock when a candidate actually starts).
+    read here is the contract `lock_contract` binds: the comparison and the
+    binding cannot be split by an edit. The digest the questions carry is
+    compared with it BEFORE binding, so a start that has to regenerate binds
+    nothing. Normally the job is frozen already (CONTRACT v10: at the first
+    genuine application) and this binds the existing snapshot.
     """
     await locks.advisory_xact_lock(session, locks.SKILLS, job.id)
     current = await assessment_contract.load_contract(session, job.id)

@@ -414,7 +414,7 @@ async def test_a_document_edit_keeps_the_reporting_line(monkeypatch) -> None:
 
     monkeypatch.setattr(jobs_api, "_get_visible_job", _visible)
     monkeypatch.setattr(jobs_api, "audit", _audit)
-    monkeypatch.setattr(jobs_api, "_invalidate_public_job", _invalidate)
+    monkeypatch.setattr(jobs_api, "invalidate_public_job", _invalidate)
     monkeypatch.setattr(jobs_api, "_job_detail_out", _detail)
 
     await jobs_api.save_jd_markdown(
@@ -469,7 +469,16 @@ async def test_public_read_returns_only_published(monkeypatch) -> None:
                     # an expired-job test.
                     posting_start_date=datetime.now(timezone.utc),
                     created_by=uuid.uuid4(), created_at=datetime.now(timezone.utc))
+
+    async def _no_saved_skills(session, jobs, *, include_unsaved=False):
+        # The builder is a real-table question (`test_posting_preview.py`);
+        # here the job has no saved skills, so the posting shows none.
+        assert include_unsaved is False, "the public posting never shows unsaved skills"
+        return {job.id: () for job in jobs}
+
+    monkeypatch.setattr(jobs_api.assessment_contract, "posting_skills", _no_saved_skills)
     out = await jobs_api.get_public_job(published.id, session=_PublicSession(published))
+    assert out.skill_buckets == []
     assert out.title == "Data Eng"
     assert out.company_name == "Acme Corp"
     assert out.jd_json == {"role": "pipelines"}
@@ -744,11 +753,14 @@ def _stub_publish_deps(monkeypatch) -> dict:
             jobs_api.rbac.Decision.ALLOW, "allowed", jobs_api.caps.Invariant.ALLOW
         )
 
-    async def _swot_saved_row(session, job):
-        return SimpleNamespace(status="edited")
-
     async def _skills_saved(session, job_id):
         return True
+
+    async def _not_frozen(session, job):
+        calls.setdefault("order", []).append("freeze_checked")
+
+    async def _after_jd(session, job, *, actor_user_id):
+        calls.setdefault("order", []).append("draft_asked")
 
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api, "record_action", _fake_record)
@@ -756,12 +768,15 @@ def _stub_publish_deps(monkeypatch) -> dict:
     monkeypatch.setattr(jobs_api, "_can_see_pre_ratified", _can_see)
     monkeypatch.setattr(jobs_api.rbac, "load_job_resource", _finalized)
     monkeypatch.setattr(jobs_api.rbac, "authorize", _allowed)
-    # The SWOT and skills halves of the gate are real-table questions, pinned
-    # by `test_job_publish_gate.py`; here they answer "saved" so these tests
-    # stay about the JD half and the response.
-    monkeypatch.setattr(jobs_api.swot_analysis, "get", _swot_saved_row)
-    monkeypatch.setattr(jobs_api.swot_analysis, "is_saved", lambda row: row is not None)
+    # The skills half of the gate is a real-table question, pinned by
+    # `test_job_publish_gate.py` (the SWOT is no step since CONTRACT v10); here
+    # it answers "saved" so these tests stay about the JD half and the
+    # response. The freeze and the draft request are real-table questions too,
+    # pinned by `test_grade_lock.py` and `test_job_skills_draft.py`; here they
+    # record the ORDER the JD save reaches them in.
     monkeypatch.setattr(jobs_api.assessment_contract, "skills_saved", _skills_saved)
+    monkeypatch.setattr(jobs_api, "_require_not_frozen", _not_frozen)
+    monkeypatch.setattr(jobs_api.skills, "after_jd_saved", _after_jd)
     monkeypatch.setattr(
         jobs_api, "dispatch_after_commit",
         lambda session, name, **k: calls["tasks"].append((name, k.get("args"))),
@@ -868,6 +883,9 @@ async def test_save_jd_markdown_works_after_publish_and_rederives_sections(
     # The em dash never survives to a candidate.
     assert "—" not in job.jd_markdown
     assert "—" not in (out.jd_markdown or "")
+    # CONTRACT v10: the freeze is asked BEFORE the write, the skills draft
+    # (for a job with no skill row) after it.
+    assert calls["order"] == ["freeze_checked", "draft_asked"]
 
 
 # ── Upload Candidate Data Bank ───────────────────────────────────────────────

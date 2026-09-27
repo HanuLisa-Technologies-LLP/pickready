@@ -78,10 +78,16 @@ def _skills_draft(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -
         raise UnscriptedTask("skills_drafting was asked without a JSON payload")
     weakness = _first_sentence(str((request.get("swot") or {}).get("weaknesses") or ""))
     must: list[dict[str, Any]] = [{"name": "Python", "source": "jd"}]
+    # CONTRACT v10: the draft is written from the JD and the SWOT is optional.
+    # With a saved SWOT the reconciliation gap is quoted from its Weaknesses;
+    # without one it is the JD's own required skill, so the skill set (and
+    # everything the journey grades against it) is the same either way.
     if weakness:
         must.append(
             {"name": "Payments reconciliation", "source": "swot", "swot_quote": weakness}
         )
+    else:
+        must.append({"name": "Payments reconciliation", "source": "jd"})
     return {
         "must_have": must,
         "nice_to_have": [{"name": "PostgreSQL tuning", "source": "jd"}],

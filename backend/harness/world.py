@@ -770,9 +770,11 @@ async def _unpublished_job_with_saved_swot(
 ) -> None:
     """A funded customer's job in DRAFT, with the SWOT the team saved.
 
-    NOT published, because under the three-step publish gate a job cannot go
-    live before its skills are saved, and the skills worlds built on this are
-    the state before that save.
+    NOT published, because under the publish gate (the JD and saved skills,
+    CONTRACT v10) a job cannot go live before its skills are saved, and the
+    skills worlds built on this are the state before that save. The SWOT is
+    saved because it is a state the product reaches; since v10 it is optional
+    context for the draft and never a publication step.
     """
     await _funded_tenant(session, world, overrides)
     await _seed_job(
@@ -799,7 +801,8 @@ async def _unpublished_job_with_saved_swot(
 async def _job_with_drafted_skills(
     session: AsyncSession, world: World, overrides: Mapping[str, Any]
 ) -> None:
-    """Sutra drafted the skills from the saved SWOT; nobody has saved them.
+    """Sutra drafted the skills from the JD, with the saved SWOT as context;
+    nobody has saved them.
 
     The state every Skills-step scenario starts from: rows authored by Sutra,
     two of them carrying the SWOT sentence they came from, the draft stamped
@@ -816,8 +819,10 @@ async def _job_with_team_written_skills(
     """The team typed its own skills before any draft was asked for.
 
     Reachable, and the precise state audit number 8 lives in: skills added by
-    hand, then the SWOT saved (`skills.after_swot_saved` finds rows and asks
-    for no draft), so the draft state is still `not_started` while rows exist.
+    hand before any draft was asked for, then the JD saved
+    (`skills.after_jd_saved` finds rows and asks for no draft; a SWOT save
+    never asks, CONTRACT v10), so the draft state is still `not_started` while
+    rows exist.
     Once the team removes every one of them, the only thing that tells "the
     team emptied this" from "a draft never landed" is that soft-deleted rows
     are still in the table. The old sweep asked for ACTIVE rows and could not

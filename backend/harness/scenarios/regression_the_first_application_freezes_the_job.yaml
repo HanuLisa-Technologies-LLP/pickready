@@ -1,0 +1,57 @@
+id: regression.the_first_application_freezes_the_job
+version: 1
+tier: regression
+description: >
+  CONTRACT v10 (owner ruling, 2026-09-28): the first GENUINE application
+  freezes the JD and the skills, in the application's own transaction. A
+  candidate applies to a published job whose skills are saved; the job now
+  holds exactly one contract snapshot, taken by that application and naming
+  it; the setup checklist reports the freeze with the server's own sentence;
+  and the team's attempt to rewrite the JD the candidate applied to is a 409
+  carrying that sentence, with the stored JD unchanged. Before v10 the lock
+  waited for the first assessment START, so a team could change the JD and
+  the skills underneath everybody who had already applied.
+tags: [skills, contract, freeze, apply, "contract-v10"]
+
+given:
+  world: job_with_unapplied_candidate
+
+workload:
+  - apply_to_job
+  - read_job_setup
+  - edit_the_frozen_jd
+
+expect:
+  state:
+    - job_candidate_links.status_for_candidate == applied
+    # ONE snapshot, and it is the application's: not an invitation's, not a
+    # start's. Applying writes no assessment row either.
+    - job_skill_snapshots.count_for_job == 1
+    - job_skill_snapshots.sources == [application]
+    - job_skill_snapshots.names_the_application == true
+    - assessment_conversations.count_for_job == 0
+    - jobs.jd_markdown contains Owns the payments platform
+  dispatched:
+    pickready.parse_resume: 1
+    pickready.draft_job_skills: 0
+  output:
+    - status.apply_to_job == 201
+    - status.read_job_setup == 200
+    - status.edit_the_frozen_jd == 409
+    - facts.setup_frozen == true
+    - facts.setup_frozen_reason contains frozen because a candidate has applied
+    - facts.frozen_jd_edit_detail contains frozen because a candidate has applied
+  trajectory:
+    - application_attempted
+    - application_accepted
+    - job_setup_read
+    - frozen_jd_edit_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

@@ -227,7 +227,7 @@ async def test_every_edit_makes_the_skills_unsaved_again(world) -> None:
     assert job["assessment_status"] == skills.PENDING_REVIEW
 
 
-# ── The lock (D5) ────────────────────────────────────────────────────────────
+# ── The freeze (CONTRACT v10, was D5) ────────────────────────────────────────
 
 
 async def test_every_write_on_a_locked_job_is_a_409_and_changes_nothing(world) -> None:
@@ -246,11 +246,13 @@ async def test_every_write_on_a_locked_job_is_a_409_and_changes_nothing(world) -
             await api.http.post(api.skills_url("/save")),
         ]
         read = (await api.http.get(api.skills_url())).json()
+    frozen = await fx.frozen_sentence(w)
     for answer in answers:
         assert answer.status_code == 409, answer.text
-        assert answer.json()["detail"] == assessment_contract.SKILLS_LOCKED_DETAIL
+        assert answer.json()["detail"] == frozen
     assert await fx.committed_skills(w) == before
     assert read["locked"] is True
+    assert read["frozen_reason"] == frozen
     assert read["can_edit"] == {"must_have": False, "nice_to_have": False, "behavioural": False}
     assert read["can_save"] is False
 

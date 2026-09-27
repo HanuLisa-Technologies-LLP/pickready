@@ -10,22 +10,31 @@ The team sees NAMES. Everything else on the row is internal: the priority
 line (`observable_evidence`, mirrored into `description`), the SWOT quotation
 (`swot_origin`) and who wrote it (`authored_by`).
 
-THE FLOW
---------
-    SWOT saved for the first time, no skill rows of ANY kind
-        -> `request_draft` -> `pickready.draft_job_skills` -> `draft`
+THE FLOW (CONTRACT v10, 2026-09-28: JD, then Skills, then the posting)
+---------------------------------------------------------------------
+    a job created with a JD, or a JD saved, while the job has NO skill row of
+        any kind -> `after_jd_saved` -> `request_draft` ->
+        `pickready.draft_job_skills` -> `draft`
+    "Draft skills" (the explicit action, or a confirmed re-draft) ->
+        `request_draft`
     the team adds, pastes, renames, moves and removes (`add`, `add_many`,
         `rename`, `move`, `remove`); every edit makes the skills UNSAVED again
     Save Skills -> `save`: ONE Sutra call writes the hidden context BEFORE any
         row changes, then one transaction writes it all
-    the first candidate START locks everything (`assessment_contract.lock_contract`)
+    the first GENUINE APPLICATION freezes the JD and the skills
+        (`assessment_contract.freeze_at_application`)
+
+The Job SWOT is internal hiring intelligence and OPTIONAL context for Sutra.
+A SWOT save never drafts skills (it did until v10); it can only make a
+re-draft AVAILABLE (`redraft_available`), which a person then asks for.
 
 THE RULES EVERY WRITE FOLLOWS, IN THIS ORDER
 --------------------------------------------
-1. `locks.advisory_xact_lock(SKILLS, job)`, the lock a candidate's start takes
-   too, so an edit and a start can never interleave.
-2. `assessment_contract.require_unlocked`: once a candidate has started, every
-   write is refused with `SKILLS_LOCKED_DETAIL` and nothing changes (D5).
+1. `locks.advisory_xact_lock(SKILLS, job)`, the lock an application's freeze
+   and a candidate's start take too, so an edit and a freeze never interleave.
+2. `assessment_contract.require_unlocked`: once the job is frozen every write
+   is refused with the frozen sentence (`assessment_contract.FROZEN_DETAIL`)
+   and nothing changes.
 3. The write.
 4. `_mark_unsaved`: an edited set of skills is not the set that was saved, so
    the job stops being invitable until somebody saves again. A published job
@@ -73,8 +82,15 @@ from app.models.job import (
     Job,
 )
 from app.models.job_setup import JobSwotAnalysis
-from app.services import assessment_contract, job_version, locks, ppi, swot_analysis
-from app.services.assessment_contract import SKILLS_LOCKED_DETAIL, SkillsLocked
+from app.services import (
+    assessment_contract,
+    generation_sufficiency,
+    job_version,
+    locks,
+    ppi,
+    swot_analysis,
+)
+from app.services.assessment_contract import SkillsLocked
 from app.services.audit import record_action, record_agent_action
 from app.services.hiring import sutra
 from app.services.hiring_pipeline import DRAFTING_STATES, JobLifecycleState
@@ -95,7 +111,6 @@ __all__ = [
     "PENDING_REVIEW",
     "READY_FOR_CANDIDATES",
     "SKILLS_CONTEXT_UNAVAILABLE",
-    "SKILLS_LOCKED_DETAIL",
     "SkillClash",
     "SkillLimitReached",
     "SkillNotFound",
@@ -109,9 +124,11 @@ __all__ = [
     "HumanSkillsWouldBeReplaced",
     "add",
     "add_many",
-    "after_swot_saved",
+    "after_jd_saved",
     "draft",
+    "draft_blocked_reason",
     "move",
+    "record_thin_jd",
     "redraft_available",
     "refresh_setup_status",
     "remove",
@@ -169,7 +186,6 @@ DRAFT_EDITED_MEANWHILE = (
     "The skills were edited while the draft was being written, so nothing was "
     "replaced. Draft again to replace them."
 )
-SWOT_NOT_SAVED_DETAIL = "Save the SWOT first. The skills are drafted from it."
 
 
 # ── Errors: each carries the HTTP status a route answers with ────────────────
@@ -326,6 +342,10 @@ class SkillsView:
     blocking_reason: str | None
     buckets: dict[str, tuple[SkillEntry, ...]] = field(default_factory=dict)
     max_per_bucket: int = MAX_PER_BUCKET
+    #: The frozen sentence (`assessment_contract.FROZEN_DETAIL`), or None.
+    frozen_reason: str | None = None
+    #: Why a draft cannot be asked for now (the JD is too thin), or None.
+    draft_blocked_reason: str | None = None
 
 
 def _source(row: JobCompetency) -> str:
@@ -354,16 +374,33 @@ def effective_draft_state(job: Job, *, now: datetime | None = None) -> tuple[str
     return status, job.skills_draft_error
 
 
+def draft_blocked_reason(job: Job) -> str | None:
+    """Why Sutra may not be asked for a draft now, as the fixed sentence, or None.
+
+    The JD is the draft's one required input (CONTRACT v10), so the gate is
+    `generation_sufficiency.skills_draft_input_state` over the title and the
+    JD document, the same text the draft sends. A fixed catalogue sentence,
+    never the operator's `reason`.
+    """
+    verdict = generation_sufficiency.skills_draft_input_state(job.title, job.jd_markdown)
+    if verdict:
+        return None
+    assert verdict.empty_state_key is not None  # an insufficient verdict names its key
+    return generation_sufficiency.empty_state_copy(verdict.empty_state_key)
+
+
 def redraft_available(
     job: Job, swot: JobSwotAnalysis | None, *, locked: bool, any_row: bool
 ) -> bool:
     """Whether the team may be OFFERED a re-draft from the current SWOT.
 
     Offered, never performed: the UI asks, and a redraft over the team's own
-    skills needs a second confirmation on top of that. Only when the skills are
-    not locked, the SWOT is saved, a draft is not already running, some skill
-    row exists (otherwise the first draft is automatic), and the saved SWOT is
-    newer than the one the current draft was written from.
+    skills needs a second confirmation on top of that. This is the ONLY thing
+    a SWOT save does to the skills (CONTRACT v10). Only when the job is not
+    frozen, the SWOT is saved, a draft is not already running, some skill row
+    exists (otherwise the first draft is requested from the JD), and the saved
+    SWOT is newer than the one the current draft read (a draft that read no
+    SWOT records none, so any saved SWOT is newer).
     """
     if locked or not any_row or not swot_analysis.is_saved(swot):
         return False
@@ -421,7 +458,8 @@ async def view(db: AsyncSession, job: Job) -> SkillsView:
     """
     rows = await _rows(db, job.id)
     active = [row for row in rows if row.is_active]
-    locked = await assessment_contract.is_locked(db, job.id)
+    frozen_reason = await assessment_contract.frozen_reason(db, job.id)
+    locked = frozen_reason is not None
     swot = await swot_analysis.get(db, job)
     status, error = effective_draft_state(job)
     problems = validate_for_save(active)
@@ -431,6 +469,8 @@ async def view(db: AsyncSession, job: Job) -> SkillsView:
         draft_error=error,
         saved=await assessment_contract.skills_saved(db, job.id),
         locked=locked,
+        frozen_reason=frozen_reason,
+        draft_blocked_reason=None if locked else draft_blocked_reason(job),
         swot_saved=swot_analysis.is_saved(swot),
         redraft_available=redraft_available(job, swot, locked=locked, any_row=bool(rows)),
         human_authored_names=tuple(
@@ -763,7 +803,7 @@ async def save(
     model call, so a candidate starting meanwhile waits on a write and never on
     a provider.
 
-    1. Refuse if locked; refuse with EVERY problem if the rows cannot be saved.
+    1. Refuse if frozen; refuse with EVERY problem if the rows cannot be saved.
     2. `sutra.build_context` writes the hidden context for exactly these rows.
        An outage is `SkillsContextUnavailable` (503, names no skill); a skill
        the writer could not describe is `SkillsContextRefused` (422, names
@@ -780,8 +820,7 @@ async def save(
     refusal precedes any write. The same shape as the matrix freeze it
     replaces.
     """
-    if await assessment_contract.is_locked(db, job.id):
-        raise SkillsLocked()
+    await assessment_contract.require_unlocked(db, job.id)
     rows = await _rows(db, job.id, active_only=True)
     problems = validate_for_save(rows)
     if problems:
@@ -887,25 +926,49 @@ async def save(
 # ── The Sutra draft ──────────────────────────────────────────────────────────
 
 
-async def after_swot_saved(
+async def after_jd_saved(
     db: AsyncSession, job: Job, *, actor_user_id: uuid.UUID
 ) -> TaskHandle | None:
-    """What a human SWOT save or restore does to the skills.
+    """What a job created with a JD, or a JD document save, does to the skills.
 
-    The FIRST time, with no skill row of any kind and no draft running or
-    done, it asks Sutra for a draft (after the commit). Every other time it
-    does NOTHING: the response offers a redraft (`redraft_available`) and the
-    team decides. A SWOT edit never silently rewrites the skills.
+    CONTRACT v10: the skills are drafted from the JD. With NO skill row of any
+    kind (a set the team emptied is a decision, 2026-09-21), the job not
+    frozen and no draft running, it asks Sutra for a draft, dispatched after
+    the commit. Every other time it does NOTHING: a JD edit never silently
+    rewrites skills that exist, and the team re-drafts by asking.
+
+    A JD too thin to draft from records the draft as `failed` with the fixed
+    sentence saying so, rather than dispatching or refusing: the create or
+    the JD save itself succeeded and must not be answered with an error, and
+    a recorded state is what stops `pickready.reconcile_job_setup` selecting
+    the job again every fifteen minutes. The next JD save tries again.
     """
-    swot = await swot_analysis.get(db, job)
-    if not swot_analysis.is_saved(swot):
-        return None
     status, _error = effective_draft_state(job)
     if status not in (SKILLS_DRAFT_NOT_STARTED, SKILLS_DRAFT_FAILED):
         return None
     if await has_any_row(db, job.id) or await assessment_contract.is_locked(db, job.id):
         return None
+    if await record_thin_jd(db, job):
+        return None
     return await request_draft(db, job, requested_by=actor_user_id, confirm_overwrite=False)
+
+
+async def record_thin_jd(db: AsyncSession, job: Job) -> bool:
+    """RECORD a JD too thin to draft from as the draft's `failed` state.
+
+    True when it was recorded (nothing is dispatched), False when the JD is
+    enough. For the AUTOMATIC askers (a create, a JD save, the reconcile
+    sweep), where refusing would fail something that succeeded: the state
+    carries the fixed sentence the team reads, and a recorded state is what
+    stops the sweep selecting the job again every tick. The explicit "Draft
+    skills" action refuses instead (`request_draft`).
+    """
+    blocked = draft_blocked_reason(job)
+    if blocked is None:
+        return False
+    await _record_failure(db, job, blocked)
+    logger.info("skills.draft_not_requested job_id=%s reason=jd_too_thin", job.id)
+    return True
 
 
 async def request_draft(
@@ -917,8 +980,10 @@ async def request_draft(
 ) -> TaskHandle | None:
     """Ask Sutra for a draft, after the commit. Refuses before writing anything.
 
-    * Locked: `SkillsLocked`.
-    * No saved SWOT: `DraftRefused`, because the draft is written from it.
+    * Frozen: `SkillsLocked`, carrying the frozen sentence.
+    * A JD too thin to draft from: `DraftRefused` with the fixed sentence
+      (`generation_sufficiency.skills_draft_input_state`). A saved SWOT is NOT
+      required any more (CONTRACT v10): it is optional context.
     * A redraft over the team's own active skills without confirmation:
       `HumanSkillsWouldBeReplaced`, naming them.
     * A draft already running and not stale: returned as it is, no second
@@ -929,9 +994,10 @@ async def request_draft(
     state older than `DRAFT_STALE_AFTER` is dispatched again.
     """
     await _begin_write(db, job)
+    blocked = draft_blocked_reason(job)
+    if blocked is not None:
+        raise DraftRefused(blocked)
     swot = await swot_analysis.get(db, job)
-    if not swot_analysis.is_saved(swot):
-        raise DraftRefused(SWOT_NOT_SAVED_DETAIL)
     status = job.skills_draft_status or SKILLS_DRAFT_NOT_STARTED
     if status == SKILLS_DRAFT_DRAFTING:
         effective, _error = effective_draft_state(job)
@@ -947,13 +1013,15 @@ async def request_draft(
     job.skills_draft_requested_at = _now()
     job.skills_draft_error = None
     await db.flush()
-    assert swot is not None  # is_saved(None) is False
     return dispatch_after_commit(
         db,
         DRAFT_TASK,
         args=[str(job.id)],
         kwargs={
-            "requested_swot_version": swot.version,
+            # The saved SWOT the draft may read, or None: a draft needs none.
+            "requested_swot_version": (
+                swot.version if swot is not None and swot_analysis.is_saved(swot) else None
+            ),
             "mode": mode,
             "confirm_overwrite": bool(confirm_overwrite),
             "requested_by": str(requested_by) if requested_by else None,
@@ -978,6 +1046,9 @@ async def draft(
     requested_by: uuid.UUID | None,
 ) -> DraftOutcome:
     """The worker body of `pickready.draft_job_skills`. The caller commits.
+
+    Drafts from the JD (the gate is asked again here) with the SAVED SWOT as
+    optional context when one exists (CONTRACT v10).
 
     Stands down (INFO, nothing written) when the job is no longer `drafting`.
     The model is called with NO lock held; the writes then happen under the
@@ -1006,21 +1077,28 @@ async def draft(
         logger.info("skills.draft_noop job_id=%s rows_present=true", job.id)
         return DraftOutcome("noop")
 
-    swot = await swot_analysis.get(db, job)
-    if not swot_analysis.is_saved(swot):
-        job.skills_draft_status = SKILLS_DRAFT_FAILED
-        job.skills_draft_error = SWOT_NOT_SAVED_DETAIL
-        await db.flush()
+    # The JD is the one required input (CONTRACT v10). Asked again here, over
+    # the JD as it stands now: it may have been cut down since the request.
+    blocked = draft_blocked_reason(job)
+    if blocked is not None:
+        await _record_failure(db, job, blocked)
+        logger.info("skills.draft_refused job_id=%s reason=jd_too_thin", job.id)
         return DraftOutcome("failed")
-    assert swot is not None
-    if requested_swot_version is not None and swot.version != requested_swot_version:
+    # The SWOT is OPTIONAL context, and only a SWOT the team SAVED counts: a
+    # model draft nobody has read is not the team's analysis.
+    swot = await swot_analysis.get(db, job)
+    saved_swot = swot if swot is not None and swot_analysis.is_saved(swot) else None
+    swot_version = saved_swot.version if saved_swot is not None else None
+    if requested_swot_version is not None and swot_version != requested_swot_version:
         logger.info(
-            "skills.draft_newer_swot job_id=%s requested=%d current=%d",
-            job.id, requested_swot_version, swot.version,
+            "skills.draft_newer_swot job_id=%s requested=%s current=%s",
+            job.id, requested_swot_version, swot_version,
         )
 
     try:
-        result = await sutra.draft_skills(db, job, swot.sections())
+        result = await sutra.draft_skills(
+            db, job, saved_swot.sections() if saved_swot is not None else None
+        )
     except sutra.SutraUnavailable:
         await _record_failure(db, job, DRAFT_FAILED_DETAIL)
         raise
@@ -1050,7 +1128,8 @@ async def draft(
         "generated_by": "sutra",
         "model_id": result.model_id,
         "prompt_version": result.prompt_version,
-        "swot_version": swot.version,
+        # None when the draft read no saved SWOT, which is a normal state now.
+        "swot_version": swot_version,
     }
     for skill in result.skills:
         found = _find(rows, skill.bucket, skill.name)
@@ -1077,7 +1156,9 @@ async def draft(
     job.skills_draft_status = SKILLS_DRAFT_DRAFTED
     job.skills_draft_error = None
     job.skills_drafted_at = now
-    job.skills_drafted_swot_version = swot.version
+    # None when no saved SWOT was read: a SWOT saved later is then newer than
+    # the draft, which is what offers a re-draft (`redraft_available`).
+    job.skills_drafted_swot_version = swot_version
     if job.framework_generated_at is None:
         job.framework_generated_at = now
     await db.flush()
@@ -1085,7 +1166,7 @@ async def draft(
     audit_metadata = {
         "mode": mode,
         "skills": len(result.skills),
-        "swot_version": swot.version,
+        "swot_version": swot_version,
         "model_id": result.model_id,
         "prompt_version": result.prompt_version,
     }
@@ -1125,8 +1206,8 @@ async def draft(
             metadata={**audit_metadata, "agent": "sutra", "requested_by": "reconcile_job_setup"},
         )
     logger.info(
-        "skills.drafted job_id=%s mode=%s skills=%d swot_version=%d",
-        job.id, mode, len(result.skills), swot.version,
+        "skills.drafted job_id=%s mode=%s skills=%d swot_version=%s",
+        job.id, mode, len(result.skills), swot_version,
     )
     return DraftOutcome("drafted", skills=len(result.skills))
 
@@ -1144,13 +1225,15 @@ async def _record_failure(db: AsyncSession, job: Job, detail: str) -> None:
 
 
 async def _stand_down_locked(db: AsyncSession, job: Job) -> DraftOutcome:
-    """A candidate started while the draft was on its way. The skills are the
+    """The job froze while the draft was on its way. The skills are the
     contract now; the draft is dropped and the state says so."""
     job.skills_draft_status = (
         SKILLS_DRAFT_DRAFTED if await has_any_row(db, job.id) else SKILLS_DRAFT_FAILED
     )
     job.skills_draft_error = (
-        None if job.skills_draft_status == SKILLS_DRAFT_DRAFTED else SKILLS_LOCKED_DETAIL
+        None
+        if job.skills_draft_status == SKILLS_DRAFT_DRAFTED
+        else await assessment_contract.frozen_reason(db, job.id)
     )
     await db.flush()
     logger.info("skills.draft_locked job_id=%s", job.id)

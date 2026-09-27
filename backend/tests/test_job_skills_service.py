@@ -331,7 +331,7 @@ async def test_every_write_after_a_start_is_refused_and_changes_nothing(world, a
 
     with pytest.raises(skills.SkillsLocked) as refused:
         await fx.run_as(w, _do)
-    assert str(refused.value) == assessment_contract.SKILLS_LOCKED_DETAIL
+    assert str(refused.value) == refused.value.detail == await fx.frozen_sentence(w)
     assert await fx.committed_skills(w) == before
     assert (await fx.committed_job(w))["framework_approved_at"] is not None
 

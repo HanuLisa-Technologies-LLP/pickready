@@ -1,4 +1,4 @@
-"""Create saves a draft; publish is the one way live, behind three setup steps.
+"""Create saves a draft; publish is the one way live, behind two setup steps.
 
 Through the REAL routers, the real grant engine and a session on the RLS
 application role (`job_setup_api_fixtures`), with every stored fact read back
@@ -12,8 +12,11 @@ from a SECOND connection after the request committed or rolled back:
   assignment on it, which is what every SCOPED cell of RBAC 24 reads, and so
   can publish it. A Recruiter who did not create it cannot, and neither can an
   HR Manager (RBAC 24 NO*).
-* Publication names EVERY missing step, in order: the JD, the saved SWOT, the
-  saved skills. A generated SWOT nobody saved is not the team's analysis.
+* Publication names EVERY missing step, in order: the JD and the saved
+  skills. The SWOT is NOT a step (CONTRACT v10): a job with no SWOT, or an
+  unsaved one, publishes.
+* Create asks Sutra for a skills draft from its JD, after the commit
+  (CONTRACT v10), and dispatches nothing else.
 * Matching and the JD index are dispatched AFTER the commit: a publish that
   rolls back starts nothing.
 
@@ -81,16 +84,9 @@ async def _job(job_id) -> dict:
 
 
 async def _make_publishable(world: fx.World, job_id) -> None:
-    """The state a saved SWOT and Save Skills leave, written directly: this
-    suite is about who may publish and what publication checks, and the two
-    steps that produce this state are pinned by their own suites."""
-    await http.sql(
-        world,
-        "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, strengths, "
-        "weaknesses, opportunities, threats, human_edited, version, last_modified_at) "
-        "VALUES (:i, :t, :j, 'edited', 'a', 'b', 'c', 'd', true, 1, now())",
-        i=uuid.uuid4(), t=world.tenant, j=job_id,
-    )
+    """The state Save Skills leaves, written directly: this suite is about who
+    may publish and what publication checks, and the step that produces this
+    state is pinned by its own suite. No SWOT: it is not a step."""
     await http.sql(
         world,
         "UPDATE jobs SET framework_approved_at = now(), "
@@ -120,7 +116,7 @@ async def test_create_with_publish_true_is_a_422_and_writes_nothing(world) -> No
     assert http.recorded("pickready.run_matching") == []
 
 
-async def test_create_saves_a_draft_assigns_the_creator_and_dispatches_nothing(world) -> None:
+async def test_create_saves_a_draft_assigns_the_creator_and_asks_only_for_a_draft(world) -> None:
     w = await world()
     await http.demo(w)
     await http.company_profile(w, "We run payment rails for small lenders.")
@@ -140,7 +136,12 @@ async def test_create_saves_a_draft_assigns_the_creator_and_dispatches_nothing(w
     assert assignments == [
         {"user_id": w.users["recruiter"], "assignment_role": "recruiter", "active": True}
     ]
-    assert http.dispatch.recorded() == []
+    # CONTRACT v10: the ONE dispatch is Sutra's draft from the JD, after the
+    # commit; nothing is published, matched or indexed.
+    (draft,) = http.dispatch.recorded()
+    assert draft.name == "pickready.draft_job_skills"
+    assert draft.args == (str(job_id),)
+    assert draft.kwargs["requested_swot_version"] is None
     audit = await http.read(
         "SELECT actor_role, new_state FROM audit_log WHERE job_id = :j AND action = 'job_created'",
         j=job_id,
@@ -171,20 +172,25 @@ async def test_publish_names_every_missing_step_in_order(world) -> None:
         response = await api.http.post(f"{http.JOBS}/{w.job}/publish")
     assert response.status_code == 409, response.text
     assert response.json()["detail"] == (
-        "Before this job can be published, write and save the job description, "
-        "save the SWOT analysis and save the skills."
+        "Before this job can be published, write and save the job description "
+        "and save the skills."
     )
     assert (await _job(w.job))["ratified_at"] is None
 
 
-async def test_a_generated_swot_nobody_saved_still_blocks(world) -> None:
-    w = await world(swot_saved=False, skills=SAVED_SKILLS, saved=True, lifecycle_state="FINALIZED")
+@pytest.mark.parametrize(
+    "swot", [{"swot_saved": False}, {"swot_row": False}], ids=["unsaved_swot", "no_swot"]
+)
+async def test_the_swot_is_not_a_publication_step(world, swot) -> None:
+    """CONTRACT v10: the SWOT is internal hiring intelligence. A job with the
+    JD and saved skills publishes whatever state its SWOT is in."""
+    w = await world(**swot, skills=SAVED_SKILLS, saved=True, lifecycle_state="FINALIZED")
     async with http.api(w) as api:
         response = await api.http.post(f"{http.JOBS}/{w.job}/publish")
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == (
-        "Before this job can be published, save the SWOT analysis."
-    )
+        setup = (await api.http.get(f"/api/v2/assessments/jobs/{w.job}/setup")).json()
+    assert response.status_code == 200, response.text
+    assert (await _job(w.job))["ratified_at"] is not None
+    assert setup["published"] is True and setup["publish_blocked_reason"] is None
 
 
 async def test_skills_edited_after_saving_block_publication_again(world) -> None:

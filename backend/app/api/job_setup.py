@@ -30,15 +30,25 @@ SWOT read has always carried (below), and resolve `can_edit` / `can_save` for
 THIS person on THIS job with the same `_decide` calls the writes enforce with,
 so the screen and the API cannot disagree.
 
-A LOCKED JOB ANSWERS 409 WITH THE LOCK SENTENCE, NOT 403
---------------------------------------------------------
-Once a candidate has started, the skills are the contract (D5). `rbac`
-refuses the skill capabilities with reason `skills_locked`, and `_require`
-turns exactly that reason into 409 `SKILLS_LOCKED_DETAIL`: a lock is a STATE
-of the job, not a permission the person lacks, and "Not permitted" would send
-them to ask an administrator for a grant nobody can give. The services
-re-check the lock inside the skills advisory lock, because a start can land
-between the decision and the write.
+A FROZEN JOB ANSWERS 409 WITH THE FROZEN SENTENCE, NOT 403
+----------------------------------------------------------
+Once a candidate has genuinely applied, the JD and the skills are the
+contract (CONTRACT v10; the first START until 2026-09-28). `rbac` refuses the
+skill capabilities with reason `skills_locked`, and `_require` turns exactly
+that reason into 409 with the frozen sentence
+(`assessment_contract.FROZEN_DETAIL`, dated): a freeze is a STATE of the job,
+not a permission the person lacks, and "Not permitted" would send them to ask
+an administrator for a grant nobody can give. The services re-check inside
+the skills advisory lock, because an application can land between the
+decision and the write.
+
+THE FINAL JOB POSTING
+---------------------
+`GET /jobs/{id}/posting-preview` is what the candidate-facing posting says,
+for the recruiter before publishing: the JD, the skills by NAME in three
+buckets, the company narrative. `assessment_contract.posting_skills` is the
+one builder, shared with the public apply page, the portal and the employer
+page. Never an evidence line, a priority or the role summary.
 """
 from __future__ import annotations
 
@@ -55,6 +65,7 @@ from app.models.job_setup import SWOT_ANALYSIS_SECTIONS, JobSwotAnalysis
 from app.models.user import User
 from app.schemas.assessments import (
     JobSetupOut,
+    PostingPreviewOut,
     SkillAddIn,
     SkillBucketPermissionsOut,
     SkillBucketsOut,
@@ -110,10 +121,14 @@ async def _require(
     """RBAC 3's whole chain for one capability, with the lock answered as 409."""
     decision = await _decide(session, user, capability, resource)
     if decision.reason == "skills_locked":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=assessment_contract.SKILLS_LOCKED_DETAIL,
+        detail = await assessment_contract.frozen_reason(
+            session, uuid.UUID(str(resource.job_id))
         )
+        if detail is None:
+            # `rbac` read a snapshot that this read cannot see: the two answers
+            # come from one table in one transaction, so this is a defect.
+            raise RuntimeError(f"job {resource.job_id} is locked with no readable snapshot")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
     rbac.raise_for(decision, capability)
 
 
@@ -136,7 +151,7 @@ def _skills_error(exc: Exception) -> HTTPException:
     """One mapping for every refusal the skills service raises.
 
     Each `SkillsError` carries its own status and a sentence the reviewer
-    reads verbatim. The lock is 409 with its sentence. A halted pipeline stage
+    reads verbatim. A frozen job is 409 with the dated frozen sentence. A halted pipeline stage
     is 503 naming the stage (`pipeline_halt.http_detail`), because an operator
     kill switch is not the reviewer's doing and not something they can fix by
     editing.
@@ -144,7 +159,7 @@ def _skills_error(exc: Exception) -> HTTPException:
     if isinstance(exc, skills.SkillsError):
         return HTTPException(status_code=exc.http_status, detail=exc.detail)
     if isinstance(exc, assessment_contract.SkillsLocked):
-        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.detail)
     if isinstance(exc, pipeline_halt.PipelineHalted):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -197,7 +212,19 @@ async def _skills_out(session: AsyncSession, user: CurrentUser, job: Job) -> Ski
         ),
         can_edit=SkillBucketPermissionsOut(**can_edit),
         can_save=can_finalize and all(can_edit.values()),
+        frozen_reason=view.frozen_reason,
+        draft_blocked_reason=view.draft_blocked_reason,
     )
+
+
+async def _after_skills_write(job: Job) -> None:
+    """The public posting shows the SAVED skills, so any write that can change
+    them (or un-save them) drops the cached public page. Everyone but the
+    author is bounded by the page's TTL anyway; this is so the author sees
+    their own change at once, the rule every other posting edit follows."""
+    from app.api.jobs import invalidate_public_job  # noqa: PLC0415
+
+    await invalidate_public_job(job.id)
 
 
 # ── The setup checklist ──────────────────────────────────────────────────────
@@ -227,7 +254,8 @@ async def get_job_setup(
         swot_analysis.effective_status(swot)[0] if swot is not None else "not_generated"
     )
     draft_status, _draft_error = skills.effective_draft_state(job)
-    locked = await assessment_contract.is_locked(session, job.id)
+    frozen_at = await assessment_contract.frozen_since(session, job.id)
+    frozen = frozen_at is not None
     published = job.ratified_at is not None
     return JobSetupOut(
         job_id=job.id,
@@ -236,14 +264,97 @@ async def get_job_setup(
         swot_saved=swot_analysis.is_saved(swot),
         skills_draft_status=draft_status,
         skills_saved=await assessment_contract.skills_saved(session, job.id),
-        skills_locked=locked,
-        grade_locked=locked,
+        skills_locked=frozen,
+        grade_locked=frozen,
         published=published,
         ready_for_candidates=job.assessment_status == skills.READY_FOR_CANDIDATES,
         publish_blocked_reason=(
             None if published else await _publication_blocked(session, job)
         ),
+        frozen=frozen,
+        frozen_at=frozen_at,
+        frozen_reason=(
+            assessment_contract.frozen_detail(frozen_at) if frozen_at is not None else None
+        ),
     )
+
+
+def experience_band(low: int | None, high: int | None) -> str | None:
+    """The experience band in the words the posting prints, or None.
+
+    Years of experience are a requirement of the role, not an assessment
+    signal, so the number is printed the way the JD itself prints it.
+    """
+    if low is not None and high is not None:
+        return f"{low} to {high} years"
+    if low is not None:
+        return f"at least {low} years"
+    if high is not None:
+        return f"up to {high} years"
+    return None
+
+
+@router.get("/jobs/{job_id}/posting-preview", response_model=PostingPreviewOut)
+async def get_posting_preview(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_COMPANY_JOBS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> PostingPreviewOut:
+    """The Final Job Posting as the candidate will read it (CONTRACT v10).
+
+    READS ONLY. Before the freeze the skills are the job's CURRENT active
+    ones (`skills_saved` says whether they are the saved set, which is what
+    the public posting will show); once frozen they are the snapshot's. Skill
+    NAMES only, in alphabetical order inside each bucket.
+    """
+    # Imported here for the reason `get_job_setup` gives.
+    from app.api.jobs import (  # noqa: PLC0415
+        _company_sections,
+        _publication_blocked,
+        jd_markdown_for,
+        posting_skill_buckets,
+        public_job_url,
+        resolve_jd_sections,
+    )
+    from app.models.tenant import Tenant  # noqa: PLC0415
+    from app.services.job_candidates import grade_label  # noqa: PLC0415
+
+    job = await _staff_job(session, user, job_id)
+    postings = await assessment_contract.posting_skills(session, [job], include_unsaved=True)
+    resolved, _overridden = resolve_jd_sections(
+        job, await _company_sections(session, job.tenant_id)
+    )
+    tenant = await session.get(Tenant, job.tenant_id)
+    frozen_at = await assessment_contract.frozen_since(session, job.id)
+    published = job.ratified_at is not None
+    return PostingPreviewOut(
+        job_id=job.id,
+        title=job.title,
+        department=job.department,
+        grade=job.assessment_grade or "non_managerial",
+        grade_label=grade_label(job.assessment_grade),
+        experience_band=experience_band(job.experience_min_years, job.experience_max_years),
+        jd_markdown=jd_markdown_for(job) or None,
+        company_name=tenant.name if tenant is not None else None,
+        about_company=resolved["about_company"],
+        work_life=resolved["work_life"],
+        benefits=resolved["benefits"],
+        skill_buckets=posting_skill_buckets(postings[job.id]),
+        skills_saved=await assessment_contract.skills_saved(session, job.id),
+        published=published,
+        public_application_url=(
+            public_job_url(job.id) if published and job.archived_at is None else None
+        ),
+        publish_blocked_reason=(
+            None if published else await _publication_blocked(session, job)
+        ),
+        frozen=frozen_at is not None,
+        frozen_at=frozen_at,
+        frozen_reason=(
+            assessment_contract.frozen_detail(frozen_at) if frozen_at is not None else None
+        ),
+    )
+
 
 
 # ── The Skills step ──────────────────────────────────────────────────────────
@@ -274,6 +385,7 @@ async def add_skill(
         await skills.add(session, job, body.bucket, body.name, actor_user_id=user.user_id)
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -294,6 +406,7 @@ async def add_skills_bulk(
         )
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -327,6 +440,7 @@ async def edit_skill(
             await skills.move(session, job, row.id, body.bucket, actor_user_id=user.user_id)
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -345,6 +459,7 @@ async def remove_skill(
         await skills.remove(session, job, skill_id, actor_user_id=user.user_id)
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -359,13 +474,15 @@ async def draft_skills(
     user: CurrentUser = Depends(require_capability(caps.VIEW_COMPANY_JOBS)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SkillsOut:
-    """ASK Sutra for a draft (or a redraft). The model runs in
-    `pickready.draft_job_skills`, dispatched after the commit; the answer is
-    202 with the skills in the `drafting` state.
+    """The "Draft skills" action: ASK Sutra for a draft (or a redraft). The
+    model runs in `pickready.draft_job_skills`, dispatched after the commit;
+    the answer is 202 with the skills in the `drafting` state.
 
-    A redraft over skills the team wrote is a 409 naming them unless
+    Drafted from the JD, with the saved SWOT as optional context (CONTRACT
+    v10); a JD too thin to draft from is a 409 with the fixed sentence. A
+    redraft over skills the team wrote is a 409 naming them unless
     `confirm_overwrite` is sent: the UI asks, and nothing is ever re-drafted
-    silently.
+    silently. A frozen job is a 409 with the frozen sentence.
     """
     job = await _staff_job(session, user, job_id)
     resource = await _resource(session, job)
@@ -377,6 +494,7 @@ async def draft_skills(
         )
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -407,6 +525,7 @@ async def save_skills(
         )
     except _SKILLS_REFUSALS as exc:
         raise _skills_error(exc) from exc
+    await _after_skills_write(job)
     return await _skills_out(session, user, job)
 
 
@@ -422,12 +541,12 @@ async def save_skills(
 # then the grant, then assignment scope, then lifecycle state. There is
 # deliberately no SWOT-only authorization anywhere in this block.
 #
-# A SWOT EDIT IS NOT REFUSED BY THE LOCK. Since the Vivekium release the
-# lifecycle no longer freezes `edit_swot` at FINALIZED (the old rule refused
-# every SWOT edit the moment the skills were first saved). The contract a
-# candidate is assessed against is the immutable snapshot, so editing the
-# document it was drafted from changes nothing already issued; the response
-# only OFFERS a re-draft of the skills (`skills_redraft_available`).
+# A SWOT EDIT IS NOT REFUSED BY THE FREEZE. The SWOT is internal hiring
+# intelligence (CONTRACT v10): editable at any time, never a publication step,
+# never shown to a candidate. The contract a candidate is assessed against is
+# the immutable snapshot, so editing the document changes nothing frozen. A
+# SWOT save NEVER drafts skills: while the job is not frozen the response only
+# OFFERS a re-draft (`skills_redraft_available`), which a person asks for.
 #
 # WHY THE READ USES `require_capability` AND THE WRITES USE `require_authorized`
 # ------------------------------------------------------------------------------
@@ -584,10 +703,8 @@ async def save_swot_analysis(
         correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    # The FIRST save on a job with no skill rows asks Sutra for a draft, after
-    # the commit. Every later save only OFFERS a re-draft
-    # (`skills_redraft_available`); the skills never change silently.
-    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
+    # CONTRACT v10: a SWOT save never drafts skills. The response OFFERS a
+    # re-draft (`skills_redraft_available`); the skills never change silently.
     return await _swot_analysis_out(session, user, job, row)
 
 
@@ -615,5 +732,4 @@ async def restore_swot_analysis(
         correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
     return await _swot_analysis_out(session, user, job, row)
