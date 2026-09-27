@@ -8,7 +8,7 @@
 // * a role neither route serves reads as not available;
 // * a read that FAILED reads as a failure with a retry, never as a closed role.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -62,5 +62,51 @@ describe("reading the job", () => {
     await waitFor(() =>
       expect(screen.getByRole("heading", { level: 1, name: "Data Engineer" })).toBeTruthy(),
     );
+  });
+});
+
+// CONTRACT v10, point 2: the public posting shows the skills by bucket name.
+describe("the posting's skills", () => {
+  const JOB = {
+    id: "job-1",
+    title: "Data Engineer",
+    jd_json: { description: "Build the warehouse." },
+    about_company: "We build payroll software.",
+  };
+
+  it("lists the skills by bucket name, names only", async () => {
+    http.apiGet.mockResolvedValueOnce({
+      ...JOB,
+      skills: {
+        must_have: ["Python", "SQL"],
+        nice_to_have: [],
+        behavioural: [{ name: "Owns incidents to closure", evidence_line: "hidden" }],
+      },
+    });
+    render(<PublicApplyPage />);
+
+    const mustHave = await screen.findByRole("region", { name: "Must-have skills" });
+    expect(within(mustHave).getByText("Python")).toBeTruthy();
+    expect(within(mustHave).getByText("SQL")).toBeTruthy();
+    expect(
+      within(screen.getByRole("region", { name: "Behavioural competencies" })).getByText(
+        "Owns incidents to closure",
+      ),
+    ).toBeTruthy();
+    // An empty bucket is not a heading over nothing, and nothing hidden leaks.
+    expect(screen.queryByText("Nice-to-have skills")).toBeNull();
+    expect(screen.queryByText("hidden")).toBeNull();
+    // The company narrative the preview promised is on the posting too.
+    expect(screen.getByText("About the company")).toBeTruthy();
+    expect(screen.getByText("We build payroll software.")).toBeTruthy();
+  });
+
+  it("renders no skills section for a legacy job without saved skills", async () => {
+    http.apiGet.mockResolvedValueOnce({ ...JOB });
+    render(<PublicApplyPage />);
+
+    await screen.findByText("Build the warehouse.");
+    expect(screen.queryByText("Must-have skills")).toBeNull();
+    expect(screen.queryByText("Behavioural competencies")).toBeNull();
   });
 });
