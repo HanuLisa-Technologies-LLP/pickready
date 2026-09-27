@@ -104,6 +104,7 @@ document.
 | [INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) | What runs where on pilot: compute, data, the object store's prefixes and backstop lifecycle, network, schedules, the alarms this release added, and the switches that are off |
 | [DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) | Restoring the database, and what Redis and S3 do not restore with it. Written, never rehearsed, and says so |
 | [DATABASE_CREDENTIAL_MIGRATION.md](operations/DATABASE_CREDENTIAL_MIGRATION.md) | Rotating database credentials |
+| [BRANCH_PROTECTION.md](operations/BRANCH_PROTECTION.md) | The exact protection `main` needs (PR required, the nine CI checks, no force push or deletion, admins exempt) and the one command an admin runs. Not yet applied, and says so |
 | [JUDGE0_RUNBOOK.md](operations/JUDGE0_RUNBOOK.md) | The code sandbox: topology, monthly cost, the staged rollout, and the outage runbook. Not yet provisioned, and says so |
 | [PICKREADY_APP_ADDRESSES.md](operations/PICKREADY_APP_ADDRESSES.md) | The two `pickready.app` mailboxes still in the code, where they are, and the owner question they wait on |
 | [TEST_BASELINE.md](operations/TEST_BASELINE.md) | What the suite covers and the current numbers |
