@@ -484,7 +484,7 @@ export default function BillingPage() {
                 {formatDate(data.subscription.current_end)}
               </DetailItem>
               <DetailItem label="Credit balance">
-                <span className="text-2xl font-bold">
+                <span className="text-2xl font-semibold tabular-nums">
                   {data.credits.balance_credits}
                 </span>{" "}
                 credits
@@ -549,7 +549,7 @@ export default function BillingPage() {
                     <p className="text-sm font-medium">
                       {CREDIT_EVENT_LABELS[event]}
                     </p>
-                    <p className="mt-2 text-2xl font-bold">
+                    <p className="mt-2 text-2xl font-semibold tabular-nums">
                       {toCredits(subunits, data.credits.subunits_per_credit)}
                     </p>
                     <p className="mt-1 text-xs">
@@ -596,7 +596,7 @@ export default function BillingPage() {
               {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
               <p className="text-sm">
                 Current balance:{" "}
-                <span className="text-lg font-bold">
+                <span className="text-lg font-semibold tabular-nums">
                   {data.credits.balance_credits}
                 </span>{" "}
                 credits
@@ -635,14 +635,14 @@ export default function BillingPage() {
                               : "border-border hover:border-brand-600/50")
                           }
                         >
-                          <p className="text-2xl font-bold">
+                          <p className="text-2xl font-semibold tabular-nums">
                             {pack.credits}
                             <span className="ml-1 text-sm font-medium">
                               credits
                             </span>
                           </p>
                           {pack.trial ? (
-                            <p className="mt-1 text-xs font-semibold uppercase tracking-[0.08em]">
+                            <p className="mt-1 type-eyebrow">
                               Trial, first purchase only
                             </p>
                           ) : null}
@@ -667,7 +667,7 @@ export default function BillingPage() {
                       href="mailto:hello@pickready.app?subject=Enterprise%20credits"
                       className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
                     >
-                      <p className="text-2xl font-bold">Custom</p>
+                      <p className="text-2xl font-semibold tabular-nums">Custom</p>
                       <p className="mt-1 text-sm">
                         {packs.min_custom_credits}+ credits, priced by
                         agreement. No self-serve checkout.
@@ -729,7 +729,7 @@ export default function BillingPage() {
                         </div>
                         <div className="flex justify-between gap-4 border-t border-border pt-2">
                           <dt className="font-semibold">Total payable</dt>
-                          <dd className="text-base font-bold">
+                          <dd className="text-base font-semibold tabular-nums">
                             {formatInr(selectedPack.total_inr)}
                           </dd>
                         </div>
@@ -793,7 +793,7 @@ export default function BillingPage() {
                       <p className="font-semibold">{plan.name}</p>
                       {current ? <Badge variant="brand">Current</Badge> : null}
                     </div>
-                    <p className="mt-3 text-2xl font-bold">
+                    <p className="mt-3 text-2xl font-semibold tabular-nums">
                       {formatInr(plan.price_inr)}
                       <span className="ml-1 text-sm font-medium">/ month</span>
                     </p>

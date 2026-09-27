@@ -33,7 +33,7 @@ export default function NotFound() {
         <FileQuestion className="h-6 w-6" />
       </span>
 
-      <h1 className="mt-5 text-xl font-semibold tracking-tight">
+      <h1 className="mt-5 type-page-title">
         This page does not exist
       </h1>
 

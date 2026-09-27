@@ -396,7 +396,7 @@ export default function CreateJobPage() {
       {requirementsComplete === false ? (
         <Card className="mb-6 border-navy-200 bg-navy-50">
           <CardContent className="space-y-3 pt-6">
-            <h2 className="text-base font-semibold">
+            <h2 className="text-subheading font-semibold">
               Fill in your Company Profile first
             </h2>
             <p className="text-sm">
@@ -427,7 +427,7 @@ export default function CreateJobPage() {
               aria-hidden="true"
             />
             <div className="min-w-0 flex-1 space-y-2">
-              <h2 className="text-base font-semibold">
+              <h2 className="text-subheading font-semibold">
                 Earlier jobs still have applicants waiting on a decision
               </h2>
               <p className="text-sm">

@@ -82,7 +82,7 @@ export function RouteError({
         <AlertCircle className="h-6 w-6" />
       </span>
 
-      <h1 className="mt-5 text-xl font-semibold tracking-tight">{surface}</h1>
+      <h1 className="mt-5 type-page-title">{surface}</h1>
 
       <p className="mt-2 text-pretty text-sm">
         {description ??

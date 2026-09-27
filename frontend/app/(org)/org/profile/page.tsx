@@ -247,7 +247,7 @@ export default function CompanyProfilePage() {
                   ) : null}
                   {research?.sources.length ? (
                     <div className="mt-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide">Sources used</p>
+                      <p className="type-eyebrow">Sources used</p>
                       <ul className="mt-2 space-y-1 text-xs">
                         {research.sources.map((source) => (
                           <li key={source}>

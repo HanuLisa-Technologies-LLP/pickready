@@ -318,7 +318,7 @@ function Outcome({
       className="flex flex-col items-center rounded-xl border border-border p-6 text-center"
     >
       <CheckCircle2 className="h-7 w-7 text-brand-600" aria-hidden="true" />
-      <h3 className="mt-3 text-base font-semibold">{title}</h3>
+      <h3 className="mt-3 text-subheading font-semibold">{title}</h3>
       <p className="mt-2 max-w-md text-pretty text-sm">{body}</p>
       <Button asChild className="mt-5">
         <Link href={href}>{action}</Link>

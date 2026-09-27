@@ -129,7 +129,7 @@ function ValidationAnswersModal({
           <div className="space-y-5">
             {groups.map((group) => (
               <div key={group.title}>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <h4 className="mb-2 type-eyebrow text-muted-foreground">
                   {group.title}
                 </h4>
                 <dl className="divide-y rounded-xl border">

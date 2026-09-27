@@ -113,7 +113,7 @@ export function BgvDocumentsCard() {
       <CardHeader>
         <div className="flex items-center gap-2">
           <FileCheck2 className="h-4 w-4" aria-hidden="true" />
-          <CardTitle className="text-base">Verification documents</CardTitle>
+          <CardTitle>Verification documents</CardTitle>
         </div>
         <CardDescription>
           Your academic certificates and proof of address. They stay on your

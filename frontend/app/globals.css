@@ -339,12 +339,6 @@
     @apply text-title-sm sm:text-title;
   }
 
-  /* Marketing display type. Fraunces, where the product gets one chance to
-     look designed (DESIGN.md section 3), never below a page title. */
-  .type-display {
-    @apply font-display text-[2.25rem] font-semibold leading-[2.625rem] tracking-[-0.02em] sm:text-[2.75rem] sm:leading-[3.125rem] lg:text-[3.25rem] lg:leading-[3.5rem];
-  }
-
   /* The small uppercase kicker above a title or a group of fields. One
      tracking value for every overline in the product; there were eight. */
   .type-eyebrow {

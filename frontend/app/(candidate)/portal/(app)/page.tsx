@@ -230,7 +230,7 @@ export default function PortalJobsPage() {
               <Card className="flex h-full flex-col shadow-card transition-shadow duration-150 hover:shadow-card-hover">
                 <CardContent className="flex flex-1 flex-col gap-4 p-6">
                   <div className="min-w-0 space-y-2">
-                    <h2 className="text-balance text-base font-semibold">
+                    <h2 className="text-subheading font-semibold">
                       {job.title}
                     </h2>
                     <p className="flex items-center gap-1.5 text-sm">

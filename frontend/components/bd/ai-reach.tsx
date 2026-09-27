@@ -290,7 +290,7 @@ function Segment({
     <section>
       <div className="mb-1 flex items-center gap-2">
         <Icon className="h-5 w-5" aria-hidden="true" />
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <h2 className="text-heading font-semibold">{title}</h2>
         {segment.status !== "ok" ? (
           <Badge variant="muted">{statusWord(segment.status)}</Badge>
         ) : null}
@@ -459,7 +459,7 @@ function SegmentSkeleton({
     <section aria-busy="true">
       <div className="mb-4 flex items-center gap-2">
         <Icon className="h-5 w-5" aria-hidden="true" />
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <h2 className="text-heading font-semibold">{title}</h2>
       </div>
       <span className="sr-only">Loading results</span>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">

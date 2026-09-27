@@ -295,7 +295,7 @@ function ProblemDetails({ payload }: { payload: CodingPayloadViewV2 }) {
   return (
     <div className="space-y-3">
       {payload.title.trim().length > 0 ? (
-        <h3 className="text-base font-semibold" data-testid="coding-title">
+        <h3 className="text-subheading font-semibold" data-testid="coding-title">
           {payload.title}
         </h3>
       ) : null}
@@ -303,13 +303,13 @@ function ProblemDetails({ payload }: { payload: CodingPayloadViewV2 }) {
         .filter(([, text]) => text.trim().length > 0)
         .map(([label, text]) => (
           <div key={label} className="border border-border bg-muted p-3 text-sm">
-            <p className="text-xs font-semibold uppercase tracking-wide">{label}</p>
+            <p className="type-eyebrow">{label}</p>
             <p className="mt-1 whitespace-pre-wrap">{text}</p>
           </div>
         ))}
       {payload.visible_tests.length > 0 ? (
         <div className="space-y-2" data-testid="coding-samples">
-          <p className="text-xs font-semibold uppercase tracking-wide">Sample tests</p>
+          <p className="type-eyebrow">Sample tests</p>
           {payload.visible_tests.map((test, index) => (
             <div
               key={test.id}
@@ -332,7 +332,7 @@ function ProblemDetails({ payload }: { payload: CodingPayloadViewV2 }) {
 function SampleBlock({ label, text }: { label: string; text: string }) {
   return (
     <div className="min-w-0">
-      <p className="text-xs font-semibold uppercase tracking-wide">{label}</p>
+      <p className="type-eyebrow">{label}</p>
       {text.length > 0 ? (
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-muted p-2 font-mono text-xs">
           {text}

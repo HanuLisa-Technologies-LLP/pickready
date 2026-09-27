@@ -127,7 +127,7 @@ function Funnel({ totals }: { totals: FunnelTotals }) {
       className="border border-border bg-surface"
     >
       <div className="flex flex-col gap-1 border-b border-border px-5 py-4">
-        <h2 className="text-base font-semibold tracking-tight">
+        <h2 className="text-subheading font-semibold">
           Where your candidates are
         </h2>
         <p className="text-sm">
@@ -143,7 +143,7 @@ function Funnel({ totals }: { totals: FunnelTotals }) {
             <li key={stage.key} className="px-5 py-4">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <p className="text-sm font-semibold">{stage.label}</p>
-                <p className="text-2xl font-semibold [font-variant-numeric:tabular-nums]">
+                <p className="text-2xl font-semibold tabular-nums">
                   {value}
                 </p>
               </div>
@@ -213,7 +213,7 @@ function AttentionList({ items }: { items: Attention[] }) {
       className="border border-border bg-surface"
     >
       <div className="border-b border-border px-5 py-4">
-        <h2 className="text-base font-semibold tracking-tight">
+        <h2 className="text-subheading font-semibold">
           Worth a look first
         </h2>
         <p className="mt-1 text-sm">
@@ -376,13 +376,13 @@ export function DashboardSummaryView() {
             <div className="space-y-6">
               <AttentionList items={attention} />
               <section className="border border-border bg-surface px-5 py-4">
-                <h2 className="text-base font-semibold tracking-tight">
+                <h2 className="text-subheading font-semibold">
                   Jobs worked
                 </h2>
                 <p className="mt-1 text-sm">
                   Roles assigned to you across this period.
                 </p>
-                <p className="mt-2 text-3xl font-semibold [font-variant-numeric:tabular-nums]">
+                <p className="mt-2 text-3xl font-semibold tabular-nums">
                   {summary.total_jobs_worked}
                 </p>
               </section>
@@ -394,7 +394,7 @@ export function DashboardSummaryView() {
             className="border border-border bg-surface"
           >
             <div className="border-b border-border px-5 py-4">
-              <h2 className="text-base font-semibold tracking-tight">
+              <h2 className="text-subheading font-semibold">
                 Every job, stage by stage
               </h2>
             </div>
