@@ -225,6 +225,23 @@ def test_an_item_the_session_never_touched_says_exactly_that() -> None:
     assert any("Nothing in your SWOT session spoke to this one" in line for line in lines)
 
 
+def test_a_job_analysis_sentence_is_quoted_as_document_evidence() -> None:
+    said = "the team needs incident command experience"
+    lines = scorecard.plain_provenance(
+        _item(swot_origin=said, provenance={"swot_source": "job_analysis"})
+    )
+    assert any(f'The Job SWOT Analysis states: "{said}"' in line for line in lines)
+    assert not any("You said:" in line for line in lines)
+
+
+def test_a_job_analysis_without_this_competency_does_not_invent_a_quote() -> None:
+    lines = scorecard.plain_provenance(
+        _item(swot_origin=None, provenance={"swot_source": "job_analysis"})
+    )
+    assert any("did not name this competency" in line for line in lines)
+    assert not any("You said:" in line for line in lines)
+
+
 # ── Evidence the assessment cannot reach ─────────────────────────────────────
 
 

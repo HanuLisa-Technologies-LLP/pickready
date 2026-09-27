@@ -125,6 +125,28 @@ def test_floors_that_cannot_fit_inside_one_are_refused() -> None:
         layers.clamp_weight_vector(impossible)
 
 
+def test_residual_distribution_handles_both_directions_within_bounds() -> None:
+    low = lambda _name: 0.1
+    raised = layers._spread_residual({"a": 0.4, "b": 0.4}, low, 0.6)
+    lowered = layers._spread_residual({"a": 0.7, "b": 0.7}, low, 0.8)
+    assert sum(raised.values()) == pytest.approx(1.0)
+    assert sum(lowered.values()) == pytest.approx(1.0)
+    assert all(0.1 <= value <= 0.6 for value in raised.values())
+    assert all(0.1 <= value <= 0.8 for value in lowered.values())
+
+
+def test_residual_distribution_refuses_when_no_headroom_exists() -> None:
+    with pytest.raises(ValueError, match="cannot be reconciled"):
+        layers._spread_residual({"a": 0.4, "b": 0.4}, lambda _name: 0.1, 0.4)
+    with pytest.raises(ValueError, match="cannot be reconciled"):
+        layers._spread_residual({"a": 0.6, "b": 0.6}, lambda _name: 0.6, 0.8)
+
+
+def test_residual_distribution_preserves_an_already_normalised_vector() -> None:
+    weights = {"a": 0.5, "b": 0.5}
+    assert layers._spread_residual(weights, lambda _name: 0.1, 0.6) == weights
+
+
 # ── Layer precedence and the invariant list ──────────────────────────────────
 
 
