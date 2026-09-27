@@ -42,7 +42,7 @@ const CANDIDATES = [
 
 export function Step1Login() {
   return (
-    <div className="relative h-full bg-[radial-gradient(circle_at_50%_20%,hsl(var(--teal-600) / ,.2),transparent_44%)] p-5 sm:p-8">
+    <div className="relative h-full bg-[radial-gradient(circle_at_50%_20%,hsl(var(--teal-600)/0.2),transparent_44%)] p-5 sm:p-8">
       <motion.div
         initial={{ opacity: 0, y: -28, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -97,7 +97,10 @@ function AnimatedField({
       <p className="mb-1 text-[9px] font-medium text-white/55">{label}</p>
       <motion.div
         initial={{ borderColor: "rgba(255,255,255,.1)" }}
-        animate={{ borderColor: ["rgba(255,255,255,.1)", "rgba(167,139,250,.7)", "rgba(255,255,255,.1)"] }}
+        // teal-400 (#0FB2A4) as an rgba literal, because framer-motion can
+        // only interpolate between colours it can parse, and a `var()` is not
+        // one. It was a violet left over from the pre-navy palette.
+        animate={{ borderColor: ["rgba(255,255,255,.1)", "rgba(15,178,164,.7)", "rgba(255,255,255,.1)"] }}
         transition={{ delay, duration: 0.85 }}
         className="h-9 rounded-lg border bg-black/20 px-3 py-2 text-[10px] text-white/80"
       >
@@ -384,7 +387,9 @@ export function Step7Invitations() {
             return (
               <motion.div
                 key={candidate.name}
-                animate={{ backgroundColor: selected ? "hsl(var(--teal-600) / ,.11)" : "rgba(255,255,255,.025)" }}
+                // teal-600 (#0D9688) as an rgba literal: `hsl(var(--teal-600) / ,.11)`
+                // was invalid CSS, and framer-motion cannot interpolate a `var()`.
+                animate={{ backgroundColor: selected ? "rgba(13,150,136,.11)" : "rgba(255,255,255,.025)" }}
                 transition={{ delay: 0.2 + index * 0.12 }}
                 className="flex items-center gap-3 rounded-lg border border-white/10 px-3 py-2"
               >
@@ -496,15 +501,18 @@ export function Step8PfiReport() {
             ))}
             <motion.polygon
               points="80,23 127,59 108,112 49,116 30,59"
-              fill="hsl(var(--teal-600) / ,.28)"
-              stroke="#a78bfa"
+              // Tailwind's token utilities, not attributes: the fill read
+              // `hsl(var(--teal-600) / ,.28)`, which is invalid, so the shape
+              // fell back to the SVG default fill, black. The violet stroke
+              // and points were the pre-navy palette.
+              className="fill-teal-600/30 stroke-teal-400"
               strokeWidth="2"
               initial={{ pathLength: 0, opacity: 0 }}
               animate={{ pathLength: 1, opacity: 1 }}
               transition={{ delay: 0.7, duration: 1.15, ease: EASE }}
             />
             {[[80,23],[127,59],[108,112],[49,116],[30,59]].map(([x,y], index) => (
-              <motion.circle key={index} cx={x} cy={y} r="2.7" fill="#c4b5fd" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.25 + index * .08, ...SPRING }} />
+              <motion.circle key={index} cx={x} cy={y} r="2.7" className="fill-teal-400" initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 1.25 + index * .08, ...SPRING }} />
             ))}
           </svg>
         </motion.div>

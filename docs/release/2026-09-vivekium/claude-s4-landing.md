@@ -79,6 +79,13 @@ landing page for readypick.ai". No migration, no backend behaviour change.
 - Request access is a `mailto:` to the published personal mailbox; a mailbox
   on the product's own domain is still the open `pickready.app` owner
   question.
-- `/about` (not part of the landing page) still promises "dedicated human
-  validation on every profile" and "a flat job subscription", and prints a
-  mojibake middle dot (`Founder &amp; CEO Â· HR StraTech Leader`).
+- `/about` was brought onto the same standard in a follow-up: no "dedicated
+  human validation on every profile" and no "flat job subscription". Its
+  founder caption's middle dot is correct UTF-8 (C2 B7) in the source and in
+  the built page; an earlier report of mojibake was a Windows PowerShell 5.1
+  decoding artifact, and nothing was changed there.
+- The product tour's report scene filled its chart with invalid CSS
+  (`hsl(var(--teal-600) / ,.28)`), which fell back to the SVG default fill,
+  black; the same malformed value sat in three backgrounds. All now use valid
+  token syntax or Tailwind token utilities, and the leftover violet colours
+  are teal and navy tokens.

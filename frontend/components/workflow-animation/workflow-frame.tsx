@@ -57,7 +57,7 @@ export function DemoWindow({
             />
           </aside>
         ) : null}
-        <div className="min-w-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_88%_0%,hsl(var(--teal-600) / ,.12),transparent_42%)]">
+        <div className="min-w-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_88%_0%,hsl(var(--teal-600)/0.12),transparent_42%)]">
           {children}
         </div>
       </div>
@@ -199,7 +199,7 @@ export function AnimatedCursor({
       className="pointer-events-none absolute z-20 h-4 w-4"
     >
       <svg viewBox="0 0 16 16" className="h-full w-full drop-shadow">
-        <path d="M1 1l12 5-5 2-2 5z" fill="white" stroke="#5b21b6" strokeWidth="1" />
+        <path d="M1 1l12 5-5 2-2 5z" fill="white" className="stroke-navy-600" strokeWidth="1" />
       </svg>
     </motion.div>
   );
