@@ -355,7 +355,7 @@ describe("history", () => {
     expect(screen.getByText("A follow-up")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
     // The only text box on the page is the current turn's.
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
   });
 });
 
