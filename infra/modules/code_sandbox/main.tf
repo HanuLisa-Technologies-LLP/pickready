@@ -226,6 +226,7 @@ resource "aws_network_acl" "sandbox" {
 # Rules are evaluated lowest number first, so the data-tier DENIES (100s) sit
 # ahead of every ALLOW (200s and up).
 resource "aws_network_acl_rule" "deny_data_in" {
+  #checkov:skip=CKV_AWS_352:This all-protocol rule denies data-subnet ingress; it permits no port.
   count          = length(var.data_subnet_cidr_blocks)
   network_acl_id = aws_network_acl.sandbox.id
   rule_number    = 100 + count.index
@@ -260,6 +261,7 @@ resource "aws_network_acl_rule" "sandbox_port_in" {
 # Return traffic for the host's own HTTPS calls. With no route out of the VPC,
 # the only things that can answer are the interface endpoints and S3.
 resource "aws_network_acl_rule" "ephemeral_in" {
+  #checkov:skip=CKV_AWS_231:The broad ephemeral range is return traffic from the S3 gateway; the sandbox has no internet route and the host security group admits no RDP.
   network_acl_id = aws_network_acl.sandbox.id
   rule_number    = 300
   egress         = false
@@ -511,7 +513,8 @@ resource "aws_instance" "host" {
   vpc_security_group_ids      = [aws_security_group.host.id]
   iam_instance_profile        = aws_iam_instance_profile.host.name
   associate_public_ip_address = false
-  monitoring                  = false
+  ebs_optimized               = true
+  monitoring                  = true
 
   # Standard credits: a busy box throttles and the credit alarm says so,
   # rather than an unlimited-mode bill nobody chose.

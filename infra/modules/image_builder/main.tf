@@ -17,9 +17,9 @@
  *   ECR        push and pull on the backend, frontend and analysis
  *              repositories, by ARN. Not the Judge0 mirrors, not any other
  *              repository in the account.
- *   S3         s3:GetObject under `builds/` in THIS bucket. No list, no put,
- *              no delete, and nothing in the storage bucket that holds
- *              candidate data.
+ *   S3         s3:GetObject under `builds/` in THIS bucket, plus decrypt on
+ *              this bucket's dedicated key through S3. No list, no put, no
+ *              delete, and nothing in the bucket that holds candidate data.
  *   Logs       its own log group, which has a retention.
  *   Secrets    the Hugging Face download token, and nothing else. Decrypting
  *              it is conditioned on Secrets Manager and on that secret's ARN.
@@ -87,16 +87,43 @@ resource "aws_s3_bucket_ownership_controls" "source" {
   }
 }
 
-# SSE-S3, NOT the environment key. The bucket holds source code, which is not
-# customer data, and encrypting it with the environment key would mean giving
-# the builder a decrypt grant on the key that also protects the database and
-# every secret. Encrypted at rest either way.
+# A dedicated key keeps the build source separate from the environment key
+# that protects customer data and application secrets. The builder receives a
+# decrypt grant on this key through S3 only.
+data "aws_iam_policy_document" "source_key" {
+  statement {
+    sid       = "EnableAccountManagement"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${var.account_id}:root"]
+    }
+  }
+}
+
+resource "aws_kms_key" "source" {
+  description             = "Build source archives for ${local.name}"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.source_key.json
+  tags                    = merge(var.tags, { Name = "${local.name}-source" })
+}
+
+resource "aws_kms_alias" "source" {
+  name          = "alias/${local.name}-source"
+  target_key_id = aws_kms_key.source.key_id
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "source" {
   bucket = aws_s3_bucket.source.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      kms_master_key_id = aws_kms_key.source.arn
+      sse_algorithm     = "aws:kms"
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -244,6 +271,18 @@ data "aws_iam_policy_document" "build" {
   }
 
   statement {
+    sid       = "DecryptBuildArchivesThroughS3Only"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.source.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.region}.amazonaws.com"]
+    }
+  }
+
+  statement {
     sid    = "WriteThisBuildsLogGroupOnly"
     effect = "Allow"
     actions = [
@@ -306,6 +345,7 @@ resource "aws_iam_role_policy" "build" {
 # ── The project ──────────────────────────────────────────────────────────────
 
 resource "aws_codebuild_project" "this" {
+  #checkov:skip=CKV_AWS_316:This isolated build project needs a Docker daemon to build arm64 images; it receives source archives only and has no application secrets.
   name          = local.name
   description   = "Native arm64 image build for ${var.project}-${var.environment}. Started by scripts/build-images-remote.sh with one commit's source archive."
   service_role  = aws_iam_role.build.arn

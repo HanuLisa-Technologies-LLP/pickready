@@ -134,6 +134,11 @@ skip-check:
   # CKV_AWS_157 RDS Multi-AZ: false in staging, true in production.
   - CKV_AWS_157
 
+  # CKV_AWS_353 RDS Performance Insights: enabled in production and disabled
+  # in pilot and staging by the same environment switch as Multi-AZ. The
+  # smaller environments use PostgreSQL logs and standard CloudWatch metrics.
+  - CKV_AWS_353
+
   # CKV2_AWS_50 ElastiCache Multi-AZ failover: needs a replica to fail over TO,
   # and staging runs zero replicas. Production runs one, and the module derives
   # `automatic_failover_enabled` from the replica count rather than accepting
