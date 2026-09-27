@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -298,5 +298,3 @@ def as_dict(halt: PipelineHalted) -> dict[str, Any]:
     return {"stage": halt.stage, "configured": halt.configured, "env_var": ENV_VAR}
 
 
-def declared_stages() -> Iterable[str]:
-    return STAGES
