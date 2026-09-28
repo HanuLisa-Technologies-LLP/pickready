@@ -77,7 +77,7 @@ describe("AI Match", () => {
       expect(classes).toContain("bg-transparent");
       expect(classes).toContain("border");
       expect(classes).toContain("font-normal");
-      expect(classes).toContain("text-[11px]");
+      expect(classes).toContain("text-chip");
     }
   });
 

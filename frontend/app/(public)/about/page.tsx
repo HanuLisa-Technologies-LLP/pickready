@@ -44,11 +44,11 @@ export default function AboutPage() {
       <section className="relative overflow-hidden border-b border-border py-20 lg:py-28">
         <div aria-hidden="true" className="absolute -top-40 left-1/2 h-[32rem] w-[48rem] -translate-x-1/2 rounded-full bg-brand-600/15 blur-[120px]" />
         <FadeIn className="relative mx-auto max-w-4xl px-6 text-center lg:px-10">
-          <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">About Vivekium</p>
-          <h1 className="mt-5 text-balance text-4xl font-bold leading-tight sm:text-5xl">
+          <p className="type-eyebrow text-brand-600">About Vivekium</p>
+          <h1 className="mx-auto mt-5 type-display">
             Built from inside HR, for the decisions HR has to defend
           </h1>
-          <p className="mx-auto mt-6 max-w-3xl text-pretty text-lg leading-8">
+          <p className="mx-auto mt-6 type-lead">
             Vivekium is the next chapter of a long operating journey: learning what teams need when sourcing, screening, validation and decision support have to work as one.
           </p>
         </FadeIn>
@@ -58,10 +58,10 @@ export default function AboutPage() {
         <div className="grid gap-12 lg:grid-cols-[.9fr_1.1fr] lg:items-start">
           <FadeIn className="rounded-3xl border border-border bg-surface p-8 shadow-card">
             <History className="h-8 w-8 text-brand-600" aria-hidden="true" />
-            <p className="mt-7 text-sm font-semibold uppercase tracking-[.16em] text-brand-600">The evolution</p>
-            <h2 className="mt-3 text-2xl font-bold">Built for its time. Rebuilt for this one.</h2>
+            <p className="mt-7 type-eyebrow text-brand-600">The evolution</p>
+            <h2 className="mt-3 text-2xl font-semibold">Built for its time. Rebuilt for this one.</h2>
           </FadeIn>
-          <FadeIn delay={0.08} className="space-y-5 text-pretty text-base leading-8">
+          <FadeIn delay={0.08} className="space-y-5 type-prose-lg">
             <p>
               Before Vivekium, Recruitrix.ai brought profiles, assessments, verification and delivery into one platform when many teams were still assembling those pieces separately. Its remote-ready model supported more than 60 customers across India, delivered more than 10,000 jobs and led to an acquisition.
             </p>
@@ -78,9 +78,9 @@ export default function AboutPage() {
       <section className="border-y border-border bg-surface/55 py-20">
         <div className="mx-auto max-w-6xl px-6 lg:px-10">
           <FadeIn className="max-w-2xl">
-            <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">How we work</p>
-            <h2 className="mt-3 text-3xl font-bold">Lean by design, accountable by default</h2>
-            <p className="mt-5 text-lg leading-8">
+            <p className="type-eyebrow text-brand-600">How we work</p>
+            <h2 className="mt-3 type-section-title">Lean by design, accountable by default</h2>
+            <p className="mt-5 type-lead">
               A small, high-leverage team builds AI that reads, assesses and explains, and leaves every decision about a person with the customer&apos;s own team. The structure is deliberate: enough process for consistency, without layers that slow a customer down.
             </p>
           </FadeIn>
@@ -112,8 +112,8 @@ export default function AboutPage() {
             </div>
           </FadeIn>
           <FadeIn delay={0.08}>
-            <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">Founder</p>
-            <h2 className="mt-3 text-3xl font-bold">The problem was lived before it was coded</h2>
+            <p className="type-eyebrow text-brand-600">Founder</p>
+            <h2 className="mt-3 type-section-title">The problem was lived before it was coded</h2>
             <div className="mt-6 space-y-5 text-pretty leading-8">
               <p>
                 Manjunath spent more than 25 years in HR - as a practitioner, transformation leader and builder of the platform he believed the function was missing.

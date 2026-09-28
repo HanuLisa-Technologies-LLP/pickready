@@ -64,19 +64,19 @@ export function EvidenceProfile() {
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <div className="grid items-start gap-12 lg:grid-cols-[1.05fr_.95fr] lg:gap-14">
           <Reveal>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+            <p className="type-eyebrow text-brand-600">
               Vivekium intelligence
             </p>
             <h2
               id="evidence-title"
-              className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+              className="mt-4 type-section-title"
             >
               AI can rank. A PRISM Report helps your team understand.
             </h2>
             {/* The SWOT is internal hiring intelligence (2026-09-28): the
                 assessment is built from the JD and the skills the team saved,
                 so that is what the page says it is built from. */}
-            <p className="mt-4 text-pretty text-base">
+            <p className="mt-4 type-lead">
               The Tatva Assessment grades every skill your team saved, from
               the candidate&apos;s own answers, and the PRISM Report says what
               each grade rests on. It is our own, built from your JD and its
@@ -147,7 +147,7 @@ export function AboutPreview() {
             same ambient glow removed from the hero. A teal rule does the same
             job of marking the panel as ours and holds still while doing it. */}
         <Reveal className="relative flex min-h-72 flex-col justify-between border border-navy-700 bg-navy-900 p-8 text-white">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-400">
+          <p className="type-eyebrow text-teal-400">
             Built from the inside
           </p>
           <span aria-hidden="true" className="mt-6 block h-px w-16 bg-teal-400" />
@@ -161,16 +161,16 @@ export function AboutPreview() {
         </Reveal>
 
         <Reveal delay={0.08}>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+          <p className="type-eyebrow text-brand-600">
             About Vivekium
           </p>
           <h2
             id="about-preview-title"
-            className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+            className="mt-4 type-section-title"
           >
             Experience became a different operating model
           </h2>
-          <p className="mt-4 text-pretty text-base">
+          <p className="mt-4 type-lead">
             Vivekium grew from years spent seeing where teams lose time:
             disconnected sourcing, repetitive screening, opaque scoring and
             systems that move the administrative load instead of removing it.
@@ -180,7 +180,7 @@ export function AboutPreview() {
               sits between a candidate and a customer in the product. The
               human in the loop is the customer's own team, and that is
               enforced (no flag rejects anybody, a person decides). */}
-          <p className="mt-4 text-pretty text-base">
+          <p className="mt-4 type-lead">
             We combine AI reading and assessment with a human decision at every
             step: the AI proposes, your team decides, and every decision is
             recorded. The result is not more activity. It is a profile the team
@@ -210,12 +210,12 @@ export function InsightsPreview() {
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <Reveal>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+            <p className="type-eyebrow text-brand-600">
               Insights
             </p>
             <h2
               id="insights-title"
-              className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+              className="mt-4 type-section-title"
             >
               Ideas for evidence-led people decisions
             </h2>

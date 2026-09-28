@@ -26,7 +26,7 @@ export function CallToAction() {
           <div className="mx-auto max-w-2xl">
             <h2
               id="cta-title"
-              className="text-balance text-2xl font-bold tracking-[-0.015em] text-white sm:text-3xl"
+              className="type-section-title text-white"
             >
               Start with one role and see the reports
             </h2>

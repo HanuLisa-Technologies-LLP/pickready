@@ -1,3 +1,5 @@
+import { displayFont } from "@/app/display-font";
+
 import { CallToAction } from "./call-to-action";
 import { Features } from "./features";
 import { Hero } from "./hero";
@@ -69,7 +71,9 @@ import {
  */
 export function LandingPage() {
   return (
-    <div className="flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink">
+    <div
+      className={`${displayFont.variable} flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink`}
+    >
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white"

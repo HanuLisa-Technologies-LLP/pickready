@@ -23,6 +23,17 @@ export const TYPE_ROLES = [
   "eyebrow",
   "table",
   "table-head",
+  "chip",
+  "ref",
+  "display",
+  "display-md",
+  "display-sm",
+  "section",
+  "section-md",
+  "section-sm",
+  "lead",
+  "lead-sm",
+  "prose-lg",
 ] as const;
 
 const twMerge = extendTailwindMerge({

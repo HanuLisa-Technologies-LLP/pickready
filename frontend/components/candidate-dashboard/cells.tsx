@@ -50,9 +50,9 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
 
   return (
     <div className="min-w-0">
-      <p className="truncate text-[13.5px] font-bold leading-5">{row.full_name}</p>
+      <p className="truncate text-table font-semibold leading-5">{row.full_name}</p>
       <span className="group inline-flex items-center gap-1">
-        <span className="select-all font-mono text-[11px] leading-4">
+        <span className="select-all type-ref">
           {row.system_id}
         </span>
         <button
@@ -69,7 +69,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
           {copied ? "Candidate code copied" : ""}
         </span>
       </span>
-      <p className="truncate text-[11px] leading-4">
+      <p className="truncate text-meta leading-4">
         {row.job_title}
       </p>
     </div>
@@ -80,7 +80,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
 
 export function SourceCell({ row }: { row: DashboardRow }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-normal text-foreground">
+    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-chip font-normal text-foreground">
       {row.source_label}
     </span>
   );
@@ -133,7 +133,7 @@ export function ReadyPickGradeCell({ row }: { row: DashboardRow }) {
           {row.ranking_state === STATE_UNDER_REVIEW ? (
             <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           ) : null}
-          <span aria-hidden="true" className="truncate text-[12px] font-bold leading-4">
+          <span aria-hidden="true" className="truncate text-meta font-bold leading-4">
             {row.ranking_label}
           </span>
           <span
@@ -167,7 +167,7 @@ export function NoteCell({ row }: { row: DashboardRow }) {
         <p
           data-testid="ready-pick-note"
           className={cn(
-            "max-w-[210px] truncate text-[12px] font-normal leading-5 text-foreground",
+            "max-w-[210px] truncate text-meta font-normal leading-5 text-foreground",
             // Never bold, never coloured. Colour is column 4's, and spending it
             // here would take the meaning out of the one place it means
             // something.
@@ -253,7 +253,7 @@ export function TeamReviewButton({
     >
       Team Review
       {row.team_review_count > 0 ? (
-        <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[11px] text-foreground">
+        <span className="ml-1.5 rounded-full bg-muted px-1.5 text-chip text-foreground">
           {row.team_review_count}
         </span>
       ) : null}
@@ -293,7 +293,7 @@ export function StageCell({
       aria-label={`Move ${row.full_name} from ${row.stage_label}`}
     >
       {locked ? <Lock className="h-3.5 w-3.5" aria-hidden="true" /> : null}
-      <span className="text-[12px]">{row.stage_label}</span>
+      <span className="text-meta">{row.stage_label}</span>
     </Button>
   );
 

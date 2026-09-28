@@ -166,7 +166,7 @@ export function Pricing() {
           </Badge>
           <h2
             id="pricing-title"
-            className="mt-5 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+            className="mt-5 type-section-title"
           >
             One rate. {formatInr(PRICE_PER_CREDIT_INR)} per credit.
           </h2>
@@ -174,7 +174,7 @@ export function Pricing() {
               month validity of new credits; the qualified promise lives in
               "How credits work", where lib/credit-expiry-copy.test.ts reads
               it. */}
-          <p className="mt-5 text-pretty text-lg leading-8">
+          <p className="mt-5 type-lead">
             Buy credits when you hire and spend them per completed candidate
             report. No subscription and no per-seat fees.
           </p>
@@ -204,7 +204,7 @@ export function Pricing() {
                 ) : null}
               </div>
 
-              <p className="mt-5 text-3xl font-bold tracking-tight">
+              <p className="mt-5 text-3xl font-semibold tabular-nums">
                 {pack.credits}
                 <span className="ml-1.5 align-baseline text-sm font-medium">
                   credits
@@ -310,7 +310,7 @@ export function Pricing() {
           <p className="text-base font-semibold">
             Everything, whatever you buy
           </p>
-          <p className="mt-2 max-w-3xl text-pretty leading-7">
+          <p className="mt-2 type-prose-lg">
             The list below is not a comparison table. Every item comes with the
             20-credit first purchase and with the 200-credit pack alike. The
             only thing a bigger pack buys is more assessments.
@@ -345,7 +345,7 @@ export function Pricing() {
               <h3 className="text-base font-semibold">{block.title}</h3>
               <div className="mt-3 space-y-4">
                 {block.body.map((paragraph) => (
-                  <p key={paragraph} className="text-pretty leading-7">
+                  <p key={paragraph} className="type-prose-lg">
                     {paragraph}
                   </p>
                 ))}

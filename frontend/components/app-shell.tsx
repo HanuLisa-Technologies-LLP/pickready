@@ -87,7 +87,7 @@ function NavLink({
       {item.badge ? (
         <span
           className={cn(
-            "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-semibold leading-none",
+            "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-chip font-semibold leading-none",
             active ? "bg-white text-brand-700" : "bg-brand-600 text-white",
             // In the collapsed rail there is no label to sit beside, so the
             // count rides the icon rather than disappearing with the text.
@@ -258,7 +258,7 @@ export function AppShell({
                 >
                   <Building2 className="h-4 w-4 shrink-0 text-brand-600" aria-hidden="true" />
                   <div className="min-w-0">
-                    <p className="text-[0.6875rem] font-semibold uppercase leading-4 tracking-[0.08em]">
+                    <p className="type-eyebrow">
                       Active workspace
                     </p>
                     <p className="truncate text-sm font-semibold leading-5">{user.workspace_name}</p>

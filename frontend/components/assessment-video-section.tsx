@@ -172,7 +172,7 @@ export function AssessmentVideoSection({ linkId }: { linkId: string }) {
 
   return (
     <section aria-label="Assessment video" className="rounded-lg border p-4">
-      <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+      <h3 className="mb-3 flex items-center gap-2 text-heading">
         <Video className="h-4 w-4" aria-hidden />
         Assessment video
       </h3>

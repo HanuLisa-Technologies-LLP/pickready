@@ -39,7 +39,7 @@ export function ProcurementBadge({
   return (
     <span
       className={cn(
-        "inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-tight",
+        "inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-chip font-medium leading-tight",
         STYLES[type] ?? "border-border bg-muted",
         className
       )}

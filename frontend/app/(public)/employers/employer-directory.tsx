@@ -83,13 +83,13 @@ export function EmployerDirectory() {
   return (
     <section className="mx-auto max-w-5xl px-6 py-14 lg:px-10 lg:py-20">
       <FadeIn>
-        <p className="text-sm font-semibold uppercase tracking-[.18em] text-teal-700">
+        <p className="type-eyebrow text-teal-700">
           Employer directory
         </p>
-        <h1 className="mt-3 text-balance text-3xl font-bold sm:text-4xl">
+        <h1 className="mt-3 type-section-title">
           Companies hiring on Vivekium
         </h1>
-        <p className="mt-4 max-w-2xl text-pretty leading-7">
+        <p className="mt-4 type-lead">
           Read about a company, visit its website, and apply to its open roles
           from one place.
         </p>

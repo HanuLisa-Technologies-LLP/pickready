@@ -69,16 +69,16 @@ export function Features() {
     >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="max-w-2xl">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+          <p className="type-eyebrow text-brand-600">
             Platform
           </p>
           <h2
             id="features-title"
-            className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+            className="mt-4 type-section-title"
           >
             Built for teams who have to defend the decision
           </h2>
-          <p className="mt-4 text-pretty text-base">
+          <p className="mt-4 type-lead">
             Everything below is in the product today, not on a roadmap.
           </p>
         </Reveal>

@@ -248,8 +248,9 @@
     @apply bg-background text-foreground;
     overflow-x: hidden;
     /* Kerning and contextual alternates are the face's own defaults; saying
-       so pins them on in every engine. Fraunces has an optical-size axis and
-       `auto` lets it pick the display cut at display sizes. */
+       so pins them on in every engine. `font-optical-sizing: auto` is inert
+       for today's faces (none carries an opsz axis) and lets any face that
+       does pick its display cut at display sizes. */
     font-kerning: normal;
     font-feature-settings: "kern", "calt";
     font-optical-sizing: auto;
@@ -350,6 +351,45 @@
      wider than that reads as a wall. */
   .type-prose {
     @apply max-w-prose text-body;
+  }
+
+  /* A reference code or system identifier: Geist Mono, 12px, 500, tabular.
+     For COMPANY-JOB-CANDIDATE codes, ids, filenames and URLs. Never for a
+     date, a count or a label: those are metadata and stay in Mona Sans. */
+  .type-ref {
+    @apply font-mono text-ref tabular-nums;
+  }
+
+  /* --- marketing roles: the public site only ---------------------------- */
+
+  /* The hero headline of a marketing page, in Hubot Sans. One per page at
+     most, and never inside the product. 40px on a phone, 52 from `sm`, 64
+     from `lg`. The measure keeps a long promise to three or four lines
+     instead of letting it run the width of its column. */
+  .type-display {
+    @apply max-w-[18ch] font-display text-display-sm sm:text-display-md lg:text-display;
+    text-wrap: balance;
+  }
+
+  /* A landing section's h2, or the h1 of a plain public page. Mona Sans.
+     32 / 40 / 48px. */
+  .type-section-title {
+    @apply text-section-sm sm:text-section-md lg:text-section;
+    text-wrap: balance;
+  }
+
+  /* The paragraph under a hero or a section title: 18 / 20px on a 54
+     character measure, the width the eye takes in without moving the head. */
+  .type-lead {
+    @apply max-w-[54ch] text-lead-sm sm:text-lead;
+    text-wrap: pretty;
+  }
+
+  /* Running text on a public page: 17 / 28 on a 65 character measure. Tables,
+     grids and forms never take a measure. */
+  .type-prose-lg {
+    @apply max-w-[65ch] text-prose-lg;
+    text-wrap: pretty;
   }
 }
 

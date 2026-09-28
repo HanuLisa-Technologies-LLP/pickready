@@ -61,7 +61,7 @@ export function SiteFooter() {
               {/* Full ink at 13px. The heading used to be `opacity-70`, which
                   is grey text by another name, and DESIGN.md section 3 admits
                   no exception for a faked one. */}
-              <h2 className="text-xs font-semibold uppercase tracking-[0.12em]">
+              <h2 className="type-eyebrow">
                 {column.heading}
               </h2>
               <ul className="mt-4 space-y-3">

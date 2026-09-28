@@ -36,11 +36,11 @@ export function WorkflowShowcase() {
           </Badge>
           <h2
             id="workflow-title"
-            className="mt-5 text-balance text-3xl font-bold leading-tight sm:text-4xl"
+            className="mt-5 type-section-title"
           >
             Watch the work move. Your team keeps the decision.
           </h2>
-          <p className="mx-auto mt-5 max-w-2xl text-pretty text-base sm:text-lg">
+          <p className="mx-auto mt-5 type-lead">
             From the JD and its skills to AI Match, one proctored assessment,
             the PRISM Report and a clear shortlist, one continuous evidence
             trail.

@@ -318,7 +318,7 @@ function DimensionSection({
   if (dimensions.length === 0) return null;
   return (
     <section aria-label={title}>
-      <h3 className="mb-3 text-lg font-semibold">{title}</h3>
+      <h3 className="mb-3 text-heading">{title}</h3>
       {chart ? <DualRadar chart={chart} series={series} /> : null}
       <div className="grid gap-3 md:grid-cols-2">
         {dimensions.map((dimension) => (
@@ -517,8 +517,8 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
 
   return (
     <section aria-label="Validation">
-      <h3 className="mb-1 text-lg font-semibold">Validation</h3>
-      <p className="mb-3 text-xs">
+      <h3 className="mb-1 text-heading">Validation</h3>
+      <p className="mb-3 max-w-prose text-body-sm">
         Submitted by the candidate on their application and profile, shown exactly as written.
         Nothing here is rated or interpreted.
       </p>
@@ -650,8 +650,8 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
   if (!snapshot && legacy.length === 0) return null;
   return (
     <section aria-label={AI_MATCH_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{AI_MATCH_TITLE}</h3>
-      <p className="mb-3 text-xs">
+      <h3 className="mb-1 text-heading">{AI_MATCH_TITLE}</h3>
+      <p className="mb-3 max-w-prose text-body-sm">
         A resume-based check made before the assessment. A close match with the Tatva
         Assessment below confirms the resume was accurate; a gap between them is itself
         worth knowing.
@@ -725,7 +725,7 @@ function OverallSection({
   const chart = chartFor(report, "overall");
   return (
       <section aria-label="Overall Assessment">
-        <h3 className="mb-1 text-lg font-semibold">Overall Assessment</h3>
+        <h3 className="mb-1 text-heading">Overall Assessment</h3>
         <div className="rounded-lg border bg-muted/30 p-5">
           <div className="mb-2 flex items-center gap-3">
             <p className="type-eyebrow">Overall</p>
@@ -763,7 +763,7 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
 
   return (
     <section aria-label="Gap Analysis and Action Plan">
-      <h3 className="mb-3 text-lg font-semibold">Gap Analysis &amp; Action Plan</h3>
+      <h3 className="mb-3 text-heading">Gap Analysis &amp; Action Plan</h3>
       {gaps.focus_summary ? (
         <p className="mb-4 rounded-md border bg-muted/30 p-4 font-medium leading-7">
           {gaps.focus_summary}
@@ -839,8 +839,8 @@ function ClaimEvidenceSection({ summary }: { summary?: ClaimEvidence }) {
 
   return (
     <section aria-label={CLAIM_EVIDENCE_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{CLAIM_EVIDENCE_TITLE}</h3>
-      {summary.note ? <p className="mb-3 text-xs">{summary.note}</p> : null}
+      <h3 className="mb-1 text-heading">{CLAIM_EVIDENCE_TITLE}</h3>
+      {summary.note ? <p className="mb-3 max-w-prose text-body-sm">{summary.note}</p> : null}
       {entries.length === 0 ? (
         <p className="rounded-md border p-3 text-sm">{statement}</p>
       ) : (
@@ -883,8 +883,8 @@ function ValidationPointsSection({ points }: { points?: ValidationPoints }) {
 
   return (
     <section aria-label={VALIDATION_POINTS_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{VALIDATION_POINTS_TITLE}</h3>
-      {points.note ? <p className="mb-3 text-xs">{points.note}</p> : null}
+      <h3 className="mb-1 text-heading">{VALIDATION_POINTS_TITLE}</h3>
+      {points.note ? <p className="mb-3 max-w-prose text-body-sm">{points.note}</p> : null}
       {rows.length === 0 ? (
         <p className="rounded-md border p-3 text-sm">{statement}</p>
       ) : (
@@ -941,8 +941,8 @@ const FINDING_GROUPS: Array<{ key: keyof ProctoringReport["findings"]; label: st
 function ProctoringSection({ report }: { report: ProctoringReport | null }) {
   return (
     <section aria-label="Proctoring Report">
-      <h3 className="mb-1 text-lg font-semibold">{PROCTORING_TITLE}</h3>
-      <p className="mb-3 text-xs">{PROCTORING_NOTE}</p>
+      <h3 className="mb-1 text-heading">{PROCTORING_TITLE}</h3>
+      <p className="mb-3 max-w-prose text-body-sm">{PROCTORING_NOTE}</p>
       {report === null ? (
         <p className="rounded-md border p-3 text-sm">{PROCTORING_ABSENT}</p>
       ) : (
@@ -984,7 +984,7 @@ function ProctoringSection({ report }: { report: ProctoringReport | null }) {
                   <tbody>
                     {report.activity_log.map((row, index) => (
                       <tr key={`log-${index}`} className="border-b border-border align-top">
-                        <td className="py-2 pr-4 font-mono text-xs">{row.time}</td>
+                        <td className="py-2 pr-4 text-xs tabular-nums">{row.time}</td>
                         <td className="py-2 pr-4">{row.what_happened}</td>
                         <td className="py-2 pr-4">{row.how_long}</td>
                         <td className="py-2">{row.what_the_system_did}</td>

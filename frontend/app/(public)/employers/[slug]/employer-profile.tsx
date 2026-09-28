@@ -210,10 +210,10 @@ export function EmployerProfile({ slug }: { slug: string }) {
         <FadeIn className="relative mx-auto max-w-5xl px-6 lg:px-10">
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div className="min-w-0">
-              <p className="text-sm font-semibold uppercase tracking-[.18em] text-teal-700">
+              <p className="type-eyebrow text-teal-700">
                 Employer page
               </p>
-              <h1 className="mt-3 text-balance text-3xl font-bold sm:text-4xl">
+              <h1 className="mt-3 type-section-title">
                 {data.name}
               </h1>
               {data.industry ? (
@@ -266,7 +266,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
         <FadeIn>
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-teal-700" aria-hidden="true" />
-            <h2 className="text-2xl font-bold">Careers at {data.name}</h2>
+            <h2 className="text-2xl font-semibold">Careers at {data.name}</h2>
           </div>
           <p className="mt-2 leading-7">
             Every application goes straight to the hiring team through

@@ -152,7 +152,7 @@ function Row({ row }: { row: ActivityRow }) {
         <StateSummary label="Now" state={row.new_state} />
       </div>
       {row.job_id || row.candidate_id ? (
-        <p className="mt-1 font-mono text-xs">
+        <p className="mt-1 type-ref">
           {row.job_id ? `job ${row.job_id}` : null}
           {row.job_id && row.candidate_id ? " . " : null}
           {row.candidate_id ? `candidate ${row.candidate_id}` : null}

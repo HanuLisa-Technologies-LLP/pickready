@@ -191,7 +191,7 @@ function FallbackPanel({
       <p className="max-w-md text-sm">
         {message}
       </p>
-      <p className="max-w-md break-all font-mono text-xs">
+      <p className="max-w-md break-all type-ref">
         {fileName}
       </p>
       {children ? <div className="mt-2">{children}</div> : null}

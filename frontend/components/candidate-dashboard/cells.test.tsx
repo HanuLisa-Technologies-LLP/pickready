@@ -219,7 +219,7 @@ describe("Candidate cell", () => {
     wrap(<CandidateCell row={row()} />);
     expect(screen.getByText("Test Candidate Zero")).toBeTruthy();
     const code = screen.getByText("JSRS-Y4BN-8HGX");
-    expect(code.className).toContain("font-mono");
+    expect(code.className).toContain("type-ref");
     expect(code.className).toContain("select-all");
   });
 

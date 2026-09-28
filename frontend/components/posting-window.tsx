@@ -166,7 +166,7 @@ export function PostingWindowChip({ job }: { job: Job }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium",
+        "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-chip font-medium",
         STATUS_STYLES[status]
       )}
     >

@@ -177,7 +177,7 @@ function NarrativeSection({
       <div className="mb-1 flex items-center gap-2">
         <h4 className="font-semibold">{label}</h4>
         {inherited ? (
-          <Badge variant="secondary" className="text-[10px]">
+          <Badge variant="secondary" className="text-chip">
             From company profile
           </Badge>
         ) : null}
@@ -889,7 +889,7 @@ export default function OrgJobDetailPage() {
             <div className="space-y-3">
               <Textarea
                 aria-label="Job description document"
-                className="min-h-[420px] font-mono text-[13px] leading-6"
+                className="min-h-[420px] font-mono text-xs leading-6"
                 value={docDraft}
                 onChange={(e) => setDocDraft(e.target.value)}
               />
@@ -1196,7 +1196,7 @@ export default function OrgJobDetailPage() {
           className={cn("mt-10 border-t border-border pt-8", tab !== "jd" && "hidden")}
         >
           <div className="mb-4 space-y-1">
-            <h2 id="hiring-intelligence-heading" className="text-lg font-semibold">
+            <h2 id="hiring-intelligence-heading" className="text-heading">
               Hiring intelligence (internal)
             </h2>
             <p className="max-w-prose text-sm">
