@@ -12,8 +12,9 @@ THERE IS ONE OF EACH, DELIBERATELY
 Two copies of a fairness detector drift invisibly: the copy nobody edits keeps
 passing its own tests while the rule it encodes has moved. Sutra holds the
 model that writes a skill's hidden evidence line to this bar
-(`hiring/sutra.build_context`), and Drishti holds a functional head's profile to
-it (`hiring/drishti`), so no second copy of the rule exists to drift. Both
+(`hiring/sutra.build_context`), and Leadership Intelligence holds a leader's
+saved input to it (`leadership/compiler`), so no second copy of the rule exists
+to drift. Both
 import from here, and `tests/test_observable_detector.py` is the one place the
 behaviour is pinned.
 

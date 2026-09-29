@@ -118,6 +118,8 @@ __all__ = [
     "SWOT_MIN_JD_WORDS",
     "skills_draft_input_state",
     "swot_input_state",
+    "LEADERSHIP_DRAFT_GROUNDING",
+    "leadership_draft_state",
     "GENERIC_STRENGTHS_PLACEHOLDER",
     "META_COMMENTARY_PHRASES",
     "META_COMMENTARY_WORDS",
@@ -170,6 +172,10 @@ GATED_PROMPTS: tuple[str, ...] = (
     # line is read by a candidate, so a model narrating the resume it was
     # given would put that narration in front of the person being assessed.
     "assessment_question_generation",
+    # Leadership Intelligence (2026-09-29, spec 17): the AI draft a leader
+    # reviews. Its text becomes the leader's own words once they save it, so a
+    # model narrating how thin the company profile was must never reach it.
+    "leadership_draft_system",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
 #: The few-shot block every gated prompt carries, and the fence around the one
@@ -304,6 +310,11 @@ EMPTY_STATE_COPY: dict[str, str] = {
     "swot.jd_too_thin": (
         "Write the job description first. The SWOT is drafted from it, so it "
         "needs a title and a few paragraphs describing the role."
+    ),
+    # leadership intelligence, internal: refused before the model is called
+    "leadership.draft.no_inputs": (
+        "Write this section yourself. Completing the Company Profile, or posting "
+        "a job in this department, gives the next draft something to work from."
     ),
     # gap analysis, internal
     "gap_analysis.probes.no_recorded_answer": (
@@ -902,6 +913,32 @@ def skills_draft_input_state(title: str | None, jd_markdown: str | None) -> Suff
         return _no(
             "skills.jd_too_thin",
             f"jd_body_words={words} below {SKILLS_DRAFT_MIN_JD_WORDS}",
+        )
+    return _ok()
+
+
+# ── Leadership Intelligence draft (internal) ─────────────────────────────────
+
+#: The inputs that can GROUND a leadership draft. The tenant's industry is
+#: gathered too, and deliberately absent here: an industry word alone would let
+#: the model write a generic leadership statement true of every company in it,
+#: which is the output this gate exists to refuse.
+LEADERSHIP_DRAFT_GROUNDING: frozenset[str] = frozenset(
+    {"company_profile", "public_research", "department_jobs", "previous_version"}
+)
+
+
+def leadership_draft_state(sources: Iterable[str]) -> Sufficiency:
+    """Whether a Leadership Intelligence draft may be written from `sources`.
+
+    Decided BEFORE the model call, over the names of what was actually
+    gathered (`services/leadership/draft`), so a refused draft spends nothing.
+    """
+    grounded = LEADERSHIP_DRAFT_GROUNDING & set(sources)
+    if not grounded:
+        return _no(
+            "leadership.draft.no_inputs",
+            f"grounding sources={sorted(set(sources))}",
         )
     return _ok()
 

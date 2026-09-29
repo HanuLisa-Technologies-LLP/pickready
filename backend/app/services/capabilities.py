@@ -845,50 +845,13 @@ DEFAULT_PERMISSION_MATRIX[Role.interview_manager].update(
 )
 
 
-# ── Drishti, the function's strategic profile (vivekium feature 1, C3) ───────
+# ── Drishti's capability is DELETED (Leadership Intelligence, 2026-09-29) ────
 #
-# WHY THIS IS ITS OWN CAPABILITY AND NOT `EDIT_COMPANY_PROFILE`
-# --------------------------------------------------------------
-# The brief names the audience in one line and excludes one role by name:
-# "MD, CEO, Functional Heads (CTO, CFO, COO). NOT the Hiring Manager." That
-# exclusion is a product rule, so it has to be expressible, and
-# `EDIT_COMPANY_PROFILE` cannot express it: every client-side staff role holds
-# it (see `_STAFF_OPERATIONAL`), including the Hiring Manager. Reusing it would
-# have made the brief's one explicit exclusion unstatable except as a role
-# branch, which rule 2 forbids.
-#
-# The Recruiter is refused for the complementary reason rather than by
-# analogy: they run a pipeline against criteria somebody else set, and a
-# function's strategic direction is not a pipeline act. Where a functional
-# head genuinely sits in a narrower seat, the per-user overlay
-# (`users.permissions_json`) pins that ONE person, which is the mechanism this
-# module already documents for exactly this case and is better than widening
-# the role default for everybody who shares their seat.
-#
-# Seeded by migration 0115 (a capability constant is only half a change), and
-# compared against the migrated database by tests/test_capability_seed_parity.
-AUTHOR_DRISHTI_PROFILE = "author_drishti_profile"
-
-# Appended, never interleaved: resolve_capability_set returns capabilities in
-# ALL_CAPABILITIES order and an existing response's field order must not
-# shuffle. It has to be in this list for a second reason here: /auth/me
-# returns exactly this list, and the customer portal's navigation asks
-# `hasCapability` for it, so a name missing from here is a page the client is
-# told does not exist.
-ALL_CAPABILITIES.append(AUTHOR_DRISHTI_PROFILE)
-
-DEFAULT_PERMISSION_MATRIX[Role.client].update({AUTHOR_DRISHTI_PROFILE: True})
-# hr_manager receives the SAME grant as recruitment_manager, the standing rule
-# above: the legacy role ranks beside Recruitment Manager, and tests/test_rbac
-# pins the two organisation-wide roles as identical grant-for-grant.
-for _role in (Role.recruitment_manager, Role.hr_manager):
-    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: True})
-# Explicit False rather than an absent key: an absent row and a false row deny
-# identically, and the explicit row makes the brief's own exclusion observable
-# in the template instead of being an omission somebody later reads as an
-# oversight and "fixes".
-for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
-    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: False})
+# Drishti's authoring capability left with its page and its routes, in
+# one change with its seeding (migration 0135 deletes every role_permissions
+# row, global and per tenant, and every per-user overlay key). The leaders who
+# write what the company wants from hires hold `author_leadership_intelligence`
+# below; `tests/test_drishti_removed.py` keeps the old name gone.
 
 
 # ── The assessment dispute path (change request 22, owner ruling 2026-09-22) ─

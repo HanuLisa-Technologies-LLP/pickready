@@ -145,22 +145,16 @@ export default function OrgLayout({
     // Company Profile (2026-07-27 spec §3.2): the About / Work Life / Benefits
     // sections every new job snapshots into its JD.
     { href: "/org/profile", label: "Company Profile", icon: FileText },
-    // Drishti, the function's strategic profile (vivekium feature 1, C3).
-    // Gated on the SAME capability the route and all four endpoints require,
-    // `author_drishti_profile`, which is in ALL_CAPABILITIES so /auth/me
-    // returns it and `hasCapability` can actually see it. That last part is
-    // the reason this entry can be gated at all: the Candidates entry above
-    // is deliberately ungated precisely because its capability is NOT in that
-    // list, and a nav item hidden by a stale client-side list is a page
-    // somebody is told does not exist.
-    //
-    // The entry itself is the feature. The page, the routes and the
-    // compilation all shipped working and nothing linked to them, so a
-    // functional head could not find the screen, so no profile was ever
-    // authored, so the layer changed nothing. A capability-gated route with
-    // no way in is indistinguishable from a feature that was never built.
-    hasCapability(CAP.authorDrishtiProfile)
-      ? { href: "/org/drishti", label: "Drishti", icon: Compass }
+    // Leadership Intelligence (2026-09-29, spec 27 and 28), which replaced
+    // Drishti. Offered to a leader who AUTHORS (CEO, MD, Functional Head) and
+    // to a company-wide reader (the Super Admin, the CEO, the MD), each gated
+    // on the capability its routes require: both are in ALL_CAPABILITIES, so
+    // /auth/me returns them and `hasCapability` can see them. A leader's page
+    // IS the feature: a gated route nobody can reach is a leadership input
+    // nobody ever saves, and the pipeline would change nothing.
+    hasCapability(CAP.authorLeadershipIntelligence) ||
+    hasCapability(CAP.viewLeadershipIntelligence)
+      ? { href: "/org/leadership", label: "Leadership Intelligence", icon: Compass }
       : null,
     { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
     // Talent Intelligence (2026-09-05 spec): the 18 operational dashboards.

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import drishti as drishti_api
+from app.api import leadership as leadership_api
 from app.api import (
     bgv,
     assessment_coding,
@@ -256,7 +256,7 @@ app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["suppor
 # candidate session and everything else is behind require_capability on the
 # tenant session, so neither audience can reach the other's routes.
 app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
-app.include_router(drishti_api.router, prefix=f"{API_PREFIX}/drishti", tags=["drishti"])
+app.include_router(leadership_api.router, prefix=f"{API_PREFIX}/leadership", tags=["leadership"])
 # Native conversations (recruiter to candidate, and the BGV threads with an
 # employer's HR contact). The REST routes and the one WebSocket live together
 # because they authorise identically: the socket is a NOTIFICATION channel over

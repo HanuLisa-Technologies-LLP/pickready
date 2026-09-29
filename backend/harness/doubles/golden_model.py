@@ -88,10 +88,19 @@ def _skills_draft(model: "GoldenModel", messages: Sequence[Mapping[str, Any]]) -
         )
     else:
         must.append({"name": "Payments reconciliation", "source": "jd"})
+    # Leadership Intelligence (2026-09-29): with the CEO's expectation in the
+    # request, the behavioural skill answers it and says so. A leadership
+    # source is named only when its lines were given, as the evaluator demands.
+    supplied = {
+        str(line.get("source"))
+        for line in request.get("leadership_context") or []
+        if isinstance(line, Mapping)
+    }
+    behavioural_source = "leadership_ceo" if "leadership_ceo" in supplied else "company"
     return {
         "must_have": must,
         "nice_to_have": [{"name": "PostgreSQL tuning", "source": "jd"}],
-        "behavioural": [{"name": "Ownership under pressure", "source": "company"}],
+        "behavioural": [{"name": "Ownership under pressure", "source": behavioural_source}],
     }
 
 

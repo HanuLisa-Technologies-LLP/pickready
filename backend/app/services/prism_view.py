@@ -41,6 +41,7 @@ from app.schemas.assessments import (
     DimensionOut,
     FunctionalReportOut,
     GapAnalysisOut,
+    LeadershipAlignmentOut,
     RadarChartOut,
     ValidationPointsOut,
 )
@@ -351,6 +352,18 @@ async def report_out(
         claim_evidence=ClaimEvidenceOut.model_validate(report.claim_evidence_json or {}),
         validation_points=ValidationPointsOut.model_validate(
             report.validation_points_json or {}
+        ),
+        # The stored section carries its context id, version and digest for
+        # provenance; only the words cross the boundary.
+        leadership_alignment=(
+            LeadershipAlignmentOut.model_validate(
+                {
+                    "note": report.leadership_alignment_json.get("note") or "",
+                    "groups": report.leadership_alignment_json.get("groups") or [],
+                }
+            )
+            if report.leadership_alignment_json
+            else None
         ),
         # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
         # what it was actually written with.

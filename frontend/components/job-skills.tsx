@@ -136,10 +136,22 @@ const SOURCE_LABEL: Record<SkillSource, string> = {
   jd: "From the JD",
   swot: "From the SWOT",
   company: "From the Company Profile",
+  // Leadership Intelligence (2026-09-29, spec 22.2): the draft names whose
+  // saved expectation a skill answers. The team still decides at Save.
+  leadership_ceo: "From the CEO's expectations",
+  leadership_md: "From the MD's expectations",
+  leadership_functional_head: "From the Functional Head's expectations",
   team: "Added by your team",
 };
 
-export type SkillSource = "swot" | "jd" | "company" | "team";
+export type SkillSource =
+  | "swot"
+  | "jd"
+  | "company"
+  | "leadership_ceo"
+  | "leadership_md"
+  | "leadership_functional_head"
+  | "team";
 
 export interface SkillOut {
   id: string;

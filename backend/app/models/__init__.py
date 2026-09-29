@@ -66,7 +66,11 @@ from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording, VideoRecordingSegment
 from app.models.voice import VoiceAnswer
 from app.models.project import CandidateProject
-from app.models.drishti import DrishtiProfile
+from app.models.leadership import (
+    JobLeadershipContext,
+    LeadershipDepartmentExpectation,
+    LeadershipProfile,
+)
 from app.models.department import CompanyDepartment
 from app.models.candidate import (
     Candidate,
@@ -150,7 +154,9 @@ from app.models.company_registration import CompanyRegistration
 from app.models.user import User
 
 __all__ = [
-    "DrishtiProfile",
+    "JobLeadershipContext",
+    "LeadershipDepartmentExpectation",
+    "LeadershipProfile",
     "CompanyDepartment",
     "Base",
     "APPROVAL_CHAIN",

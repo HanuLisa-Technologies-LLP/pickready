@@ -90,6 +90,8 @@ __all__ = [
     "WORD_MAX",
     "WORD_MIN",
     "CompanyProfileDraft",
+    "fence_sources",
+    "gather_sources",
     "research_company",
 ]
 
@@ -316,6 +318,25 @@ def _fence(hits: list[dict[str, Any]]) -> str:
         + "\n\n".join(lines)
         + "\nEND SOURCE PACK"
     )
+
+
+async def gather_sources(
+    company: str, website: str | None, industry: str | None
+) -> list[dict[str, Any]]:
+    """Retrieved pages ABOUT this company: gathered, host-filtered and
+    attributed. Never raises; an unconfigured search answers an empty list.
+
+    The ONE gathering path, shared by the Company Profile draft below and the
+    Leadership Intelligence draft (spec 17), so the two cannot disagree about
+    which sources are allowed or which page is about which company.
+    """
+    hits = await _gather(company, website, industry)
+    return generation_sufficiency.attributable_sources(company, hits)
+
+
+def fence_sources(hits: list[dict[str, Any]]) -> str:
+    """The source pack, fenced as data, exactly as this module fences it."""
+    return _fence(hits)
 
 
 def _words(text: str) -> int:

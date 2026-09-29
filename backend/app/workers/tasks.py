@@ -3142,3 +3142,6 @@ from app.workers import tasks_retrieval  # noqa: E402,F401
 # The platform security email (auth hardening, 2026-09-29), registered the
 # same way.
 from app.workers import tasks_security_email  # noqa: E402,F401
+# The Leadership Intelligence draft (2026-09-29, spec 17), registered the
+# same way.
+from app.workers import tasks_leadership  # noqa: E402,F401

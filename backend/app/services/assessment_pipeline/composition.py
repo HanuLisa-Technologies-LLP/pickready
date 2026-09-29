@@ -348,6 +348,52 @@ def _status_findings(miti: Any) -> list[dict[str, str]]:
     return findings
 
 
+def leadership_plan(
+    miti: Any, dimensions: Sequence[Mapping[str, Any]], gap_groups: Sequence[Mapping[str, Any]]
+) -> tuple[dict[str, Any] | None, tuple[Any, ...]]:
+    """The Leadership Alignment plan and its citable nodes, or (None, ()).
+
+    Read from the CONTRACT Miti graded against (`miti.contract.leadership`,
+    frozen at Save Skills), never from the live leadership input, so the
+    report names the same leadership version the assessment was built on.
+    """
+    from app.services.leadership.context import SOURCE_LABELS
+    from app.services.siddhi import leadership_alignment
+
+    frozen = getattr(miti.contract, "leadership", None)
+    if frozen is None or not frozen.context.lines:
+        return None, ()
+    grade_by_name = {
+        str(row["name"]): (row.get("grade") or siddhi_synthesis.NOT_ASSESSED_WORD)
+        for row in dimensions
+    }
+    leadership_skills = [
+        {
+            "name": skill.name,
+            "source": frozen.source_of(skill.id),
+            "grade": grade_by_name.get(skill.name, siddhi_synthesis.NOT_ASSESSED_WORD),
+        }
+        for skill in miti.contract.skills
+        if frozen.is_leadership_skill(skill.id)
+    ]
+    probes_by_item: dict[str, list[str]] = {}
+    for group in gap_groups:
+        for item in group.get("items") or []:
+            name = str(item.get("name") or "")
+            if name:
+                probes_by_item.setdefault(name, []).extend(
+                    str(probe) for probe in item.get("probes") or []
+                )
+    lines = [line.as_json() for line in frozen.context.lines]
+    payload = leadership_alignment.build_payload(
+        lines=lines,
+        source_labels=SOURCE_LABELS,
+        leadership_skills=leadership_skills,
+        probes_by_item=probes_by_item,
+    )
+    return payload, leadership_alignment.nodes(str(frozen.context_id), lines)
+
+
 async def compose(
     session: AsyncSession,
     inputs: AssessmentInputs,
@@ -436,6 +482,7 @@ async def compose(
     section = await gap_analysis.build_gap_groups(
         session, dimensions, evidence_by_item, provenance=provenance
     )
+    leadership_payload, leadership_nodes = leadership_plan(miti, dimensions, section["groups"])
     composed = await siddhi_report.compose_prism(
         dimensions=dimensions,
         evidence_by_item=evidence_by_item,
@@ -447,8 +494,10 @@ async def compose(
         validation=validation,
         validation_points=points_section,
         claim_evidence=claims_section,
-        extra_nodes=tuple(claim_evidence.employment_nodes(employments)),
+        extra_nodes=tuple(claim_evidence.employment_nodes(employments))
+        + tuple(leadership_nodes),
         passages=_passages_by_skill(miti),
+        leadership=leadership_payload,
         embed=support.semantic_embedder(),
         # THE SUPPORT CHECK'S THIRD LOOK, THROUGH THE TOOL LAYER. Siddhi never
         # imports the retrieval entry point: it is handed here, bound to this
@@ -461,6 +510,18 @@ async def compose(
         ),
     )
     gap_analysis_json = {**section, "siddhi": composed.siddhi_namespace()}
+    leadership_alignment_json = None
+    frozen_leadership = getattr(miti.contract, "leadership", None)
+    if leadership_payload is not None and frozen_leadership is not None:
+        from app.services.siddhi import leadership_alignment
+
+        # Built from what RENDERED: a withheld statement is never stored.
+        leadership_alignment_json = leadership_alignment.stored_section(
+            composed.sections,
+            context_id=str(frozen_leadership.context_id),
+            context_version=frozen_leadership.version,
+            digest=frozen_leadership.digest,
+        )
 
     submitted = link.validation_json or {}
     gate = quality_gate.evaluate(
@@ -534,6 +595,7 @@ async def compose(
             "category_grades_json": dict(aggregate.category_grades),
             "contract_version": miti.contract_version,
             "contract_digest": miti.contract_digest,
+            "leadership_alignment_json": leadership_alignment_json,
             "needs_human_review": needs_review,
             "review_findings_json": findings or None,
         },

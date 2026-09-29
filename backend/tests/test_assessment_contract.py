@@ -265,6 +265,9 @@ def test_the_contract_carries_the_fields_every_reader_needs() -> None:
     assert set(AssessmentContract.__dataclass_fields__) == {
         "job_id", "version", "locked", "skills", "role_summary", "digest",
         "grade", "locked_at",
+        # Leadership Intelligence (2026-09-29): the frozen leadership context
+        # the skills were saved with, or None; in the digest only when present.
+        "leadership",
     }
     assert set(ContractSkill.__dataclass_fields__) == {
         "id", "name", "bucket", "priority", "evidence_line",
