@@ -143,6 +143,9 @@ from app.models.job_skill_snapshot import JobSkillSnapshot
 # (migration 0124). The key is read and written only by
 # `services/coding_assessment/keys`.
 from app.models.coding import CodingQuestionKey, CodingRun, CodingSubmission
+# A company's public self-registration before it is a customer (migration
+# 0134). Read and written only by `api/company_onboarding`.
+from app.models.company_registration import CompanyRegistration
 from app.models.user import User
 
 __all__ = [
@@ -187,6 +190,7 @@ __all__ = [
     "WebhookEvent",
     "COMMERCIAL_DOCUMENT_TYPES",
     "Company",
+    "CompanyRegistration",
     "ComplianceDocument",
     "DOCUMENT_GROUPS",
     "DOCUMENT_LABELS",

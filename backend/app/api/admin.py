@@ -33,7 +33,6 @@ from app.api.deps import (
 )
 from app.config import llm_providers
 from app.core.config import get_settings
-from app.models.candidate import Candidate, Profile
 from app.models.enums import Role, UserStatus
 from app.models.invite import (
     StaffInvite,
@@ -43,7 +42,6 @@ from app.models.invite import (
     invite_expiry,
 )
 from app.models.bd import BDLead
-from app.models.job import Job
 from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
 from app.schemas.admin import (
@@ -60,7 +58,7 @@ from app.schemas.admin import (
     TenantOut,
     derive_tenant_domain,
 )
-from app.services import cost_telemetry, employer_pages, rbac
+from app.services import cost_telemetry, employer_pages, rbac, tenant_deletion
 from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
@@ -286,35 +284,12 @@ async def delete_tenant(
             detail="Confirmation does not match the company name",
         )
 
-    removed: dict[str, int] = {}
-    for label, model in (("users", User), ("jobs", Job)):
-        removed[label] = (
-            await session.execute(
-                select(func.count()).select_from(model).where(model.tenant_id == tenant_id)
-            )
-        ).scalar_one()
-
-    released_candidates = await session.execute(
-        update(Candidate).where(Candidate.tenant_id == tenant_id).values(tenant_id=None)
-    )
-    removed["candidates_released"] = released_candidates.rowcount or 0
-    released_profiles = await session.execute(
-        update(Profile)
-        .where(Profile.source_tenant_id == tenant_id)
-        .values(source_tenant_id=None)
-    )
-    removed["profiles_released"] = released_profiles.rowcount or 0
-
     name = tenant.name
-    # Audit BEFORE the delete so the row is written while the tenant still
-    # exists; audit_log has no FK to tenants, so the trail survives.
-    await audit(
-        session, tenant_id=tenant_id, actor_user_id=user.user_id,
-        action="tenant_deleted", target_type="tenant", target_id=tenant_id,
-        metadata={"name": name, "domain": tenant.domain, "removed": removed},
+    # The one implementation, shared with the operator's cleanup script
+    # (services/tenant_deletion carries the cascade and release rules).
+    removed = await tenant_deletion.delete_tenant(
+        session, tenant, actor_user_id=user.user_id
     )
-    await session.delete(tenant)
-    await session.flush()
     return TenantDeleteOut(id=tenant_id, name=name, removed=removed)
 
 

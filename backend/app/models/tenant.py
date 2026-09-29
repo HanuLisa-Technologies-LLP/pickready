@@ -151,6 +151,14 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
 CUSTOMER_ACTIVE = "active"
 CUSTOMER_ARCHIVED = "archived"
 CUSTOMER_STATUSES: tuple[str, ...] = (CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED)
+#: A FOURTH `tenants.status` (migration 0134), beside `prospect`
+#: (`models/bd.TENANT_PROSPECT`). A company registered itself and verified its
+#: email but has not finished: no paid first purchase, or no password yet.
+#: Like a prospect it is not a live customer, so the Provider Portal's lists
+#: never show it, and unlike one it has a `client` user who must NOT be able to
+#: sign in until `POST /company-onboarding/activate` flips it to `active`
+#: (`services/company_onboarding.login_refusal`).
+TENANT_ONBOARDING = "onboarding"
 
 
 class RolePermission(Base, UUIDPKMixin):

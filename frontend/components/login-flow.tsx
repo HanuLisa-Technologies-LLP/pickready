@@ -216,6 +216,10 @@ export function LoginFlow({
   ) : surface === "company" ? (
     <div className="space-y-2">
       <p>
+        New to Vivekium?{" "}
+        <AuthLink href="/company/register">Register your company</AuthLink>
+      </p>
+      <p>
         Joining a team? Use the invitation email your company admin sent you.
       </p>
       <p>

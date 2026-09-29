@@ -576,6 +576,51 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "the same handler under the v2 prefix, where the companies router is "
         "mounted a second time."
     ),
+    # Company self-registration (owner spec 2026-09-29, section 5). The
+    # person registering has no account, so no route here can ask for a
+    # session. Each step is authorized by the proof the step before produced.
+    "/api/v1/company-onboarding/register": (
+        "spends a single-use company_register CAPTCHA proof before anything "
+        "else, then sends a security code (or, to an address that already has "
+        "an account, a notice) and answers the same sentence either way. "
+        "Rate limited."
+    ),
+    "/api/v1/company-onboarding/code/resend": (
+        "a new security code for a registration already started, sent only "
+        "to the mailbox that registration names; the resend window runs for "
+        "every address alike, so the answer discloses nothing. Rate limited."
+    ),
+    "/api/v1/company-onboarding/code/verify": (
+        "the six-digit security code from the mailbox is the authentication: "
+        "HMAC in Redis, five attempts, ten minutes. A right code creates the "
+        "onboarding company and sets the onboarding cookie."
+    ),
+    "/api/v1/company-onboarding/state": (
+        "where this browser's registration stands, read from the signed "
+        "onboarding cookie; with no cookie it answers the first step and "
+        "discloses nothing."
+    ),
+    "/api/v1/company-onboarding/pricing": (
+        "authorized by the signed onboarding cookie (its own audience, sixty "
+        "minutes, minted only by a right security code); prices the packs "
+        "for the one registration the cookie names."
+    ),
+    "/api/v1/company-onboarding/purchase": (
+        "authorized by the signed onboarding cookie; creates the first "
+        "Razorpay Order for the one registration it names, through the same "
+        "purchase path as the billing page."
+    ),
+    "/api/v1/company-onboarding/purchase/verify": (
+        "authorized by the signed onboarding cookie AND the Razorpay order "
+        "signature, recomputed on the server with the Key Secret; the order "
+        "must belong to the cookie's registration."
+    ),
+    "/api/v1/company-onboarding/activate": (
+        "authorized by the signed onboarding cookie AND a paid credit "
+        "purchase for its company, read from credit_purchases; it creates the "
+        "password sign-in for exactly the registered address and opens the "
+        "company session."
+    ),
     "/api/v1/auth/refresh": (
         "reads the refresh cookie itself and re-mints for the SAME audience. "
         "A missing or dead cookie returns a dead session rather than data."

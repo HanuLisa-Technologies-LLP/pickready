@@ -21,6 +21,7 @@ function hasSession(request: NextRequest): boolean {
 const PUBLIC_PREFIXES = [
   "/login",
   "/company/login", // the company sign-in page (email, password, security check)
+  "/company/register", // company self-registration (details, security code, first purchase, password)
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
   "/pricing", // the public credit price list (GET /billing/public/credit-packs)

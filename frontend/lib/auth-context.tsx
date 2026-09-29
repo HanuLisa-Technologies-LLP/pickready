@@ -49,6 +49,7 @@ const NAVIGATION_REVALIDATE_MS = 60 * 1000;
 const PUBLIC_PREFIXES = [
   "/login",
   "/company/login",
+  "/company/register",
   "/register",
   "/docs",
   "/pricing",

@@ -51,6 +51,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    company_onboarding,
     dashboard,
     emails,
     job_setup,
@@ -83,6 +84,11 @@ ROUTERS = {
     "billing": billing,
     "candidates": candidates,
     "companies": companies,
+    # Company self-registration (2026-09-29). Every write here is made by
+    # somebody with no account yet, so each is authorized by a proof rather
+    # than a session: a CAPTCHA proof, a security code, or the onboarding
+    # cookie those two mint.
+    "company_onboarding": company_onboarding,
     "dashboard": dashboard,
     "emails": emails,
     # The setup checklist, the Skills step and the SWOT routes (Vivekium
@@ -121,6 +127,11 @@ GATES = (
     "get_current_candidate",
     "get_candidate_db",
     "get_current_any",
+    # The onboarding cookie (company self-registration): a signed token with
+    # its own audience, minted only by a right security code, naming one
+    # registration. It is the authorization of every registration step after
+    # the code, and it grants nothing a portal session grants.
+    "require_onboarding_cookie",
 )
 
 #: Routes authorized by possession of a signed token rather than by a session.
@@ -177,6 +188,14 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # not. A session dependency would defeat it, because the reader is by
     # definition somebody who has not signed in for six months.
     "/consent/renew": "single-use renewal token, keeps a profile and nothing else",
+    # Company self-registration (2026-09-29). The person has no account, so
+    # these cannot ask for one. The register step spends a single-use
+    # company_register CAPTCHA proof first and answers the same sentence for
+    # every address; the resend writes only to a registration already
+    # started; the verify needs the six-digit code from the mailbox.
+    "/register": "CAPTCHA proof, enumeration safe",
+    "/code/resend": "writes only to a registration already started, rate limited",
+    "/code/verify": "security code from the mailbox",
 }
 
 #: Routes that mutate ONLY the caller's own record.
