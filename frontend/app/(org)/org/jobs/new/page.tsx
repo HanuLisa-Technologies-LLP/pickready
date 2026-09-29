@@ -50,6 +50,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { FormField, FormSection } from "@/components/ui/form";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { DepartmentPicker } from "@/components/department-picker";
 import {
   Select,
   SelectContent,
@@ -130,6 +131,7 @@ export default function CreateJobPage() {
 
   const [form, setForm] = React.useState<JobFormValues>({
     title: "",
+    department_id: "",
     department: "",
     grade: "",
     requirement_period: "",
@@ -174,6 +176,7 @@ export default function CreateJobPage() {
   const [reportingOptions, setReportingOptions] = React.useState<string[]>([]);
   const [reportingChoice, setReportingChoice] = React.useState("");
   const [gradeError, setGradeError] = React.useState<string | null>(null);
+  const [departmentError, setDepartmentError] = React.useState<string | null>(null);
   const [experienceError, setExperienceError] = React.useState<string | null>(null);
   // True right after a draft lands, so the editor opens ready to edit.
   const [justDrafted, setJustDrafted] = React.useState(false);
@@ -353,6 +356,12 @@ export default function CreateJobPage() {
    */
   const saveDraft = async () => {
     // Radix Select is not a native control, so `required` cannot gate it.
+    if (!form.department_id) {
+      setDepartmentError("Choose the department this role belongs to.");
+      focusInvalid("department");
+      return;
+    }
+    setDepartmentError(null);
     if (!form.grade) {
       setGradeError("Select a grade. It decides which assessment the candidate receives.");
       focusInvalid("grade");
@@ -479,14 +488,20 @@ export default function CreateJobPage() {
               <FormField label="Job title" htmlFor="title" required>
                 <Input id="title" value={form.title} onChange={set("title")} required />
               </FormField>
-              <FormField label="Department" htmlFor="department" required>
-                <Input
-                  id="department"
-                  value={form.department}
-                  onChange={set("department")}
-                  required
-                />
-              </FormField>
+              <DepartmentPicker
+                id="department"
+                required
+                error={departmentError}
+                value={form.department_id}
+                onChange={(department) => {
+                  setForm((prev) => ({
+                    ...prev,
+                    department_id: department.id,
+                    department: department.name,
+                  }));
+                  setDepartmentError(null);
+                }}
+              />
               <FormField
                 label="Grade"
                 htmlFor="grade"

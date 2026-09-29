@@ -15,7 +15,14 @@ const toast = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 vi.mock("@/lib/api", () => api);
-vi.mock("@/lib/auth-context", () => ({ useAuth: () => ({ user: { tenant_id: "t1" } }) }));
+vi.mock("@/lib/auth-context", () => ({
+  useAuth: () => ({
+    user: { tenant_id: "t1" },
+    hasCapability: () => true,
+    capabilities: [],
+    loading: false,
+  }),
+}));
 vi.mock("@/components/ui/toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/components/app-shell", () => ({
   PageHeader: ({ title }: { title: React.ReactNode }) => <h1>{title}</h1>,
@@ -68,6 +75,11 @@ beforeEach(() => {
     if (path === "/companies/me/profile") {
       return Promise.resolve({ about_company: "We build payments." });
     }
+    if (path === "/companies/departments") {
+      return Promise.resolve([
+        { id: "dept-eng", name: "Engineering", is_active: true },
+      ]);
+    }
     return Promise.resolve({ jobs: [], total_unresolved: 0 });
   });
 });
@@ -76,7 +88,13 @@ async function fillPosition() {
   fireEvent.change(screen.getByLabelText(/^Job title/), {
     target: { value: "Backend Engineer" },
   });
+  // The department is PICKED from the company's list (the leadership
+  // release): the first select is the department, the second the grade.
+  await screen.findByRole("option", { name: "Engineering" });
   fireEvent.change(screen.getAllByLabelText("choice")[0], {
+    target: { value: "dept-eng" },
+  });
+  fireEvent.change(screen.getAllByLabelText("choice")[1], {
     target: { value: "managerial" },
   });
   fireEvent.change(screen.getByLabelText("Min"), { target: { value: "3" } });
@@ -140,6 +158,7 @@ describe("Create Job", () => {
     expect(body).not.toHaveProperty("level");
     expect(body).toMatchObject({
       title: "Backend Engineer",
+      department_id: "dept-eng",
       grade: "managerial",
       experience_min_years: 3,
       experience_max_years: 6,

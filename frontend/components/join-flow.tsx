@@ -48,6 +48,10 @@ const ROLE_LABELS: Record<StaffRole, string> = {
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",
+  interview_manager: "Interview Manager",
+  ceo: "CEO",
+  md: "MD",
+  functional_head: "Functional Head",
 };
 
 export function JoinFlow({ token }: { token: string }) {

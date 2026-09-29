@@ -57,6 +57,10 @@ export const ROLE_LABEL: Record<Role, string> = {
   hr_manager: "HR manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring manager",
+  interview_manager: "Interview manager",
+  ceo: "CEO",
+  md: "MD",
+  functional_head: "Functional head",
   candidate: "Candidate",
   bd: "Business development",
 };

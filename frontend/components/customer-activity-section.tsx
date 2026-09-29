@@ -61,6 +61,9 @@ const ROLE_LABELS: Record<string, string> = {
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",
   interview_manager: "Interview Manager",
+  ceo: "CEO",
+  md: "MD",
+  functional_head: "Functional Head",
   candidate: "Candidate",
   unknown: "Role not recorded",
 };

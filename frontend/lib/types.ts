@@ -7,6 +7,13 @@ export type Role =
   | "hr_manager"
   | "recruiter"
   | "hiring_manager"
+  | "interview_manager"
+  // The leadership roles (2026-09-29): CEO and MD read the whole company and
+  // write only their own Leadership Intelligence; a Functional Head reads one
+  // department. All three are org-portal roles.
+  | "ceo"
+  | "md"
+  | "functional_head"
   | "candidate"
   // Business Development: Vivekium's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
@@ -192,7 +199,18 @@ export type StaffRole =
   | "recruitment_manager"
   | "hr_manager"
   | "recruiter"
-  | "hiring_manager";
+  | "hiring_manager"
+  | "interview_manager"
+  | "ceo"
+  | "md"
+  | "functional_head";
+
+/** Row from GET /companies/departments (the leadership release, spec 13). */
+export interface Department {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
 
 /** Row from GET /companies/me/staff (contract rev 2). */
 export interface StaffMember {
@@ -203,6 +221,15 @@ export interface StaffMember {
   role: StaffRole;
   status: string;
   approval_level?: string | null;
+  /** A Functional Head's one department. */
+  department_id?: string | null;
+  department_name?: string | null;
+  /**
+   * Whether THE CALLER may edit, re-invite, deactivate or re-permission this
+   * person. The server answers it per row; a view-only reader (a CEO or MD)
+   * sees every row with it false.
+   */
+  can_manage?: boolean;
   created_at?: string | null;
   invite_status?: "pending" | "accepted" | "revoked" | "expired" | null;
   invite_sent_at?: string | null;
@@ -305,6 +332,8 @@ export interface Job {
   id: string;
   title: string;
   department: string;
+  /** The job's department row (the leadership release, spec 13). */
+  department_id?: string | null;
   // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
   // free-text seniority any more. The grade and the experience band replaced
   // it; the column survives in the database as history only.

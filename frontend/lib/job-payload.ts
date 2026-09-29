@@ -2,6 +2,14 @@ import type { JobGrade } from "./types";
 
 export type JobFormValues = {
   title: string;
+  /**
+   * The department, chosen from the company's list (the leadership release,
+   * spec 13): its id is what the server stores and what a Functional Head is
+   * confined by, and its name rides along for the AI brief. A department is
+   * picked or added through `components/department-picker.tsx`; nothing here
+   * is free text any more.
+   */
+  department_id: string;
   department: string;
   /**
    * Assessment grade (spec §5/§6), REQUIRED by POST /jobs. Drives the
@@ -83,7 +91,7 @@ export const skillsToArray = (value: string): string[] =>
 export function buildJobCreatePayload(form: JobFormValues) {
   return {
     title: form.title.trim(),
-    department: form.department.trim() || null,
+    department_id: form.department_id || null,
     grade: form.grade,
     requirement_period: form.requirement_period.trim() || null,
     experience_min_years: optionalNumber(form.experience_min_years),

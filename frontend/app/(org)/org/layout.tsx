@@ -115,14 +115,19 @@ export default function OrgLayout({
   const { can: hasCapability } = usePermissions();
 
   const nav = [
-    hasCapability(CAP.manageStaff)
+    // The team list is a READ (view_staff) since the leadership release: a
+    // CEO or MD reads the whole team, and only a holder of manage_staff sees
+    // the controls on it.
+    hasCapability(CAP.viewStaff)
       ? { href: "/org/staff", label: "Staff", icon: Users }
       : null,
     // Compliance & legal records (Provider Portal spec §3). Capability-gated
     // to the Company Admin by default, a GSTIN certificate and a signed
     // agreement are the company's legal instruments, not recruitment data, so
     // this is the one surface the flat staff model deliberately does not share.
-    hasCapability(CAP.manageComplianceDocuments)
+    // A READ since the leadership release (view_compliance_documents): the
+    // CEO and MD read the records, and filing one still takes the manage.
+    hasCapability(CAP.viewComplianceDocuments)
       ? { href: "/org/compliance", label: "Compliance", icon: ShieldCheck }
       : null,
     // Shared staff surface, identical for every staff role (flat).

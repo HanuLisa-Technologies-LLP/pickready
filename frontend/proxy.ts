@@ -76,6 +76,10 @@ const PORTAL_BY_ROLE: Record<string, string> = {
   hr_manager: "/org",
   recruiter: "/org",
   hiring_manager: "/org",
+  interview_manager: "/org",
+  ceo: "/org",
+  md: "/org",
+  functional_head: "/org",
 };
 
 const PORTAL_BY_AUDIENCE: Record<string, string> = {
