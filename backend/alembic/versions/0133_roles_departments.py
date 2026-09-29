@@ -1,7 +1,7 @@
 """Roles and departments: CEO, MD, Functional Head, and the department boundary.
 
 Revision ID: 0133_roles_departments
-Revises: 0131_freeze_at_application
+Revises: 0132_subscription_retirement
 
 The leadership release (2026-09-29), spec 2.4, 2.11, 2.12, 13, 15 and 30
 ("Migration B"). Four halves of one change, and they ride together because
@@ -66,7 +66,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0133_roles_departments"
-down_revision = "0131_freeze_at_application"
+down_revision = "0132_subscription_retirement"
 branch_labels = None
 depends_on = None
 

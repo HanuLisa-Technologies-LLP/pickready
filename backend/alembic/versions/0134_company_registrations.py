@@ -1,7 +1,7 @@
 """Company self-registration: `company_registrations` and the `onboarding` tenant.
 
 Revision ID: 0134_company_registrations
-Revises: 0132_subscription_retirement
+Revises: 0133_roles_departments
 
 Owner spec 2026-09-29, sections 2.2, 5, 24 and 30 (Migration A): the first
 Company Super Admin registers the company publicly, proves the mailbox with a
@@ -34,7 +34,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0134_company_registrations"
-down_revision = "0132_subscription_retirement"
+down_revision = "0133_roles_departments"
 branch_labels = None
 depends_on = None
 
