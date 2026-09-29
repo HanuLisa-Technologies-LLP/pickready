@@ -283,21 +283,6 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         ),
     ),
     ScheduledTask(
-        rule="readypick-sweep-subscription-usage-alerts",
-        task="pickready.sweep_subscription_usage_alerts",
-        interval_minutes=1440,
-        why=(
-            "Change request 27: the month 10 and month 11 usage summary. "
-            "PURELY INFORMATIONAL, and it writes exactly one column, the "
-            "once-only latch that stops the letter being sent twice. DAILY "
-            "because the window is a subscription MONTH, so running late "
-            "delays the letter by a day and can never duplicate it. It is "
-            "keyed on the TABLE (subscription_started_at against now), never "
-            "on a last-swept stamp, so a run that died between the claim and "
-            "the send does not silently skip the tenant it died on."
-        ),
-    ),
-    ScheduledTask(
         rule="readypick-reconcile-queued-emails",
         task="pickready.reconcile_queued_emails",
         interval_minutes=15,

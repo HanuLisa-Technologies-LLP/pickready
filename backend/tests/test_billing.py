@@ -1,16 +1,18 @@
-"""Subscriptions and the credit ledger (killer-spec Parts 2 and 3).
+"""The credit ledger (killer-spec Part 3) and the Razorpay signatures.
 
-Five things are worth guarding here, and each has a specific failure mode that
+Per-credit only since 2026-09-29: the monthly subscription plans and their
+seeded prices are retired (`tests/test_subscription_removed.py`), and the
+published credit price list is pinned in `tests/test_credit_packs.py` and
+`tests/test_public_credit_catalogue.py`.
+
+Four things are worth guarding here, and each has a specific failure mode that
 is invisible without a test:
 
   * the SUB-UNIT ARITHMETIC. 1, 1/3, 1/15 and 1/20 of a credit must divide 60
     exactly. A wrong constant here silently overcharges or undercharges every
     customer, forever, and nothing about the UI would look wrong.
-  * the PRICES. Spec §2.3 says "do not round or approximate". A typo in a
-    migration seed is a billing defect, not a cosmetic one.
-  * the CHECKOUT SIGNATURE ORDER. Subscriptions sign `payment|subscription`,
-    Orders sign `order|payment`. Getting it backwards fails 100% of real
-    payments, and only ever in production where real cards are used.
+  * the WEBHOOK SIGNATURE. Over the raw bytes, and failing closed without a
+    secret. A signature check that cannot be performed has failed.
   * IDEMPOTENCY. Razorpay delivers webhooks at least once and Celery redelivers
     tasks, so a double grant or a double charge is the default behaviour unless
     something prevents it.
@@ -38,22 +40,11 @@ from app.models.billing import (
     EVENT_NO_SHOW,
     EVENT_OLD_PROFILE_REVIEW,
     LEDGER_EVENT_TYPES,
-    SUBSCRIPTION_STATUSES,
     SUBUNITS_PER_CREDIT,
 )
 from app.services import credits
 from app.services import credit_reconciliation as recon
 from app.services import razorpay
-
-# The exact figures from spec §2.3, restated here independently of the
-# migration so a typo in either one is caught rather than agreed with.
-EXPECTED_PLANS = {
-    "starter": (50, 10000, 200),
-    "growth": (100, 18000, 180),
-    "scale": (150, 24000, 160),
-    "pro": (200, 28000, 140),
-}
-
 
 # ── Sub-unit arithmetic ──────────────────────────────────────────────────────
 
@@ -80,8 +71,9 @@ def test_consumption_rates_match_the_spec(event, per_credit, expected) -> None:
 
 
 def test_a_grant_is_not_a_consumption_rate() -> None:
-    """A grant has no fixed size — it comes from the plan. Listing it among the
-    consumption rates would let `consume()` accept it and deduct a grant."""
+    """A grant has no fixed size: it comes from the pack bought. Listing it
+    among the consumption rates would let `consume()` accept it and deduct a
+    grant."""
     assert EVENT_GRANT in LEDGER_EVENT_TYPES
     assert EVENT_GRANT not in CONSUMPTION_SUBUNITS
 
@@ -113,35 +105,6 @@ async def test_consume_refuses_an_event_that_has_no_rate() -> None:
 
 # ── Razorpay signatures ──────────────────────────────────────────────────────
 
-def test_subscription_checkout_signs_payment_then_subscription(monkeypatch) -> None:
-    """The Orders flow signs `order|payment`; Subscriptions signs
-    `payment|subscription`. This is the single most expensive thing to get
-    backwards — it fails every real payment and nothing else."""
-    import hashlib
-    import hmac
-
-    secret = "test-secret"
-    monkeypatch.setattr(
-        razorpay,
-        "config",
-        lambda: razorpay.RazorpayConfig(key_id="rzp_test_x", key_secret=secret, webhook_secret=""),
-    )
-    payment, subscription = "pay_ABC", "sub_XYZ"
-    correct = hmac.new(
-        secret.encode(), f"{payment}|{subscription}".encode(), hashlib.sha256
-    ).hexdigest()
-    reversed_order = hmac.new(
-        secret.encode(), f"{subscription}|{payment}".encode(), hashlib.sha256
-    ).hexdigest()
-
-    assert razorpay.verify_checkout_signature(
-        payment_id=payment, subscription_id=subscription, signature=correct
-    )
-    assert not razorpay.verify_checkout_signature(
-        payment_id=payment, subscription_id=subscription, signature=reversed_order
-    )
-
-
 def test_webhook_signature_is_over_the_raw_bytes(monkeypatch) -> None:
     """Re-serialising the parsed JSON changes key order and whitespace, so the
     verification must never be handed anything but the bytes Razorpay sent."""
@@ -154,7 +117,7 @@ def test_webhook_signature_is_over_the_raw_bytes(monkeypatch) -> None:
         "config",
         lambda: razorpay.RazorpayConfig(key_id="k", key_secret="s", webhook_secret=secret),
     )
-    raw = b'{"event":"subscription.charged","payload":{}}'
+    raw = b'{"event":"payment.captured","payload":{}}'
     good = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
     assert razorpay.verify_webhook_signature(raw_body=raw, signature=good)
     # One byte of reformatting is enough to break it, which is the point.
@@ -168,8 +131,8 @@ def test_signature_verification_fails_closed_without_a_secret(monkeypatch) -> No
         lambda: razorpay.RazorpayConfig(key_id="", key_secret="", webhook_secret=""),
     )
     assert not razorpay.verify_webhook_signature(raw_body=b"{}", signature="anything")
-    assert not razorpay.verify_checkout_signature(
-        payment_id="p", subscription_id="s", signature="anything"
+    assert not razorpay.verify_order_signature(
+        order_id="o", payment_id="p", signature="anything"
     )
 
 
@@ -178,10 +141,6 @@ def test_amounts_are_converted_to_paise() -> None:
     price and look like a working integration."""
     assert razorpay.PAISE_PER_RUPEE == 100
     assert 10000 * razorpay.PAISE_PER_RUPEE == 1_000_000
-
-
-def test_subscription_statuses_are_the_four_the_schema_allows() -> None:
-    assert set(SUBSCRIPTION_STATUSES) == {"active", "past_due", "cancelled", "halted"}
 
 
 # ── Reconciliation policy ────────────────────────────────────────────────────
@@ -259,39 +218,6 @@ async def _tenant(session) -> uuid.UUID:
 
 
 @pytest.mark.asyncio
-async def test_seeded_prices_match_the_spec_exactly() -> None:
-    from sqlalchemy import text
-
-    engine, factory = await _factory_or_skip()
-    try:
-        async with factory() as session:
-            rows = (
-                await session.execute(
-                    text(
-                        "SELECT slug, applications_per_month, price_inr, "
-                        "rate_per_application_inr FROM pricing_plans"
-                    )
-                )
-            ).mappings().all()
-        found = {
-            row["slug"]: (
-                row["applications_per_month"], row["price_inr"],
-                row["rate_per_application_inr"],
-            )
-            for row in rows
-        }
-        for slug, expected in EXPECTED_PLANS.items():
-            assert found.get(slug) == expected, f"{slug} does not match spec §2.3"
-        # Every rate must be exactly price / applications — a plan whose stated
-        # per-application rate disagrees with its own arithmetic is a pricing
-        # page that argues with itself.
-        for applications, price, rate in EXPECTED_PLANS.values():
-            assert price / applications == rate
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_grants_and_charges_are_idempotent_and_sum_to_the_balance() -> None:
     from sqlalchemy import text
 
@@ -306,7 +232,7 @@ async def test_grants_and_charges_are_idempotent_and_sum_to_the_balance() -> Non
                 idempotency_key="razorpay:payment:pay_TEST_1",
             )
             # The same payment arriving twice (checkout-verify, then the
-            # webhook) must not grant a second month.
+            # webhook) must not grant a second time.
             assert not await credits.grant(
                 session, tenant_id=tenant_id, subunits=50 * SUBUNITS_PER_CREDIT,
                 idempotency_key="razorpay:payment:pay_TEST_1",

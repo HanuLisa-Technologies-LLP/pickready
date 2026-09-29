@@ -1,20 +1,24 @@
-"""Subscriptions and the credit ledger (killer-spec Parts 2 and 3).
+"""The credit ledger, credit-pack purchases and the Razorpay money records.
 
-Two deliberate departures from the spec's literal DDL, both forced by rules
-this codebase already lives under:
+The product sells ONE thing: credits, bought as one-time Razorpay Orders
+(`CreditPurchase`) and consumed per billable event. The monthly subscription
+plans that shipped first were RETIRED on 2026-09-29 (owner spec, section 23):
+the plan table, the tenant subscription columns and the plan foreign keys
+were dropped by migration 0132 behind guards that refuse while any of them
+still holds customer history, and `tests/test_subscription_removed.py` keeps
+them gone.
 
-1. The spec writes ``ALTER TABLE companies ADD COLUMN razorpay_customer_id...``.
-   In Vivekium a **customer IS a `tenants` row**, not a `companies` row
-   (claude.md, Provider Portal rules): `companies` is the client-authored,
+Two deliberate departures from the original spec's literal DDL, both forced
+by rules this codebase already lives under:
+
+1. A **customer IS a `tenants` row**, not a `companies` row (claude.md,
+   Provider Portal rules): `companies` is the client-authored,
    candidate-facing page and does not exist until the client signs in, while
-   `tenants` carries the customer identity from onboarding. A subscription
-   hung off `companies` would therefore be unreachable for exactly the
-   customers who have just paid and not yet signed in. It lives on `tenants`.
+   `tenants` carries the customer identity from onboarding. Billing state
+   therefore hangs off `tenants`.
 
 2. The spec's ``credit_ledger.related_application_id REFERENCES applications``
    maps to `job_candidate_links` here, which is this schema's application row.
-
-Everything else is the spec verbatim, including the 60-sub-unit arithmetic.
 """
 import uuid
 from datetime import datetime
@@ -110,45 +114,6 @@ def consumption_subunits(event_type: str, role_classification: str | None) -> in
     )
     return table.get(event_type)
 
-SUBSCRIPTION_ACTIVE = "active"
-SUBSCRIPTION_PAST_DUE = "past_due"
-SUBSCRIPTION_CANCELLED = "cancelled"
-SUBSCRIPTION_HALTED = "halted"
-SUBSCRIPTION_STATUSES: tuple[str, ...] = (
-    SUBSCRIPTION_ACTIVE,
-    SUBSCRIPTION_PAST_DUE,
-    SUBSCRIPTION_CANCELLED,
-    SUBSCRIPTION_HALTED,
-)
-
-
-class PricingPlan(Base, UUIDPKMixin, CreatedAtMixin):
-    """One self-serve tier. Razorpay's own plan id is DATA, never a constant in
-    code, so a repriced plan is a row edit rather than a redeploy."""
-
-    __tablename__ = "pricing_plans"
-    __table_args__ = (
-        UniqueConstraint("slug", name="uq_pricing_plans_slug"),
-        CheckConstraint("price_inr >= 0", name="ck_pricing_plans_price_non_negative"),
-        CheckConstraint(
-            "applications_per_month > 0", name="ck_pricing_plans_applications_positive"
-        ),
-    )
-
-    slug: Mapped[str] = mapped_column(String(50), nullable=False)
-    name: Mapped[str] = mapped_column(String(50), nullable=False)
-    applications_per_month: Mapped[int] = mapped_column(Integer, nullable=False)
-    price_inr: Mapped[int] = mapped_column(Integer, nullable=False)
-    rate_per_application_inr: Mapped[int] = mapped_column(Integer, nullable=False)
-    razorpay_plan_id: Mapped[str | None] = mapped_column(String(100))
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    @property
-    def monthly_subunits(self) -> int:
-        return self.applications_per_month * SUBUNITS_PER_CREDIT
-
-
 class BillingTransaction(Base, UUIDPKMixin, CreatedAtMixin):
     """One Razorpay money event. `razorpay_payment_id` is UNIQUE so a webhook
     Razorpay delivers twice (which it will — at-least-once delivery) cannot
@@ -166,13 +131,9 @@ class BillingTransaction(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
     razorpay_payment_id: Mapped[str | None] = mapped_column(String(100))
-    razorpay_subscription_id: Mapped[str | None] = mapped_column(String(100))
     amount_inr: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     transaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    plan_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pricing_plans.id", ondelete="SET NULL")
-    )
     notes: Mapped[str | None] = mapped_column(Text)
 
 
@@ -201,9 +162,6 @@ class CreditLedgerEntry(Base, UUIDPKMixin, CreatedAtMixin):
     # schema is a `job_candidate_links` row.
     job_candidate_link_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("job_candidate_links.id", ondelete="SET NULL")
-    )
-    plan_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pricing_plans.id", ondelete="SET NULL")
     )
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB)
@@ -243,7 +201,7 @@ class OldProfileReview(Base, UUIDPKMixin, CreatedAtMixin):
 class WebhookEvent(Base, UUIDPKMixin, CreatedAtMixin):
     """Razorpay delivers at least once. This is the dedupe table: the handler
     inserts the provider's event id first and does nothing if it already
-    exists, so a replayed `subscription.charged` cannot grant a second month."""
+    exists, so a replayed `payment.captured` cannot settle a purchase twice."""
 
     __tablename__ = "webhook_events"
     __table_args__ = (
@@ -309,11 +267,9 @@ CREDIT_PACKS: dict[str, tuple[int, int]] = {
 #: The customer-facing name of each pack, resolved server-side so an invoice,
 #: an email and the billing page cannot call one pack three things.
 #:
-#: The Starter Pack's label is DELIBERATELY not the bare word "Starter": that
-#: is already the name of a SUBSCRIPTION PLAN (`pricing_plans.slug = 'starter'`,
-#: 50 applications for Rs. 10,000), and two different products called Starter
-#: on one billing page is a support ticket waiting to be filed. It is named for
-#: what it delivers.
+#: The Starter Pack's label is DELIBERATELY not the bare word "Starter": it was
+#: chosen while a monthly subscription plan of that name still existed, and it
+#: stays named for what it delivers, which is the more useful label anyway.
 CREDIT_PACK_LABELS: dict[str, str] = {
     "trial_20": "Trial, 20 credits",
     "standard_50": "Standard, 50 credits",

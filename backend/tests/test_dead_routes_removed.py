@@ -70,6 +70,11 @@ DELETED_ROUTES: tuple[tuple[str, str], ...] = (
     ("put", "/companies/me/email-templates"),
     ("post", "/candidates/links/{link_id}/grant-access"),
     ("get", "/billing/config"),
+    # Retired with the monthly subscriptions (2026-09-29): it stood above as
+    # a SURVIVOR, the billing page's Cancel subscription control, until the
+    # product became per-credit only. `test_subscription_removed.py` owns the
+    # rest of that removal.
+    ("post", "/billing/cancel"),
 )
 
 #: What must survive beside them: the three declared operator routes and the
@@ -80,7 +85,6 @@ SURVIVORS: tuple[tuple[str, str], ...] = (
     ("post", "/admin/tenants/{tenant_id}/super-admin"),
     ("get", "/admin/audit-log"),
     ("get", "/billing/ledger"),
-    ("post", "/billing/cancel"),
     ("post", "/outreach/send"),
     ("post", "/telemetry/landing-view"),
 )
