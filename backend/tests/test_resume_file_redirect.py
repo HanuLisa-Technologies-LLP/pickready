@@ -75,6 +75,16 @@ def granted(monkeypatch):
 
     monkeypatch.setattr(candidates_api.rbac, "has_capability", _has_capability)
 
+    # The department boundary (the leadership release) asks the database for
+    # the caller's department; this caller is an unscoped HR Manager, and the
+    # session double here answers only the resume's own two reads.
+    async def _unscoped(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        candidates_api.department_access, "department_scope", _unscoped
+    )
+
 
 def _mounted_paths() -> set[str]:
     """Every path the app actually SERVES, taken from its OpenAPI schema.
