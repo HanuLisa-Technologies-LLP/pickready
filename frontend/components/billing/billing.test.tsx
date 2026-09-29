@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
-// The billing page's credit statement and its cancel control (PLAN-p7 WP-B6).
-// Both routes existed and were tested server-side while no screen called
-// them. The load-bearing claims here: the statement pages through the ledger
-// route rather than showing only the overview's newest rows, it never renders
-// the application a consumption row refers to, and cancelling happens only
-// after an explicit confirmation and then reports what the server returned.
+// The billing page's credit statement (PLAN-p7 WP-B6). The route existed and
+// was tested server-side while no screen called it. The load-bearing claims
+// here: the statement pages through the ledger route rather than showing only
+// the overview's newest rows, and it never renders the application a
+// consumption row refers to. (The cancel control this file also covered left
+// with the monthly subscriptions on 2026-09-29.)
 
 import {
   cleanup,
@@ -24,9 +24,8 @@ const toast = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => api);
 vi.mock("@/components/ui/toast", () => ({ useToast: () => ({ toast }) }));
 
-import { CancelSubscriptionDialog } from "./cancel-subscription-dialog";
 import { CreditStatement, STATEMENT_PAGE_SIZE } from "./credit-statement";
-import type { CreditLedgerEntry, SubscriptionSummary } from "@/lib/types";
+import type { CreditLedgerEntry } from "@/lib/types";
 
 afterEach(() => {
   cleanup();
@@ -122,84 +121,5 @@ describe("credit statement", () => {
     );
     expect(screen.queryByText(/nothing yet/i)).toBeNull();
     expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
-  });
-});
-
-const SUBSCRIPTION: SubscriptionSummary = {
-  plan: {
-    id: "plan-1",
-    slug: "growth",
-    name: "Growth",
-    applications_per_month: 50,
-    price_inr: 4999,
-    rate_per_application_inr: 99,
-    is_active: true,
-    checkout_ready: true,
-  },
-  status: "active",
-  razorpay_subscription_id: "sub_123",
-  current_end: "2026-10-20T00:00:00Z",
-};
-
-describe("cancel subscription", () => {
-  it("does nothing until the cancellation is confirmed", async () => {
-    render(
-      <CancelSubscriptionDialog subscription={SUBSCRIPTION} onCancelled={vi.fn()} />
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel subscription" }));
-
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog.textContent).toContain("Cancel your Growth subscription?");
-    expect(dialog.textContent).toMatch(/not be charged again/i);
-    expect(dialog.textContent).toMatch(/credits already in your pool stay/i);
-    fireEvent.click(screen.getByRole("button", { name: "Keep subscription" }));
-    expect(api.apiPost).not.toHaveBeenCalled();
-  });
-
-  it("cancels through the one route and hands the result back", async () => {
-    const cancelled = { ...SUBSCRIPTION, status: "cancelled" as const };
-    api.apiPost.mockResolvedValueOnce(cancelled);
-    const onCancelled = vi.fn();
-    render(
-      <CancelSubscriptionDialog subscription={SUBSCRIPTION} onCancelled={onCancelled} />
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel subscription" }));
-    await screen.findByRole("alertdialog");
-    const confirm = screen
-      .getAllByRole("button", { name: "Cancel subscription" })
-      .find((button) => button.closest("[role=alertdialog]"));
-    expect(confirm).toBeTruthy();
-    fireEvent.click(confirm!);
-
-    await waitFor(() => expect(onCancelled).toHaveBeenCalledWith(cancelled));
-    expect(api.apiPost).toHaveBeenCalledWith("/billing/cancel");
-    expect(toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Subscription cancelled" })
-    );
-  });
-
-  it("says plainly when the server refused, and reports nothing as done", async () => {
-    api.apiPost.mockRejectedValueOnce(new Error("There is no subscription to cancel."));
-    const onCancelled = vi.fn();
-    render(
-      <CancelSubscriptionDialog subscription={SUBSCRIPTION} onCancelled={onCancelled} />
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel subscription" }));
-    await screen.findByRole("alertdialog");
-    fireEvent.click(
-      screen
-        .getAllByRole("button", { name: "Cancel subscription" })
-        .find((button) => button.closest("[role=alertdialog]"))!
-    );
-
-    await waitFor(() =>
-      expect(toast).toHaveBeenCalledWith(
-        expect.objectContaining({
-          variant: "destructive",
-          description: "There is no subscription to cancel.",
-        })
-      )
-    );
-    expect(onCancelled).not.toHaveBeenCalled();
   });
 });

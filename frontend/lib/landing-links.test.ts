@@ -44,18 +44,16 @@ const LANDING_FILES = [
   "features.tsx",
   "report-section.tsx",
   "story-sections.tsx",
-  "pricing.tsx",
   "call-to-action.tsx",
 ].map((name) => join(publicDir, name));
 
 /**
  * Destinations a landing link may send somebody to that need a session, each
- * with the reason. Nothing else may.
+ * with the reason. Nothing else may. EMPTY since 2026-09-29: the inline
+ * pricing cards that sent a signed-in customer to `/org/billing` left the
+ * landing page for the public `/pricing` page.
  */
-const SIGNED_IN_TARGETS: Record<string, string> = {
-  "/org/billing":
-    "the pricing card sends a signed-in member of a customer team straight to billing; everybody else goes to /login with it as `next`",
-};
+const SIGNED_IN_TARGETS: Record<string, string> = {};
 
 /** Routes addressed by a single-use token: a bare link to one is a dead end. */
 const TOKEN_ROUTES = ["/join", "/assessments/invite", "/keep-profile", "/verify-employment"];
@@ -185,10 +183,16 @@ describe("the landing page's links", () => {
     expect(refused).toEqual([]);
   });
 
-  it("sends a signed-in destination through sign-in for everybody else", () => {
-    const pricing = read(join(publicDir, "pricing.tsx"));
-    expect(pricing).toContain('"/login?next=%2Forg%2Fbilling"');
-    expect(pricing).not.toContain("/register?next");
+  it("sends pricing to its own page, from the header, the footer and the close", () => {
+    // Owner spec 2026-09-29, section 4.1: no inline price list and no
+    // `/#pricing` anchor; "See pricing plans" opens `/pricing`.
+    expect(links.filter(({ target }) => target.includes("#pricing"))).toEqual([]);
+    for (const name of ["site-header.tsx", "site-footer.tsx", "call-to-action.tsx"]) {
+      const source = read(join(publicDir, name));
+      expect(source, name).toContain('"/pricing"');
+      expect(source, name).toContain("See pricing plans");
+    }
+    expect(read(join(publicDir, "landing-page.tsx"))).not.toMatch(/\bPricing\b/);
   });
 
   it("lands every anchor on a section the page mounts", () => {

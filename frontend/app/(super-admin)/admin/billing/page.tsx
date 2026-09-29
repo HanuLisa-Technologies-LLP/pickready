@@ -1,12 +1,12 @@
 "use client";
 
-// Provider Portal → Billing (killer-spec §4.1).
+// Provider Portal → Billing (killer-spec §4.1, per-credit only since 2026-09-29).
 //
-// Which customer is on which plan, whether their subscription is charging, and
-// what their credit balance is. READ-ONLY, like every other Provider view of a
-// customer's own data, and read-only by ABSENCE: there is no route in
-// api/billing that lets the Provider write a subscription, a plan or a credit,
-// so there is nothing to gate here with a flag.
+// What each customer's credit balance is. READ-ONLY, like every other Provider
+// view of a customer's own data, and read-only by ABSENCE: there is no route in
+// api/billing that lets the Provider write a purchase or a credit, so there is
+// nothing to gate here with a flag. There is no plan or renewal column: the
+// product sells one-time credit packs and nothing recurs.
 //
 // The one number that matters most is the deficit column: a customer whose pool
 // has run dry has stopped being able to invite anyone to an assessment, and
@@ -37,29 +37,12 @@ import {
 } from "@/components/ui/table";
 import { ExportXlsxButton } from "@/components/export-xlsx-button";
 
-const STATUS_LABELS: Record<string, string> = {
-  active: "Active",
-  past_due: "Payment pending",
-  cancelled: "Cancelled",
-  halted: "Halted",
-};
-
-function formatDate(value: string | null): string {
-  if (!value) return "Not scheduled";
-  return new Date(value).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return <Badge variant="outline">No subscription</Badge>;
-  return (
-    <Badge variant={status === "active" ? "brand" : "outline"}>
-      {STATUS_LABELS[status] ?? status}
-    </Badge>
-  );
+function formatInr(value: string): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2,
+  }).format(Number(value));
 }
 
 export default function ProviderBillingPage() {
@@ -95,18 +78,15 @@ export default function ProviderBillingPage() {
     <>
       <PageHeader
         title="Billing"
-        description="Plans, subscription status and credit balances across your customers."
+        description="Credit balances across your customers."
         actions={
           rows.length ? (
             <ExportXlsxButton
               fileName="vivekium-provider-billing"
               rows={rows.map((row) => ({
                 customer: row.customer_name,
-                plan: row.plan_name ?? "No plan",
-                status: row.subscription_status ?? "No subscription",
-                renews: formatDate(row.current_end),
                 credits: row.balance_credits,
-                amount_inr: row.balance_inr ?? "No plan rate",
+                amount_inr: row.balance_inr,
                 deficit: row.in_deficit,
               }))}
             />
@@ -129,7 +109,7 @@ export default function ProviderBillingPage() {
       ) : rows.length === 0 ? (
         <EmptyState
           title="No customers yet"
-          description="Subscription and credit information appears here once a customer is onboarded."
+          description="Credit balances appear here once a customer is onboarded."
         />
       ) : (
         <div className="space-y-6">
@@ -151,7 +131,7 @@ export default function ProviderBillingPage() {
                 <p className="mt-1 leading-7">
                   New assessment invitations are paused for{" "}
                   {inDeficit.map((row) => row.customer_name).join(", ")} until
-                  their next billing date or an upgrade.
+                  they buy more credits.
                 </p>
               </div>
             </div>
@@ -159,16 +139,13 @@ export default function ProviderBillingPage() {
 
           <Section
             title="Customers"
-            description="Balances are shown in credits. One credit is one completed assessment."
+            description="Balances are shown in credits, and in rupees at the list price per credit, excluding GST."
           >
             <div className="hidden md:block">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Customer</TableHead>
-                    <TableHead>Plan</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Renews</TableHead>
                     <TableHead className="text-right">Credits / INR value</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -178,21 +155,10 @@ export default function ProviderBillingPage() {
                       <TableCell className="font-medium">
                         {row.customer_name}
                       </TableCell>
-                      <TableCell>{row.plan_name ?? "No plan"}</TableCell>
-                      <TableCell>
-                        <StatusBadge status={row.subscription_status} />
-                      </TableCell>
-                      <TableCell>{formatDate(row.current_end)}</TableCell>
                       <TableCell className="text-right font-medium">
                         <span className="block">{row.balance_credits} credits</span>
                         <span className="mt-0.5 block text-xs font-normal">
-                          {row.balance_inr !== null
-                            ? new Intl.NumberFormat("en-IN", {
-                                style: "currency",
-                                currency: "INR",
-                                maximumFractionDigits: 2,
-                              }).format(Number(row.balance_inr))
-                            : "No plan rate"}
+                          {formatInr(row.balance_inr)}
                         </span>
                         {row.in_deficit ? (
                           <span className="ml-2 align-middle">
@@ -213,32 +179,17 @@ export default function ProviderBillingPage() {
                 <li key={row.tenant_id}>
                   <RowCard
                     title={row.customer_name}
-                    meta={<StatusBadge status={row.subscription_status} />}
+                    meta={
+                      row.in_deficit ? (
+                        <Badge variant="rating5">In deficit</Badge>
+                      ) : null
+                    }
                   >
-                    <div className="flex items-baseline justify-between gap-3 text-sm">
-                      <span>Plan</span>
-                      <span className="font-medium">
-                        {row.plan_name ?? "No plan"}
-                      </span>
-                    </div>
-                    <div className="flex items-baseline justify-between gap-3 text-sm">
-                      <span>Renews</span>
-                      <span className="font-medium">
-                        {formatDate(row.current_end)}
-                      </span>
-                    </div>
                     <div className="flex items-baseline justify-between gap-3 text-sm">
                       <span>Credits</span>
                       <span className="font-medium">
-                        {row.balance_credits} credits
-                        {row.balance_inr !== null
-                          ? ` / ${new Intl.NumberFormat("en-IN", {
-                              style: "currency",
-                              currency: "INR",
-                              maximumFractionDigits: 2,
-                            }).format(Number(row.balance_inr))}`
-                          : " / no plan rate"}
-                        {row.in_deficit ? " (in deficit)" : ""}
+                        {row.balance_credits} credits /{" "}
+                        {formatInr(row.balance_inr)}
                       </span>
                     </div>
                   </RowCard>

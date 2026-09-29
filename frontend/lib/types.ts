@@ -942,7 +942,7 @@ export interface DashboardSummary {
 // page, the component, the route and its response schemas all went in the same
 // change, so these types described a payload nothing sends.
 
-// ---- Billing, subscriptions and credits (killer-spec Parts 2 and 3) ----
+// ---- Billing and credits (per-credit only since 2026-09-29) ----
 
 /**
  * Credits are exchanged in SUB-UNITS everywhere except display. One credit is
@@ -952,8 +952,6 @@ export interface DashboardSummary {
  * the sub-units.
  */
 export const SUBUNITS_PER_CREDIT = 60;
-
-export type SubscriptionStatus = "active" | "past_due" | "cancelled" | "halted";
 
 export type CreditEventType =
   | "grant"
@@ -966,39 +964,6 @@ export type CreditEventType =
   // grants only). The ledger has written it since then; the type had not.
   | "expiry";
 
-export interface PricingPlan {
-  id: string;
-  slug: string;
-  name: string;
-  applications_per_month: number;
-  price_inr: number;
-  rate_per_application_inr: number;
-  is_active: boolean;
-  /** False until a Razorpay Plan exists; Subscribe is disabled rather than failing. */
-  checkout_ready: boolean;
-}
-
-export interface BillingConfig {
-  razorpay_key_id: string | null;
-  configured: boolean;
-  currency: "INR";
-  plans: PricingPlan[];
-}
-
-export interface SubscribeResponse {
-  subscription_id: string;
-  razorpay_key_id: string;
-  plan: PricingPlan;
-  short_url: string | null;
-}
-
-export interface SubscriptionSummary {
-  plan: PricingPlan | null;
-  status: SubscriptionStatus | null;
-  razorpay_subscription_id: string | null;
-  current_end: string | null;
-}
-
 export interface UsageBreakdown {
   completed_assessment: number;
   incomplete_assessment: number;
@@ -1010,6 +975,7 @@ export interface UsageBreakdown {
 export interface CreditSummary {
   balance_subunits: number;
   balance_credits: string;
+  /** The balance at the list price per credit, excl. GST. */
   balance_inr: string | null;
   subunits_per_credit: number;
   granted_subunits: number;
@@ -1051,14 +1017,12 @@ export interface BillingTransaction {
   razorpay_payment_id: string | null;
   amount_inr: number;
   status: "success" | "failed" | "refunded";
-  transaction_type: "subscription_charge" | "plan_change" | "refund";
+  transaction_type: "credit_pack" | "refund";
   created_at: string;
 }
 
 export interface BillingOverview {
-  subscription: SubscriptionSummary;
   credits: CreditSummary;
-  plans: PricingPlan[];
   razorpay_key_id: string | null;
   recent_ledger: CreditLedgerEntry[];
   transactions: BillingTransaction[];
@@ -1127,13 +1091,59 @@ export interface CreditPurchaseRow {
 export interface ProviderBillingRow {
   tenant_id: string;
   customer_name: string;
-  plan_name: string | null;
-  subscription_status: SubscriptionStatus | null;
   balance_subunits: number;
   balance_credits: string;
-  balance_inr: string | null;
+  /** At the list price per credit, excl. GST. */
+  balance_inr: string;
   in_deficit: boolean;
-  current_end: string | null;
+}
+
+// ── The published price list: GET /billing/public/credit-packs ─────────────
+
+/**
+ * One pack at the STANDARD price, for a visitor with no account. Excludes the
+ * one-time setup fee, which depends on the account and is stated once on the
+ * catalogue. Every figure is the server's: the pricing page holds no price.
+ */
+export interface PublishedPack {
+  slug: string;
+  label: string;
+  credits: number;
+  bonus_credits: number;
+  credits_total: number;
+  subtotal_inr: number;
+  gst_inr: number;
+  total_inr: number;
+  /** The trial pack: sold once per account, as its first purchase. */
+  new_accounts_only: boolean;
+  validity_months: number;
+}
+
+/** What one billable event draws from the pool, in integer sub-units. */
+export interface PublishedConsumption {
+  event_type: CreditEventType;
+  label: string;
+  non_stem_subunits: number;
+  stem_subunits: number;
+}
+
+export interface PublishedBonusLevel {
+  min_credits: number;
+  bonus_credits: number;
+}
+
+export interface PublishedCatalogue {
+  price_per_credit_inr: number;
+  gst_rate_percent: number;
+  subunits_per_credit: number;
+  credit_validity_months: number;
+  min_custom_credits: number;
+  setup_fee_inr: number;
+  setup_fee_gst_inr: number;
+  setup_fee_waiver_limit: number;
+  bonus_levels: PublishedBonusLevel[];
+  packs: PublishedPack[];
+  consumption: PublishedConsumption[];
 }
 
 /**

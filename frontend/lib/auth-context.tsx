@@ -50,6 +50,7 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/register",
   "/docs",
+  "/pricing",
   "/about",
   "/insights",
   "/privacy",

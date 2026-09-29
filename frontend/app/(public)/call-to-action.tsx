@@ -71,6 +71,14 @@ export function CallToAction() {
                 </Button>
               </Pressable>
             </div>
+            <p className="mt-6 text-sm text-white">
+              <Link
+                href="/pricing"
+                className="font-medium underline underline-offset-4 hover:text-navy-50"
+              >
+                See pricing plans
+              </Link>
+            </p>
           </div>
         </div>
       </Reveal>
