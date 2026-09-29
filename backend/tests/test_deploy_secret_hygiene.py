@@ -539,14 +539,42 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "exchanges a verified Firebase ID token for this product's cookies. "
         "The Firebase token IS the authentication."
     ),
-    "/api/v1/auth/password-changed": (
-        "revokes every app session for an account after a Firebase password "
-        "change. It verifies a FRESH Firebase ID token in the body and acts "
-        "only on the uid that token names, so the token IS the authentication, "
-        "exactly as it is for /auth/firebase/session. A cookie dependency "
-        "would defeat the purpose: the cookie it revokes may already be "
-        "expired, and the session most worth killing is the one whose holder "
-        "cannot sign in any more. It only ever REMOVES access."
+    "/api/v1/auth/captcha/challenge": (
+        "draws a CAPTCHA challenge for a sign-in, registration or password "
+        "surface. It is answered before anybody has a session, so it cannot "
+        "require one; it writes one short-lived Redis row holding only an "
+        "HMAC of the answer, and it is rate limited."
+    ),
+    "/api/v1/auth/captcha/verify": (
+        "judges a CAPTCHA answer and returns a single-use proof bound to one "
+        "purpose. Anonymous for the same reason as the challenge; three wrong "
+        "answers spend the challenge and every failure is audited."
+    ),
+    "/api/v1/auth/password-reset/request": (
+        "starts a forgotten-password reset for somebody who by definition "
+        "cannot sign in. It spends a single-use CAPTCHA proof first and "
+        "answers the same sentence whether or not the address has an account."
+    ),
+    "/api/v1/auth/password-reset/verify": (
+        "exchanges the six-digit security code that went to the mailbox for "
+        "a single-use reset ticket. The code is the authentication: HMAC in "
+        "Redis, five attempts, ten minutes."
+    ),
+    "/api/v1/auth/password-reset/complete": (
+        "sets the new password with the single-use ticket the verify step "
+        "minted, then revokes every session of the account. The ticket is "
+        "the authentication and it is consumed by this call."
+    ),
+    "/api/v1/companies/invites/{token}/setup-password": (
+        "creates the invited person's password sign-in for EXACTLY the "
+        "invited email, then opens their company session. The invite token "
+        "names one pending invitation and a single-use CAPTCHA proof is spent "
+        "first; the person has no account yet, so a session cannot be asked "
+        "for."
+    ),
+    "/api/v2/companies/invites/{token}/setup-password": (
+        "the same handler under the v2 prefix, where the companies router is "
+        "mounted a second time."
     ),
     "/api/v1/auth/refresh": (
         "reads the refresh cookie itself and re-mints for the SAME audience. "

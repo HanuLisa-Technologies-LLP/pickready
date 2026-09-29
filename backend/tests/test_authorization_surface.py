@@ -139,11 +139,20 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # The authentication endpoint itself. It cannot require authorization: it
     # is what produces the session. Rate limited instead (services/rate_limit).
     "/firebase/session": "creates the session",
-    # Authorized by a FRESH Firebase ID token in the body, verified before
-    # anything is read, and it acts only on the uid that token names. A cookie
-    # dependency would defeat it: the session it revokes may already be
-    # expired, and it only ever removes access.
-    "/password-changed": "verified Firebase ID token, revokes only",
+    # The CAPTCHA (auth hardening, 2026-09-29). Answered before anybody has
+    # a session, so it cannot require one. The challenge writes one Redis row
+    # and the verify spends it; both are rate limited, and the challenge's own
+    # attempt count and single use are what protect it.
+    "/captcha/challenge": "anonymous by necessity, draws a challenge",
+    "/captcha/verify": "anonymous by necessity, spends a challenge",
+    # Forgotten password. The person cannot sign in, which is the whole
+    # point. The request needs a single-use CAPTCHA proof and answers the same
+    # sentence for every address; the verify needs the six-digit code that
+    # went to the mailbox; the complete needs the single-use ticket the verify
+    # minted. Each step is authorized by the proof the step before produced.
+    "/password-reset/request": "CAPTCHA proof, enumeration safe",
+    "/password-reset/verify": "security code from the mailbox",
+    "/password-reset/complete": "single-use reset ticket",
     # Authorized by a single-use, short-lived context_token in the body, minted
     # by /firebase/session moments earlier.
     "/select-context": "single-use context token",

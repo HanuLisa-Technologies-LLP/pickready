@@ -423,6 +423,27 @@ class Settings(BaseSettings):
     #: stays at `sent` rather than pretending to a delivery it cannot observe.
     ses_configuration_set: str = ""
 
+    # ── Platform security email (auth hardening, 2026-09-29) ────────────────
+    #
+    # The From identity of every security email this product sends on its
+    # own behalf: a security code for registration or a password change, and
+    # the notice that an address already has an account. NEVER a tenant's
+    # corporate sender and never an address a request supplied
+    # (`services/security_email`). Under SES the domain must be a verified
+    # identity in the account; in production a non-SES transport is refused
+    # outright rather than falling back to SMTP.
+    platform_security_sender_email: str = "contact@readypick.ai"
+    platform_security_sender_name: str = "Vivekium"
+
+    # ── Security codes (registration and password change or reset) ─────────
+    #
+    # Six digits, stored only as an HMAC in Redis (`services/security_codes`).
+    # How long a code lives, how many wrong entries end it, and how soon a
+    # second one may be asked for (a new code REPLACES the previous one).
+    security_code_ttl_seconds: int = 600
+    security_code_max_attempts: int = 5
+    security_code_resend_seconds: int = 60
+
     # ── Corporate sender registration (Corporate Email System spec) ─────────
     #
     # Free/personal mail providers may never be registered as a corporate
@@ -1279,6 +1300,20 @@ class Settings(BaseSettings):
         if value not in {"smtp", "ses"}:
             raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
         object.__setattr__(self, "email_transport", value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_security_codes(self) -> "Settings":
+        """A security code that expires at once, can never be entered, or can
+        be re-sent without pause is not a security control. Refused at boot."""
+        if self.security_code_ttl_seconds < 60:
+            raise ValueError("SECURITY_CODE_TTL_SECONDS must be at least 60")
+        if self.security_code_max_attempts < 1:
+            raise ValueError("SECURITY_CODE_MAX_ATTEMPTS must be at least 1")
+        if self.security_code_resend_seconds < 1:
+            raise ValueError("SECURITY_CODE_RESEND_SECONDS must be at least 1")
+        if "@" not in (self.platform_security_sender_email or ""):
+            raise ValueError("PLATFORM_SECURITY_SENDER_EMAIL must be an email address")
         return self
 
     @model_validator(mode="after")
