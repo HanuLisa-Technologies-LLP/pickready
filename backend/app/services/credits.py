@@ -208,7 +208,6 @@ async def write_entry(
     subunits_delta: int,
     idempotency_key: str,
     job_candidate_link_id: uuid.UUID | None = None,
-    plan_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> CreditLedgerEntry | None:
     """Append one entry, or return None if this exact event was already written.
@@ -230,7 +229,6 @@ async def write_entry(
         event_type=event_type,
         subunits_delta=subunits_delta,
         job_candidate_link_id=job_candidate_link_id,
-        plan_id=plan_id,
         idempotency_key=idempotency_key,
         metadata_json=metadata,
     )
@@ -249,10 +247,9 @@ async def grant(
     tenant_id: uuid.UUID,
     subunits: int,
     idempotency_key: str,
-    plan_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> bool:
-    """Add a month's allotment or a purchased pack. False when already granted.
+    """Add granted credits. False when already granted.
 
     SUPERSEDES the original "nothing ever expires" rule, NARROWLY. Every grant
     written from here opens a `credit_lots` row carrying a three-month expiry,
@@ -275,7 +272,6 @@ async def grant(
         event_type=EVENT_GRANT,
         subunits_delta=subunits,
         idempotency_key=idempotency_key,
-        plan_id=plan_id,
         metadata=metadata,
     )
     if entry is None:

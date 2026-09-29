@@ -607,6 +607,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     # contacts, billing or applicant counts, and hide non-public tenants
     # behind the same 404 an unknown slug gets.
     "/api/v1/employers": "the public employer directory search.",
+    # The published price list (owner spec 2026-09-29, section 4.2). The
+    # public /pricing page renders it, so it is read before any account
+    # exists. It reads no tenant and no table: the catalogue is code, the
+    # figures every checkout quote and GST invoice use, and it carries no
+    # account's setup-fee waiver or trial state. Rate limited.
+    "/api/v1/billing/public/credit-packs": (
+        "the platform's published credit price list for the public pricing "
+        "page, built from code constants; it reads no tenant and no row."
+    ),
     "/api/v1/employers/{slug}": "one public employer page with its careers list.",
     # Genuinely public, and each returns something already public.
     "/api/v1/telemetry/landing-view": (

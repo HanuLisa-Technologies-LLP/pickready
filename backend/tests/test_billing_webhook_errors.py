@@ -7,9 +7,9 @@ The webhook dedupes by inserting the delivery into `webhook_events`, UNIQUE on
 `except Exception`, rolled back and answered 200 `{"status": "duplicate"}`.
 A unique violation is a duplicate. Nothing else is: a DataError, a lost
 connection or a constraint that is not the dedupe index told Razorpay the
-event had been handled, Razorpay never retried it, and a paid
-`subscription.charged` granted nothing. The customer was charged and the
-record of the charge was a 200 in somebody's retry dashboard.
+event had been handled, Razorpay never retried it, and a paid charge
+granted nothing. The customer was charged and the record of the charge was a
+200 in somebody's retry dashboard.
 
 The handler now states the no-op in SQL (`ON CONFLICT ON CONSTRAINT
 uq_webhook_events_provider_id DO NOTHING`), so the database absorbs the
@@ -23,10 +23,12 @@ old `except` swallowed. Fixtures and the signing helper are the ones
 `test_billing_webhook_idempotency.py` defines, imported rather than copied, so
 the two files cannot disagree about how Razorpay delivers.
 
-A SECOND PROPERTY, SAME ROUTE: the two tasks a webhook starts
-(`release_held_assessments` after a grant, `send_payment_failed_email` after
-a failed charge) are dispatched AFTER THE COMMIT, so a delivery that fails
-after them sends nothing about a state that was never stored.
+A SECOND PROPERTY, SAME ROUTE: the two tasks a settled purchase starts
+(`release_held_assessments` and `send_credit_invoice_email`) are dispatched
+AFTER THE COMMIT, so a delivery that fails after them sends nothing about a
+state that was never stored. A failed payment on a purchase starts nothing:
+it marks the purchase failed and grants nothing (the subscription-era
+payment-failed email left with the subscriptions, 2026-09-29).
 """
 from __future__ import annotations
 
@@ -42,7 +44,7 @@ from app.main import app
 from app.workers import dispatch as dispatch_module
 from tests.test_billing_webhook_idempotency import (  # noqa: F401 -- fixtures
     World,
-    _charged_payload,
+    _captured_payload,
     _deliver,
     _ledger,
     _run,
@@ -51,7 +53,7 @@ from tests.test_billing_webhook_idempotency import (  # noqa: F401 -- fixtures
 )
 
 #: One character wider than `webhook_events.event_type` (String(80)).
-OVERSIZED_EVENT = "subscription.charged." + "x" * 60
+OVERSIZED_EVENT = "payment.captured." + "x" * 70
 
 
 @pytest.fixture
@@ -81,7 +83,7 @@ def test_a_failed_insert_is_a_server_error_not_a_duplicate(
     http_5xx: TestClient, world: World  # noqa: F811
 ) -> None:
     assert len(OVERSIZED_EVENT) > 80
-    payload = _charged_payload(world, f"pay_{uuid.uuid4().hex[:14]}")
+    payload = _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     payload["event"] = OVERSIZED_EVENT
     response = _deliver(
         http_5xx, payload, event_id=f"evt_{world.tenant.hex[:8]}_oversized"
@@ -103,8 +105,9 @@ def test_a_redelivery_is_still_a_duplicate(
     into a second grant or an error."""
     payment_id = f"pay_{uuid.uuid4().hex[:14]}"
     event_id = f"evt_{world.tenant.hex[:8]}_again"
-    first = _deliver(http_5xx, _charged_payload(world, payment_id), event_id=event_id)
-    second = _deliver(http_5xx, _charged_payload(world, payment_id), event_id=event_id)
+    payload = _captured_payload(world.order_id, payment_id)
+    first = _deliver(http_5xx, payload, event_id=event_id)
+    second = _deliver(http_5xx, payload, event_id=event_id)
 
     assert first.status_code == 200 and first.json() == {"status": "ok"}
     assert second.status_code == 200 and second.json() == {"status": "duplicate"}
@@ -112,28 +115,45 @@ def test_a_redelivery_is_still_a_duplicate(
     assert _run(_recorded_events(world.tenant)) == 1
 
 
-def test_a_grant_releases_held_assessments_after_the_commit(
+async def _purchase_status(order_id: str) -> str:
+    async with _sessions()() as session:
+        async with session.begin():
+            async with superadmin_scope(session):
+                return (
+                    await session.execute(
+                        text(
+                            "SELECT status FROM credit_purchases "
+                            "WHERE razorpay_order_id = :order"
+                        ),
+                        {"order": order_id},
+                    )
+                ).scalar_one()
+
+
+def test_a_settlement_dispatches_its_two_tasks_after_the_commit(
     http_5xx: TestClient, world: World  # noqa: F811
 ) -> None:
     dispatch_module.clear_recorded()
     try:
         response = _deliver(
             http_5xx,
-            _charged_payload(world, f"pay_{uuid.uuid4().hex[:14]}"),
+            _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}"),
             event_id=f"evt_{world.tenant.hex[:8]}_release",
         )
         assert response.status_code == 200, response.text
+        names = [call.name for call in dispatch_module.recorded()]
         released = [
             call
             for call in dispatch_module.recorded()
             if call.name == "pickready.release_held_assessments"
         ]
         assert [call.args for call in released] == [(str(world.tenant),)]
+        assert names.count("pickready.send_credit_invoice_email") == 1, names
     finally:
         dispatch_module.clear_recorded()
 
 
-def test_a_failed_charge_emails_once_after_the_commit(
+def test_a_failed_payment_marks_the_purchase_failed_and_grants_nothing(
     http_5xx: TestClient, world: World  # noqa: F811
 ) -> None:
     payload = {
@@ -143,8 +163,8 @@ def test_a_failed_charge_emails_once_after_the_commit(
             "payment": {
                 "entity": {
                     "id": f"pay_{uuid.uuid4().hex[:14]}",
-                    "amount": 499_900,
-                    "subscription_id": world.subscription_id,
+                    "order_id": world.order_id,
+                    "amount": 3_540_000,
                     "error_description": "Card declined",
                 }
             },
@@ -156,11 +176,11 @@ def test_a_failed_charge_emails_once_after_the_commit(
             http_5xx, payload, event_id=f"evt_{world.tenant.hex[:8]}_failed"
         )
         assert response.status_code == 200, response.text
-        emails = [
-            call
-            for call in dispatch_module.recorded()
-            if call.name == "pickready.send_payment_failed_email"
-        ]
-        assert [call.args for call in emails] == [(str(world.tenant),)]
+        assert response.json() == {"status": "ok"}
+        assert _run(_purchase_status(world.order_id)) == "failed"
+        assert _run(_ledger(world.tenant)) == []
+        started = set(dispatch_module.recorded_names())
+        assert "pickready.send_credit_invoice_email" not in started, started
+        assert "pickready.release_held_assessments" not in started, started
     finally:
         dispatch_module.clear_recorded()

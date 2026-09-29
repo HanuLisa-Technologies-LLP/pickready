@@ -30,7 +30,6 @@ Money rules this module keeps true:
 """
 from __future__ import annotations
 
-import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,11 +42,17 @@ from app.models.billing import (
     CREDIT_PACK_LABELS,
     CREDIT_PACKS,
     CREDIT_VALIDITY_MONTHS,
+    EVENT_COMPLETED,
+    EVENT_INCOMPLETE,
+    EVENT_NO_SHOW,
+    EVENT_OLD_PROFILE_REVIEW,
     GST_RATE_PERCENT,
     MIN_PURCHASE_CREDITS,
     PRICE_PER_CREDIT_INR,
     PURCHASE_CREATED,
     PURCHASE_PAID,
+    ROLE_NON_STEM,
+    ROLE_STEM,
     SETUP_FEE_INR,
     SETUP_FEE_WAIVER_LIMIT,
     STARTER_PACK_SLUG,
@@ -55,15 +60,18 @@ from app.models.billing import (
     TRIAL_CREDITS,
     BillingTransaction,
     CreditPurchase,
+    consumption_subunits,
 )
 from app.models.tenant import Tenant
 from app.services import credits, razorpay
 
-log = logging.getLogger(__name__)
 
 #: Slug stored on a purchase that came through the custom-amount path rather
 #: than a named pack. Deliberately not in CREDIT_PACKS: it has no fixed size.
 CUSTOM_SLUG = "custom"
+
+#: The once-per-account trial pack (Rule 1).
+TRIAL_PACK_SLUG = "trial_20"
 
 
 def bonus_for(credit_count: int) -> int:
@@ -97,8 +105,7 @@ class PackQuote:
     slug: str
     #: The customer-facing name. Resolved here rather than in the client so an
     #: invoice, an email and the billing page cannot call one pack three
-    #: things, and so the Starter Assessment Pack is never rendered as the bare
-    #: word "Starter", which is already a subscription plan.
+    #: things.
     label: str
     credits: int
     bonus_credits: int
@@ -157,7 +164,7 @@ async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
     setup_fee, waived = await setup_fee_for(session, tenant)
     quotes: list[PackQuote] = []
     for slug, (credit_count, bonus) in CREDIT_PACKS.items():
-        is_trial = slug == "trial_20"
+        is_trial = slug == TRIAL_PACK_SLUG
         subtotal, tax, total = _price(credit_count, setup_fee)
         quotes.append(
             PackQuote(
@@ -177,6 +184,147 @@ async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
             )
         )
     return quotes
+
+
+# ── The published catalogue (the public /pricing page) ──────────────────────
+
+#: The public name of each billable event, the same words the customer's
+#: credit statement uses (`components/billing/credit-statement.tsx`).
+CONSUMPTION_LABELS: dict[str, str] = {
+    EVENT_COMPLETED: "Assessment completed",
+    EVENT_INCOMPLETE: "Assessment started, not finished",
+    EVENT_NO_SHOW: "Invitation never opened",
+    EVENT_OLD_PROFILE_REVIEW: "Earlier applicant reviewed",
+}
+
+
+@dataclass(frozen=True)
+class PublishedPack:
+    """One pack at the STANDARD price, for a visitor with no account.
+
+    Deliberately not a `PackQuote`: a quote is priced for one tenant (its
+    setup fee, its waiver, whether its trial is used), and a signed-out page
+    knows none of that. The setup fee is therefore NOT folded in here; the
+    catalogue states it once, as the rule it is.
+    """
+
+    slug: str
+    label: str
+    credits: int
+    bonus_credits: int
+    credits_total: int
+    subtotal_inr: int
+    gst_inr: int
+    total_inr: int
+    #: The trial pack: sold once per account, on the first purchase only.
+    new_accounts_only: bool
+    validity_months: int
+
+
+@dataclass(frozen=True)
+class ConsumptionRate:
+    """What one billable event draws from the pool, by role type.
+
+    In integer SUB-UNITS (60 to a credit), read from the same tables
+    `credits.consume` bills from, so a third of a credit is stated exactly
+    rather than as a rounded decimal the page would then have to explain.
+    """
+
+    event_type: str
+    label: str
+    non_stem_subunits: int
+    stem_subunits: int
+
+
+@dataclass(frozen=True)
+class BonusLevel:
+    """A purchase of at least `min_credits` adds `bonus_credits` free."""
+
+    min_credits: int
+    bonus_credits: int
+
+
+@dataclass(frozen=True)
+class PublishedCatalogue:
+    price_per_credit_inr: int
+    gst_rate_percent: int
+    subunits_per_credit: int
+    credit_validity_months: int
+    min_custom_credits: int
+    setup_fee_inr: int
+    setup_fee_gst_inr: int
+    setup_fee_waiver_limit: int
+    bonus_levels: tuple[BonusLevel, ...]
+    packs: tuple[PublishedPack, ...]
+    consumption: tuple[ConsumptionRate, ...]
+
+
+def published_catalogue() -> PublishedCatalogue:
+    """The platform's standard price list, from the same constants and the
+    same arithmetic every tenant quote and every invoice uses.
+
+    ONE SOURCE OF TRUTH is the reason this exists (owner spec, section 4.2):
+    the public page used to carry its own copy of the packs, which could
+    drift from what checkout actually charges. Every figure here comes from
+    `models/billing.py` through `_price` and `bonus_for`, the functions the
+    purchase path itself calls. Nothing is read from a table because nothing
+    about the published price list is tenant state.
+    """
+    packs = []
+    for slug, (credit_count, bonus) in CREDIT_PACKS.items():
+        subtotal, tax, total = _price(credit_count, 0)
+        packs.append(
+            PublishedPack(
+                slug=slug,
+                label=CREDIT_PACK_LABELS[slug],
+                credits=credit_count,
+                bonus_credits=bonus,
+                credits_total=credit_count + bonus,
+                subtotal_inr=subtotal,
+                gst_inr=tax,
+                total_inr=total,
+                new_accounts_only=slug == TRIAL_PACK_SLUG,
+                validity_months=CREDIT_VALIDITY_MONTHS,
+            )
+        )
+    # The volume thresholds exactly as `bonus_for` applies them to a custom
+    # amount: every named pack size that earns a bonus by that function.
+    levels = sorted(
+        {
+            credit_count
+            for credit_count, bonus in CREDIT_PACKS.values()
+            if bonus and bonus_for(credit_count) == bonus
+        }
+    )
+    consumption = []
+    for event, label in CONSUMPTION_LABELS.items():
+        non_stem = consumption_subunits(event, ROLE_NON_STEM)
+        stem = consumption_subunits(event, ROLE_STEM)
+        assert non_stem is not None and stem is not None  # billable by construction
+        consumption.append(
+            ConsumptionRate(
+                event_type=event,
+                label=label,
+                non_stem_subunits=non_stem,
+                stem_subunits=stem,
+            )
+        )
+    return PublishedCatalogue(
+        price_per_credit_inr=PRICE_PER_CREDIT_INR,
+        gst_rate_percent=GST_RATE_PERCENT,
+        subunits_per_credit=SUBUNITS_PER_CREDIT,
+        credit_validity_months=CREDIT_VALIDITY_MONTHS,
+        min_custom_credits=MIN_PURCHASE_CREDITS,
+        setup_fee_inr=SETUP_FEE_INR,
+        setup_fee_gst_inr=gst_inr(SETUP_FEE_INR),
+        setup_fee_waiver_limit=SETUP_FEE_WAIVER_LIMIT,
+        bonus_levels=tuple(
+            BonusLevel(min_credits=level, bonus_credits=bonus_for(level))
+            for level in levels
+        ),
+        packs=tuple(packs),
+        consumption=tuple(consumption),
+    )
 
 
 async def create_purchase(
@@ -210,7 +358,7 @@ async def create_purchase(
         if pack_slug == STARTER_PACK_SLUG:
             assert credit_count + bonus >= MIN_PURCHASE_CREDITS
         # Rule 1: check trial_used on EVERY attempt, not just the first.
-        if pack_slug == "trial_20" and tenant.trial_used:
+        if pack_slug == TRIAL_PACK_SLUG and tenant.trial_used:
             raise ValueError(
                 f"The {TRIAL_CREDITS}-credit trial is available once per "
                 f"account and has already been used. The minimum purchase is "
@@ -343,25 +491,29 @@ async def settle_purchase(
     )
     await session.flush()
 
-    # Both enqueues are best-effort: a broker outage must never turn a settled
-    # payment into an error the customer sees. The invoice email is retried by
-    # support if lost; the held-report release re-checks balances anyway.
-    try:
-        from app.workers.dispatch import dispatch
+    # Both after the COMMIT (CLAUDE.md rule 4). The invoice email renders the
+    # PDF from this purchase row and the release re-checks this grant's
+    # balance, so a task started before the commit could read neither; and a
+    # settlement whose transaction rolls back must announce nothing. They used
+    # to be plain dispatches inside a broad `except`, which both fired before
+    # the rows existed and hid a programming error as a log line.
+    #
+    # A lost invoke after the commit is logged by the dispatcher and never
+    # fails the settlement. The held-report release is repaired by the hourly
+    # `pickready.release_held_assessments` sweep (`workers/schedule.py`); the
+    # invoice stays downloadable from the billing page whatever happens to
+    # the email.
+    from app.workers.dispatch import dispatch_after_commit
 
-        dispatch(
-            "pickready.send_credit_invoice_email", args=[str(purchase.id)]
-        )
-        # A top-up releases whatever finalisation was held for want of
-        # credits — same task, same reasoning as the subscription grant path
-        # (api/billing._grant_for_payment).
-        dispatch(
-            "pickready.release_held_assessments", args=[str(purchase.tenant_id)]
-        )
-    except Exception:  # noqa: BLE001 - notification must never break settlement
-        log.warning(
-            "credit_packs.enqueue_failed purchase=%s", purchase.id, exc_info=True
-        )
+    dispatch_after_commit(
+        session, "pickready.send_credit_invoice_email", args=[str(purchase.id)]
+    )
+    # A top-up releases whatever finalisation was held for want of credits.
+    dispatch_after_commit(
+        session,
+        "pickready.release_held_assessments",
+        args=[str(purchase.tenant_id)],
+    )
     return True
 
 

@@ -35,6 +35,8 @@ const NOTES: Record<string, string> = {
   "/": "Home page.",
   "/employers":
     "Directory of companies hiring through Vivekium, each with a public page and its currently open roles.",
+  "/pricing":
+    "Credit pricing: one rate per credit, one-time packs, GST, validity, bonus credits and the setup fee, from the live price list.",
   "/about": "Who builds Vivekium and the principles the product is built on.",
   "/insights":
     "Articles on evidence-led candidate decisions, assessment design and consent.",

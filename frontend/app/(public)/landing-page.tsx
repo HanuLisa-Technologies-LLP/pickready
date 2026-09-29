@@ -5,7 +5,6 @@ import { Features } from "./features";
 import { Hero } from "./hero";
 import { HowItWorks } from "./how-it-works";
 import { LandingTelemetry } from "./landing-telemetry";
-import { Pricing } from "./pricing";
 import { ReportSection } from "./report-section";
 import { SiteFooter } from "./site-footer";
 import { SiteHeader } from "./site-header";
@@ -41,9 +40,10 @@ import {
  *  6. `AboutPreview`    "who is behind this": the one trust section.
  *  7. `InsightsPreview` "do they think about this seriously": three real
  *                       articles that exist at /insights.
- *  8. `Pricing`         "what does it cost": asked only once the value is
- *                       established, and answered with the real credit rate.
- *  9. `CallToAction`    the close.
+ *  8. `CallToAction`    the close, with "See pricing plans" beside it: "what
+ *                       does it cost" is answered on its own page, `/pricing`,
+ *                       from the server's price list (owner spec 2026-09-29,
+ *                       section 4.1), rather than by a copy of it inline.
  *
  * `WorkflowShowcase` sits between 2 and 3, as the product tour: having read how
  * it works, you watch it work. It was held out of an earlier draft because the
@@ -92,7 +92,6 @@ export function LandingPage() {
         <EvidenceProfile />
         <AboutPreview />
         <InsightsPreview />
-        <Pricing />
         <CallToAction />
       </main>
 

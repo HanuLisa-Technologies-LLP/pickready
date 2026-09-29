@@ -1,18 +1,18 @@
-"""Razorpay Subscriptions client and signature verification (killer-spec Part 2).
+"""Razorpay Orders client and signature verification.
+
+The product sells credits as ONE-TIME purchases, so the Orders API is the
+only Razorpay API this module speaks: an Order is exactly one charge. The
+monthly Subscriptions client that shipped first was deleted with the
+subscription model (owner spec, 2026-09-29, section 23).
 
 This talks to Razorpay's REST API over httpx rather than pulling in the official
 `razorpay` package, for one reason: that SDK is synchronous (requests), and
 every route and task in this codebase is async. A blocking HTTP call inside an
-async handler stalls the whole event loop, which is precisely the class of
-latency problem the rest of this build pass is removing.
+async handler stalls the whole event loop.
 
 The Key Secret never leaves this module and is never logged. Errors carry
 Razorpay's own message where it is safe (it is written for the merchant, not
 the cardholder) and never the credentials that produced them.
-
-Recurring monthly billing means the **Subscriptions** API, not Orders: an Order
-is a one-time charge and would silently turn a monthly plan into a single
-payment.
 """
 from __future__ import annotations
 
@@ -33,11 +33,6 @@ API_BASE = "https://api.razorpay.com/v1"
 # Razorpay quotes money in paise. Every amount crossing this boundary is an
 # integer number of paise; rupees appear only in our own tables and in the UI.
 PAISE_PER_RUPEE = 100
-
-# Razorpay requires a finite billing count on a subscription. 120 monthly cycles
-# is ten years — long enough that no live subscription reaches it, short enough
-# that Razorpay accepts it.
-DEFAULT_TOTAL_COUNT = 120
 
 _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
@@ -113,29 +108,6 @@ async def _request(method: str, path: str, payload: dict[str, Any] | None = None
     return response.json()
 
 
-# ── Plans ────────────────────────────────────────────────────────────────────
-
-async def create_plan(*, name: str, price_inr: int, notes: dict[str, str] | None = None) -> str:
-    """Create a monthly Razorpay Plan and return its id."""
-    body = await _request(
-        "POST",
-        "/plans",
-        {
-            "period": "monthly",
-            "interval": 1,
-            "item": {
-                "name": name,
-                "amount": price_inr * PAISE_PER_RUPEE,
-                "currency": "INR",
-            },
-            "notes": notes or {},
-        },
-    )
-    return body["id"]
-
-
-# ── Customers ────────────────────────────────────────────────────────────────
-
 # ── Orders (one-time credit-pack purchases, Master Directive Part 5) ─────────
 
 async def create_order(
@@ -160,85 +132,18 @@ async def create_order(
     )
 
 
-# ── Subscriptions ────────────────────────────────────────────────────────────
-
-async def create_subscription(
-    *,
-    plan_id: str,
-    customer_id: str | None = None,
-    total_count: int = DEFAULT_TOTAL_COUNT,
-    notes: dict[str, str] | None = None,
-) -> dict:
-    payload: dict[str, Any] = {
-        "plan_id": plan_id,
-        "total_count": total_count,
-        # Razorpay emails the customer its own receipts. Vivekium sends its
-        # own lifecycle mail, so this stays off to avoid two messages for one
-        # event.
-        "customer_notify": 0,
-        "notes": notes or {},
-    }
-    if customer_id:
-        payload["customer_id"] = customer_id
-    return await _request("POST", "/subscriptions", payload)
-
-
-async def update_subscription(
-    subscription_id: str, *, plan_id: str, schedule_change_at: str = "now"
-) -> dict:
-    """Move a live subscription to a different plan.
-
-    `schedule_change_at="now"` makes Razorpay compute the proration itself and
-    charge or credit the difference on the spot; `"cycle_end"` defers to the next
-    renewal with no proration. We do NOT compute proration locally — the amount
-    Razorpay actually charges is the only one that matters, and a second opinion
-    computed here would only ever disagree with the customer's card statement.
-    """
-    return await _request(
-        "PATCH",
-        f"/subscriptions/{subscription_id}",
-        {"plan_id": plan_id, "schedule_change_at": schedule_change_at, "customer_notify": 0},
-    )
-
-
-async def cancel_subscription(subscription_id: str, *, at_cycle_end: bool = True) -> dict:
-    return await _request(
-        "POST",
-        f"/subscriptions/{subscription_id}/cancel",
-        {"cancel_at_cycle_end": 1 if at_cycle_end else 0},
-    )
-
-
 # ── Signatures ───────────────────────────────────────────────────────────────
 
 def _hmac_hex(secret: str, message: str) -> str:
     return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def verify_checkout_signature(
-    *, payment_id: str, subscription_id: str, signature: str
-) -> bool:
-    """Verify the handler payload Razorpay Checkout returns in the browser.
-
-    For SUBSCRIPTIONS the signed message is ``payment_id|subscription_id`` — the
-    reverse of the Orders flow's ``order_id|payment_id``. Getting that order
-    wrong produces a verification that fails 100% of the time on perfectly good
-    payments, so it is asserted directly in tests/test_billing.py.
-    """
-    cfg = config()
-    if not cfg.key_secret:
-        return False
-    expected = _hmac_hex(cfg.key_secret, f"{payment_id}|{subscription_id}")
-    return hmac.compare_digest(expected, signature or "")
-
-
 def verify_order_signature(*, order_id: str, payment_id: str, signature: str) -> bool:
     """Verify the Checkout handler payload for an ORDERS payment.
 
-    Orders sign ``order_id|payment_id`` — the REVERSE of the subscription
-    helper above, which signs ``payment_id|subscription_id``. Same stakes as
-    documented there: the wrong order fails 100% of good payments, so the
-    direction is pinned by tests/test_credit_packs.py.
+    Orders sign ``order_id|payment_id``, in that order. The wrong order fails
+    100% of good payments, which is exactly the kind of defect a happy-path
+    test never sees, so the direction is pinned by tests/test_credit_packs.py.
     """
     cfg = config()
     if not cfg.key_secret:
@@ -253,9 +158,9 @@ def verify_webhook_signature(*, raw_body: bytes, signature: str) -> bool:
     Re-serializing the parsed JSON and hashing that would change key order and
     whitespace and fail every time, which is why the caller passes raw bytes.
 
-    With no RAZORPAY_WEBHOOK_SECRET configured this returns False. The route is
-    what decides whether an unverified payload is acceptable, and it only ever
-    is outside production — see api/billing.razorpay_webhook.
+    With no RAZORPAY_WEBHOOK_SECRET configured this returns False, and the
+    route refuses every webhook in that state (api/billing.razorpay_webhook):
+    a signature check that cannot be performed has failed, not passed.
     """
     cfg = config()
     if not cfg.webhook_secret:

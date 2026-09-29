@@ -9,8 +9,8 @@ import { SiteHeader } from "./site-header";
  * carries its own copy of this frame (see `landing-page.tsx`).
  *
  * The header and footer take no props: `/` always serves the landing page, so
- * their anchors into it (`/#how-it-works`, `/#features`, `/#pricing`) resolve
- * from every page that renders them.
+ * their anchors into it (`/#how-it-works`, `/#features`) resolve from every
+ * page that renders them.
  */
 export default function PublicLayout({
   children,

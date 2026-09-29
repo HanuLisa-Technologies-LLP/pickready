@@ -22,8 +22,9 @@ THREE PASSES, AND NOTHING IS WRITTEN UNTIL THE LAST
    `apply_transition` raised `InvalidTransition` and 500'd its whole batch.
    Now the second waits for the first, reads `assessment_invited`, and skips
    that applicant with a reason.
-2. ONE CREDIT QUESTION FOR THE WHOLE BATCH. `credits.can_start_assessment`
-   with `count` = the eligible applicants. It used to ask about ONE report and
+2. ONE CREDIT QUESTION FOR THE WHOLE BATCH. `entitlements.restriction_reason`
+   (`send_assessment`, over `credits.can_start_assessment`) with `count` = the
+   eligible applicants. It used to ask about ONE report and
    then invite everybody ticked, so a balance holding one assessment let a
    recruiter invite two hundred people, each charged at completion into a
    deficit nobody chose. A shortfall is refused in ONE sentence naming the
@@ -54,13 +55,12 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.email_log import EMAIL_TYPE_ASSESSMENT_INVITATION
-from app.services import credits
+from app.services import entitlements
 from app.services import hiring_pipeline as pipeline
 from app.services.audit import audit
 from app.workers.dispatch import dispatch_after_commit
@@ -109,21 +109,6 @@ class InviteResult:
     #: The stage change written for each invited application, in `invited`
     #: order. The single-application route answers with it.
     transitions: tuple[pipeline.TransitionResult, ...] = field(default_factory=tuple)
-
-
-def _shortfall_detail(
-    *, count: int, role_classification: str | None, required: Decimal, balance: Decimal
-) -> str:
-    role_word = "STEM" if role_classification == "STEM" else "Non-STEM"
-    per_report = (required / count).quantize(Decimal("0.01"))
-    short = (required - balance).quantize(Decimal("0.01"))
-    people = "1 candidate" if count == 1 else f"{count} candidates"
-    return (
-        f"Insufficient credits. Inviting {people} to this {role_word} role "
-        f"requires {required} credits ({per_report} per assessment). Current "
-        f"balance: {balance} credits, {short} short. Nobody was invited. Top "
-        "up, or invite fewer candidates."
-    )
 
 
 async def invite_batch(
@@ -218,22 +203,15 @@ async def invite_batch(
 
     # ── Pass 2: one credit question for the whole batch ─────────────────────
     if eligible:
-        allowed, required, balance = await credits.can_start_assessment(
+        refused = await entitlements.restriction_reason(
             session,
             tenant_id,
+            entitlements.ACTION_SEND_ASSESSMENT,
             role_classification=job["role_classification"],
             count=len(eligible),
         )
-        if not allowed:
-            raise InvitationRefused(
-                402,
-                _shortfall_detail(
-                    count=len(eligible),
-                    role_classification=job["role_classification"],
-                    required=required,
-                    balance=balance,
-                ),
-            )
+        if refused is not None:
+            raise InvitationRefused(402, refused)
 
     # ── Pass 3: write, and dispatch after the commit ────────────────────────
     grade = job["assessment_grade"] or "non_managerial"

@@ -15,9 +15,9 @@ plus 35 BONUS credits at Rs. 0. The customer receives 75 for Rs. 24,000, which
 is the contract; the invoice prints the same two-line shape `volume_100`
 already prints; the constant does not move.
 
-The naming hazard is pinned too. `pricing_plans` already has a SUBSCRIPTION
-plan whose slug is `starter` (50 applications, Rs. 10,000), so a top-up called
-"Starter" would be two different products with one name on one billing page.
+The label is pinned too: it names what the pack delivers ("75 assessments")
+rather than the bare word "Starter", which was chosen while a monthly plan of
+that name still existed and stays the more useful label.
 """
 from __future__ import annotations
 
@@ -71,9 +71,9 @@ def test_the_pack_invoices_twenty_four_thousand_plus_gst() -> None:
     assert total == 28_320
 
 
-def test_the_label_cannot_be_confused_with_the_starter_subscription_plan() -> None:
-    """`pricing_plans.slug = 'starter'` is a MONTHLY PLAN. The top-up's label
-    must not read as that plan's name on a page that shows both."""
+def test_the_label_names_what_the_pack_delivers() -> None:
+    """The label says what the customer receives, never the bare word
+    "Starter", so an invoice line and the pricing page read the same."""
     label = CREDIT_PACK_LABELS[STARTER_PACK_SLUG]
     assert label != "Starter"
     assert "Starter Assessment Pack" in label

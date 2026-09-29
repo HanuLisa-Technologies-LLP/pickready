@@ -1,19 +1,20 @@
 "use client";
 
 /**
- * Razorpay Checkout, loaded on demand (killer-spec §2.4).
+ * Razorpay Checkout for one-time credit purchases, loaded on demand.
  *
  * The script is NOT in the document head. It is ~90 KB of third-party
- * JavaScript that only matters to someone who has decided to subscribe, so
+ * JavaScript that only matters to someone who has decided to buy credits, so
  * putting it on every page load would tax the landing page for everybody to
- * serve the few who click Subscribe. `loadCheckout()` injects it on first use
- * and every later call reuses the same promise.
+ * serve the few who pay. `loadCheckout()` injects it on first use and every
+ * later call reuses the same promise.
  *
- * The Key ID arrives at runtime on the server's own subscribe and purchase
- * responses (`razorpay_key_id`), never from a build-time NEXT_PUBLIC_
- * variable, so there is one source of truth and the frontend never needs the
- * .env file. The Key SECRET has no path into this file: the signature
- * that proves a payment is verified server-side by POST /billing/checkout/verify.
+ * The Key ID arrives at runtime on the server's purchase response
+ * (`razorpay_key_id`), never from a build-time NEXT_PUBLIC_ variable, so there
+ * is one source of truth and the frontend never needs the .env file. The Key
+ * SECRET has no path into this file: the signature that proves a payment is
+ * verified server-side by POST /billing/purchase/verify. The product sells
+ * credits only (2026-09-29), so ORDERS are the one Checkout this file opens.
  */
 
 const CHECKOUT_SRC = "https://checkout.razorpay.com/v1/checkout.js";
@@ -56,47 +57,6 @@ export function loadCheckout(): Promise<boolean> {
   return loader;
 }
 
-export interface CheckoutHandlerPayload {
-  razorpay_payment_id: string;
-  razorpay_subscription_id: string;
-  razorpay_signature: string;
-}
-
-export interface OpenCheckoutOptions {
-  keyId: string;
-  subscriptionId: string;
-  planName: string;
-  /** Prefills the Checkout form. All optional. */
-  prefill?: { name?: string; email?: string; contact?: string };
-  onSuccess: (payload: CheckoutHandlerPayload) => void;
-  onDismiss?: () => void;
-}
-
-/**
- * Open Razorpay Checkout for a subscription.
- *
- * Returns false when the script could not be loaded, so the caller can fall
- * back to the subscription's hosted `short_url` rather than leaving the user
- * looking at a button that silently does nothing.
- */
-export async function openCheckout(options: OpenCheckoutOptions): Promise<boolean> {
-  const ready = await loadCheckout();
-  if (!ready || !window.Razorpay) return false;
-
-  const checkout = new window.Razorpay({
-    key: options.keyId,
-    subscription_id: options.subscriptionId,
-    name: "Vivekium",
-    description: `${options.planName} plan, billed monthly`,
-    prefill: options.prefill ?? {},
-    theme: { color: "#0A2540" },
-    handler: (response: CheckoutHandlerPayload) => options.onSuccess(response),
-    modal: { ondismiss: () => options.onDismiss?.() },
-  });
-  checkout.open();
-  return true;
-}
-
 /** What Razorpay hands back for a one-time ORDER payment. The field names are
  *  Razorpay's own and travel unchanged into POST /billing/purchase/verify,
  *  where the server recomputes the signature; nothing here proves payment. */
@@ -121,10 +81,9 @@ export interface OpenOrderCheckoutOptions {
 
 /**
  * Open Razorpay Checkout for a one-time ORDER: a credit pack purchase
- * (directive Part 5 section 3.3), as opposed to the recurring subscription
- * `openCheckout` above starts. Same script loader, same contract: resolves
- * false when Checkout could not load, so the caller can tell the user instead
- * of leaving a button that silently does nothing.
+ * (directive Part 5 section 3.3). Resolves false when Checkout could not
+ * load, so the caller can tell the user instead of leaving a button that
+ * silently does nothing.
  */
 export async function openOrderCheckout(
   options: OpenOrderCheckoutOptions

@@ -487,14 +487,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         "authorisation rules. Nothing about the reset touches them.", named_by_d2=False
     ),
     TableRule(
-        "pricing_plans",
-        PRESERVE,
-        "The commercial plan catalogue. A global table that tenants reference, so "
-        "deleting a row would strand a subscription.",
-        tenant_column=None,
-        named_by_d2=False,
-    ),
-    TableRule(
         "billing_transactions", PRESERVE, "Payment records. Money is never purged, and a payment that happened "
         "cannot be unmade by deleting the row describing it.", named_by_d2=False
     ),

@@ -1100,13 +1100,6 @@ module "scheduler" {
       task            = "pickready.expire_credit_lots"
       rate_expression = "rate(1440 minutes)"
     }
-    # Change request 27. The month 10 and month 11 usage summary, purely
-    # informational: it writes one latch column and no subscription state.
-    # Daily, because the window it measures is a subscription month.
-    "readypick-sweep-subscription-usage-alerts" = {
-      task            = "pickready.sweep_subscription_usage_alerts"
-      rate_expression = "rate(1440 minutes)"
-    }
     # Phase 6 WP6-C. The Terraform half of the entry in
     # app/workers/schedule.py; tests/test_schedule_parity.py fails on drift.
     # Re-dispatches candidate emails whose after-commit send was lost; never

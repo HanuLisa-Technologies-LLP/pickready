@@ -370,7 +370,7 @@ async def flush(
     turn calls this on each answer and the tier is stamped once on the first
     piece of spend, so looking it up in the caller would run a join on every
     turn of every interview to discard the answer. Passing one explicitly still
-    wins, which is what lets a test state the tier without seeding a plan.
+    wins, which is what lets a test state the tier without seeding a job.
 
     THE ROW IS LOCKED AND THEN MERGED IN PYTHON rather than upserted in SQL.
     `models_json` is a per-model breakdown that has to be added key by key, and
@@ -412,7 +412,7 @@ async def flush(
                 # an empty record contains.
                 await session.flush()
             if pricing_tier is None and row.pricing_tier is None:
-                pricing_tier = await pricing_tier_for(session, scope.tenant_id)
+                pricing_tier = await pricing_tier_for(session, scope.job_id)
             _merge(
                 row,
                 tally,
@@ -484,9 +484,9 @@ def _merge(
         # a retry or an out-of-order write from walking the count backwards.
         row.questions_asked = max(row.questions_asked, int(questions_asked))
     if pricing_tier is not None and row.pricing_tier is None:
-        # Written ONCE, on the first piece of spend. The tenant may change plan
-        # mid-assessment, and re-stamping would report work that was done under
-        # the old plan as though it had been done under the new one.
+        # Written ONCE, on the first piece of spend. The job's classification
+        # may be overridden mid-assessment, and re-stamping would report work
+        # done under one rate as though it had been done under the other.
         row.pricing_tier = pricing_tier
     row.models_json = _merged_models(dict(row.models_json or {}), tally.by_model)
     row.pricing_json = _pricing_snapshot(row.models_json)
@@ -724,9 +724,9 @@ async def owner_cost_summary(
         "alert": _alert(average, alert_threshold_inr),
         "by_pricing_tier": [
             {
-                # None is a REAL state: a demonstration tenant and a customer
-                # between subscriptions both legitimately have no plan, and
-                # they are reported under their own heading rather than folded
+                # None is a REAL state: a record written before the tier was
+                # the per-credit rate carries a retired plan slug or nothing,
+                # and it is reported under its own heading rather than folded
                 # into whichever tier happened to sort first.
                 "pricing_tier": tier,
                 "assessments": int(count),
@@ -812,29 +812,34 @@ def _alert(average: dict[str, Any], threshold_inr: float) -> dict[str, Any]:
 
 
 async def pricing_tier_for(
-    session: AsyncSession, tenant_id: uuid.UUID
+    session: AsyncSession, job_id: uuid.UUID
 ) -> str | None:
-    """The tenant's current plan slug, or None when they are on no plan.
+    """The per-credit rate this job's assessments bill at: `STEM` or `NON_STEM`.
 
-    None is a real state and is not a failure: a demonstration tenant and a
-    customer between subscriptions both legitimately have no plan, and the
-    dashboard reports them under an explicit "no plan" heading rather than
-    inventing one. Read through the ORM rather than joined into the cost query
-    so the value is SNAPSHOTTED onto the record: a customer who upgrades next
-    month must not retroactively change which tier last month's assessments are
+    The product sells credits only (owner spec, 2026-09-29), so the tier an
+    assessment's cost is compared against is no longer a subscription plan: it
+    is the job's role classification, which is what decides whether a
+    completed report consumes 1.0 or 1.5 credits (`models.billing.
+    consumption_subunits`). A NULL classification bills at the non-STEM rate,
+    so it is reported as that rate here too. None only when the job itself
+    cannot be read.
+
+    Read through the ORM rather than joined into the cost query so the value
+    is SNAPSHOTTED onto the record: a classification overridden next month
+    must not retroactively change which rate last month's assessments are
     reported under.
     """
-    from app.models.billing import PricingPlan  # noqa: PLC0415
-    from app.models.tenant import Tenant  # noqa: PLC0415
+    from app.models.billing import ROLE_NON_STEM, ROLE_STEM  # noqa: PLC0415
+    from app.models.job import Job  # noqa: PLC0415
 
-    slug = (
+    found = (
         await session.execute(
-            select(PricingPlan.slug)
-            .join(Tenant, Tenant.current_plan_id == PricingPlan.id)
-            .where(Tenant.id == tenant_id)
+            select(Job.id, Job.role_classification).where(Job.id == job_id)
         )
-    ).scalars().first()
-    return str(slug) if slug else None
+    ).first()
+    if found is None:
+        return None
+    return ROLE_STEM if found.role_classification == ROLE_STEM else ROLE_NON_STEM
 
 
 async def finalize(

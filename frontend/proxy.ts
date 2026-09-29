@@ -22,6 +22,7 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
+  "/pricing", // the public credit price list (GET /billing/public/credit-packs)
   // THE REST OF THE PUBLIC SITE, WHICH WAS BEING REDIRECTED TO SIGN-IN.
   //
   // This list is a deny-by-default allowlist, and five genuinely public pages

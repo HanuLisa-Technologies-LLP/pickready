@@ -1108,11 +1108,10 @@ class Settings(BaseSettings):
     #: degradation rather than an embedding outage wearing a reranker's name.
     voyage_rerank_2_5: str = ""
 
-    # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
-    # in the browser and receives it on the subscribe and purchase responses);
-    # the Key Secret and
-    # the webhook secret are server-side only and never reach a response body,
-    # a log line, or the frontend bundle.
+    # Payments: Razorpay Orders, one-time credit purchases. The Key ID is public
+    # (Checkout needs it in the browser and receives it on the purchase
+    # response); the Key Secret and the webhook secret are server-side only
+    # and never reach a response body, a log line, or the frontend bundle.
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""

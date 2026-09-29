@@ -59,7 +59,6 @@ from tests import comms_world
 #: reviewed change to this set, and so a revert to bypass is visible here.
 CONVERTED = {
     "pickready.send_lifecycle_email",
-    "pickready.send_payment_failed_email",
     "pickready.send_credit_warning_email",
     "pickready.send_credit_invoice_email",
 }
@@ -365,7 +364,7 @@ def _capture(monkeypatch) -> list[tuple]:
 
 @pytest.mark.parametrize(
     ("task_name", "extra"),
-    [("send_payment_failed_email", ()), ("send_credit_warning_email", (2,))],
+    [("send_credit_warning_email", (2,))],
 )
 async def test_billing_notices_resolve_the_same_recipient_as_under_bypass(
     two_tenants, monkeypatch, task_name, extra

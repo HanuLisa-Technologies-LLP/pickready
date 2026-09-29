@@ -228,8 +228,8 @@ app.include_router(pipeline.router, prefix=f"{API_PREFIX}/pipeline", tags=["pipe
 app.include_router(provider.router, prefix=f"{API_PREFIX}/provider", tags=["provider"])
 # Business Development Portal, the fourth portal (/bd in the UI and the API).
 app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
-# Subscriptions + the credit ledger. Mounted at one path only (no /api/v2
-# alias): it is new in this release, so there is no v1 client to keep working
+# Credits, credit-pack purchases and the ledger. Mounted at one path only
+# (no /api/v2 alias): it is new in this release, so there is no v1 client to keep working
 # and a second prefix would just be a second URL for Razorpay's webhook to be
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])

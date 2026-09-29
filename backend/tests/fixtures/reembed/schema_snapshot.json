@@ -61,12 +61,6 @@
       "table": "bd_leads"
     },
     {
-      "column": "plan_id",
-      "on_delete": "SET NULL",
-      "references": "pricing_plans",
-      "table": "billing_transactions"
-    },
-    {
       "column": "tenant_id",
       "on_delete": "CASCADE",
       "references": "tenants",
@@ -178,12 +172,6 @@
       "column": "job_candidate_link_id",
       "on_delete": "SET NULL",
       "references": "job_candidate_links",
-      "table": "credit_ledger"
-    },
-    {
-      "column": "plan_id",
-      "on_delete": "SET NULL",
-      "references": "pricing_plans",
       "table": "credit_ledger"
     },
     {
@@ -637,12 +625,6 @@
       "table": "staff_invites"
     },
     {
-      "column": "current_plan_id",
-      "on_delete": "SET NULL",
-      "references": "pricing_plans",
-      "table": "tenants"
-    },
-    {
       "column": "manager_user_id",
       "on_delete": "SET NULL",
       "references": "users",
@@ -706,7 +688,6 @@
     "jobs",
     "old_profile_reviews",
     "pipeline_status",
-    "pricing_plans",
     "profiles",
     "report_dimensions",
     "report_skill_evidence",

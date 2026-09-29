@@ -1258,7 +1258,7 @@ def run_functional_assessment(link_id: str):
     from app.models.assessment import AssessmentConversation
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
-    from app.services import credits, locks
+    from app.services import entitlements, locks
     from app.services.assessment_pipeline import persistence
     from app.services.coding_assessment import submissions as coding_submissions
     from app.services.functional_assessment import run_assessment
@@ -1314,7 +1314,9 @@ def run_functional_assessment(link_id: str):
                         link_id, hold.open_submissions,
                     )
                     return
-            if not await credits.has_positive_balance(session, link.tenant_id):
+            if await entitlements.restriction_reason(
+                session, link.tenant_id, entitlements.ACTION_BILLABLE_AI_WORK
+            ) is not None:
                 logger.warning(
                     "functional_assessment.held_pending_credits link_id=%s tenant_id=%s",
                     link_id, link.tenant_id,
@@ -1477,7 +1479,7 @@ def release_held_assessments(tenant_id: str | None = None):
     query for good.
     """
     from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
-    from app.services import credits
+    from app.services import entitlements
 
     async def _task():
         async with _worker_session() as session:
@@ -1504,8 +1506,11 @@ def release_held_assessments(tenant_id: str | None = None):
             checked: dict[uuid.UUID, bool] = {}
             for link_id, row_tenant in rows:
                 if row_tenant not in checked:
-                    checked[row_tenant] = await credits.has_positive_balance(
-                        session, row_tenant
+                    checked[row_tenant] = (
+                        await entitlements.restriction_reason(
+                            session, row_tenant, entitlements.ACTION_BILLABLE_AI_WORK
+                        )
+                        is None
                     )
                 if not checked[row_tenant]:
                     continue
@@ -2498,50 +2503,6 @@ def reconcile_assessment_credits():
 
 
 @task(
-    name="pickready.send_payment_failed_email",
-    route=Route.LAMBDA,
-    rls="tenant",
-)
-def send_payment_failed_email(tenant_id: str):
-    """Tell the customer a charge failed, before credits quietly stop arriving.
-
-    Silence here is the worst outcome: invitations would keep working until the
-    pool ran out, and the first the customer would hear of it is a 402.
-    """
-    async def _task():
-        async with _tenant_worker_session(uuid.UUID(str(tenant_id))) as session:
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT u.email, t.name FROM users u JOIN tenants t ON t.id = u.tenant_id "
-                        "WHERE u.tenant_id = :tid AND u.role = 'client' "
-                        "AND u.status <> 'disabled' AND u.email IS NOT NULL "
-                        "ORDER BY u.created_at LIMIT 1"
-                    ),
-                    {"tid": tenant_id},
-                )
-            ).mappings().first()
-            if row is None:
-                logger.warning("billing.payment_failed_email_no_recipient tenant=%s", tenant_id)
-                return {"sent": False, "reason": "no recipient"}
-            dispatch(
-                "pickready.send_email",
-                args=[
-                    tenant_id,
-                    row["email"],
-                    "payment_failed",
-                    {
-                        "company_name": row["name"],
-                        "billing_url": f"{get_settings().frontend_url}/org/billing",
-                    },
-                ],
-            )
-            return {"sent": True}
-
-    return _run(_task())
-
-
-@task(
     name="pickready.send_credit_warning_email",
     route=Route.LAMBDA,
     rls="tenant",
@@ -2658,135 +2619,6 @@ def expire_credit_lots(limit: int = 500):
     return _run(_task())
 
 
-def _expiry_line(summary) -> str:
-    """The one sentence about validity in the usage summary.
-
-    Three states, and they are genuinely different facts rather than three
-    phrasings of one. A customer holding only pre-change credits is told their
-    credits do not expire, because that is still true for them and telling
-    them otherwise would be the letter contradicting their own invoices. A
-    customer with nothing expiring soon is told nothing about a date, because
-    a warning about one three months out is noise. Only the third state gets
-    a date.
-    """
-    if summary.expiring_soon_credits > 0 and summary.next_expiry_at is not None:
-        return (
-            "Expiring within the next month: "
-            f"{summary.expiring_soon_credits} credits, "
-            f"the first on {summary.next_expiry_at:%d %b %Y}."
-        )
-    if summary.non_expiring_credits == summary.balance_credits:
-        return "Your credits do not expire."
-    return "Nothing in your balance expires within the next month."
-
-
-@task(
-    name="pickready.sweep_subscription_usage_alerts",
-    route=Route.LAMBDA,
-    rls="bypass",
-    rls_reason="a sweep: one run reads every tenant's rows",
-)
-def sweep_subscription_usage_alerts(limit: int = 200):
-    """The month 10 and month 11 informational usage summary.
-
-    Change request 27. PURELY INFORMATIONAL: it writes exactly one column,
-    `tenants.usage_alert_last_month`, which exists only so the letter cannot
-    be sent twice. It does not renew, cancel, charge, grant or change a
-    subscription status, and `tests/test_subscription_usage_alerts.py` asserts
-    that by reading every subscription column back after the sweep.
-
-    The month is CLAIMED before the letter is dispatched, in one checked
-    UPDATE. That ordering is deliberate and is the same trade
-    `_sync_warning_flags` makes: claiming first means a crash between the
-    claim and the dispatch costs a customer one informational email, while
-    dispatching first would mean two sweeps racing send two.
-
-    DAILY, because the windows it measures are months. Running late delays the
-    letter by a day; it can never duplicate one.
-    """
-    from app.models.billing import (
-        CREDIT_PACK_LABELS,
-        STARTER_PACK_PRICE_INR,
-        STARTER_PACK_SLUG,
-        STARTER_PACK_TOTAL_CREDITS,
-    )
-    from app.services import subscription_usage
-
-    async def _task():
-        sent = 0
-        now = datetime.now(timezone.utc)
-        async with _worker_session() as session:
-            due = await subscription_usage.due_tenants(
-                session, now=now, limit=limit
-            )
-            for tenant_id, month in due:
-                row = (
-                    await session.execute(
-                        text(
-                            "SELECT u.email, t.name FROM users u "
-                            "JOIN tenants t ON t.id = u.tenant_id "
-                            "WHERE u.tenant_id = :tid AND u.role = 'client' "
-                            "AND u.status <> 'disabled' AND u.email IS NOT NULL "
-                            "ORDER BY u.created_at LIMIT 1"
-                        ),
-                        {"tid": str(tenant_id)},
-                    )
-                ).mappings().first()
-                if row is None:
-                    # No account admin to write to. Say so rather than
-                    # claiming the month: a tenant who gains an admin next
-                    # week should still get the summary while it is true.
-                    logger.warning(
-                        "billing.usage_summary_no_recipient tenant=%s", tenant_id
-                    )
-                    continue
-                if not await subscription_usage.claim_month(
-                    session, tenant_id, month
-                ):
-                    continue
-                summary = await subscription_usage.build_summary(
-                    session, tenant_id, month
-                )
-                await session.commit()
-                dispatch(
-                    "pickready.send_email",
-                    args=[
-                        str(tenant_id),
-                        row["email"],
-                        "subscription_usage_summary",
-                        {
-                            "company_name": row["name"],
-                            "subscription_month": str(month),
-                            "assessments_used": str(summary.assessments_used),
-                            "assessments_remaining": str(
-                                summary.assessments_remaining
-                            ),
-                            "balance_credits": str(summary.balance_credits),
-                            "rollover_credits": str(summary.rollover_credits),
-                            "average_credits": str(
-                                summary.average_credits_per_assessment
-                            ),
-                            "expiry_line": _expiry_line(summary),
-                            "starter_pack_label": CREDIT_PACK_LABELS[
-                                STARTER_PACK_SLUG
-                            ],
-                            "starter_pack_credits": str(
-                                STARTER_PACK_TOTAL_CREDITS
-                            ),
-                            "starter_pack_price": f"{STARTER_PACK_PRICE_INR:,}",
-                            "billing_url": (
-                                f"{get_settings().frontend_url}/org/billing"
-                            ),
-                        },
-                    ],
-                )
-                sent += 1
-        logger.info("billing.usage_summary_sweep sent=%d", sent)
-        return {"sent": sent}
-
-    return _run(_task())
-
-
 @task(
     name="pickready.send_credit_invoice_email",
     route=Route.LAMBDA,
@@ -2797,9 +2629,10 @@ def send_credit_invoice_email(purchase_id: str):
 
     Master Directive Part 5 §3.3 step 5 / §7.3: the invoice goes to the
     account admin immediately on payment confirmation. Rendered HERE, not in
-    the settlement path — a payment confirmation must never wait on PDF
-    generation, and a broker outage already cannot break settlement because
-    the enqueue there is best-effort. The PDF is regenerated from the stored
+    the settlement path: a payment confirmation must never wait on PDF
+    generation, and settlement dispatches this AFTER its commit, so a lost
+    invoke is logged rather than turned into a failed settlement. The PDF is
+    regenerated from the stored
     purchase row, so a redelivered task sends the same invoice again rather
     than a different one.
     """
