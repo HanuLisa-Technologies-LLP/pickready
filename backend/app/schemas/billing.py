@@ -28,10 +28,6 @@ __all__ = [
     "CreditPurchaseVerifyIn",
     "CreditSummaryOut",
     "ProviderBillingRowOut",
-    "PublishedBonusLevelOut",
-    "PublishedCatalogueOut",
-    "PublishedConsumptionOut",
-    "PublishedPackOut",
     "TransactionOut",
     "UsageBreakdownOut",
 ]
@@ -67,10 +63,6 @@ class CreditLotOut(BaseModel):
 class CreditSummaryOut(BaseModel):
     balance_subunits: int
     balance_credits: Decimal
-    # The balance at the list price per credit (`PRICE_PER_CREDIT_INR`, excl.
-    # GST). Credits remain the ledger's unit; INR is shown beside them so the
-    # commercial value is never hidden.
-    balance_inr: Decimal | None = None
     subunits_per_credit: int
     granted_subunits: int
     consumed_subunits: int
@@ -225,11 +217,7 @@ class CreditPackQuoteOut(BaseModel):
 
 class CreditPacksOut(BaseModel):
     packs: list[CreditPackQuoteOut]
-    price_per_credit_inr: int
     gst_rate_percent: int
-    #: The Rule 2 floor for the custom-amount field.
-    min_custom_credits: int
-    trial_used: bool
 
 
 class CreditPurchaseIn(BaseModel):
@@ -290,64 +278,4 @@ class ProviderBillingRowOut(BaseModel):
     customer_name: str
     balance_subunits: int
     balance_credits: Decimal
-    #: At the list price per credit, excl. GST.
-    balance_inr: Decimal
     in_deficit: bool
-
-
-# ── The published catalogue (GET /billing/public/credit-packs) ─────────────
-
-
-class PublishedPackOut(BaseModel):
-    """One pack at the STANDARD price, for a visitor with no account.
-
-    Excludes the one-time setup fee, which is account-dependent (charged or
-    waived on the first purchase only) and stated once on the catalogue.
-    """
-
-    slug: str
-    label: str
-    credits: int
-    bonus_credits: int
-    credits_total: int
-    subtotal_inr: int
-    gst_inr: int
-    total_inr: int
-    #: The trial pack: sold once per account, as its first purchase.
-    new_accounts_only: bool
-    validity_months: int
-
-
-class PublishedConsumptionOut(BaseModel):
-    """What one billable event draws from the pool, in integer sub-units, so
-    a fraction of a credit is exact (`subunits_per_credit` to a credit)."""
-
-    event_type: str
-    label: str
-    non_stem_subunits: int
-    stem_subunits: int
-
-
-class PublishedBonusLevelOut(BaseModel):
-    min_credits: int
-    bonus_credits: int
-
-
-class PublishedCatalogueOut(BaseModel):
-    """The platform's published price list. One source of truth: the public
-    pricing page renders this and holds no figure of its own."""
-
-    price_per_credit_inr: int
-    gst_rate_percent: int
-    subunits_per_credit: int
-    credit_validity_months: int
-    min_custom_credits: int
-    #: The one-time account setup fee, excl. GST, and its GST. Charged on the
-    #: first purchase only, and waived for the first `setup_fee_waiver_limit`
-    #: client accounts; whether a given account pays it is shown at checkout.
-    setup_fee_inr: int
-    setup_fee_gst_inr: int
-    setup_fee_waiver_limit: int
-    bonus_levels: list[PublishedBonusLevelOut]
-    packs: list[PublishedPackOut]
-    consumption: list[PublishedConsumptionOut]

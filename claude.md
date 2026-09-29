@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Monthly completed-assessment plans (2026-09-30) | Four monthly plans, paid Starter pilot, three-month rollover, Starter-only top-up, no setup fee |
 | Company onboarding, auth hardening, credits only, Leadership Intelligence (2026-09-29) | CAPTCHA on every auth surface; security codes (not login OTP); company roles password-only; server-side password reset/change; self-registration activated by the first credit purchase; subscriptions deleted; CEO/MD/Functional Head and departments; Leadership Intelligence replaces Drishti across Sutra, SWOT, Yukti, Vaada and PRISM |
 | The Vivekium simplification release (2026-09-25) | CONTRACT v10 (2026-09-28): JD, Skills, the Final Job Posting, publish, and the freeze at the first application; the Skills step and the locked contract; Yukti and one blended rank; no number with no exception; the server-timed assessment; Path P pauses; recording retention; the Judge0 sandbox; Miti the sole grader; the insert-only report; Evidence RAG through tools; candidate identity; dispatch after commit; task RLS; the legacy scrap |
 | Tatva human authority (2026-09-23) | Sutra proposes; the Hiring Manager owns criteria; Save Matrix freezes the approved version; Company Profile is current company context |
@@ -121,6 +122,23 @@ how the product works today.
   Finishing is a state, not a feeling: the tests named in the task have run and
   passed, and anything left undone has been said out loud.
 
+## Current hard rules, monthly completed-assessment plans (2026-09-30)
+
+Owner pricing ruling supersedes only the 2026-09-29 commercial model. Starter is
+₹24,000 for 75 completed assessments per month; Growth is ₹55,000 for 200;
+Scale is ₹1,20,000 for 500; Pro is ₹2,40,000 for 1,200. Prices exclude GST.
+Every plan renews monthly, with no annual commitment or lock-in. Customers may
+cancel anytime, effective at the end of the paid cycle. The 30-day pilot starts
+on Starter and is paid at signup. There is no setup fee. Unused monthly credits
+roll over for three months from grant, then expire. One completed assessment
+spends one credit, including STEM; incomplete assessments, no-shows and old
+profile reviews spend none. Credits pool across all open jobs. Every plan
+includes every feature, all seven agents and BGV reconfirm. Only a Starter
+pack can be purchased as a top-up. Public pricing must sit in Start beside
+“Open a role”; its three-month expiry must be adjacent to prices. Never show
+derived per-assessment prices. Historical paid purchases and invoices remain
+readable at the terms at which they were sold.
+
 ## Current hard rules, company onboarding, auth hardening, credits only, Leadership Intelligence (2026-09-29)
 
 Owner spec: `readypick_auth_payment_leadership_spec.md` (2026-09-29). Migrations
@@ -146,12 +164,12 @@ Owner spec: `readypick_auth_payment_leadership_spec.md` (2026-09-29). Migrations
   `firebase_auth.assert_provider_allowed` by reading `_ORG_ROLES` at call time.
   Candidates keep Google. Team members are invite-only and the server creates
   the password sign-in for EXACTLY the invited email.
-- **Self-registration**: register (CAPTCHA) -> security code -> onboarding
+- **SUPERSEDED 2026-09-30 for payment step.** Self-registration: register (CAPTCHA) -> security code -> onboarding
   tenant (`tenants.status = onboarding`) -> first credit purchase ->
   password -> active. Payment is DERIVED from `credit_purchases`, never stored;
   a browser callback alone never activates; an onboarding tenant is refused at
   EVERY session path before an invited user can be activated.
-- **Credits are the only commercial model.** Subscriptions, plans and their
+- **SUPERSEDED 2026-09-30.** Credits are the only commercial model. Subscriptions, plans and their
   columns are deleted (0132, guarded). `/pricing` renders
   `GET /billing/public/credit-packs`; the frontend holds no price literal.
   Every credit gate asks `services/entitlements.py`. Zero credits never block

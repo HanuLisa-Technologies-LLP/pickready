@@ -19,7 +19,7 @@
  *     /login by a link on a public page (the one signed-in destination is
  *     declared below with its reason);
  *   * an anchor names a section id the landing page actually mounts;
- *   * a `mailto:` is the one request-access address or the enterprise line;
+ *   * a `mailto:` is the request-access address;
  *   * no token-addressed route is linked bare, and no dead parameter returns.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -194,7 +194,6 @@ describe("the landing page's links", () => {
   it("writes to the request-access mailbox and nowhere else by mail", () => {
     const allowed = new Set([
       requestAccessHref(),
-      "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
     ]);
     const mail = links.filter(({ target }) => target.startsWith("mailto:"));
     expect(mail.filter(({ target }) => !allowed.has(target))).toEqual([]);
@@ -253,13 +252,8 @@ describe("the pricing page's links", () => {
     ).toEqual([]);
   });
 
-  it("writes to the enterprise line and nowhere else by mail", () => {
+  it("does not link to an obsolete enterprise credit offer", () => {
     const mail = targets.filter((target) => target.startsWith("mailto:"));
-    expect(mail.length).toBeGreaterThan(0);
-    expect(
-      mail.filter(
-        (target) => target !== "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
-      ),
-    ).toEqual([]);
+    expect(mail).toEqual([]);
   });
 });

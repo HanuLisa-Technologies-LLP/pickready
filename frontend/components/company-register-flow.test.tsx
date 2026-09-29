@@ -23,32 +23,23 @@ const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: navigation.replace }) }));
 const auth = vi.hoisted(() => ({ setSession: vi.fn() }));
 vi.mock("@/lib/auth-context", () => ({ useAuth: () => ({ setSession: auth.setSession }) }));
-const checkout = vi.hoisted(() => ({ openOrderCheckout: vi.fn() }));
+const checkout = vi.hoisted(() => ({ openSubscriptionCheckout: vi.fn() }));
 vi.mock("@/lib/razorpay", () => checkout);
 
 import { ApiError } from "@/lib/api";
 import { CompanyRegisterFlow } from "./company-register-flow";
 
-const PACKS = {
-  packs: [
-    {
-      slug: "standard_50", credits: 50, bonus_credits: 0, subtotal_inr: 30000,
-      setup_fee_inr: 0, setup_fee_waived: true, gst_inr: 5400, total_inr: 35400,
-      available: true, trial: false,
-    },
-  ],
-  price_per_credit_inr: 600,
-  gst_rate_percent: 18,
-  min_custom_credits: 50,
-  trial_used: false,
-};
+const PLANS = { plans: [{
+  slug: "starter", name: "Starter", price_inr: 24000, assessments: 75,
+  gst_inr: 4320, total_inr: 28320, rollover_months: 3,
+}] };
 
 let stage: Record<string, unknown> = { stage: "details" };
 
 function serve(overrides: Record<string, (body: unknown) => unknown> = {}) {
   http.apiGet.mockImplementation(async (path: string) => {
     if (path === "/company-onboarding/state") return stage;
-    if (path === "/company-onboarding/pricing") return PACKS;
+    if (path === "/company-onboarding/monthly/plans") return PLANS;
     throw new Error(`unexpected GET ${path}`);
   });
   http.apiPost.mockImplementation(async (path: string, body: unknown) => {
@@ -61,14 +52,10 @@ function serve(overrides: Record<string, (body: unknown) => unknown> = {}) {
     if (path === "/company-onboarding/code/verify") {
       return { stage: "choose_pack", email: "founder@circa.com", company_name: "Circa Corp" };
     }
-    if (path === "/company-onboarding/purchase") {
-      return {
-        purchase_id: "p1", razorpay_order_id: "order_1", razorpay_key_id: "rzp_test",
-        total_inr: 35400, credits: 50, bonus_credits: 0, subtotal_inr: 30000,
-        setup_fee_inr: 0, gst_inr: 5400,
-      };
+    if (path === "/company-onboarding/monthly/subscribe") {
+      return { subscription_id: "sub_1", razorpay_key_id: "rzp_test" };
     }
-    if (path === "/company-onboarding/purchase/verify") {
+    if (path === "/company-onboarding/monthly/verify") {
       return { stage: "set_password", email: "founder@circa.com", company_name: "Circa Corp" };
     }
     if (path === "/company-onboarding/activate") {
@@ -124,35 +111,34 @@ describe("register your company", () => {
     render(<CompanyRegisterFlow />);
     fireEvent.change(await screen.findByLabelText("Security code"), { target: { value: "123456" } });
     fireEvent.click(screen.getByRole("button", { name: "Verify email" }));
-    await screen.findByText("Choose your first credit pack");
+    await screen.findByText("Start your 30-day Starter pilot");
     expect(http.apiPost).toHaveBeenCalledWith("/company-onboarding/code/verify", {
       email: "founder@circa.com",
       code: "123456",
     });
   });
 
-  it("buys the first pack through the onboarding routes and waits for the server", async () => {
+  it("pays for the Starter pilot through the onboarding routes", async () => {
     stage = { stage: "choose_pack", email: "founder@circa.com", company_name: "Circa Corp" };
     serve();
-    checkout.openOrderCheckout.mockImplementation(async (options) => {
+    checkout.openSubscriptionCheckout.mockImplementation(async (options) => {
       options.onSuccess({
-        razorpay_order_id: "order_1",
+        razorpay_subscription_id: "sub_1",
         razorpay_payment_id: "pay_1",
         razorpay_signature: "sig",
       });
       return true;
     });
     render(<CompanyRegisterFlow />);
-    fireEvent.click(await screen.findByRole("button", { name: /50\s*credits/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Proceed to Payment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start on Starter" }));
     await screen.findByText("Set your password");
-    expect(http.apiPost).toHaveBeenCalledWith("/company-onboarding/purchase", { pack_slug: "standard_50" });
-    expect(http.apiPost).toHaveBeenCalledWith("/company-onboarding/purchase/verify", {
-      razorpay_order_id: "order_1",
+    expect(http.apiPost).toHaveBeenCalledWith("/company-onboarding/monthly/subscribe", { plan_slug: "starter" });
+    expect(http.apiPost).toHaveBeenCalledWith("/company-onboarding/monthly/verify", {
+      razorpay_subscription_id: "sub_1",
       razorpay_payment_id: "pay_1",
       razorpay_signature: "sig",
     });
-    expect(posted().filter((path) => path.startsWith("/billing") || /subscri/i.test(path))).toEqual([]);
+    expect(posted().filter((path) => path.startsWith("/billing"))).toEqual([]);
   });
 
   it("sets the password and opens the workspace", async () => {

@@ -695,17 +695,16 @@ Databank handling follows separate verification rules so that historical profile
 
 ### 14.1 Subscription plans
 
-All self-service tiers offer the same implemented feature set and differ by monthly candidate allowance and unit economics.
+All plans include every feature, all seven agents and BGV reconfirm. They differ only by completed-assessment allowance.
 
-| Plan | Monthly applications | Monthly price | Nominal price/application |
-|---|---:|---:|---:|
-| Starter | 50 | ₹10,000 | ₹200 |
-| Growth | 100 | ₹18,000 | ₹180 |
-| Scale | 150 | ₹24,000 | ₹160 |
-| Pro | 200 | ₹28,000 | ₹140 |
-| Enterprise | Contact sales | Custom | Custom |
+| Plan | Completed assessments per month | Monthly price, before GST |
+|---|---:|---:|
+| Starter | 75 | ₹24,000 |
+| Growth | 200 | ₹55,000 |
+| Scale | 500 | ₹1,20,000 |
+| Pro | 1,200 | ₹2,40,000 |
 
-Razorpay subscriptions provide checkout, plan change, cancellation, signature verification, and deduplicated webhook handling. Enterprise is a contact path rather than a self-service database plan.
+Razorpay subscriptions provide checkout, plan changes at the next billing cycle, cancellation, signature verification, and deduplicated webhook handling. The paid pilot starts on Starter for 30 days. There is no setup fee, annual commitment, or lock-in; the customer can cancel anytime. Prices on the public site appear in Start beside the Open a role action.
 
 ### 14.2 Credit model
 
@@ -714,11 +713,11 @@ One credit equals 60 integer sub-units.
 | Event | Sub-units | Credit equivalent |
 |---|---:|---:|
 | Completed assessment | 60 | 1 |
-| Started but incomplete after reconciliation | 20 | 1/3 |
-| Never opened after reminders and settlement window | 4 | 1/15 |
-| Old-profile review | 3 | 1/20 |
+| Started but incomplete after reconciliation | 0 | 0 |
+| Never opened after reminders and settlement window | 0 | 0 |
+| Old-profile review | 0 | 0 |
 
-Credits roll over and do not expire. Consumption can make a balance negative because a completed candidate action is not reversed. A negative balance blocks new assessment invitations until credits are restored.
+Unused monthly credits roll over for three months from grant and then expire. Credits pool across all of an employer's open jobs. Consumption can make a balance negative because a completed candidate action is not reversed. A negative balance blocks new assessment invitations until credits are restored.
 
 Reminder attempts occur around 24 and 72 hours. Unfinished invitations are settled after seven days. Ledger entries are append-only and carry idempotency keys so retries do not double-charge.
 
@@ -737,7 +736,7 @@ billed unchanged.
 
 ### 14.3 Credit packs
 
-Credits are also sold outright, as one-off packs rather than a subscription.
+Only a Starter top-up is sold, granting 75 additional completed assessments for ₹24,000 plus GST.
 A pack purchase is a Razorpay **Order** (not a Subscription), verified by
 signature, granted exactly once through the same idempotency key the webhook
 derives, and invoiced with GST. The purchase grants sub-units into the same

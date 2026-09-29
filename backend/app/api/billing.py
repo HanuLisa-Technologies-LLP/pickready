@@ -1,8 +1,8 @@
-"""Credits, credit-pack purchases and the credit ledger API.
+"""Monthly plans, Starter top-ups and the completed-assessment ledger API.
 
 Route shape:
 
-    GET  /billing/public/credit-packs  anyone: the published price list
+    GET  /billing/public/plans        anyone: published monthly prices
     GET  /billing/overview             customer: balance, usage, history
     GET  /billing/ledger               customer: paginated credit statement
     GET  /billing/credit-packs         customer: every pack priced for them
@@ -13,13 +13,7 @@ Route shape:
     POST /billing/webhook/razorpay     Razorpay: signature-verified, no session
     GET  /billing/provider/overview    Provider Portal: balances across customers
 
-PER-CREDIT ONLY (owner spec, 2026-09-29, sections 2.1 and 23). The monthly
-subscription routes (`/subscribe`, `/checkout/verify`, `/change-plan`,
-`/cancel`) and the webhook's subscription events were deleted with the
-subscription model; `tests/test_subscription_removed.py` keeps them gone.
-Credits are bought as one-time Razorpay Orders and granted by ONE path,
-`credit_packs.settle_purchase`, which the verify route and the webhook both
-reach and which only one of them can win.
+Monthly charges and Starter top-ups each have one idempotent settlement path.
 
 The browser receives the Razorpay KEY ID on the response that opens Checkout
 (`/purchase`) and on `/overview`. There is no separate public config route.
@@ -31,6 +25,7 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,8 +40,6 @@ from app.api.deps import (
 from app.models.billing import (
     CREDIT_VALIDITY_MONTHS,
     GST_RATE_PERCENT,
-    MIN_PURCHASE_CREDITS,
-    PRICE_PER_CREDIT_INR,
     PURCHASE_CREATED,
     PURCHASE_FAILED,
     PURCHASE_PAID,
@@ -69,21 +62,181 @@ from app.schemas.billing import (
     CreditPurchaseVerifyIn,
     CreditSummaryOut,
     ProviderBillingRowOut,
-    PublishedBonusLevelOut,
-    PublishedCatalogueOut,
-    PublishedConsumptionOut,
-    PublishedPackOut,
     TransactionOut,
     UsageBreakdownOut,
 )
 from app.services import capabilities as caps
-from app.services import credit_packs, credits, razorpay
+from app.services import credit_packs, credits, monthly_plans, razorpay
 from app.services.audit import audit
-from app.services.rate_limit import rate_limit
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class MonthlyPlanChoice(BaseModel):
+    plan_slug: str
+
+
+class MonthlyCheckoutProof(BaseModel):
+    razorpay_subscription_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@router.get("/public/plans")
+async def public_monthly_plans(response: Response) -> dict:
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return {
+        "plans": [
+            {**plan.__dict__, "gst_inr": plan.gst_inr, "total_inr": plan.total_inr,
+             "rollover_months": plan.rollover_months}
+            for plan in monthly_plans.PLANS
+        ],
+        "gst_rate_percent": GST_RATE_PERCENT,
+        "pilot_days": 30,
+        "pilot_plan_slug": "starter",
+        "topup_plan_slug": "starter",
+    }
+
+
+@router.get("/monthly/current")
+async def current_monthly_plan(
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    return {
+        "plan_slug": tenant.current_plan_slug,
+        "pending_plan_slug": tenant.pending_plan_slug,
+        "status": tenant.subscription_status,
+        "current_end": tenant.subscription_current_end,
+    }
+
+
+@router.get("/monthly/charges")
+async def monthly_charges(
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[dict]:
+    rows = (await session.execute(
+        select(BillingTransaction)
+        .where(BillingTransaction.tenant_id == user.tenant_id,
+               BillingTransaction.transaction_type == "subscription_charge")
+        .order_by(BillingTransaction.created_at.desc()).limit(100)
+    )).scalars().all()
+    return [
+        {"id": row.id, "plan_slug": row.plan_slug,
+         "assessments_granted": row.assessments_granted,
+         "subtotal_inr": row.subtotal_inr, "gst_inr": row.gst_inr,
+         "amount_inr": row.amount_inr, "invoice_number": row.invoice_number,
+         "created_at": row.created_at}
+        for row in rows
+    ]
+
+
+@router.get("/monthly/charges/{charge_id}/invoice")
+async def download_monthly_invoice(
+    charge_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    charge = (await session.execute(
+        select(BillingTransaction).where(
+            BillingTransaction.id == charge_id,
+            BillingTransaction.tenant_id == user.tenant_id,
+            BillingTransaction.transaction_type == "subscription_charge",
+            BillingTransaction.status == "success",
+        )
+    )).scalars().first()
+    if charge is None:
+        raise HTTPException(status_code=404, detail="No invoice for this charge")
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    return Response(
+        content=monthly_plans.render_charge_invoice_pdf(charge, tenant),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{charge.invoice_number}.pdf"'},
+    )
+
+
+@router.post("/monthly/subscribe")
+async def subscribe_monthly(
+    body: MonthlyPlanChoice,
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    try:
+        return await monthly_plans.begin_subscription(session, tenant, body.plan_slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
+        raise _razorpay_or_503(exc) from exc
+
+
+@router.post("/monthly/verify")
+async def verify_monthly_checkout(
+    body: MonthlyCheckoutProof,
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    if not razorpay.verify_subscription_signature(
+        subscription_id=body.razorpay_subscription_id,
+        payment_id=body.razorpay_payment_id,
+        signature=body.razorpay_signature,
+    ):
+        raise HTTPException(status_code=400, detail="Payment could not be verified")
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    if tenant.razorpay_subscription_id != body.razorpay_subscription_id:
+        raise HTTPException(status_code=403, detail="Payment belongs to another company")
+    payment = await razorpay.fetch_payment(body.razorpay_payment_id)
+    if payment.get("status") != "captured" or payment.get("currency") != "INR":
+        raise HTTPException(status_code=409, detail="Payment has not been captured")
+    plan = monthly_plans.BY_SLUG[tenant.current_plan_slug]
+    amount_paise = int(payment["amount"])
+    granted = False
+    if amount_paise == plan.total_inr * razorpay.PAISE_PER_RUPEE:
+        granted = await monthly_plans.settle_charge(
+            session, tenant=tenant, subscription_id=body.razorpay_subscription_id,
+            payment_id=body.razorpay_payment_id, amount_inr=plan.total_inr,
+        )
+    else:
+        if tenant.subscription_status != "active":
+            tenant.subscription_status = "pending"
+    return {"granted": granted, "status": tenant.subscription_status}
+
+
+@router.post("/monthly/change-plan")
+async def change_monthly_plan(
+    body: MonthlyPlanChoice,
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    plan = monthly_plans.BY_SLUG.get(body.plan_slug)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Unknown monthly plan")
+    if not tenant.razorpay_subscription_id or tenant.subscription_status != "active":
+        raise HTTPException(status_code=409, detail="No active subscription")
+    if tenant.current_plan_slug == plan.slug:
+        raise HTTPException(status_code=409, detail="Already on this plan")
+    gateway_id = await monthly_plans.gateway_plan_id(session, plan)
+    await razorpay.change_subscription_plan(tenant.razorpay_subscription_id, gateway_id)
+    tenant.pending_plan_slug = plan.slug
+    return {"plan_slug": tenant.current_plan_slug, "pending_plan_slug": plan.slug}
+
+
+@router.post("/monthly/cancel")
+async def cancel_monthly(
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    if not tenant.razorpay_subscription_id or tenant.subscription_status != "active":
+        raise HTTPException(status_code=409, detail="No active subscription")
+    await razorpay.cancel_subscription(tenant.razorpay_subscription_id)
+    tenant.subscription_status = "cancelling"
+    return {"status": "cancelling", "current_end": tenant.subscription_current_end}
 
 # ── Customer: overview ───────────────────────────────────────────────────────
 
@@ -110,9 +263,7 @@ def _warning_message(
     the 402 refusal cannot describe one situation three different ways."""
     if level <= 0:
         return None
-    stem_note = (
-        " Note: STEM roles consume 1.5 credits per report." if stem_active else ""
-    )
+    stem_note = ""
     if level >= 2:
         return (
             f"Critical: Only {balance} credits remaining. Some assessments may "
@@ -136,7 +287,6 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
     return CreditSummaryOut(
         balance_subunits=summary.balance_subunits,
         balance_credits=summary.balance_credits,
-        balance_inr=_at_list_price(summary.balance_credits),
         subunits_per_credit=SUBUNITS_PER_CREDIT,
         granted_subunits=summary.granted_subunits,
         consumed_subunits=summary.consumed_subunits,
@@ -187,18 +337,6 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
             )
         ),
         unlimited=summary.unlimited,
-    )
-
-
-def _at_list_price(balance_credits: Decimal) -> Decimal:
-    """A credit balance at the list price per credit, excl. GST.
-
-    It used to be priced at the tenant's SUBSCRIPTION plan rate and was None
-    for everybody without a plan, which after the per-credit change is every
-    customer. There is one price per credit now, so there is one answer.
-    """
-    return (balance_credits * Decimal(PRICE_PER_CREDIT_INR)).quantize(
-        Decimal("0.01")
     )
 
 
@@ -294,73 +432,17 @@ def _razorpay_or_503(exc: Exception) -> HTTPException:
 
 # ── The published catalogue (the public /pricing page) ───────────────────────
 
-@router.get(
-    "/public/credit-packs",
-    response_model=PublishedCatalogueOut,
-    dependencies=[Depends(rate_limit("billing_public_catalogue", limit=60, window=60))],
-)
-async def published_credit_packs(response: Response) -> PublishedCatalogueOut:
-    """The platform's standard price list, for a visitor with no account.
-
-    ONE SOURCE OF TRUTH (owner spec, section 4.2): the public pricing page
-    renders this and holds no price of its own, so the figures a visitor
-    reads are the figures checkout charges. Built by
-    `credit_packs.published_catalogue` from the constants and the arithmetic
-    every tenant quote and every invoice uses.
-
-    Public by design, and it discloses nothing an account owns: no tenant is
-    read, so the setup-fee WAIVER state (a count across every customer) and
-    any account's trial state are never on it. The trial pack is marked as
-    new-accounts-only and the setup fee is stated as its rule. Rate limited
-    as an abuse control, the same as the public employer pages. No session,
-    no database: the catalogue is code.
-    """
-    catalogue = credit_packs.published_catalogue()
-    # A price list changes with a deploy, never with a request. A short
-    # shared cache is safe and spares the API a hit per page view.
-    response.headers["Cache-Control"] = "public, max-age=300"
-    return PublishedCatalogueOut(
-        price_per_credit_inr=catalogue.price_per_credit_inr,
-        gst_rate_percent=catalogue.gst_rate_percent,
-        subunits_per_credit=catalogue.subunits_per_credit,
-        credit_validity_months=catalogue.credit_validity_months,
-        min_custom_credits=catalogue.min_custom_credits,
-        setup_fee_inr=catalogue.setup_fee_inr,
-        setup_fee_gst_inr=catalogue.setup_fee_gst_inr,
-        setup_fee_waiver_limit=catalogue.setup_fee_waiver_limit,
-        bonus_levels=[
-            PublishedBonusLevelOut(**level.__dict__)
-            for level in catalogue.bonus_levels
-        ],
-        packs=[PublishedPackOut(**pack.__dict__) for pack in catalogue.packs],
-        consumption=[
-            PublishedConsumptionOut(**rate.__dict__) for rate in catalogue.consumption
-        ],
-    )
-
-
-# ── Credit-pack purchases (Master Directive Part 5) ──────────────────────────
-
 @router.get("/credit-packs", response_model=CreditPacksOut)
 async def credit_pack_quotes(
     user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> CreditPacksOut:
-    """Every pack priced for THIS tenant, breakdown included (§3.3 step 2).
-
-    Priced server-side rather than letting the client multiply, because the
-    setup fee and the trial's availability depend on tenant state the client
-    cannot know (the §5.1 waiver count lives across all tenants), and the
-    figure the customer accepts must be the figure the Order is created for.
-    """
+    """The Starter top-up quote, computed on the server before checkout."""
     tenant = await _tenant_or_404(session, user.tenant_id)
     quotes = await credit_packs.quote(session, tenant)
     return CreditPacksOut(
         packs=[CreditPackQuoteOut(**q.__dict__) for q in quotes],
-        price_per_credit_inr=PRICE_PER_CREDIT_INR,
         gst_rate_percent=GST_RATE_PERCENT,
-        min_custom_credits=MIN_PURCHASE_CREDITS,
-        trial_used=tenant.trial_used,
     )
 
 
@@ -521,6 +603,9 @@ _HANDLED_EVENTS = {
     "payment.captured",
     "order.paid",
     "payment.failed",
+    "subscription.charged",
+    "subscription.cancelled",
+    "subscription.halted",
 }
 
 
@@ -622,6 +707,43 @@ async def razorpay_webhook(
     payload = body.get("payload") or {}
     payment_entity = ((payload.get("payment") or {}).get("entity")) or {}
     order_entity = ((payload.get("order") or {}).get("entity")) or {}
+    subscription_entity = ((payload.get("subscription") or {}).get("entity")) or {}
+
+    if event_type.startswith("subscription."):
+        subscription_id = subscription_entity.get("id")
+        tenant = (
+            await session.execute(
+                select(Tenant).where(Tenant.razorpay_subscription_id == subscription_id)
+            )
+        ).scalars().first() if subscription_id else None
+        if tenant is None:
+            log.warning("billing.subscription_unmatched id=%s", subscription_id or "")
+            if event_type == "subscription.charged":
+                raise HTTPException(status_code=503, detail="Subscription is not recorded yet")
+            return {"status": "unmatched"}
+        if event_type == "subscription.charged":
+            if (payment_entity.get("status") != "captured"
+                    or payment_entity.get("currency") != "INR"
+                    or not payment_entity.get("id")
+                    or int(payment_entity.get("amount") or 0) % razorpay.PAISE_PER_RUPEE):
+                raise HTTPException(status_code=503, detail="Charge is not captured")
+            await monthly_plans.settle_charge(
+                session, tenant=tenant, subscription_id=subscription_id,
+                payment_id=payment_entity["id"],
+                amount_inr=int(payment_entity["amount"]) // razorpay.PAISE_PER_RUPEE,
+                current_end=subscription_entity.get("current_end"),
+                gateway_plan_id=subscription_entity.get("plan_id"),
+            )
+        elif event_type == "subscription.cancelled":
+            tenant.subscription_status = "cancelled"
+        elif event_type == "subscription.halted":
+            tenant.subscription_status = "halted"
+        await session.execute(
+            text("UPDATE webhook_events SET processed_at = now() "
+                 "WHERE provider = 'razorpay' AND event_id = :eid"),
+            {"eid": event_id},
+        )
+        return {"status": "ok"}
 
     # ── Credit-pack purchases first (Master Directive Part 5 §3.3 step 5) ────
     # A payment.captured / order.paid / payment.failed whose order id matches
@@ -717,7 +839,6 @@ async def provider_billing_overview(
             customer_name=name,
             balance_subunits=int(balance),
             balance_credits=credits.credits_from_subunits(int(balance)),
-            balance_inr=_at_list_price(credits.credits_from_subunits(int(balance))),
             in_deficit=int(balance) < 0,
         )
         for tenant_id, name, balance in rows

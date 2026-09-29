@@ -1,12 +1,10 @@
 "use client";
 
-// Provider Portal → Billing (killer-spec §4.1, per-credit only since 2026-09-29).
+// Provider Portal billing balances. Read-only across customer tenants.
 //
 // What each customer's credit balance is. READ-ONLY, like every other Provider
 // view of a customer's own data, and read-only by ABSENCE: there is no route in
-// api/billing that lets the Provider write a purchase or a credit, so there is
-// nothing to gate here with a flag. There is no plan or renewal column: the
-// product sells one-time credit packs and nothing recurs.
+// api/billing that lets the Provider change a plan or allowance.
 //
 // The one number that matters most is the deficit column: a customer whose pool
 // has run dry has stopped being able to invite anyone to an assessment, and
@@ -36,14 +34,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ExportXlsxButton } from "@/components/export-xlsx-button";
-
-function formatInr(value: string): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(Number(value));
-}
 
 export default function ProviderBillingPage() {
   const [rows, setRows] = React.useState<ProviderBillingRow[]>([]);
@@ -86,7 +76,6 @@ export default function ProviderBillingPage() {
               rows={rows.map((row) => ({
                 customer: row.customer_name,
                 credits: row.balance_credits,
-                amount_inr: row.balance_inr,
                 deficit: row.in_deficit,
               }))}
             />
@@ -139,14 +128,14 @@ export default function ProviderBillingPage() {
 
           <Section
             title="Customers"
-            description="Balances are shown in credits, and in rupees at the list price per credit, excluding GST."
+            description="Completed assessments available across each customer's open jobs."
           >
             <div className="hidden md:block">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Customer</TableHead>
-                    <TableHead className="text-right">Credits / INR value</TableHead>
+                    <TableHead className="text-right">Assessments available</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -157,9 +146,6 @@ export default function ProviderBillingPage() {
                       </TableCell>
                       <TableCell className="text-right font-medium">
                         <span className="block">{row.balance_credits} credits</span>
-                        <span className="mt-0.5 block text-xs font-normal">
-                          {formatInr(row.balance_inr)}
-                        </span>
                         {row.in_deficit ? (
                           <span className="ml-2 align-middle">
                             <Badge variant="rating5">In deficit</Badge>
@@ -188,8 +174,7 @@ export default function ProviderBillingPage() {
                     <div className="flex items-baseline justify-between gap-3 text-sm">
                       <span>Credits</span>
                       <span className="font-medium">
-                        {row.balance_credits} credits /{" "}
-                        {formatInr(row.balance_inr)}
+                        {row.balance_credits} assessments
                       </span>
                     </div>
                   </RowCard>

@@ -1,6 +1,6 @@
 "use client";
 
-// Customer Portal → Billing (per-credit only since 2026-09-29).
+// Customer Portal billing for monthly plans and Starter top-ups.
 //
 // Four things this page has to get right, because each of them is a question a
 // customer will otherwise ask by email:
@@ -14,7 +14,7 @@
 // Reading is gated on `view_billing`, which the three staff roles hold, so a
 // recruiter can answer the third question for themselves. Buying credits
 // needs `manage_billing`, which the Company Admin holds alone. There is no
-// plan, renewal or cancellation: credits are one-time purchases.
+// plan changes and cancellation use the manage_billing capability.
 
 import * as React from "react";
 import { AlertTriangle, Download } from "lucide-react";
@@ -23,7 +23,7 @@ import { API_BASE, ApiError, apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { CAP } from "@/lib/permissions";
 import { usePermissions } from "@/lib/use-permissions";
-import { openOrderCheckout } from "@/lib/razorpay";
+import { openOrderCheckout, openSubscriptionCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
   CreditPack,
@@ -33,7 +33,6 @@ import type {
 } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
 import {
-  CREDIT_EVENT_LABELS,
   CreditStatement,
 } from "@/components/billing/credit-statement";
 import { CreditPackPicker, formatInr } from "@/components/billing/credit-pack-picker";
@@ -55,12 +54,19 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 
-/** How many of each event make one credit. Shown so the rate is never a mystery. */
-const EVENT_RATE: Record<string, string> = {
-  completed_assessment: "1 per credit",
-  incomplete_assessment: "3 per credit",
-  no_show: "15 per credit",
-  old_profile_review: "20 per credit",
+
+type MonthlyPlan = {
+  slug: string; name: string; assessments: number; price_inr: number;
+  gst_inr: number; total_inr: number; rollover_months: number;
+};
+type CurrentPlan = {
+  plan_slug: string | null; pending_plan_slug: string | null;
+  status: string | null; current_end: string | null;
+};
+type MonthlyCharge = {
+  id: string; plan_slug: string; assessments_granted: number;
+  subtotal_inr: number; gst_inr: number; amount_inr: number;
+  invoice_number: string; created_at: string;
 };
 
 /** Plain-text purchase statuses (directive Part 5 section 7.3): typography,
@@ -121,6 +127,10 @@ export default function BillingPage() {
   );
   const [selectedSlug, setSelectedSlug] = React.useState<string | null>(null);
   const [payBusy, setPayBusy] = React.useState(false);
+  const [monthlyPlans, setMonthlyPlans] = React.useState<MonthlyPlan[] | null>(null);
+  const [currentPlan, setCurrentPlan] = React.useState<CurrentPlan | null>(null);
+  const [monthlyCharges, setMonthlyCharges] = React.useState<MonthlyCharge[] | null>(null);
+  const [planBusy, setPlanBusy] = React.useState(false);
 
   const canManage = can(CAP.manageBilling);
 
@@ -164,11 +174,72 @@ export default function BillingPage() {
     }
   }, []);
 
+  const loadPlans = React.useCallback(async () => {
+    const [catalogue, current, charges] = await Promise.all([
+      apiGet<{ plans: MonthlyPlan[] }>("/billing/public/plans"),
+      apiGet<CurrentPlan>("/billing/monthly/current"),
+      apiGet<MonthlyCharge[]>("/billing/monthly/charges"),
+    ]);
+    setMonthlyPlans(catalogue.plans);
+    setCurrentPlan(current);
+    setMonthlyCharges(charges);
+  }, []);
+
   React.useEffect(() => {
     void load();
     void loadPacks();
     void loadPurchases();
-  }, [load, loadPacks, loadPurchases]);
+    void loadPlans().catch((error) => {
+      setLoadError(error instanceof Error ? error.message : "Could not load monthly billing.");
+    });
+  }, [load, loadPacks, loadPurchases, loadPlans]);
+
+  const selectPlan = React.useCallback(async (plan: MonthlyPlan) => {
+    setPlanBusy(true);
+    try {
+      if (currentPlan?.status === "active") {
+        await apiPost("/billing/monthly/change-plan", { plan_slug: plan.slug });
+        toast({ title: "Plan change scheduled", description: `${plan.name} begins with your next monthly charge.` });
+        await loadPlans();
+        return;
+      }
+      const checkout = await apiPost<{ subscription_id: string; razorpay_key_id: string }>(
+        "/billing/monthly/subscribe", { plan_slug: plan.slug }
+      );
+      const opened = await openSubscriptionCheckout({
+        keyId: checkout.razorpay_key_id,
+        subscriptionId: checkout.subscription_id,
+        name: "ReadyPick", description: `${plan.name} monthly plan`,
+        prefill: { email: user?.email ?? undefined, name: user?.full_name ?? undefined },
+        onSuccess: async (proof) => {
+          try {
+            const confirmation = await apiPost<{ granted: boolean; status: string }>("/billing/monthly/verify", proof);
+            await Promise.all([load(), loadPlans()]);
+            toast(confirmation.status === "active"
+              ? { title: "Plan active", description: `${plan.assessments} completed assessments added to your pool.` }
+              : { title: "Payment authorization received", description: "Your plan starts after the first full monthly charge. Refresh billing to check its status." });
+          } catch (error) {
+            toast({ variant: "destructive", title: "Payment could not be confirmed", description: error instanceof Error ? error.message : "Refresh billing to check its status." });
+          } finally { setPlanBusy(false); }
+        },
+        onDismiss: () => setPlanBusy(false),
+      });
+      if (!opened) throw new Error("Checkout could not open. Try again.");
+    } catch (error) {
+      toast({ variant: "destructive", title: "Plan change failed", description: error instanceof Error ? error.message : "Try again." });
+    } finally { if (currentPlan?.status === "active") setPlanBusy(false); }
+  }, [currentPlan?.status, load, loadPlans, toast, user]);
+
+  const cancelPlan = React.useCallback(async () => {
+    setPlanBusy(true);
+    try {
+      await apiPost("/billing/monthly/cancel", {});
+      await loadPlans();
+      toast({ title: "Cancellation scheduled", description: "Your plan ends after the paid billing period. Existing credits retain their expiry dates." });
+    } catch (error) {
+      toast({ variant: "destructive", title: "Could not cancel", description: error instanceof Error ? error.message : "Try again." });
+    } finally { setPlanBusy(false); }
+  }, [loadPlans, toast]);
 
   /**
    * The credit pack purchase flow (directive Part 5 section 3.3): create the
@@ -354,7 +425,7 @@ export default function BillingPage() {
           {/* ── Balance ────────────────────────────────────────────────── */}
           <Section
             title="Credit balance"
-            description="Credits are bought as one-time packs and drawn as assessments run. There is no plan to renew."
+            description="Your monthly allowance and any Starter top-ups share one pool across all open jobs."
           >
             <dl className="grid gap-6 sm:grid-cols-2">
               <DetailItem label="Credit balance">
@@ -362,21 +433,10 @@ export default function BillingPage() {
                   {data.credits.balance_credits}
                 </span>{" "}
                 credits
-                {data.credits.balance_inr !== null ? (
-                  <span className="mt-1 block text-sm font-medium">
-                    {`${formatInr(Number(data.credits.balance_inr))} at the list price per credit, excluding GST`}
-                  </span>
-                ) : null}
               </DetailItem>
-              {/* Directive Part 3 §7.3: projected assessments remaining,
-                  split by role type. */}
               {Number(data.credits.balance_credits) > 0 ? (
-                <DetailItem label="Roughly how many reports that covers">
-                  At 1.0 credit/report (Non-STEM): ~
-                  {Math.floor(Number(data.credits.balance_credits))} more
-                  reports. At 1.5 credits/report (STEM): ~
-                  {Math.floor(Number(data.credits.balance_credits) / 1.5)}{" "}
-                  more reports.
+                <DetailItem label="Completed assessments remaining">
+                  {Math.floor(Number(data.credits.balance_credits))}
                 </DetailItem>
               ) : null}
             </dl>
@@ -385,36 +445,16 @@ export default function BillingPage() {
           {/* ── Usage this month ───────────────────────────────────────── */}
           <Section
             title="This month"
-            description="What drew from the pool, and at what rate."
+            description="Only completed assessments draw credits. Incomplete attempts and no-shows do not."
           >
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {(
-                [
-                  "completed_assessment",
-                  "incomplete_assessment",
-                  "no_show",
-                  "old_profile_review",
-                ] as const
-              ).map((event) => {
-                const subunits =
-                  data.credits.usage_this_month_subunits[event] ?? 0;
-                return (
-                  <div
-                    key={event}
-                    className="rounded-xl border border-border bg-surface p-4"
-                  >
-                    <p className="text-sm font-medium">
-                      {CREDIT_EVENT_LABELS[event]}
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold tabular-nums">
-                      {toCredits(subunits, data.credits.subunits_per_credit)}
-                    </p>
-                    <p className="mt-1 text-xs">
-                      credits used, at {EVENT_RATE[event]}
-                    </p>
-                  </div>
-                );
-              })}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-xl border border-border bg-surface p-4">
+                <p className="text-sm font-medium">Completed assessments</p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {toCredits(data.credits.usage_this_month_subunits.completed_assessment ?? 0, data.credits.subunits_per_credit)}
+                </p>
+                <p className="mt-1 text-xs">credits used</p>
+              </div>
             </div>
             <div className="mt-6 grid gap-6 sm:grid-cols-3">
               <DetailItem label="Carried over from last month">
@@ -437,16 +477,50 @@ export default function BillingPage() {
             </div>
           </Section>
 
-          {/* ── Credit packs (directive Part 5 sections 3 and 7.2) ─────── */}
+          <Section
+            title="Monthly plan"
+            description="One completed assessment uses one credit. Unused monthly credits roll over for three months, then expire. Every plan includes every feature, all 7 agents and BGV reconfirm. Credits pool across all open jobs."
+          >
+            {currentPlan ? (
+              <p className="text-sm">
+                {currentPlan.plan_slug ? `Current plan: ${currentPlan.plan_slug}. ` : "No plan yet. "}
+                {currentPlan.status ? `Status: ${currentPlan.status}. ` : ""}
+                {currentPlan.current_end ? `Current period ends ${formatDate(currentPlan.current_end)}. ` : ""}
+                {currentPlan.pending_plan_slug ? `Next plan: ${currentPlan.pending_plan_slug}.` : ""}
+              </p>
+            ) : null}
+            {monthlyPlans ? (
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                {monthlyPlans.map((plan) => (
+                  <div key={plan.slug} className="rounded-xl border border-border bg-surface p-4">
+                    <h3 className="font-semibold">{plan.name}</h3>
+                    <p className="mt-2 text-xl font-semibold tabular-nums">{formatInr(plan.price_inr)} / month</p>
+                    <p className="mt-2 text-sm">{plan.assessments.toLocaleString("en-IN")} completed assessments</p>
+                    <p className="mt-2 text-xs">GST {formatInr(plan.gst_inr)}. Total {formatInr(plan.total_inr)}.</p>
+                    <p className="mt-3 text-sm font-medium">Unused credits roll over for {plan.rollover_months} months, then expire.</p>
+                    <Button className="mt-4 w-full" variant="outline" disabled={!canManage || planBusy || currentPlan?.plan_slug === plan.slug} onClick={() => void selectPlan(plan)}>
+                      {currentPlan?.plan_slug === plan.slug ? "Current plan" : currentPlan?.status === "active" ? "Switch next month" : "Choose plan"}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : <LoadingRows rows={2} label="Loading monthly plans" />}
+            {currentPlan?.status === "active" && canManage ? (
+              <Button variant="outline" className="mt-5" disabled={planBusy} onClick={() => void cancelPlan()}>Cancel at period end</Button>
+            ) : null}
+            <p className="mt-4 text-sm">Monthly billing, no annual commitment or lock-in. Cancel anytime. The paid pilot starts on Starter for 30 days, then you can keep it or stop.</p>
+          </Section>
+
+          {/* Starter top-up */}
           {/* This wrapper carries the #billing-plans anchor the warning
               banners scroll to: a top-up has to land on the packs. */}
           <div id="billing-plans" className="scroll-mt-24">
             <Section
-              title="Purchase ReadyPick Intelligence Report Credits"
+              title="Starter top-up"
               description={
                 canManage
-                  ? `One-time purchases at ${packs ? formatInr(packs.price_per_credit_inr) : "the list price"} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`
-                  : `One-time purchases at ${packs ? formatInr(packs.price_per_credit_inr) : "the list price"} per credit. Ask your Company Admin to buy credits.`
+                  ? `The only top-up is Starter: 75 completed assessments. Added credits remain valid for ${data.credits.credit_validity_months} months.`
+                  : "Ask your Company Admin to buy a Starter top-up."
               }
             >
               {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
@@ -500,6 +574,24 @@ export default function BillingPage() {
               refreshToken={data.recent_ledger[0]?.id ?? "empty"}
             />
           </Section>
+
+          {monthlyCharges && monthlyCharges.length > 0 ? (
+            <Section title="Monthly payments and invoices" description="Each paid month grants its completed assessment allowance.">
+              <ul className="space-y-3">
+                {monthlyCharges.map((charge) => (
+                  <li key={charge.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
+                    <div>
+                      <p className="font-medium">{charge.plan_slug} · {charge.assessments_granted} completed assessments</p>
+                      <p className="text-sm text-muted-foreground">{formatDate(charge.created_at)} · {formatInr(charge.subtotal_inr)} + {formatInr(charge.gst_inr)} GST</p>
+                    </div>
+                    <a className="inline-flex items-center gap-1 text-sm underline" href={`${API_BASE}/billing/monthly/charges/${charge.id}/invoice`} download>
+                      <Download className="h-4 w-4" aria-hidden="true" />{charge.invoice_number ?? "Download invoice"}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          ) : null}
 
           {/* ── Purchase history (directive Part 5 sections 7.3, 7.4) ──── */}
           {/* Hidden while the endpoint is unavailable; empty text otherwise,
@@ -628,6 +720,8 @@ export default function BillingPage() {
                         <TableCell>
                           {row.transaction_type === "credit_pack"
                             ? "Credit pack"
+                            : row.transaction_type === "subscription_charge"
+                              ? "Monthly plan"
                             : "Refund"}
                         </TableCell>
                         <TableCell>

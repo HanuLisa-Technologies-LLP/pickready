@@ -14,7 +14,7 @@
  * is one source of truth and the frontend never needs the .env file. The Key
  * SECRET has no path into this file: the signature that proves a payment is
  * verified server-side by POST /billing/purchase/verify. The product sells
- * credits only (2026-09-29), so ORDERS are the one Checkout this file opens.
+ * Orders handle Starter top-ups; Subscriptions handle monthly plans.
  */
 
 const CHECKOUT_SRC = "https://checkout.razorpay.com/v1/checkout.js";
@@ -105,5 +105,36 @@ export async function openOrderCheckout(
     modal: { ondismiss: () => options.onDismiss?.() },
   });
   checkout.open();
+  return true;
+}
+
+
+export interface SubscriptionCheckoutPayload {
+  razorpay_subscription_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+export async function openSubscriptionCheckout(options: {
+  keyId: string;
+  subscriptionId: string;
+  name: string;
+  description: string;
+  prefill?: { name?: string; email?: string; contact?: string };
+  onSuccess: (payload: SubscriptionCheckoutPayload) => void;
+  onDismiss?: () => void;
+}): Promise<boolean> {
+  const ready = await loadCheckout();
+  if (!ready || !window.Razorpay) return false;
+  new window.Razorpay({
+    key: options.keyId,
+    subscription_id: options.subscriptionId,
+    name: options.name,
+    description: options.description,
+    prefill: options.prefill ?? {},
+    theme: { color: "#0A2540" },
+    handler: (payload: SubscriptionCheckoutPayload) => options.onSuccess(payload),
+    modal: { ondismiss: () => options.onDismiss?.() },
+  }).open();
   return true;
 }

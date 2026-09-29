@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 
 // The first Company Super Admin registers the company here (owner spec
 // 2026-09-29, section 2.2): details and a security check, a security code from
-// the company mailbox, the first credit pack, then a password. Every other
+// the company mailbox, the paid Starter pilot, then a password. Every other
 // company role joins through an invitation instead.
 export default function CompanyRegisterPage() {
   return <CompanyRegisterFlow />;

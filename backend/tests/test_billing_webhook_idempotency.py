@@ -72,10 +72,10 @@ from app.models.billing import CREDIT_PACKS, SUBUNITS_PER_CREDIT  # noqa: E402
 #: The purchase seeded below: the standard 50-credit pack. DERIVED from the
 #: catalogue rather than typed twice, so the expectation cannot drift away
 #: from the thing it checks.
-PACK_SLUG = "standard_50"
+PACK_SLUG = "starter_pack_75"
 PACK_CREDITS, PACK_BONUS = CREDIT_PACKS[PACK_SLUG]
 PACK_SUBUNITS = (PACK_CREDITS + PACK_BONUS) * SUBUNITS_PER_CREDIT
-PACK_TOTAL_INR = 35_400
+PACK_TOTAL_INR = 28_320
 
 
 def _run(coro):
@@ -176,7 +176,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
                                 "slug": PACK_SLUG,
                                 "credits": PACK_CREDITS,
                                 "bonus": PACK_BONUS,
-                                "subtotal": 30_000,
+                                "subtotal": 24_000,
                                 "gst": 5_400,
                                 "total": PACK_TOTAL_INR,
                                 "order": order_id,

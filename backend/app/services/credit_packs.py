@@ -1,32 +1,9 @@
-"""Credit-pack purchases: quoting, validation, settlement, and the GST invoice
-(Master Directive Part 5 — Pricing Model).
+"""Starter-only top-up quoting, settlement and GST invoices.
 
-Money rules this module keeps true:
-
-* The per-credit price NEVER moves (Rule 3). Volume levels add FREE credits;
-  the invoice always shows purchased credits at ₹600 and the bonus as a ₹0
-  line, so `subtotal_inr` is always credits × 600 with no discount arithmetic
-  anywhere.
-* GST is 18% of everything charged — credits AND setup fee (Rule 7) — held in
-  its own column so the invoice's breakdown is the stored breakdown.
-* The trial (20 credits) is once per account, checked on EVERY attempt
-  (Rule 1); everything else is a hard 50-credit minimum (Rule 2).
-* The Starter Assessment Pack (change request 26) is 75 assessments for
-  Rs. 24,000, and it does NOT bend the price rule to get there: it is 40
-  credits purchased at Rs. 600 (Rs. 24,000 exactly) plus 35 bonus credits at
-  Rs. 0. The invoice therefore prints the same two-line shape `volume_100`
-  and `volume_200` already print, and `PRICE_PER_CREDIT_INR` does not move.
-* Credits granted by a purchase EXPIRE after `CREDIT_VALIDITY_MONTHS`
-  (change request 25), and the term is stamped on the purchase row so a
-  re-downloaded invoice states the terms it was actually sold under. NULL on
-  every purchase made before that change, which is what keeps the "Credits
-  never expire." line true on invoices already issued.
-* The ₹5,000 setup fee rides on the first purchase only (Rule 6) and is
-  waived while fewer than 15 accounts hold the waiver (§5.1). The count of
-  `tenants.setup_fee_waived` IS the §5.1 counter — no separate row to drift.
-* Settlement is idempotent: the status flip created→paid happens in the same
-  UPDATE that checks it, so the browser-verify call and the webhook can race
-  (and duplicate webhooks can replay, §9) and exactly one caller grants.
+New Starter purchases grant 75 completed assessments for ₹24,000 plus GST,
+with no setup fee. Historical purchase rows retain their original invoice
+amounts and validity terms. Settlement remains idempotent across Checkout
+verification and webhook delivery.
 """
 from __future__ import annotations
 
@@ -42,25 +19,15 @@ from app.models.billing import (
     CREDIT_PACK_LABELS,
     CREDIT_PACKS,
     CREDIT_VALIDITY_MONTHS,
-    EVENT_COMPLETED,
-    EVENT_INCOMPLETE,
-    EVENT_NO_SHOW,
-    EVENT_OLD_PROFILE_REVIEW,
     GST_RATE_PERCENT,
-    MIN_PURCHASE_CREDITS,
     PRICE_PER_CREDIT_INR,
     PURCHASE_CREATED,
     PURCHASE_PAID,
-    ROLE_NON_STEM,
-    ROLE_STEM,
-    SETUP_FEE_INR,
-    SETUP_FEE_WAIVER_LIMIT,
     STARTER_PACK_SLUG,
+    STARTER_PACK_PRICE_INR,
     SUBUNITS_PER_CREDIT,
-    TRIAL_CREDITS,
     BillingTransaction,
     CreditPurchase,
-    consumption_subunits,
 )
 from app.models.tenant import Tenant
 from app.services import credits, razorpay
@@ -71,29 +38,17 @@ from app.services import credits, razorpay
 CUSTOM_SLUG = "custom"
 
 #: The once-per-account trial pack (Rule 1).
-TRIAL_PACK_SLUG = "trial_20"
 
 
 def bonus_for(credit_count: int) -> int:
-    """Free credits for a purchase of this size (Rule 3 / §3.2).
-
-    Threshold-based rather than exact-match so a custom purchase of, say,
-    150 credits still earns the 100-level bonus: Rule 3 says "at 100 credits
-    purchased: add 5", which reads as a level reached, not a SKU.
-    """
-    if credit_count >= 200:
-        return CREDIT_PACKS["volume_200"][1]
-    if credit_count >= 100:
-        return CREDIT_PACKS["volume_100"][1]
+    """There are no custom volume bonuses in the monthly-plan catalogue."""
     return 0
 
 
 def gst_inr(taxable_inr: int) -> int:
     """18% of the taxable amount, rounded half-up to whole rupees.
 
-    Every self-serve figure is a multiple of ₹600 (plus the ₹5,000 fee), so
-    in practice this is exact; the rounding exists so a future custom rate
-    cannot produce a fractional-paise invoice.
+    The rounding also supports a future published bundle with a different price.
     """
     return (taxable_inr * GST_RATE_PERCENT + 50) // 100
 
@@ -109,9 +64,7 @@ class PackQuote:
     label: str
     credits: int
     bonus_credits: int
-    #: What the customer actually receives. The Starter Assessment Pack is
-    #: quoted to them as 75 assessments; `credits` is 40 because that is what
-    #: is PURCHASED at the fixed rate, and the difference is the bonus.
+    #: What the customer receives as completed assessments.
     credits_total: int
     subtotal_inr: int
     setup_fee_inr: int
@@ -128,43 +81,24 @@ class PackQuote:
 
 
 def _price(credit_count: int, setup_fee: int) -> tuple[int, int, int]:
-    """(subtotal, gst, total) for a purchase of `credit_count` credits."""
-    subtotal = credit_count * PRICE_PER_CREDIT_INR
+    """Price the only currently offered top-up."""
+    if credit_count != CREDIT_PACKS[STARTER_PACK_SLUG][0]:
+        raise ValueError("Only the Starter top-up is available.")
+    subtotal = STARTER_PACK_PRICE_INR
     tax = gst_inr(subtotal + setup_fee)
     return subtotal, tax, subtotal + tax + setup_fee
 
 
 async def setup_fee_for(session: AsyncSession, tenant: Tenant) -> tuple[int, bool]:
-    """(fee to charge on this purchase, whether it is being waived).
-
-    Once `setup_fee_paid` is set nothing is ever charged again (Rule 6).
-    Otherwise the §5.1 waiver applies while fewer than 15 accounts carry
-    `setup_fee_waived` — the flag count is the counter itself. Read with raw
-    SQL because `tenants` is a global table and this must answer identically
-    from a tenant-scoped session and from the webhook's public session.
-    """
-    if tenant.setup_fee_paid:
-        return 0, False
-    waived_count = (
-        await session.execute(
-            text("SELECT count(*) FROM tenants WHERE setup_fee_waived")
-        )
-    ).scalar_one()
-    if int(waived_count) < SETUP_FEE_WAIVER_LIMIT:
-        return 0, True
-    return SETUP_FEE_INR, False
+    """The monthly pricing model has no account setup fee."""
+    return 0, False
 
 
 async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
-    """Price every pack for this tenant, with its live setup-fee treatment.
-
-    The trial pack is listed but `available=False` once used (§7.2: "hidden
-    after first use" is the UI's job; the API states the fact).
-    """
+    """Price the Starter top-up for this tenant."""
     setup_fee, waived = await setup_fee_for(session, tenant)
     quotes: list[PackQuote] = []
     for slug, (credit_count, bonus) in CREDIT_PACKS.items():
-        is_trial = slug == TRIAL_PACK_SLUG
         subtotal, tax, total = _price(credit_count, setup_fee)
         quotes.append(
             PackQuote(
@@ -178,153 +112,12 @@ async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
                 setup_fee_waived=waived,
                 gst_inr=tax,
                 total_inr=total,
-                available=not (is_trial and tenant.trial_used),
-                trial=is_trial,
+                available=True,
+                trial=False,
                 validity_months=CREDIT_VALIDITY_MONTHS,
             )
         )
     return quotes
-
-
-# ── The published catalogue (the public /pricing page) ──────────────────────
-
-#: The public name of each billable event, the same words the customer's
-#: credit statement uses (`components/billing/credit-statement.tsx`).
-CONSUMPTION_LABELS: dict[str, str] = {
-    EVENT_COMPLETED: "Assessment completed",
-    EVENT_INCOMPLETE: "Assessment started, not finished",
-    EVENT_NO_SHOW: "Invitation never opened",
-    EVENT_OLD_PROFILE_REVIEW: "Earlier applicant reviewed",
-}
-
-
-@dataclass(frozen=True)
-class PublishedPack:
-    """One pack at the STANDARD price, for a visitor with no account.
-
-    Deliberately not a `PackQuote`: a quote is priced for one tenant (its
-    setup fee, its waiver, whether its trial is used), and a signed-out page
-    knows none of that. The setup fee is therefore NOT folded in here; the
-    catalogue states it once, as the rule it is.
-    """
-
-    slug: str
-    label: str
-    credits: int
-    bonus_credits: int
-    credits_total: int
-    subtotal_inr: int
-    gst_inr: int
-    total_inr: int
-    #: The trial pack: sold once per account, on the first purchase only.
-    new_accounts_only: bool
-    validity_months: int
-
-
-@dataclass(frozen=True)
-class ConsumptionRate:
-    """What one billable event draws from the pool, by role type.
-
-    In integer SUB-UNITS (60 to a credit), read from the same tables
-    `credits.consume` bills from, so a third of a credit is stated exactly
-    rather than as a rounded decimal the page would then have to explain.
-    """
-
-    event_type: str
-    label: str
-    non_stem_subunits: int
-    stem_subunits: int
-
-
-@dataclass(frozen=True)
-class BonusLevel:
-    """A purchase of at least `min_credits` adds `bonus_credits` free."""
-
-    min_credits: int
-    bonus_credits: int
-
-
-@dataclass(frozen=True)
-class PublishedCatalogue:
-    price_per_credit_inr: int
-    gst_rate_percent: int
-    subunits_per_credit: int
-    credit_validity_months: int
-    min_custom_credits: int
-    setup_fee_inr: int
-    setup_fee_gst_inr: int
-    setup_fee_waiver_limit: int
-    bonus_levels: tuple[BonusLevel, ...]
-    packs: tuple[PublishedPack, ...]
-    consumption: tuple[ConsumptionRate, ...]
-
-
-def published_catalogue() -> PublishedCatalogue:
-    """The platform's standard price list, from the same constants and the
-    same arithmetic every tenant quote and every invoice uses.
-
-    ONE SOURCE OF TRUTH is the reason this exists (owner spec, section 4.2):
-    the public page used to carry its own copy of the packs, which could
-    drift from what checkout actually charges. Every figure here comes from
-    `models/billing.py` through `_price` and `bonus_for`, the functions the
-    purchase path itself calls. Nothing is read from a table because nothing
-    about the published price list is tenant state.
-    """
-    packs = []
-    for slug, (credit_count, bonus) in CREDIT_PACKS.items():
-        subtotal, tax, total = _price(credit_count, 0)
-        packs.append(
-            PublishedPack(
-                slug=slug,
-                label=CREDIT_PACK_LABELS[slug],
-                credits=credit_count,
-                bonus_credits=bonus,
-                credits_total=credit_count + bonus,
-                subtotal_inr=subtotal,
-                gst_inr=tax,
-                total_inr=total,
-                new_accounts_only=slug == TRIAL_PACK_SLUG,
-                validity_months=CREDIT_VALIDITY_MONTHS,
-            )
-        )
-    # The volume thresholds exactly as `bonus_for` applies them to a custom
-    # amount: every named pack size that earns a bonus by that function.
-    levels = sorted(
-        {
-            credit_count
-            for credit_count, bonus in CREDIT_PACKS.values()
-            if bonus and bonus_for(credit_count) == bonus
-        }
-    )
-    consumption = []
-    for event, label in CONSUMPTION_LABELS.items():
-        non_stem = consumption_subunits(event, ROLE_NON_STEM)
-        stem = consumption_subunits(event, ROLE_STEM)
-        assert non_stem is not None and stem is not None  # billable by construction
-        consumption.append(
-            ConsumptionRate(
-                event_type=event,
-                label=label,
-                non_stem_subunits=non_stem,
-                stem_subunits=stem,
-            )
-        )
-    return PublishedCatalogue(
-        price_per_credit_inr=PRICE_PER_CREDIT_INR,
-        gst_rate_percent=GST_RATE_PERCENT,
-        subunits_per_credit=SUBUNITS_PER_CREDIT,
-        credit_validity_months=CREDIT_VALIDITY_MONTHS,
-        min_custom_credits=MIN_PURCHASE_CREDITS,
-        setup_fee_inr=SETUP_FEE_INR,
-        setup_fee_gst_inr=gst_inr(SETUP_FEE_INR),
-        setup_fee_waiver_limit=SETUP_FEE_WAIVER_LIMIT,
-        bonus_levels=tuple(
-            BonusLevel(min_credits=level, bonus_credits=bonus_for(level))
-            for level in levels
-        ),
-        packs=tuple(packs),
-        consumption=tuple(consumption),
-    )
 
 
 async def create_purchase(
@@ -342,37 +135,14 @@ async def create_purchase(
     grants NOTHING: credits arrive only through `settle_purchase`, on payment
     confirmation (§3.3 step 5, and the §9 payment-failed row).
     """
-    if (pack_slug is None) == (custom_credits is None):
-        raise ValueError("Choose either a credit pack or a custom amount.")
+    if custom_credits is not None or pack_slug is None:
+        raise ValueError("Only the Starter top-up is available.")
 
     if pack_slug is not None:
         if pack_slug not in CREDIT_PACKS:
             raise ValueError("Unknown credit pack.")
         credit_count, bonus = CREDIT_PACKS[pack_slug]
-        # Rule 2's 50-credit floor is checked on the CUSTOM path only, and the
-        # Starter Assessment Pack is the first named pack whose PURCHASED count
-        # (40) sits below it. That is not a hole: the floor is about how much a
-        # customer may buy at a time, the pack delivers 75 credits, and 75
-        # clears 50. Asserted here so the next reader does not "fix" it by
-        # adding a check that would take the pack off the page.
-        if pack_slug == STARTER_PACK_SLUG:
-            assert credit_count + bonus >= MIN_PURCHASE_CREDITS
-        # Rule 1: check trial_used on EVERY attempt, not just the first.
-        if pack_slug == TRIAL_PACK_SLUG and tenant.trial_used:
-            raise ValueError(
-                f"The {TRIAL_CREDITS}-credit trial is available once per "
-                f"account and has already been used. The minimum purchase is "
-                f"{MIN_PURCHASE_CREDITS} credits."
-            )
         slug = pack_slug
-    else:
-        # Rule 2: the custom path has the same hard floor as everything else.
-        if custom_credits < MIN_PURCHASE_CREDITS:
-            raise ValueError(
-                f"The minimum purchase is {MIN_PURCHASE_CREDITS} credits."
-            )
-        credit_count, bonus = custom_credits, bonus_for(custom_credits)
-        slug = CUSTOM_SLUG
 
     setup_fee, waived = await setup_fee_for(session, tenant)
     subtotal, tax, total = _price(credit_count, setup_fee)
@@ -593,11 +363,15 @@ def render_invoice_pdf(purchase: CreditPurchase, tenant: Tenant) -> bytes:
         page.drawRightString(width - 40, y, amount_text)
         y -= 16
 
-    line(
-        f"Vivekium Intelligence Report Credits "
-        f"({purchase.credits_purchased} x {_inr(PRICE_PER_CREDIT_INR)})",
-        _inr(purchase.subtotal_inr),
-    )
+    if purchase.pack_slug == STARTER_PACK_SLUG and purchase.credits_purchased == 75:
+        line("Starter top-up: 75 completed assessments", _inr(purchase.subtotal_inr))
+    else:
+        # Preserve the description of historical invoices as sold.
+        line(
+            f"Vivekium Intelligence Report Credits "
+            f"({purchase.credits_purchased} x {_inr(PRICE_PER_CREDIT_INR)})",
+            _inr(purchase.subtotal_inr),
+        )
     if purchase.bonus_credits:
         # Rule 3: the bonus is a gift, never a discount — it appears at Rs. 0
         # and the purchased credits above stay at full price.

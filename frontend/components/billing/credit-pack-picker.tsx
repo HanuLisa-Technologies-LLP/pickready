@@ -1,14 +1,9 @@
 "use client";
 
-// The credit pack cards and the order summary: ONE component for the two
-// places a company buys credits, the billing page (a top-up) and company
-// registration (the first purchase that activates the workspace). Every figure
-// is the server's (`/billing/credit-packs` or `/company-onboarding/pricing`,
-// both priced by `credit_packs.quote`): the picker renders the calculation and
-// never performs it, so the two screens cannot quote one pack two ways.
+// Starter top-up picker. All prices and credit counts come from the server.
 
 import * as React from "react";
-import { ArrowUpRight, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import type { CreditPack, CreditPacksResponse } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -29,7 +24,6 @@ export function CreditPackPicker({
   busy,
   canBuy = true,
   cannotBuyNote,
-  showEnterprise = true,
 }: {
   packs: CreditPacksResponse;
   selectedSlug: string | null;
@@ -39,11 +33,7 @@ export function CreditPackPicker({
   canBuy?: boolean;
   /** Shown under a disabled button, for somebody who may look but not buy. */
   cannotBuyNote?: string;
-  /** The Enterprise card: custom volume by conversation, never self-serve. */
-  showEnterprise?: boolean;
 }) {
-  // Hidden packs stay hidden: the trial card disappears after first use
-  // (directive Part 5 section 3.1) and the selection dies with it.
   const availablePacks = packs.packs.filter((pack) => pack.available);
   const selectedPack =
     availablePacks.find((pack) => pack.slug === selectedSlug) ?? null;
@@ -66,43 +56,17 @@ export function CreditPackPicker({
                   : "border-border hover:border-brand-600/50")
               }
             >
-              <p className="text-2xl font-semibold tabular-nums">
-                {pack.credits}
-                <span className="ml-1 text-sm font-medium">credits</span>
+              <p className="font-semibold">{pack.label}</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums">
+                {pack.credits_total}
+                <span className="ml-1 text-sm font-medium">completed assessments</span>
               </p>
-              {pack.trial ? (
-                <p className="mt-1 type-eyebrow">Trial, first purchase only</p>
-              ) : null}
-              {pack.bonus_credits > 0 ? (
-                <p className="mt-1 text-sm font-medium">
-                  +{pack.bonus_credits} bonus credits free
-                </p>
-              ) : null}
               <div className="flex-1" />
               <p className="mt-3 font-semibold">{formatInr(pack.total_inr)}</p>
               <p className="text-xs">one-time, incl. GST</p>
             </button>
           );
         })}
-        {showEnterprise ? (
-          // Custom volume is Enterprise, by conversation and never self-serve
-          // (directive Part 5 section 3.2).
-          <a
-            href="mailto:hello@pickready.app?subject=Enterprise%20credits"
-            className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
-          >
-            <p className="text-2xl font-semibold tabular-nums">Custom</p>
-            <p className="mt-1 text-sm">
-              {packs.min_custom_credits}+ credits, priced by agreement. No
-              self-serve checkout.
-            </p>
-            <div className="flex-1" />
-            <p className="mt-3 inline-flex items-center gap-1 font-semibold underline">
-              Talk to us about Enterprise
-              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </p>
-          </a>
-        ) : null}
       </div>
 
       {/* Live breakdown of the selected pack (directive Part 5 section 3.3
@@ -112,29 +76,13 @@ export function CreditPackPicker({
           <p className="font-semibold">Order summary</p>
           <dl className="mt-3 space-y-2 text-sm">
             <div className="flex justify-between gap-4">
-              <dt>Credits</dt>
-              <dd className="font-medium">{selectedPack.credits}</dd>
+              <dt>Completed assessments</dt>
+              <dd className="font-medium">{selectedPack.credits_total}</dd>
             </div>
-            {selectedPack.bonus_credits > 0 ? (
-              <div className="flex justify-between gap-4">
-                <dt>Bonus credits</dt>
-                <dd className="font-medium">+{selectedPack.bonus_credits} free</dd>
-              </div>
-            ) : null}
             <div className="flex justify-between gap-4">
               <dt>Subtotal</dt>
               <dd className="font-medium">{formatInr(selectedPack.subtotal_inr)}</dd>
             </div>
-            {selectedPack.setup_fee_inr > 0 || selectedPack.setup_fee_waived ? (
-              <div className="flex justify-between gap-4">
-                <dt>Account setup fee</dt>
-                <dd className="font-medium">
-                  {selectedPack.setup_fee_waived
-                    ? "Waived"
-                    : formatInr(selectedPack.setup_fee_inr)}
-                </dd>
-              </div>
-            ) : null}
             <div className="flex justify-between gap-4">
               <dt>GST @ {packs.gst_rate_percent}%</dt>
               <dd className="font-medium">{formatInr(selectedPack.gst_inr)}</dd>

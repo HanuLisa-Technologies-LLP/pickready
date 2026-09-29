@@ -132,6 +132,40 @@ async def create_order(
     )
 
 
+async def create_monthly_plan(*, name: str, total_inr: int, slug: str) -> str:
+    """Create a recurring monthly charge, including GST in the gateway amount."""
+    body = await _request("POST", "/plans", {
+        "period": "monthly", "interval": 1,
+        "item": {"name": name, "amount": total_inr * PAISE_PER_RUPEE, "currency": "INR"},
+        "notes": {"readypick_plan_slug": slug},
+    })
+    return body["id"]
+
+
+async def create_subscription(*, plan_id: str, tenant_id: str, slug: str) -> dict:
+    return await _request("POST", "/subscriptions", {
+        "plan_id": plan_id, "total_count": 120, "customer_notify": 0,
+        "notes": {"tenant_id": tenant_id, "plan_slug": slug},
+    })
+
+
+async def cancel_subscription(subscription_id: str) -> dict:
+    return await _request(
+        "POST", f"/subscriptions/{subscription_id}/cancel",
+        {"cancel_at_cycle_end": 1},
+    )
+
+
+async def change_subscription_plan(subscription_id: str, plan_id: str) -> dict:
+    return await _request("PATCH", f"/subscriptions/{subscription_id}", {
+        "plan_id": plan_id, "schedule_change_at": "cycle_end", "customer_notify": 0,
+    })
+
+
+async def fetch_payment(payment_id: str) -> dict:
+    return await _request("GET", f"/payments/{payment_id}")
+
+
 # ── Signatures ───────────────────────────────────────────────────────────────
 
 def _hmac_hex(secret: str, message: str) -> str:
@@ -149,6 +183,14 @@ def verify_order_signature(*, order_id: str, payment_id: str, signature: str) ->
     if not cfg.key_secret:
         return False
     expected = _hmac_hex(cfg.key_secret, f"{order_id}|{payment_id}")
+    return hmac.compare_digest(expected, signature or "")
+
+
+def verify_subscription_signature(*, subscription_id: str, payment_id: str, signature: str) -> bool:
+    cfg = config()
+    if not cfg.key_secret:
+        return False
+    expected = _hmac_hex(cfg.key_secret, f"{payment_id}|{subscription_id}")
     return hmac.compare_digest(expected, signature or "")
 
 

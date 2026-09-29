@@ -111,8 +111,8 @@ async def restriction_reason(
     """None when `action` may proceed now; otherwise the sentence to show.
 
     `role_classification` and `count` matter to the two assessment actions
-    only: an assessment is priced at the job's role rate (1.5 credits for
-    STEM, 1.0 otherwise), and an invitation batch is asked about as a whole.
+    only: each completed assessment consumes one credit, and an invitation
+    batch is asked about as a whole.
     An unknown action RAISES: a typo here would otherwise read as "allowed".
     """
     if action not in ACTIONS:
