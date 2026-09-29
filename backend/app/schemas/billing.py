@@ -129,10 +129,9 @@ class CreditSummaryOut(BaseModel):
     warning_level: int = 0
     warning_1_threshold_credits: int = 20
     warning_2_threshold_credits: int = 10
-    #: §4.2's estimate: balance ÷ 30-day average credits per assessment
-    #: (platform default 1.2), rounded down.
+    #: Estimate: remaining credits at one credit per completed assessment.
     estimated_assessments_remaining: int = 0
-    average_credits_per_assessment: float = 1.2
+    average_credits_per_assessment: float = 1.0
     #: Plain-language copy for whichever alert is showing. Resolved server-side
     #: so the API, the on-screen dialog and the 402 refusal cannot describe the
     #: same situation three different ways.
@@ -185,9 +184,8 @@ class BillingOverviewOut(BaseModel):
 class CreditPackQuoteOut(BaseModel):
     """One purchase option, priced for THIS tenant.
 
-    The setup fee (and its waiver) is folded into every quote rather than
-    listed once beside them, because §3.3 step 2 requires the full breakdown
-    the customer will actually pay, and the fee depends on tenant state.
+    Historical fee fields remain in the shape for existing invoices. New
+    Starter top-up quotes always set them to zero and false.
     """
 
     slug: str
@@ -196,19 +194,14 @@ class CreditPackQuoteOut(BaseModel):
     label: str
     credits: int
     bonus_credits: int
-    #: What the customer receives. For the Starter Assessment Pack this is 75
-    #: while `credits` is 40, and the difference is the free bonus: the price
-    #: per credit never moves, so a headline of "75 for Rs. 24,000" is
-    #: delivered by bonus credits rather than by a discount.
+    #: Completed assessments added to the shared employer pool.
     credits_total: int
     subtotal_inr: int
     setup_fee_inr: int
     setup_fee_waived: bool
     gst_inr: int
     total_inr: int
-    #: False for the trial pack once `trial_used` is set. The UI hides an
-    #: unavailable pack (§7.2); the API states the fact so it cannot be
-    #: resurrected by a stale client.
+    #: The published Starter top-up is always available to paid employers.
     available: bool
     trial: bool
     #: Months the granted credits stay spendable, stated BEFORE payment.

@@ -115,12 +115,12 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
         Boolean, nullable=False, default=False, server_default="false"
     )
     # ── Credit-pack purchase state (Master Directive Part 5) ─────────────────
-    #: Rule 1: TRUE after the first purchase; every later purchase is 50+.
+    #: Historical first-purchase flag retained for existing accounts.
     trial_used: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    #: Rule 6: once TRUE the setup fee is never charged again — including when
-    #: it was waived, which also sets this.
+    #: Historical setup fee flags retained for invoice compatibility. New
+    #: subscriptions and Starter top-ups never charge a setup fee.
     setup_fee_paid: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

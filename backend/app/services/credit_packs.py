@@ -33,18 +33,6 @@ from app.models.tenant import Tenant
 from app.services import credits, razorpay
 
 
-#: Slug stored on a purchase that came through the custom-amount path rather
-#: than a named pack. Deliberately not in CREDIT_PACKS: it has no fixed size.
-CUSTOM_SLUG = "custom"
-
-#: The once-per-account trial pack (Rule 1).
-
-
-def bonus_for(credit_count: int) -> int:
-    """There are no custom volume bonuses in the monthly-plan catalogue."""
-    return 0
-
-
 def gst_inr(taxable_inr: int) -> int:
     """18% of the taxable amount, rounded half-up to whole rupees.
 

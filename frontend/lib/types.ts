@@ -1059,10 +1059,8 @@ export interface BillingOverview {
 
 /**
  * One purchasable credit pack, PRICED SERVER-SIDE. The server sends every line
- * of the breakdown (subtotal, setup fee, GST, total) already computed, so the
- * page renders arithmetic it never performs and can never disagree with the
- * invoice. `available: false` covers the trial pack after first use
- * (directive Part 5 section 3.1) and anything else the account cannot buy.
+ * of the breakdown (subtotal, GST, total) already computed, so the page
+ * renders the server's quote. Historical setup fee fields remain in the API.
  */
 export interface CreditPack {
     slug: string;
@@ -1081,11 +1079,7 @@ export interface CreditPack {
 
 export interface CreditPacksResponse {
   packs: CreditPack[];
-  price_per_credit_inr: number;
   gst_rate_percent: number;
-  /** Hard minimum for a bespoke Enterprise order, quoted in the Custom card. */
-  min_custom_credits: number;
-  trial_used: boolean;
 }
 
 /**

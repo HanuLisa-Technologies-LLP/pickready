@@ -18,7 +18,6 @@ def test_current_top_up_contract() -> None:
     assert CREDIT_PACKS == {STARTER_PACK_SLUG: (75, 0)}
     assert GST_RATE_PERCENT == 18
     assert credit_packs._price(75, 0) == (24_000, 4_320, 28_320)
-    assert credit_packs.bonus_for(100) == 0
     with pytest.raises(ValueError, match="Only the Starter"):
         credit_packs._price(50, 0)
 
