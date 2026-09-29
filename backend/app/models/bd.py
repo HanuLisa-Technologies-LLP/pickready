@@ -10,9 +10,8 @@ THE FOURTH PORTAL
 The BD team works leads. A lead is a company Vivekium wants as a customer but
 does not have yet, so `bd_leads` is deliberately NOT a tenant-scoped table: a
 lead has no tenant until it converts, and Vivekium's own sales pipeline is not
-any customer's data. It is a global table in the same family as `tenants` and
-`pricing_plans`, reachable only through the RLS bypass scope the BD and
-Owner consoles run in (migration 0023 gives it a policy that requires
+any customer's data. It is a global table in the same family as `tenants`,
+reachable only through the RLS bypass scope the BD and Owner consoles run in (migration 0023 gives it a policy that requires
 `app.bypass_rls = 'on'`, so an org session cannot read the pipeline).
 
 ONE TABLE, TWO CHANNELS

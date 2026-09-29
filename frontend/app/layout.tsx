@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Fraunces, Inter_Tight, JetBrains_Mono } from "next/font/google";
+import { Geist_Mono, Mona_Sans } from "next/font/google";
 
 import "./globals.css";
 import { ChunkRecovery } from "@/components/chunk-recovery";
@@ -14,43 +14,32 @@ import {
 } from "@/lib/site";
 
 /**
- * Three faces, each with one job (DESIGN.md section 3).
+ * The faces every route needs (DESIGN.md section 3). The third face, Hubot
+ * Sans, is the marketing display face and is bound in `app/display-font.ts`
+ * by the two public frames only, so no product route downloads it.
  *
- * NOT default Inter. DESIGN.md states the reason plainly: default Inter is the
- * typeface a UI reaches for when nobody chose one, and Impeccable ships a
- * detector that flags it as a generated-interface tell. This file loaded plain
- * `Inter` and cited a DESIGN_BRIEF that DESIGN.md superseded, so the product
- * had been carrying the tell its own design authority forbids.
+ *  - Mona Sans is the working face: body, navigation, forms, tables, dialogs,
+ *    reports, product page titles and most marketing copy. `body` carries it,
+ *    so a component gets it without asking. It replaced Inter Tight on
+ *    2026-09-28; it is a touch wider, so a label that fit before is not
+ *    assumed to fit now.
+ *  - Geist Mono carries reference codes, system identifiers, URLs and code.
+ *    Nothing else: ordinary metadata stays in Mona Sans with tabular numerals.
  *
- *  - Inter Tight is the working face. Tighter and more editorial than Inter,
- *    and it holds a dense recruiter table better at 13px, which is the size the
- *    candidate list actually renders at.
- *  - Fraunces is display only, where the product has one chance to look like
- *    somebody designed it. It is never used below a page title.
- *  - JetBrains Mono carries the COMPANY-JOB-CANDIDATE reference code, which has
- *    to be select-all and transcribable by eye. Twenty-five call sites already
- *    say `font-mono` and were resolving to whatever the browser had.
- *
- * All three are loaded through next/font, so they are self-hosted, preloaded,
- * and subset at build time. No network request reaches Google at runtime, which
- * also keeps them out of the CSP's font-src.
+ * Both are variable fonts (one file per subset carries every weight) and are
+ * SIL Open Font License 1.1, which permits commercial use and self-hosting.
+ * next/font downloads them at BUILD time and serves them from this origin, so
+ * no request reaches a font CDN at runtime and the CSP's `font-src 'self'`
+ * holds. It also emits a metric-matched fallback face, which is what keeps the
+ * swap from shifting layout.
  */
-const sans = Inter_Tight({
+const sans = Mona_Sans({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-sans",
 });
 
-const display = Fraunces({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-display",
-  // Fraunces is variable along an optical-size axis. Pinning it high keeps the
-  // lower-contrast, wider-aperture cut that stays legible at display sizes.
-  axes: ["SOFT", "WONK", "opsz"],
-});
-
-const mono = JetBrains_Mono({
+const mono = Geist_Mono({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-mono",
@@ -120,7 +109,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${sans.variable} ${display.variable} ${mono.variable}`}
+      className={`${sans.variable} ${mono.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-screen font-sans antialiased">

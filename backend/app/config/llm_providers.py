@@ -177,6 +177,7 @@ TaskType = Literal[
     "jd_generation",
     "swot_analysis",
     "skills_drafting",
+    "leadership_draft",
     "assessment_context",
     # ── Scoring ──
     "behavioral_assessment",
@@ -244,6 +245,10 @@ MODEL_FOR_TASK: dict[str, str] = {
     # its JD and SWOT, and the hidden assessment context WRITES the evidence
     # line every candidate is assessed against. Both sides of the Terra half.
     "skills_drafting": MODEL_TERRA,
+    # Leadership Intelligence (2026-09-29, spec 17): the draft a leader reviews
+    # and saves as the input that shapes every job in their scope. It WRITES
+    # the text a hiring team later reads as criteria, so the Terra half.
+    "leadership_draft": MODEL_TERRA,
     "assessment_context": MODEL_TERRA,
     "behavioral_assessment": MODEL_TERRA,
     # Miti: five isolated rubric-anchored evaluators.
@@ -422,6 +427,9 @@ TASK_TIMEOUTS: dict[str, float] = {
     "swot_analysis": 60.0,
     # Background: the skills draft runs in pickready.draft_job_skills.
     "skills_drafting": 60.0,
+    # Background: the leader's draft runs in pickready.draft_leadership and the
+    # screen polls the run-status record, so nobody's request is blocked.
+    "leadership_draft": 60.0,
     # Background.
     "behavioral_assessment": 60.0,
     "dimension_evaluation": 60.0,
@@ -493,6 +501,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "assessment_context": 50.0,
     "swot_analysis": 120.0,
     "skills_drafting": 120.0,
+    "leadership_draft": 120.0,
     "behavioral_assessment": 140.0,
     "dimension_evaluation": 140.0,
     "triangulation": 140.0,
@@ -549,6 +558,9 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "swot_analysis": 1536,
     # Fifteen short names with their source and a quotation.
     "skills_drafting": 3072,
+    # Up to three fields of two to five sentences, or a company-wide field and
+    # one short entry per department.
+    "leadership_draft": 3072,
     # A role summary and up to fifteen one-sentence evidence lines.
     "assessment_context": 2048,
     "email_composition": 1024,
@@ -652,6 +664,8 @@ TASK_TEMPERATURE: dict[str, float] = {
     # Proposes a list a person edits. Low: the same JD and SWOT should not
     # produce a different list on every press.
     "skills_drafting": 0.3,
+    # A draft a person rewrites; some variety between presses is the point.
+    "leadership_draft": 0.3,
     # The evidence line is what a candidate is assessed against. Near
     # deterministic, and the observable-evidence gate enforces the substance.
     "assessment_context": 0.2,
@@ -693,6 +707,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "jd_generation": 3,
     "swot_analysis": 3,
     "skills_drafting": 3,
+    "leadership_draft": 3,
     # Interactive: a person pressed Save and is waiting.
     "assessment_context": 2,
     "email_composition": 3,
@@ -1252,6 +1267,9 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "question_generation": 0.25,
     # The same row as `answer_evaluation`, the same size of judging call.
     "coding_quality_review": 0.25,
+    # A source pack in and 3072 tokens out on the reasoning tier: the
+    # company_profile_research row, which reads the same pack.
+    "leadership_draft": 0.40,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of

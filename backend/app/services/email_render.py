@@ -51,19 +51,6 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Alternatively, you may reply directly to this email with the "
         "details.\n\nRegards,\n{{company_name}} People Team",
     ),
-    # Billing. A failed charge must never be silent: credits simply stop
-    # arriving, and the first the customer would otherwise hear of it is a
-    # refused invitation. Deliberately carries no amount and no card detail.
-    "payment_failed": (
-        "Your Vivekium payment did not go through",
-        "Hello,\n\n"
-        "We could not process this month's subscription payment for "
-        "{{company_name}}. Your credit balance is unchanged, and any credits "
-        "already in your pool remain available.\n\n"
-        "Update your payment method to keep new assessment invitations "
-        "flowing:\n\n{{billing_url}}\n\n"
-        "Regards,\nVivekium",
-    ),
     # Master Directive Part 5 §4 — the two credit-balance warning tiers. The
     # figures are computed at send time by the worker; the copy states balance,
     # estimated assessments remaining, and the top-up link, per §4.1's table.
@@ -98,36 +85,6 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "\n\n{{validity_sentence}}\n\n"
         "Invoice {{invoice_number}} (total Rs. {{total_inr}} incl. GST) is "
         "attached, and remains available from your billing page:\n\n"
-        "{{billing_url}}\n\n"
-        "Regards,\nVivekium",
-    ),
-    # Change request 27: the month 10 and month 11 usage summary.
-    # INFORMATIONAL, and the copy has to carry that difference. The balance
-    # warnings above end with "Top up immediately" because the customer is
-    # about to be unable to run an assessment; this one fires on a calendar
-    # at a moment when nothing is wrong, so it states facts, offers the pack,
-    # and says in as many words that doing nothing is a normal choice.
-    # Borrowing the warning's urgency here is how a customer learns to
-    # ignore the warning.
-    "subscription_usage_summary": (
-        "Your Vivekium usage summary, month {{subscription_month}}",
-        "Hello,\n\n"
-        "This is a summary of how {{company_name}} has used Vivekium so "
-        "far. Nothing about your subscription changes because of this "
-        "email, and no action is required.\n\n"
-        "Assessments completed to date: {{assessments_used}}\n"
-        "Credit balance: {{balance_credits}} credits\n"
-        "Carried over from last month: {{rollover_credits}} credits\n"
-        "{{expiry_line}}\n"
-        "At your own average of {{average_credits}} credits per "
-        "assessment, your balance covers approximately "
-        "{{assessments_remaining}} more assessments.\n\n"
-        "If that is enough for the hiring you have planned, there is "
-        "nothing to do and this email needs no reply.\n\n"
-        "If you expect to need more, the {{starter_pack_label}} is "
-        "{{starter_pack_credits}} assessments for Rs. "
-        "{{starter_pack_price}} plus GST, and you can buy it from your "
-        "billing page:\n\n"
         "{{billing_url}}\n\n"
         "Regards,\nVivekium",
     ),

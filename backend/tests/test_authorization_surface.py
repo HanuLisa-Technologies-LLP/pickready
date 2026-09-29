@@ -51,6 +51,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    company_onboarding,
     dashboard,
     emails,
     job_setup,
@@ -83,6 +84,11 @@ ROUTERS = {
     "billing": billing,
     "candidates": candidates,
     "companies": companies,
+    # Company self-registration (2026-09-29). Every write here is made by
+    # somebody with no account yet, so each is authorized by a proof rather
+    # than a session: a CAPTCHA proof, a security code, or the onboarding
+    # cookie those two mint.
+    "company_onboarding": company_onboarding,
     "dashboard": dashboard,
     "emails": emails,
     # The setup checklist, the Skills step and the SWOT routes (Vivekium
@@ -116,11 +122,21 @@ GATES = (
     # route renders says `Depends(dependency)` and names nothing. `_gate_for`
     # unwraps the parameter defaults for exactly that reason.
     "require_authorized",
+    # `deps.require_organisation_wide` (the leadership release, 2026-09-29):
+    # `require_capability` itself, plus a refusal for a department-scoped
+    # account on a company-wide surface. A closure, spelled as a qualname
+    # fragment for the reason above.
+    "require_organisation_wide",
     "require_bd_capability",
     "get_superadmin_db",
     "get_current_candidate",
     "get_candidate_db",
     "get_current_any",
+    # The onboarding cookie (company self-registration): a signed token with
+    # its own audience, minted only by a right security code, naming one
+    # registration. It is the authorization of every registration step after
+    # the code, and it grants nothing a portal session grants.
+    "require_onboarding_cookie",
 )
 
 #: Routes authorized by possession of a signed token rather than by a session.
@@ -139,11 +155,20 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # The authentication endpoint itself. It cannot require authorization: it
     # is what produces the session. Rate limited instead (services/rate_limit).
     "/firebase/session": "creates the session",
-    # Authorized by a FRESH Firebase ID token in the body, verified before
-    # anything is read, and it acts only on the uid that token names. A cookie
-    # dependency would defeat it: the session it revokes may already be
-    # expired, and it only ever removes access.
-    "/password-changed": "verified Firebase ID token, revokes only",
+    # The CAPTCHA (auth hardening, 2026-09-29). Answered before anybody has
+    # a session, so it cannot require one. The challenge writes one Redis row
+    # and the verify spends it; both are rate limited, and the challenge's own
+    # attempt count and single use are what protect it.
+    "/captcha/challenge": "anonymous by necessity, draws a challenge",
+    "/captcha/verify": "anonymous by necessity, spends a challenge",
+    # Forgotten password. The person cannot sign in, which is the whole
+    # point. The request needs a single-use CAPTCHA proof and answers the same
+    # sentence for every address; the verify needs the six-digit code that
+    # went to the mailbox; the complete needs the single-use ticket the verify
+    # minted. Each step is authorized by the proof the step before produced.
+    "/password-reset/request": "CAPTCHA proof, enumeration safe",
+    "/password-reset/verify": "security code from the mailbox",
+    "/password-reset/complete": "single-use reset ticket",
     # Authorized by a single-use, short-lived context_token in the body, minted
     # by /firebase/session moments earlier.
     "/select-context": "single-use context token",
@@ -168,6 +193,14 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # not. A session dependency would defeat it, because the reader is by
     # definition somebody who has not signed in for six months.
     "/consent/renew": "single-use renewal token, keeps a profile and nothing else",
+    # Company self-registration (2026-09-29). The person has no account, so
+    # these cannot ask for one. The register step spends a single-use
+    # company_register CAPTCHA proof first and answers the same sentence for
+    # every address; the resend writes only to a registration already
+    # started; the verify needs the six-digit code from the mailbox.
+    "/register": "CAPTCHA proof, enumeration safe",
+    "/code/resend": "writes only to a registration already started, rate limited",
+    "/code/verify": "security code from the mailbox",
 }
 
 #: Routes that mutate ONLY the caller's own record.

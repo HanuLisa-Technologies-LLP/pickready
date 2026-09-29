@@ -38,7 +38,7 @@ export function EvidenceTags({
             key={`${tag.polarity}:${tag.text}`}
             data-polarity={tag.polarity}
             className={cn(
-              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium leading-tight",
+              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-chip font-medium leading-tight",
               positive
                 ? "border-teal-700/40 bg-teal-50 text-foreground"
                 : "border-border bg-muted text-foreground",

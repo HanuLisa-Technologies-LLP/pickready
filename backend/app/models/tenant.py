@@ -7,7 +7,6 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
-    Integer,
     SmallInteger,
     String,
     Text,
@@ -68,36 +67,13 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     website_domain: Mapped[str | None] = mapped_column(String(255))
     notes: Mapped[str | None] = mapped_column(Text)
 
-    # ── Subscription + credits (migration 0026) ──────────────────────────────
-    # A customer IS a tenant, so the Razorpay linkage lives here rather than on
-    # `companies` (which does not exist until the client first signs in — see
-    # models/billing.py for the full reasoning).
-    razorpay_customer_id: Mapped[str | None] = mapped_column(String(100))
-    razorpay_subscription_id: Mapped[str | None] = mapped_column(String(100))
-    current_plan_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pricing_plans.id", ondelete="SET NULL")
-    )
-    subscription_status: Mapped[str | None] = mapped_column(String(20))
-    subscription_current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # ── Subscription month (change request 27, migration 0111) ───────────────
-    #: When this customer's subscription first CHARGED successfully. The
-    #: product had no subscription-start date at all until now: it knew the
-    #: current period's END (`subscription_current_end`, restamped by Razorpay
-    #: on every renewal) and therefore could not answer "which month of their
-    #: subscription is this customer in", which the month 10 and 11 usage
-    #: summaries are keyed on. Stamped by `_grant_for_payment` on the FIRST
-    #: grant and never moved: a /subscribe click is an intent to pay, and
-    #: counting months from it would start the clock on a card that was never
-    #: charged.
-    subscription_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    #: The highest subscription month for which the informational usage summary
-    #: has been sent. The idempotency latch, in the same checked-UPDATE shape
-    #: as `credit_warning_1_sent`: the sweep claims a month with
-    #: `WHERE ... < :month RETURNING id`, so a re-run, a redelivered dispatch
-    #: and two sweeps racing all send exactly one letter.
-    usage_alert_last_month: Mapped[int | None] = mapped_column(Integer)
+    # ── Billing (migrations 0026, 0072, 0132) ─────────────────────────────────
+    # A customer IS a tenant, so billing state lives here rather than on
+    # `companies` (which does not exist until the client first signs in; see
+    # models/billing.py). The monthly subscription columns that used to sit
+    # here were dropped by migration 0132 when the product became per-credit
+    # only; credits are bought as one-time Razorpay Orders and the balance is
+    # the ledger.
     # The stored deficit flag (a copy of "the ledger sums below zero") is
     # DROPPED by migration 0128: nothing read it, and the comment that said it
     # drove a dunning email and a deficit banner described neither. The
@@ -175,6 +151,14 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
 CUSTOMER_ACTIVE = "active"
 CUSTOMER_ARCHIVED = "archived"
 CUSTOMER_STATUSES: tuple[str, ...] = (CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED)
+#: A FOURTH `tenants.status` (migration 0134), beside `prospect`
+#: (`models/bd.TENANT_PROSPECT`). A company registered itself and verified its
+#: email but has not finished: no paid first purchase, or no password yet.
+#: Like a prospect it is not a live customer, so the Provider Portal's lists
+#: never show it, and unlike one it has a `client` user who must NOT be able to
+#: sign in until `POST /company-onboarding/activate` flips it to `active`
+#: (`services/company_onboarding.login_refusal`).
+TENANT_ONBOARDING = "onboarding"
 
 
 class RolePermission(Base, UUIDPKMixin):

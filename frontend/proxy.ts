@@ -20,8 +20,11 @@ function hasSession(request: NextRequest): boolean {
 
 const PUBLIC_PREFIXES = [
   "/login",
+  "/company/login", // the company sign-in page (email, password, security check)
+  "/company/register", // company self-registration (details, security code, first purchase, password)
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
+  "/pricing", // the public credit price list (GET /billing/public/credit-packs)
   // THE REST OF THE PUBLIC SITE, WHICH WAS BEING REDIRECTED TO SIGN-IN.
   //
   // This list is a deny-by-default allowlist, and five genuinely public pages
@@ -76,6 +79,10 @@ const PORTAL_BY_ROLE: Record<string, string> = {
   hr_manager: "/org",
   recruiter: "/org",
   hiring_manager: "/org",
+  interview_manager: "/org",
+  ceo: "/org",
+  md: "/org",
+  functional_head: "/org",
 };
 
 const PORTAL_BY_AUDIENCE: Record<string, string> = {
@@ -144,7 +151,10 @@ export function proxy(request: NextRequest) {
   // PUBLIC_PREFIXES needs a session, so /bd is covered without an entry.
   if (!hasSession(request)) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    // A company page sends a signed-out visitor to the COMPANY sign-in page,
+    // because a company account cannot sign in on the candidate one.
+    url.pathname =
+      pathname === "/org" || pathname.startsWith("/org/") ? "/company/login" : "/login";
     // Carry the QUERY too, not just the path. A destination like
     // /portal/assessments/<id>?from=email loses its meaning without it, and
     // the whole point of `next` is that the person lands where they were

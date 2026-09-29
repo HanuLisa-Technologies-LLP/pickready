@@ -8,7 +8,8 @@ export default function OrgSettingsPage() {
   return (
     <SettingsPage>
       {/* Corporate email senders (2026-09-05 spec): the card hides itself
-          for accounts without manage_email_senders. */}
+          for accounts without view_email_senders, and shows the list without
+          its Add control to a reader who may not manage it. */}
       <EmailSendersCard />
     </SettingsPage>
   );

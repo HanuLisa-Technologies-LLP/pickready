@@ -72,22 +72,23 @@ export function Hero() {
                 left to be inferred from it. The sparkle icon that used to sit
                 here is gone: an AI badge with a sparkle on it is the decoration
                 every AI product ships, and it competes with the sentence. */}
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+            <p className="type-eyebrow text-brand-600">
               For in-house hiring teams and recruitment partners
             </p>
 
             {/* The product tagline, set by the client. It is the h1: it is the
                 promise the whole page then evidences, not a decoration above
-                one. Fraunces (font-display) is the one place the product gets
-                display type, per DESIGN.md section 3. */}
+                one. `.type-display` sets it in Hubot Sans, the display face the
+                public site reserves for its hero headlines (DESIGN.md
+                section 3). */}
             <h1
               id="landing-title"
-              className="mt-5 text-balance font-display text-[2.125rem] font-semibold leading-[1.06] tracking-[-0.02em] text-navy-600 sm:text-[2.75rem] lg:text-[3.375rem]"
+              className="mt-5 type-display text-navy-600"
             >
               Know Every Candidate Before You Meet Them
             </h1>
 
-            <p className="mt-6 max-w-xl text-pretty text-lg leading-8">
+            <p className="mt-6 type-lead">
               Vivekium reads every resume against the skills your team saved
               for the role, assesses the candidates you invite in one proctored
               session built from those skills, and hands you a PRISM Report per
@@ -166,7 +167,7 @@ export function Hero() {
         <div className="mx-auto max-w-6xl px-6 py-7 lg:px-10">
           <p
             id="hero-capabilities-label"
-            className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600"
+            className="type-eyebrow text-brand-600"
           >
             In the product today
           </p>

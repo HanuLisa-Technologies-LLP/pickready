@@ -4,7 +4,8 @@ tier: integration
 description: >
   The golden end-to-end journey (CONTRACT v4 item 1), driven over HTTP by the
   same sequence tests/test_golden_journey.py drives (harness.golden_journey).
-  A recruiter creates a job with its JD (which drafts the skills), saves the
+  The CEO and the department's Functional Head save their Leadership
+  Intelligence first. A recruiter creates a job with its JD (which drafts the skills), saves the
   SWOT as separate intelligence (which drafts nothing), saves the skills,
   previews the Final Job Posting and publishes it; two candidates apply, and
   the first application freezes the JD and the skills (CONTRACT v10); AI
@@ -42,6 +43,7 @@ expect:
     - facts.golden_answered.fill_blank == 1
     - facts.golden_answered.coding == 1
   trajectory:
+    - leadership_saved
     - job_created
     - jd_saved
     - skills_drafted

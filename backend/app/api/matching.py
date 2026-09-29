@@ -33,6 +33,7 @@ from app.schemas.matching import (
 )
 from app.services import assessment_contract
 from app.services import capabilities as caps
+from app.services import department_access
 from app.services import matching_progress
 from app.services.audit import audit
 from app.workers import status as task_status
@@ -56,6 +57,7 @@ async def _get_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) 
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:  # defense in depth; RLS is the boundary
         raise HTTPException(status_code=404, detail="Job not found")
+    await department_access.require_job_in_scope(session, user, job.id)
     return job
 
 

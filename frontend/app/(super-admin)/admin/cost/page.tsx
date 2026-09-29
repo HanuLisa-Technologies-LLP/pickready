@@ -60,6 +60,14 @@ type Breakdown = {
 };
 
 type TierRow = Breakdown & { pricing_tier: string | null };
+
+/** The per-credit rate an assessment billed at (the server's tier since the
+ *  subscription plans were retired). An older record may carry a retired
+ *  plan's slug, which is shown as it was stored. */
+const RATE_LABELS: Record<string, string> = {
+  STEM: "STEM role rate",
+  NON_STEM: "Non-STEM role rate",
+};
 type ClientRow = Breakdown & { tenant_id: string; tenant_name: string };
 
 type CostSummary = {
@@ -249,17 +257,17 @@ export default function ProviderCostPage() {
             </p>
           </Section>
 
-          <Section title="By pricing tier">
+          <Section title="By credit rate">
             {summary.by_pricing_tier.length === 0 ? (
               <EmptyState
                 title="No assessments this month"
-                description="Tier averages appear once assessments have run."
+                description="Rate averages appear once assessments have run."
               />
             ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Tier</TableHead>
+                    <TableHead>Credit rate</TableHead>
                     <TableHead className="text-right">Assessments</TableHead>
                     <TableHead className="text-right">Average</TableHead>
                     <TableHead className="text-right">Total</TableHead>
@@ -267,10 +275,12 @@ export default function ProviderCostPage() {
                 </TableHeader>
                 <TableBody>
                   {summary.by_pricing_tier.map((row) => (
-                    <TableRow key={row.pricing_tier ?? "no-plan"}>
+                    <TableRow key={row.pricing_tier ?? "not-recorded"}>
                       <TableCell>
-                        {row.pricing_tier ?? (
-                          <Badge variant="outline">No plan</Badge>
+                        {row.pricing_tier ? (
+                          (RATE_LABELS[row.pricing_tier] ?? row.pricing_tier)
+                        ) : (
+                          <Badge variant="outline">Not recorded</Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">

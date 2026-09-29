@@ -45,6 +45,19 @@ grade) can prove they read the same contract by logging the same digest:
 Migration `0118_skills_contract` carries its own copy of the canonical
 form, deliberately (a migration must not change behaviour when this module
 does); `tests/test_assessment_contract.py` pins the two as identical.
+
+THE LEADERSHIP CONTEXT IS PART OF THE CONTRACT WHEN ONE EXISTS (2026-09-29)
+---------------------------------------------------------------------------
+Save Skills freezes the leadership context it was made with as a
+`job_leadership_contexts` row and names it in `jobs.assessment_context_json`
+(`leadership_context_id`); the snapshot copies the id. The contract then
+carries `leadership` (`services/leadership/context.FrozenLeadership`), and the
+digest covers that row's own content digest, ONLY when one exists. A contract
+with no leadership context hashes to exactly what it hashed to before, so every
+snapshot written before 0135 still verifies and the frozen 0118 formula is
+unchanged. Yukti, Vaada, the PRISM Report and Miti's rubrics read the leadership
+context from HERE, never live: a leadership edit after the freeze cannot move
+how an applied candidate is assessed (spec 21, rule 37.9).
 """
 from __future__ import annotations
 
@@ -67,6 +80,8 @@ from app.models.job_skill_snapshot import (
     JobSkillSnapshot,
 )
 from app.services import audit, locks
+from app.services.leadership import context as leadership_context
+from app.services.leadership.context import FrozenLeadership
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +189,9 @@ class AssessmentContract:
     digest: str              # sha256 over the canonical CONTENT (see module doc)
     grade: str               # jobs.assessment_grade, locked with the skills
     locked_at: datetime | None
+    #: The leadership context the skills were saved with, or None when no
+    #: leadership input applied. Covered by the digest only when present.
+    leadership: FrozenLeadership | None = None
 
 
 # ── The canonical form and the digest ───────────────────────────────────────
@@ -184,15 +202,20 @@ def _sort_key(skill: ContractSkill) -> tuple[int, int, str, str]:
 
 
 def canonical_payload(
-    skills: Iterable[ContractSkill], role_summary: str, grade: str
+    skills: Iterable[ContractSkill],
+    role_summary: str,
+    grade: str,
+    leadership_digest: str | None = None,
 ) -> dict[str, Any]:
     """The exact content the digest covers, in canonical order.
 
     Bucket order, then priority, then name, then id: total, so two readers of
-    the same rows can never serialise them differently.
+    the same rows can never serialise them differently. `leadership` is a KEY
+    only when a leadership context exists, so a contract without one hashes to
+    exactly what it did before Leadership Intelligence (the 0118 formula).
     """
     ordered = sorted(skills, key=_sort_key)
-    return {
+    payload: dict[str, Any] = {
         "grade": grade,
         "role_summary": role_summary,
         "skills": [
@@ -206,14 +229,20 @@ def canonical_payload(
             for skill in ordered
         ],
     }
+    if leadership_digest is not None:
+        payload["leadership"] = {"digest": leadership_digest}
+    return payload
 
 
 def compute_digest(
-    skills: Iterable[ContractSkill], role_summary: str, grade: str
+    skills: Iterable[ContractSkill],
+    role_summary: str,
+    grade: str,
+    leadership_digest: str | None = None,
 ) -> str:
     """sha256 hex over `canonical_payload`, stable across processes and runs."""
     encoded = json.dumps(
-        canonical_payload(skills, role_summary, grade),
+        canonical_payload(skills, role_summary, grade, leadership_digest),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -384,9 +413,34 @@ def _skills_to_json(skills: Iterable[ContractSkill]) -> list[dict[str, Any]]:
     return canonical_payload(skills, "", "")["skills"]
 
 
-def _from_snapshot(snapshot: JobSkillSnapshot) -> AssessmentContract:
+def _leadership_digest(leadership: FrozenLeadership | None) -> str | None:
+    return leadership.digest if leadership is not None else None
+
+
+async def _snapshot_leadership(
+    db: AsyncSession, snapshot: JobSkillSnapshot
+) -> FrozenLeadership | None:
+    return await leadership_context.load_frozen(db, snapshot.leadership_context_id)
+
+
+def _from_snapshot(
+    snapshot: JobSkillSnapshot, leadership: FrozenLeadership | None = None
+) -> AssessmentContract:
+    """The contract a snapshot states. `leadership` is the row the snapshot
+    names (`_snapshot_leadership`), read by the async caller; a snapshot that
+    names one and is handed none fails its digest, loudly."""
+    if (leadership is None) != (snapshot.leadership_context_id is None) or (
+        leadership is not None and leadership.context_id != snapshot.leadership_context_id
+    ):
+        raise ContractIntegrityError(
+            f"job_skill_snapshots {snapshot.id} names leadership context "
+            f"{snapshot.leadership_context_id} and was read with "
+            f"{leadership.context_id if leadership is not None else None}"
+        )
     skills = _skills_from_json(snapshot.skills_json or [])
-    digest = compute_digest(skills, snapshot.role_summary or "", snapshot.grade)
+    digest = compute_digest(
+        skills, snapshot.role_summary or "", snapshot.grade, _leadership_digest(leadership)
+    )
     if digest != snapshot.digest:
         raise ContractIntegrityError(
             f"job_skill_snapshots {snapshot.id} stores digest {snapshot.digest} "
@@ -401,21 +455,35 @@ def _from_snapshot(snapshot: JobSkillSnapshot) -> AssessmentContract:
         digest=snapshot.digest,
         grade=snapshot.grade,
         locked_at=snapshot.locked_at,
+        leadership=leadership,
     )
+
+
+async def _read_snapshot(db: AsyncSession, snapshot: JobSkillSnapshot) -> AssessmentContract:
+    return _from_snapshot(snapshot, await _snapshot_leadership(db, snapshot))
 
 
 async def _live_contract(db: AsyncSession, job: Job) -> AssessmentContract:
     skills = await _live_skills(db, job.id)
     role_summary = _role_summary(job)
+    # The context the LAST Save Skills froze, named on the saved context. Any
+    # edit since makes the skills unsaved (`skills._mark_unsaved`), and only a
+    # saved contract is ever frozen, so the name is always the current save's.
+    leadership = await leadership_context.load_frozen(
+        db, (job.assessment_context_json or {}).get("leadership_context_id")
+    )
     return AssessmentContract(
         job_id=job.id,
         version=0,
         locked=False,
         skills=skills,
         role_summary=role_summary,
-        digest=compute_digest(skills, role_summary, job.assessment_grade),
+        digest=compute_digest(
+            skills, role_summary, job.assessment_grade, _leadership_digest(leadership)
+        ),
         grade=job.assessment_grade,
         locked_at=None,
+        leadership=leadership,
     )
 
 
@@ -423,7 +491,7 @@ async def load_contract(db: AsyncSession, job_id: uuid.UUID) -> AssessmentContra
     """The latest snapshot when the job is locked, else the live rows."""
     snapshot = await _latest_snapshot(db, job_id)
     if snapshot is not None:
-        return _from_snapshot(snapshot)
+        return await _read_snapshot(db, snapshot)
     return await _live_contract(db, await _job(db, job_id))
 
 
@@ -457,7 +525,7 @@ async def load_contract_for_conversation(
             f"assessment conversation {conversation_id} is bound to snapshot "
             f"{conversation.skill_snapshot_id}, which is not readable"
         )
-    contract = _from_snapshot(snapshot)
+    contract = await _read_snapshot(db, snapshot)
     if conversation.contract_digest is not None and conversation.contract_digest != contract.digest:
         raise ContractIntegrityError(
             f"assessment conversation {conversation_id} recorded digest "
@@ -547,10 +615,19 @@ async def posting_skills(
             )
         ).all():
             live[job_id].append((bucket, name))
+    frozen = await leadership_context.load_frozen_many(
+        db, (snapshot.leadership_context_id for snapshot in latest.values())
+    )
     out: dict[uuid.UUID, tuple[PostingBucket, ...]] = {}
     for job in jobs:
         if job.id in latest:
-            contract = _from_snapshot(latest[job.id])
+            snapshot = latest[job.id]
+            contract = _from_snapshot(
+                snapshot,
+                frozen.get(snapshot.leadership_context_id)
+                if snapshot.leadership_context_id is not None
+                else None,
+            )
             out[job.id] = _posting((skill.bucket, skill.name) for skill in contract.skills)
         elif job.id in live:
             out[job.id] = _posting(live[job.id])
@@ -616,6 +693,9 @@ async def _write_snapshot(
         locked_by_conversation_id=conversation_id,
         locked_by_link_id=link_id,
         locked_at=datetime.now(timezone.utc),
+        leadership_context_id=(
+            live.leadership.context_id if live.leadership is not None else None
+        ),
     )
     db.add(snapshot)
     await db.flush()
@@ -677,7 +757,7 @@ async def freeze_at_application(
     await locks.advisory_xact_lock(db, locks.SKILLS, job_id)
     snapshot = await _latest_snapshot(db, job_id)
     if snapshot is not None:
-        return _from_snapshot(snapshot)
+        return await _read_snapshot(db, snapshot)
     job = await _job(db, job_id)
     live = await _lockable_contract(db, job)
     if live is None:
@@ -690,7 +770,7 @@ async def freeze_at_application(
         db, job, live, source=SNAPSHOT_SOURCE_APPLICATION,
         conversation_id=None, link_id=link_id, application_id=link_id,
     )
-    return _from_snapshot(snapshot)
+    return await _read_snapshot(db, snapshot)
 
 
 async def lock_contract(
@@ -747,7 +827,7 @@ async def lock_contract(
             application_id=conversation.job_candidate_link_id,
         )
 
-    contract = _from_snapshot(snapshot)
+    contract = await _read_snapshot(db, snapshot)
     conversation.skill_snapshot_id = snapshot.id
     conversation.contract_digest = contract.digest
     await db.flush()

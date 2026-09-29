@@ -80,6 +80,7 @@ __all__ = [
     "KIND_SEARCHED",
     "KIND_EMPLOYER",
     "KIND_PASSAGE",
+    "KIND_LEADERSHIP",
     "LOCATOR_MESSAGE",
     "LOCATOR_QUESTION",
     "LOCATOR_CHUNK",
@@ -128,6 +129,16 @@ KIND_EMPLOYER = "employer"
 #: only) is what the support check reads. It joins the item's grounding beside
 #: its answers, never instead of them.
 KIND_PASSAGE = "passage"
+
+#: A SEVENTH KIND: A LINE OF THE JOB'S FROZEN LEADERSHIP CONTEXT (2026-09-29).
+#:
+#: The Leadership Alignment section states what the company's leaders said
+#: they need from hires. That is a REQUIREMENT SOURCE, not evidence about the
+#: candidate, and it is the one statement in the report whose citation is not
+#: the candidate's own account: it cites the frozen `job_leadership_contexts`
+#: row the contract names (locator `job_leadership_contexts:<id>#<line ref>`),
+#: so a reader can always tell a leader's expectation from a finding.
+KIND_LEADERSHIP = "leadership"
 
 #: How many characters of an answer the generator may quote back when grounding
 #: a probe. Long enough to be recognisably the candidate's own claim, short

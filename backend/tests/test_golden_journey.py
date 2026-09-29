@@ -112,11 +112,16 @@ class _RealClient:
     switched by swapping the cookie jar, never by an override."""
 
     def __init__(
-        self, http: TestClient, staff: dict[str, str], candidates: dict[str, dict[str, str]]
+        self,
+        http: TestClient,
+        staff: dict[str, str],
+        candidates: dict[str, dict[str, str]],
+        leaders: dict[str, dict[str, str]],
     ):
         self._http = http
         self._staff = staff
         self._candidates = candidates
+        self._leaders = leaders
         self.bodies: list[tuple[str, str, Any]] = []
 
     def as_staff(self) -> None:
@@ -126,6 +131,10 @@ class _RealClient:
     def as_candidate(self, who: str = "candidate") -> None:
         self._http.cookies.clear()
         self._http.cookies.update(self._candidates[who])
+
+    def as_leader(self, who: str) -> None:
+        self._http.cookies.clear()
+        self._http.cookies.update(self._leaders[who])
 
     def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
         response = self._http.request(method, path, **kwargs)
@@ -155,6 +164,23 @@ async def _rows(sql: str, **params: Any) -> list[Any]:
 
 async def _judge(name: str, state: journey.JourneyState) -> None:
     job = str(state.job)
+    if name == "leadership_saved":
+        # Two versions, each in its OWN stream, written by the route from the
+        # author's own row: the head's is the seeded department's.
+        rows = await _rows(
+            "SELECT author_role, department_id, version, company_requirements, "
+            "department_requirements FROM leadership_profiles WHERE tenant_id = :t "
+            "ORDER BY author_role",
+            t=str(state.tenant),
+        )
+        assert [(row.author_role, row.version) for row in rows] == [
+            ("ceo", 1), ("functional_head", 1)
+        ], rows
+        assert rows[0].department_id is None
+        assert rows[0].company_requirements == journey.LEADERSHIP_CEO
+        assert rows[1].department_id == state.department
+        assert rows[1].department_requirements == journey.LEADERSHIP_HEAD
+        return
     if name == "job_created":
         rows = await _rows("SELECT tenant_id, ratified_at FROM jobs WHERE id = :j", j=job)
         assert rows and rows[0].tenant_id == state.tenant and rows[0].ratified_at is None
@@ -175,6 +201,14 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         assert drafted[0].skills_draft_status == "drafted"
         assert drafted[0].skills_drafted_swot_version is None
         assert not await _rows("SELECT id FROM job_swot_analyses WHERE job_id = :j", j=job)
+        # The CEO's saved expectation reached Sutra's draft, which names it as
+        # the source of the behavioural skill (spec 22.2).
+        sourced = await _rows(
+            "SELECT provenance_json FROM job_competencies WHERE job_id = :j "
+            "AND category = 'behavioural' AND is_active",
+            j=job,
+        )
+        assert [row.provenance_json["source"] for row in sourced] == ["leadership_ceo"]
     elif name == "swot_saved":
         rows = await _rows(
             "SELECT weaknesses, version FROM job_swot_analyses WHERE job_id = :j", j=job
@@ -197,6 +231,20 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
             j=job,
         )
         assert not missing, f"saved skills without hidden context: {missing}"
+        # Save Skills froze the leadership context it was made with and named
+        # it on the job (spec 21).
+        contexts = await _rows(
+            "SELECT id, skill_sources_json, ceo_profile_id, functional_head_profile_id "
+            "FROM job_leadership_contexts WHERE job_id = :j",
+            j=job,
+        )
+        assert len(contexts) == 1, contexts
+        context = contexts[0]
+        assert "leadership_ceo" in context.skill_sources_json.values()
+        assert context.ceo_profile_id and context.functional_head_profile_id
+        named = await _rows("SELECT assessment_context_json FROM jobs WHERE id = :j", j=job)
+        assert named[0].assessment_context_json["leadership_context_id"] == str(context.id)
+        state.responses["leadership_context"] = context.id
     elif name == "posting_previewed":
         preview = state.responses["posting_preview"]
         buckets = {bucket["bucket"]: bucket["names"] for bucket in preview["skill_buckets"]}
@@ -237,6 +285,11 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
             ("application", state.link)
         ], snapshots
         state.responses["frozen_snapshot"] = snapshots[0].id
+        frozen_context = await _rows(
+            "SELECT leadership_context_id FROM job_skill_snapshots WHERE id = :s",
+            s=str(snapshots[0].id),
+        )
+        assert frozen_context[0].leadership_context_id == state.responses["leadership_context"]
     elif name == "matched":
         rows = await _rows(
             "SELECT id, yukti_status, yukti_pre_score FROM job_candidate_links WHERE job_id = :j",
@@ -377,6 +430,14 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         assert report.contract_digest == conversation[0].contract_digest
         link = await _rows("SELECT status FROM job_candidate_links WHERE id = :l", l=str(state.link))
         assert link[0].status == "assessment_completed"
+        # Leadership Alignment names the SAME frozen context the contract did.
+        alignment = await _rows(
+            "SELECT leadership_alignment_json FROM functional_skills_reports WHERE id = :r",
+            r=str(report.id),
+        )
+        stored = alignment[0].leadership_alignment_json
+        assert stored and stored["context_id"] == str(state.responses["leadership_context"])
+        assert stored["groups"], stored
     elif name == "proctoring_reported":
         rows = await _rows(
             "SELECT r.id FROM proctoring_reports r JOIN proctoring_sessions s "
@@ -424,6 +485,12 @@ async def _judge(name: str, state: journey.JourneyState) -> None:
         assert not provenance.get("templates"), provenance
         transcript = state.responses["transcript"]
         assert journey.SPOKEN_ANSWER in str(transcript), "the spoken answer is not in the transcript"
+        # The Leadership Alignment section reaches the recruiter, in words.
+        alignment = profile["leadership_alignment"]
+        assert alignment and alignment["groups"], alignment
+        lines = [line["text"] for group in alignment["groups"] for line in group["lines"]]
+        assert f"CEO: {journey.LEADERSHIP_CEO}" in lines, lines
+        assert any("Ownership under pressure" in line for line in lines), lines
     else:
         raise AssertionError(f"no judge for gate {name!r}")
 
@@ -455,11 +522,16 @@ def test_the_golden_journey() -> None:
             who: asyncio.run(_signed_in(world.id(f"{who}_user"), AUDIENCE_CANDIDATE))
             for who in ("candidate", "rival")
         }
+        leaders = {
+            who: asyncio.run(_signed_in(world.id(who), AUDIENCE_ORG))
+            for who in ("ceo", "functional_head")
+        }
         state = journey.JourneyState(
             tenant=world.id("tenant"),
             staff=world.id("staff"),
             candidate=world.id("candidate"),
             rival=world.id("rival"),
+            department=world.id("department"),
         )
         with (
             TestClient(app) as http,
@@ -467,7 +539,7 @@ def test_the_golden_journey() -> None:
             journey.deployment() as deployment,
             journey.digest_lines() as digests,
         ):
-            client = _RealClient(http, staff, candidates)
+            client = _RealClient(http, staff, candidates, leaders)
             journey.drive(client, state, gate)
             installed = deployment.store
         assert reached == list(journey.GATES)

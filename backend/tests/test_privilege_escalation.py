@@ -82,6 +82,11 @@ def test_the_staff_body_has_no_tenant_or_permission_field_to_inject_into(
         "phone",
         "role",
         "approval_level",
+        # The leadership release (2026-09-29): a Functional Head's one
+        # department. Not an injection point: the handler refuses an id that
+        # is not the caller's own tenant's, and a same-tenant composite
+        # foreign key refuses it again in the database.
+        "department_id",
     }
     for forbidden in ("tenant_id", "permissions_json", "overrides", "status",
                       "firebase_uid", "id", "user_id"):

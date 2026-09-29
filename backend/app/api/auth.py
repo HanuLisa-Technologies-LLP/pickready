@@ -9,6 +9,7 @@ request, code verification) sat here without a route for two months after
 Firebase took over identity, and were deleted on 2026-09-24 with the schemas
 only they used. `tests/test_login_otp_removed.py` keeps them gone.
 """
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -42,26 +43,68 @@ from app.models.enums import Role, UserStatus
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import (
+    CaptchaChallengeIn,
+    CaptchaChallengeOut,
+    CaptchaVerifyIn,
+    CaptchaVerifyOut,
     ContextOut,
     FirebaseSessionIn,
     MeOut,
+    PasswordChangeCompleteIn,
+    PasswordChangedOut,
+    PasswordChangeRequestIn,
+    PasswordChangeVerifyIn,
+    PasswordChangeVerifyOut,
+    PasswordResetCompleteIn,
+    PasswordResetRequestIn,
+    PasswordResetVerifyIn,
+    PasswordResetVerifyOut,
+    SecurityCodeSentOut,
     SelectContextIn,
     SessionOut,
     UserOut,
 )
 from app.services import auth_sessions, candidate_identity, login_context
+from app.services import company_onboarding
+from app.services import captcha, password_policy, security_codes, security_email
 from app.services import firebase_auth
 from app.services import rbac
 from app.services import staff_invites
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
+    AUTH_CAPTCHA_CHALLENGE_FAILED,
     AUTH_CONTEXT_SELECTED,
     AUTH_LOGIN_REFUSED,
     AUTH_LOGIN_SUCCEEDED,
+    AUTH_PASSWORD_CHANGE_CODE_SENT,
+    AUTH_PASSWORD_CHANGED,
     record_auth_event,
 )
 
 router = APIRouter()
+
+#: Which portal a session exchange may land in, by the CAPTCHA purpose of the
+#: surface it came from (auth spec 6.5 and 7). The purpose is the portal
+#: intent: a filter over the database's own roles, never a grant, so a person
+#: with a candidate profile and a company seat gets the candidate workspace on
+#: the candidate sign-in page and the company one on /company/login.
+EXCHANGE_PURPOSE_PORTAL: dict[str, str] = {
+    "candidate_login": "candidate",
+    "candidate_register": "candidate",
+    "company_login": "org",
+    "invite_join": "org",
+    "provider_login": "owner",
+    "bd_login": "bd",
+}
+
+#: How a refusal names the portal a person tried to enter. The words are the
+#: surface's, never the role enum's.
+_PORTAL_LABEL = {
+    "candidate": "candidate",
+    "org": "company",
+    "owner": "Provider",
+    "bd": "business development",
+}
 
 PORTAL_ROLES = {
     "candidate": {Role.candidate},
@@ -77,22 +120,25 @@ PORTAL_ROLES = {
         Role.recruiter,
         Role.hiring_manager,
         Role.interview_manager,
+        Role.ceo,
+        Role.md,
+        Role.functional_head,
     },
     "bd": {Role.bd},
     "owner": {Role.super_admin},
 }
 
 
-def _filter_requested_portal(users: list[User], requested_portal: str | None) -> list[User]:
+def _filter_portal(users: list[User], portal: str | None) -> list[User]:
     """Apply a login-screen portal choice without ever converting roles.
 
     Portal intent narrows already-authorised database users. It cannot create a
     BD, owner or customer-team account and therefore cannot be used for
     privilege escalation.
     """
-    if not requested_portal:
+    if not portal:
         return users
-    allowed = PORTAL_ROLES[requested_portal]
+    allowed = PORTAL_ROLES[portal]
     return [user for user in users if user.role in allowed]
 
 
@@ -234,10 +280,19 @@ async def firebase_session(
       may claim the oldest unlinked sourced record; an unverified one never
       does), candidate cookies.
 
-    Google and email/password sign-in are available to every role. Phone
-    sign-in is removed: the provider is refused and nothing matches on a phone
-    number. Every failure is a clean 401/403/409/422, never a 500.
+    A CAPTCHA PROOF IS SPENT FIRST (auth spec 6.4), before the token is
+    verified: the application session is the boundary, so a caller who went
+    to Firebase directly still has to pass the check here. The proof's
+    purpose names the surface, and the surface narrows the workspaces this
+    identity may enter (`EXCHANGE_PURPOSE_PORTAL`).
+
+    The provider is ROLE AWARE (`firebase_auth.assert_provider_allowed`): a
+    candidate may use Google or a password, every company role a password
+    only, and the Provider and BD keep their policy. Phone sign-in is removed.
+    Every failure is a clean 400/401/403/409/422/503, never a 500.
     """
+    await captcha.consume_proof(body.captcha_proof, body.captcha_purpose)
+    portal = EXCHANGE_PURPOSE_PORTAL[body.captcha_purpose]
     settings = get_settings()
     # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
     # forces a network round trip to the Firebase Admin API on every
@@ -254,10 +309,10 @@ async def firebase_session(
     # via this endpoint (the general lookup below only ever creates candidates,
     # and eligible_login_users / the ORM guard reject any impostor super_admin).
     if _is_owner_email(identity.email, settings.owner_email):
-        if body.requested_portal not in (None, "owner"):
+        if portal != "owner":
             raise HTTPException(
                 status_code=403,
-                detail=f"No {body.requested_portal} workspace is linked to this account",
+                detail=f"No {_PORTAL_LABEL[portal]} workspace is linked to this account",
             )
         # Owner is an internal role resolved only by the configured owner email.
         firebase_auth.assert_provider_allowed(identity, Role.super_admin.value)
@@ -285,22 +340,25 @@ async def firebase_session(
         eligible = login_context.eligible_login_users(
             matched, owner_email=settings.owner_email
         )
-        eligible = _filter_requested_portal(eligible, body.requested_portal)
+        eligible = _filter_portal(eligible, portal)
         if not eligible:
-            # Every match is disabled or an impostor super_admin — do NOT mint a
-            # duplicate candidate over the top of an existing (unusable) account.
-            detail = (
-                f"No {body.requested_portal} workspace is linked to this account"
-                if body.requested_portal
-                else "Account unavailable"
-            )
-            raise HTTPException(status_code=403, detail=detail)
-    else:
-        # First-ever sign-in for this identity -> a fresh candidate user.
-        if body.requested_portal not in (None, "candidate"):
+            # Every match is disabled or an impostor super_admin, or belongs to
+            # another portal -- do NOT mint a duplicate candidate over the top
+            # of an existing account. A disabled account in THIS portal is told
+            # so; an account that lives on another surface is told which one
+            # this is not.
+            if _filter_portal(list(matched), portal):
+                raise HTTPException(status_code=403, detail="Account unavailable")
             raise HTTPException(
                 status_code=403,
-                detail=f"No {body.requested_portal} workspace is linked to this account",
+                detail=f"No {_PORTAL_LABEL[portal]} workspace is linked to this account",
+            )
+    else:
+        # First-ever sign-in for this identity -> a fresh candidate user.
+        if portal != "candidate":
+            raise HTTPException(
+                status_code=403,
+                detail=f"No {_PORTAL_LABEL[portal]} workspace is linked to this account",
             )
         firebase_auth.assert_provider_allowed(identity, Role.candidate.value)
         if not identity.email:
@@ -320,6 +378,13 @@ async def firebase_session(
         # WRITTEN on this path: the candidate has seen no consent wording, and
         # Stage A is stamped where it is shown (PUT /portal/me/profile-form).
         eligible = [user]
+
+    # ── A company still ONBOARDING opens no session ─────────────────────────
+    # Before the provider gate and before `_finalize_single`, which flips an
+    # invited account to active: a Firebase sign-up with a registered address
+    # must not open a workspace nobody has paid for. Refuses with the fixed
+    # sentence when no other workspace is left (services/company_onboarding).
+    eligible = await company_onboarding.without_onboarding(session, eligible)
 
     # ── Provider gate on every resolved context ─────────────────────────────
     for user in eligible:
@@ -444,6 +509,8 @@ async def available_workspaces(
         await login_context.find_users(session, identifier),
         owner_email=get_settings().owner_email,
     )
+    # A company still onboarding is never offered (services/company_onboarding).
+    eligible = await company_onboarding.without_onboarding(session, eligible)
     contexts = await login_context.build_contexts(session, eligible)
     token = login_context.make_context_token(
         identifier,
@@ -464,6 +531,12 @@ async def select_context(
 ) -> SessionOut:
     """Exchange a context_token (proof of a verified identity) for cookies as
     one of the identifier's users (contract rev 2). Single-use."""
+    # A company still ONBOARDING is refused before the token is spent and
+    # before `select_context` flips an invited account to active
+    # (services/company_onboarding).
+    chosen = await session.get(User, body.user_id)
+    if chosen is not None:
+        await company_onboarding.without_onboarding(session, [chosen])
     try:
         result = await login_context.select_context(
             session, context_token=body.context_token, user_id=body.user_id
@@ -616,23 +689,322 @@ async def logout(request: Request, response: Response) -> dict:
     return {"logged_out": True}
 
 
-@router.post("/password-changed")
-async def password_changed(
-    body: FirebaseSessionIn,
-    response: Response,
+# ── CAPTCHA (auth spec section 6) ────────────────────────────────────────────
+#
+# Anonymous by necessity: a CAPTCHA is answered before anybody has a session.
+# Rate limited as abuse control; the limiter fails OPEN, so it is never what
+# protects a secret -- the challenge's own attempt count and single use are.
+
+
+@router.post(
+    "/captcha/challenge",
+    response_model=CaptchaChallengeOut,
+    dependencies=[Depends(rate_limit("captcha_challenge", limit=30, window=60))],
+)
+async def captcha_challenge(body: CaptchaChallengeIn) -> CaptchaChallengeOut:
+    """A fresh server-drawn challenge for one surface."""
+    challenge = await captcha.create_challenge(body.purpose)
+    return CaptchaChallengeOut(
+        challenge_id=challenge.challenge_id,
+        image=challenge.image,
+        expires_in=challenge.expires_in,
+    )
+
+
+@router.post(
+    "/captcha/verify",
+    response_model=CaptchaVerifyOut,
+    dependencies=[Depends(rate_limit("captcha_verify", limit=30, window=60))],
+)
+async def captcha_verify(
+    body: CaptchaVerifyIn,
     session: AsyncSession = Depends(get_identity_session),
-) -> dict:
-    """Fresh Firebase proof revokes app sessions even if this cookie expired."""
-    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
-    users = (await session.execute(
-        select(User.id).where(User.firebase_uid == identity.uid)
+) -> CaptchaVerifyOut:
+    """Judge an answer; a right one is exchanged for a single-use proof.
+
+    A wrong answer is recorded (`captcha_challenge_failed`, the purpose and a
+    reason word, never the answer) and committed BEFORE the refusal is raised,
+    because the refusal is the whole point of the row.
+    """
+    try:
+        proof = await captcha.verify_answer(body.challenge_id, body.answer, body.purpose)
+    except captcha.CaptchaIncorrect as exc:
+        await record_auth_event(
+            session,
+            action=AUTH_CAPTCHA_CHALLENGE_FAILED,
+            metadata={"purpose": body.purpose, "reason": exc.reason},
+        )
+        await session.commit()
+        raise
+    return CaptchaVerifyOut(captcha_proof=proof)
+
+
+# ── Password reset and change (auth spec section 9) ─────────────────────────
+#
+# THE SERVER CHANGES THE PASSWORD NOW. Firebase's own reset email and the
+# browser-side password update are retired: the reset went around the CAPTCHA
+# and the security code entirely, and the change needed a separate call, on a
+# fresh Firebase token, to revoke sessions, which a browser could simply not
+# make. `tests/test_auth_hardening_removed.py` keeps both gone. Both flows are three steps: a CAPTCHA and a security code sent to
+# the account's email, the code exchanged for a single-use ticket, and the
+# ticket exchanged for the new password. Firebase still stores the credential.
+
+RESET_SENT_MESSAGE = (
+    "If an account uses this address, we have sent a security code to it. "
+    "Check your inbox and your spam folder."
+)
+CODE_REFUSED_DETAIL = (
+    "That security code is not valid or has expired. Check the latest email, "
+    "or ask for a new code."
+)
+TICKET_REFUSED_DETAIL = (
+    "This password change has expired. Start again and ask for a new "
+    "security code."
+)
+PASSWORD_UPDATE_FAILED_DETAIL = (
+    "We could not change your password right now. Please start again in a moment."
+)
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _normal_email(value: str) -> str:
+    email = (value or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    return email
+
+
+async def _accounts_for_email(session: AsyncSession, email: str) -> list[User]:
+    """Every NON-DISABLED account on this address, across portals.
+
+    One Firebase identity stands behind all of them, so a password reset
+    reaches all of them and revokes all of their sessions.
+    """
+    rows = (await session.execute(
+        select(User).where(func.lower(User.email) == email).order_by(User.created_at, User.id)
     )).scalars().all()
-    if not users:
-        raise HTTPException(status_code=401, detail="Unknown account")
-    for user_id in users:
-        await auth_sessions.revoke_all(user_id)
-    clear_auth_cookies(response)
-    return {"sessions_revoked": True}
+    return [row for row in rows if row.status != UserStatus.disabled]
+
+
+def _masked(email: str) -> str:
+    local, _, domain = email.partition("@")
+    head = local[:1] if local else ""
+    return f"{head}***@{domain}" if domain else "your email address"
+
+
+async def _replace_password(uid: str, password: str) -> None:
+    """Set the Firebase password and revoke its refresh tokens, or 503."""
+    try:
+        await firebase_auth.set_password(uid, password)
+        await firebase_auth.revoke_refresh_tokens(uid)
+    except firebase_auth.IdentityOperationFailed as exc:
+        raise HTTPException(status_code=503, detail=PASSWORD_UPDATE_FAILED_DETAIL) from exc
+
+
+async def _identity_uid(email: str) -> str | None:
+    try:
+        return await firebase_auth.identity_exists(email)
+    except firebase_auth.IdentityOperationFailed as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Sign-in is briefly unavailable. Please try again in a moment.",
+        ) from exc
+
+
+@router.post(
+    "/password-reset/request",
+    response_model=SecurityCodeSentOut,
+    dependencies=[Depends(rate_limit("password_reset", limit=10, window=600))],
+)
+async def password_reset_request(
+    body: PasswordResetRequestIn,
+    session: AsyncSession = Depends(get_identity_session),
+) -> SecurityCodeSentOut:
+    """Send a security code for a forgotten password. ENUMERATION SAFE.
+
+    The answer is the same sentence whether or not an account uses the
+    address, and a code is ISSUED (and its resend window started) either way,
+    so neither the answer, a second request's cooldown nor a later verify can
+    tell a registered address from an unregistered one. Only an address with a
+    live account AND a Firebase identity is actually written to.
+    """
+    await captcha.consume_proof(body.captcha_proof, "password_reset")
+    email = _normal_email(body.email)
+    code = await security_codes.issue_code("password_reset", email)
+    accounts = await _accounts_for_email(session, email)
+    if accounts and await _identity_uid(email):
+        security_email.dispatch_security_email(
+            email, "security_code_password", {"code": code, "action": "reset"},
+            session=session,
+        )
+        await record_auth_event(
+            session,
+            action=AUTH_PASSWORD_CHANGE_CODE_SENT,
+            actor_user_id=accounts[0].id,
+            tenant_id=accounts[0].tenant_id,
+            metadata={"flow": "reset"},
+        )
+        await session.commit()
+    return SecurityCodeSentOut(message=RESET_SENT_MESSAGE)
+
+
+@router.post(
+    "/password-reset/verify",
+    response_model=PasswordResetVerifyOut,
+    dependencies=[Depends(rate_limit("password_reset_verify", limit=20, window=600))],
+)
+async def password_reset_verify(body: PasswordResetVerifyIn) -> PasswordResetVerifyOut:
+    """Exchange a right code for a single-use reset token (ten minutes)."""
+    email = _normal_email(body.email)
+    if not await security_codes.check_code("password_reset", email, body.code):
+        raise HTTPException(status_code=400, detail=CODE_REFUSED_DETAIL)
+    return PasswordResetVerifyOut(
+        reset_token=await security_codes.mint_ticket("password_reset", email)
+    )
+
+
+@router.post(
+    "/password-reset/complete",
+    response_model=PasswordChangedOut,
+    dependencies=[Depends(rate_limit("password_reset_complete", limit=20, window=600))],
+)
+async def password_reset_complete(
+    body: PasswordResetCompleteIn,
+    session: AsyncSession = Depends(get_identity_session),
+) -> PasswordChangedOut:
+    """Set the new password, then revoke every session of every account on
+    the address, in Firebase and here. The rule is checked BEFORE the token is
+    spent, so a weak password costs a retry, not the whole flow."""
+    password_policy.require_valid(body.password)
+    email = await security_codes.redeem_ticket("password_reset", body.reset_token)
+    if not email:
+        raise HTTPException(status_code=400, detail=TICKET_REFUSED_DETAIL)
+    uid = await _identity_uid(email)
+    accounts = await _accounts_for_email(session, email)
+    if uid is None or not accounts:
+        raise HTTPException(status_code=400, detail=TICKET_REFUSED_DETAIL)
+    await _replace_password(uid, body.password)
+    for account in accounts:
+        await auth_sessions.revoke_all(account.id)
+        await record_auth_event(
+            session,
+            action=AUTH_PASSWORD_CHANGED,
+            actor_user_id=account.id,
+            tenant_id=account.tenant_id,
+            metadata={"flow": "reset"},
+        )
+    await session.commit()
+    return PasswordChangedOut(
+        message="Your password has been changed. Sign in with your new password."
+    )
+
+
+@router.post(
+    "/password-change/request",
+    response_model=SecurityCodeSentOut,
+    dependencies=[Depends(rate_limit("password_change", limit=10, window=600))],
+)
+async def password_change_request(
+    body: PasswordChangeRequestIn,
+    current: CurrentUser = Depends(get_current_any),
+    session: AsyncSession = Depends(get_identity_session),
+) -> SecurityCodeSentOut:
+    """Send a security code to the signed-in account's own email address."""
+    await captcha.consume_proof(body.captcha_proof, "password_change")
+    user = await session.get(User, current.user_id)
+    if user is None or user.status == UserStatus.disabled:
+        raise HTTPException(status_code=401, detail="Account unavailable")
+    if not user.email:
+        raise HTTPException(
+            status_code=409,
+            detail="This account has no email address to send a security code to.",
+        )
+    code = await security_codes.issue_code("password_change", str(user.id))
+    security_email.dispatch_security_email(
+        user.email, "security_code_password", {"code": code, "action": "change"},
+        session=session,
+    )
+    await record_auth_event(
+        session,
+        action=AUTH_PASSWORD_CHANGE_CODE_SENT,
+        actor_user_id=user.id,
+        tenant_id=user.tenant_id,
+        metadata={"flow": "change"},
+    )
+    await session.commit()
+    return SecurityCodeSentOut(
+        message=f"We sent a security code to {_masked(user.email)}."
+    )
+
+
+@router.post(
+    "/password-change/verify",
+    response_model=PasswordChangeVerifyOut,
+    dependencies=[Depends(rate_limit("password_change_verify", limit=20, window=600))],
+)
+async def password_change_verify(
+    body: PasswordChangeVerifyIn,
+    current: CurrentUser = Depends(get_current_any),
+) -> PasswordChangeVerifyOut:
+    """Exchange a right code for a single-use change token (ten minutes)."""
+    subject = str(current.user_id)
+    if not await security_codes.check_code("password_change", subject, body.code):
+        raise HTTPException(status_code=400, detail=CODE_REFUSED_DETAIL)
+    return PasswordChangeVerifyOut(
+        change_token=await security_codes.mint_ticket("password_change", subject)
+    )
+
+
+@router.post(
+    "/password-change/complete",
+    response_model=PasswordChangedOut,
+    dependencies=[Depends(rate_limit("password_change_complete", limit=20, window=600))],
+)
+async def password_change_complete(
+    body: PasswordChangeCompleteIn,
+    response: Response,
+    current: CurrentUser = Depends(get_current_any),
+    session: AsyncSession = Depends(get_identity_session),
+) -> PasswordChangedOut:
+    """Set the new password, revoke every OTHER session, re-issue this one.
+
+    Every app session of every account on this email is revoked (one Firebase
+    identity stands behind all of them), Firebase's refresh tokens are
+    revoked, and the browser that made the change gets a FRESH session, so
+    the person who changed their password stays signed in here and nowhere
+    else.
+    """
+    password_policy.require_valid(body.password)
+    subject = await security_codes.redeem_ticket("password_change", body.change_token)
+    if subject != str(current.user_id):
+        raise HTTPException(status_code=400, detail=TICKET_REFUSED_DETAIL)
+    user = await session.get(User, current.user_id)
+    if user is None or user.status == UserStatus.disabled or not user.email:
+        raise HTTPException(status_code=401, detail="Account unavailable")
+    uid = user.firebase_uid or await _identity_uid(user.email)
+    if uid is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This account has no password sign-in to change.",
+        )
+    await _replace_password(uid, body.password)
+    accounts = await _accounts_for_email(session, user.email.strip().lower())
+    for account_id in {user.id, *(account.id for account in accounts)}:
+        await auth_sessions.revoke_all(account_id)
+    await record_auth_event(
+        session,
+        action=AUTH_PASSWORD_CHANGED,
+        actor_user_id=user.id,
+        tenant_id=user.tenant_id,
+        metadata={"flow": "change"},
+    )
+    if "password" not in (user.auth_providers or []):
+        user.auth_providers = sorted(set((user.auth_providers or []) + ["password"]))
+    await session.commit()
+    await _issue_session(response, user, audience_for_role(user.role))
+    return PasswordChangedOut(
+        message="Your password has been changed. Other devices have been signed out."
+    )
 
 
 @router.get("/me", response_model=MeOut)

@@ -77,7 +77,17 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The legacy free-text department, kept in step with `department_id` as
+    #: the department's display name (spec 13.1 keeps it "temporarily during
+    #: migration"). Authorization NEVER reads it: `department_id` is the
+    #: boundary (`services/department_access`).
     department: Mapped[str | None] = mapped_column(String(255))
+    #: The job's department (migration 0133), a same-tenant composite foreign
+    #: key onto company_departments(id, tenant_id). Written only through
+    #: `services/departments.assign_job_department`.
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     level: Mapped[str | None] = mapped_column(String(100))
     jd_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     #: The unified JD document (migration 0022). Nullable so jobs created

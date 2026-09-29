@@ -90,17 +90,6 @@ export const CAP = {
   addCompensation: "add_compensation",
   integrityDisposition: "integrity_disposition",
   /**
-   * Drishti, the function's strategic profile (vivekium feature 1, C3).
-   *
-   * Deliberately NOT `editCompanyProfile`. Every client-side staff role
-   * holds that one, including the Hiring Manager, and the brief excludes the
-   * Hiring Manager by name from Drishti's audience. Asking the wider
-   * capability here would show the nav entry to somebody every one of the
-   * four endpoints then refuses, which is the failure this whole file exists
-   * to stop: the courtesy and the gate have to agree.
-   */
-  authorDrishtiProfile: "author_drishti_profile",
-  /**
    * The job's skills, one capability per bucket (Vivekium release, Phase 1).
    * Editing a skill is the Hiring Manager's authority, not `create_job`'s:
    * the skills are what every candidate on the job is assessed against. The
@@ -120,6 +109,22 @@ export const CAP = {
    * open; it never extends the thirty day retention window.
    */
   retrieveDisputedAssessment: "retrieve_disputed_assessment",
+  /**
+   * The READ halves of three surfaces that used to be read and written under
+   * one capability (the leadership release, 2026-09-29, spec 15). A CEO or MD
+   * holds the view and not the manage; a navigation entry asks the view, and
+   * every write control on the page asks the manage.
+   */
+  viewStaff: "view_staff",
+  viewComplianceDocuments: "view_compliance_documents",
+  viewEmailSenders: "view_email_senders",
+  /**
+   * Leadership Intelligence (spec 2.13): AUTHOR is a leader's own input (the
+   * CEO's, the MD's, a Functional Head's for their department), VIEW is the
+   * Super Admin's visibility of all of it.
+   */
+  authorLeadershipIntelligence: "author_leadership_intelligence",
+  viewLeadershipIntelligence: "view_leadership_intelligence",
 } as const;
 
 export type CapabilityName = (typeof CAP)[keyof typeof CAP];

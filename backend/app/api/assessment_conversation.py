@@ -83,7 +83,7 @@ from app.services import (
     candidate_identity,
     consent_catalog,
     cost_telemetry,
-    credits,
+    entitlements,
     hiring_pipeline,
     job_posting,
     locks,
@@ -117,10 +117,9 @@ NOT_INVITED_DETAIL = (
 #: What a candidate reads when the employer's credit cannot pay for a NEW
 #: assessment. It names no billing term: the balance is the employer's
 #: business, and the employer sees the refusal on their own screens.
-START_CREDIT_DETAIL = (
-    "This assessment cannot be started right now. Please try again later, and "
-    "contact the hiring team if this continues."
-)
+#: The candidate's refusal at a start the employer's credits cannot cover.
+#: Worded once, in `services/entitlements`.
+START_CREDIT_DETAIL = entitlements.START_ASSESSMENT_DETAIL
 RETIRED_MODE_DETAIL = (
     "This assessment was begun as a video interview, which is no longer "
     "offered, so it cannot continue here. Please contact the hiring team."
@@ -680,15 +679,18 @@ async def start_conversation(
 
     if conversation.started_at is None:
         # A running conversation always finishes; a NEW one must be payable.
-        allowed, _required, _balance = await credits.can_start_assessment(
-            session, job.tenant_id, role_classification=job.role_classification
+        refused = await entitlements.restriction_reason(
+            session,
+            job.tenant_id,
+            entitlements.ACTION_START_ASSESSMENT,
+            role_classification=job.role_classification,
         )
-        if not allowed:
+        if refused is not None:
             logger.warning(
                 "assessment_start.refused_credit tenant_id=%s job_id=%s link_id=%s",
                 job.tenant_id, job.id, link.id,
             )
-            raise HTTPException(status_code=402, detail=START_CREDIT_DETAIL)
+            raise HTTPException(status_code=402, detail=refused)
 
     rows = await turns.conversation_prompts(session, job, link)
     if not rows:

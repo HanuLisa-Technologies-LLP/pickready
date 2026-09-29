@@ -1,4 +1,8 @@
-"""Billing and credit-ledger schemas (killer-spec Parts 2 and 3).
+"""Billing and credit-ledger schemas: credits, packs, purchases, invoices.
+
+Per-credit only. The monthly subscription schemas (plans, subscribe, the
+subscription checkout payload) were deleted with the subscription model on
+2026-09-29 (owner spec, section 23).
 
 Balances cross this boundary in BOTH units on purpose. `balance_subunits` is
 the exact integer the ledger holds and is what any arithmetic must use;
@@ -15,7 +19,6 @@ from pydantic import BaseModel, ConfigDict, Field
 __all__ = [
     "CreditLotOut",
     "BillingOverviewOut",
-    "CheckoutVerifyIn",
     "CreditLedgerEntryOut",
     "CreditPackQuoteOut",
     "CreditPacksOut",
@@ -24,62 +27,14 @@ __all__ = [
     "CreditPurchaseOut",
     "CreditPurchaseVerifyIn",
     "CreditSummaryOut",
-    "PlanOut",
     "ProviderBillingRowOut",
-    "SubscribeIn",
-    "SubscribeOut",
-    "SubscriptionOut",
+    "PublishedBonusLevelOut",
+    "PublishedCatalogueOut",
+    "PublishedConsumptionOut",
+    "PublishedPackOut",
     "TransactionOut",
     "UsageBreakdownOut",
 ]
-
-
-class PlanOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    slug: str
-    name: str
-    applications_per_month: int
-    price_inr: int
-    rate_per_application_inr: int
-    is_active: bool
-    #: True once a Razorpay Plan exists for it. A Subscribe button on a plan
-    #: without one would open Checkout and immediately fail, so the UI disables
-    #: it instead of pretending.
-    checkout_ready: bool
-
-
-class SubscribeIn(BaseModel):
-    plan_slug: str = Field(min_length=1, max_length=50)
-
-
-class SubscribeOut(BaseModel):
-    subscription_id: str
-    razorpay_key_id: str
-    plan: PlanOut
-    #: Razorpay's hosted page, offered as a fallback when the embedded widget
-    #: cannot open (blocked script, unsupported browser).
-    short_url: str | None = None
-
-
-class CheckoutVerifyIn(BaseModel):
-    """The handler payload Razorpay Checkout hands back in the browser.
-
-    Signed as ``payment_id|subscription_id`` for subscriptions — the reverse of
-    the Orders flow.
-    """
-
-    razorpay_payment_id: str = Field(min_length=1, max_length=100)
-    razorpay_subscription_id: str = Field(min_length=1, max_length=100)
-    razorpay_signature: str = Field(min_length=1, max_length=200)
-
-
-class SubscriptionOut(BaseModel):
-    plan: PlanOut | None
-    status: str | None
-    razorpay_subscription_id: str | None
-    current_end: datetime | None
 
 
 class UsageBreakdownOut(BaseModel):
@@ -112,8 +67,9 @@ class CreditLotOut(BaseModel):
 class CreditSummaryOut(BaseModel):
     balance_subunits: int
     balance_credits: Decimal
-    # Current plan-rate equivalent. Credits remain the ledger's unit; INR is
-    # shown beside them so the commercial value is never hidden.
+    # The balance at the list price per credit (`PRICE_PER_CREDIT_INR`, excl.
+    # GST). Credits remain the ledger's unit; INR is shown beside them so the
+    # commercial value is never hidden.
     balance_inr: Decimal | None = None
     subunits_per_credit: int
     granted_subunits: int
@@ -219,16 +175,14 @@ class TransactionOut(BaseModel):
 
 
 class BillingOverviewOut(BaseModel):
-    """Everything /org/billing renders in one call.
+    """The balance, the usage and the recent history /org/billing renders.
 
-    One round trip rather than four: the page has no state in which it wants
-    the plan without the balance, and four parallel calls each pay the same
-    auth + RLS setup cost.
+    One round trip rather than several: each call pays the same auth and RLS
+    setup cost, and the page has no state in which it wants the balance
+    without the usage.
     """
 
-    subscription: SubscriptionOut
     credits: CreditSummaryOut
-    plans: list[PlanOut]
     razorpay_key_id: str | None
     recent_ledger: list[CreditLedgerEntryOut]
     transactions: list[TransactionOut]
@@ -246,8 +200,7 @@ class CreditPackQuoteOut(BaseModel):
 
     slug: str
     #: Resolved server-side so the page, the invoice and an email cannot call
-    #: one pack three things. The Starter Assessment Pack is never labelled
-    #: with the bare word "Starter": that is already a subscription plan.
+    #: one pack three things.
     label: str
     credits: int
     bonus_credits: int
@@ -305,8 +258,7 @@ class CreditPurchaseCreatedOut(BaseModel):
 class CreditPurchaseVerifyIn(BaseModel):
     """The handler payload Razorpay Checkout returns for an ORDERS payment.
 
-    Signed as ``order_id|payment_id`` — the reverse of the subscription flow
-    (see services/razorpay.verify_order_signature).
+    Signed as ``order_id|payment_id`` (see services/razorpay.verify_order_signature).
     """
 
     razorpay_order_id: str = Field(min_length=1, max_length=100)
@@ -332,14 +284,70 @@ class CreditPurchaseOut(BaseModel):
 
 
 class ProviderBillingRowOut(BaseModel):
-    """One customer's billing state in the Provider Portal overview."""
+    """One customer's credit balance in the Provider Portal overview."""
 
     tenant_id: uuid.UUID
     customer_name: str
-    plan_name: str | None
-    subscription_status: str | None
     balance_subunits: int
     balance_credits: Decimal
-    balance_inr: Decimal | None = None
+    #: At the list price per credit, excl. GST.
+    balance_inr: Decimal
     in_deficit: bool
-    current_end: datetime | None
+
+
+# ── The published catalogue (GET /billing/public/credit-packs) ─────────────
+
+
+class PublishedPackOut(BaseModel):
+    """One pack at the STANDARD price, for a visitor with no account.
+
+    Excludes the one-time setup fee, which is account-dependent (charged or
+    waived on the first purchase only) and stated once on the catalogue.
+    """
+
+    slug: str
+    label: str
+    credits: int
+    bonus_credits: int
+    credits_total: int
+    subtotal_inr: int
+    gst_inr: int
+    total_inr: int
+    #: The trial pack: sold once per account, as its first purchase.
+    new_accounts_only: bool
+    validity_months: int
+
+
+class PublishedConsumptionOut(BaseModel):
+    """What one billable event draws from the pool, in integer sub-units, so
+    a fraction of a credit is exact (`subunits_per_credit` to a credit)."""
+
+    event_type: str
+    label: str
+    non_stem_subunits: int
+    stem_subunits: int
+
+
+class PublishedBonusLevelOut(BaseModel):
+    min_credits: int
+    bonus_credits: int
+
+
+class PublishedCatalogueOut(BaseModel):
+    """The platform's published price list. One source of truth: the public
+    pricing page renders this and holds no figure of its own."""
+
+    price_per_credit_inr: int
+    gst_rate_percent: int
+    subunits_per_credit: int
+    credit_validity_months: int
+    min_custom_credits: int
+    #: The one-time account setup fee, excl. GST, and its GST. Charged on the
+    #: first purchase only, and waived for the first `setup_fee_waiver_limit`
+    #: client accounts; whether a given account pays it is shown at checkout.
+    setup_fee_inr: int
+    setup_fee_gst_inr: int
+    setup_fee_waiver_limit: int
+    bonus_levels: list[PublishedBonusLevelOut]
+    packs: list[PublishedPackOut]
+    consumption: list[PublishedConsumptionOut]

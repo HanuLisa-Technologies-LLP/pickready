@@ -253,13 +253,13 @@ function SectionIntro({
 }) {
   return (
     <FadeIn className="max-w-3xl">
-      <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">
+      <p className="type-eyebrow text-brand-600">
         {eyebrow}
       </p>
-      <h2 className="mt-3 text-balance text-3xl font-bold leading-tight sm:text-4xl">
+      <h2 className="mt-3 type-section-title">
         {title}
       </h2>
-      <p className="mt-5 text-pretty text-base sm:text-lg sm:leading-8">
+      <p className="mt-5 type-lead">
         {body}
       </p>
     </FadeIn>
@@ -268,7 +268,7 @@ function SectionIntro({
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex rounded-full border border-brand-500/30 bg-brand-100 px-3 py-1 text-xs font-semibold uppercase tracking-[.12em] text-brand-700">
+    <span className="inline-flex rounded-full border border-brand-500/30 bg-brand-100 px-3 py-1 type-eyebrow text-brand-700">
       {children}
     </span>
   );
@@ -291,11 +291,11 @@ export default function DocsPage() {
             <div className="flex flex-wrap items-center gap-3">
               <Label>Documented as built</Label>
             </div>
-            <h1 className="mt-7 text-balance text-4xl font-bold leading-[1.05] sm:text-5xl lg:text-6xl">
+            <h1 className="mt-7 type-display">
               The product and the system,{" "}
               <span className="text-gradient-brand">documented as built.</span>
             </h1>
-            <p className="mt-7 max-w-2xl text-pretty text-lg leading-8">
+            <p className="mt-7 type-lead">
               A code-aligned guide to what Vivekium does, how each workspace
               fits together, and how the platform should mature from its
               current deployment into a production-scale service.
@@ -325,7 +325,7 @@ export default function DocsPage() {
                 <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
               </div>
-              <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
+              <p className="type-ref text-teal-400">
                 vivekium / system-map
               </p>
               <div className="mt-8 grid gap-3">
@@ -339,7 +339,7 @@ export default function DocsPage() {
                     key={number}
                     className="group grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-2xl border border-white/10 bg-white/[.055] px-4 py-4"
                   >
-                    <span className="font-mono text-xs text-teal-400">
+                    <span className="text-xs font-semibold tabular-nums text-teal-400">
                       {number}
                     </span>
                     <div>
@@ -377,7 +377,7 @@ export default function DocsPage() {
             aria-label="Documentation contents"
             className="sticky top-24 rounded-2xl border border-border bg-surface p-4 shadow-card"
           >
-            <p className="px-2 text-xs font-semibold uppercase tracking-[.16em]">
+            <p className="px-2 type-eyebrow">
               On this page
             </p>
             <ul className="mt-3 space-y-1">
@@ -409,7 +409,7 @@ export default function DocsPage() {
                   <Sparkles className="h-7 w-7" aria-hidden="true" />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-bold">What makes it distinct</h3>
+                  <h3 className="text-2xl font-semibold">What makes it distinct</h3>
                   <p className="mt-3 leading-7">
                     The platform combines hybrid retrieval, grade-aware
                     assessment, behavioural evidence, qualitative reporting,
@@ -454,7 +454,7 @@ export default function DocsPage() {
                       </div>
                       <Label>{workspace.label}</Label>
                     </div>
-                    <h3 className="mt-6 text-xl font-bold">{workspace.title}</h3>
+                    <h3 className="mt-6 text-xl font-semibold">{workspace.title}</h3>
                     <p className="mt-3 text-sm">{workspace.body}</p>
                     <ul className="mt-5 space-y-2 border-t border-border pt-5">
                       {workspace.items.map((item) => (
@@ -503,10 +503,10 @@ export default function DocsPage() {
                       >
                         <item.icon className="h-4 w-4" aria-hidden="true" />
                       </div>
-                      <p className="font-mono text-xs font-semibold text-brand-600">
+                      <p className="text-xs font-semibold tabular-nums text-brand-600">
                         {item.step}
                       </p>
-                      <h3 className="mt-2 text-lg font-bold">{item.title}</h3>
+                      <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                       <p className="mt-2 text-sm">{item.body}</p>
                     </article>
                   </FadeIn>
@@ -540,7 +540,7 @@ export default function DocsPage() {
                 >
                   <span className="font-semibold">{row[0]}</span>
                   {row.slice(1).map((value, valueIndex) => (
-                    <span key={`${row[0]}-${valueIndex}`} className="text-right font-mono">
+                    <span key={`${row[0]}-${valueIndex}`} className="text-right tabular-nums">
                       {value}
                     </span>
                   ))}
@@ -571,7 +571,7 @@ export default function DocsPage() {
                   className="rounded-2xl border border-border bg-surface p-5"
                 >
                   <item.icon className="h-5 w-5 text-brand-600" aria-hidden="true" />
-                  <h3 className="mt-4 font-bold">{item.title}</h3>
+                  <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                   <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
@@ -590,7 +590,7 @@ export default function DocsPage() {
                   key={metric.label}
                   className="rounded-2xl border border-border bg-surface p-5 shadow-card"
                 >
-                  <p className="font-mono text-2xl font-bold text-brand-600">
+                  <p className="text-2xl font-semibold tabular-nums text-brand-600">
                     {metric.value}
                   </p>
                   <p className="mt-2 text-sm">{metric.label}</p>
@@ -601,7 +601,7 @@ export default function DocsPage() {
               <div className="flex gap-4">
                 <Gauge className="mt-0.5 h-6 w-6 shrink-0" aria-hidden="true" />
                 <div>
-                  <h3 className="font-bold">Evidence roadmap</h3>
+                  <h3 className="font-semibold">Evidence roadmap</h3>
                   <p className="mt-2 text-sm">
                     Production analytics should establish time-to-publish,
                     candidate review minutes, invite completion, report-to-
@@ -616,13 +616,13 @@ export default function DocsPage() {
 
           <section id="technical" className="scroll-mt-24 pt-28">
             <div className="rounded-3xl bg-[#090b16] p-7 text-white sm:p-10">
-              <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
+              <p className="type-eyebrow text-teal-400">
                 Technical documentation
               </p>
-              <h2 className="mt-4 max-w-3xl text-balance text-3xl font-bold leading-tight sm:text-4xl">
+              <h2 className="mt-4 max-w-3xl type-section-title">
                 A modular web system with durable workflows and defense in depth
               </h2>
-              <p className="mt-5 max-w-3xl text-pretty leading-7 text-white/70">
+              <p className="mt-5 type-lead text-white/70">
                 Next.js serves the public and portal experiences. FastAPI owns
                 contracts and authorization. PostgreSQL stores domain state and
                 enforces tenant isolation. Long-running work runs on compute
@@ -640,7 +640,7 @@ export default function DocsPage() {
                     key={label}
                     className="rounded-xl border border-white/10 bg-white/[.055] p-4"
                   >
-                    <p className="font-mono text-xl font-bold text-teal-100">
+                    <p className="text-xl font-semibold tabular-nums text-teal-100">
                       {value}
                     </p>
                     <p className="mt-1 text-xs text-white/60">{label}</p>
@@ -657,7 +657,7 @@ export default function DocsPage() {
                       <item.icon className="h-5 w-5" aria-hidden="true" />
                     </div>
                     <div>
-                      <h3 className="font-bold">{item.title}</h3>
+                      <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                       <p className="mt-2 text-sm">{item.detail}</p>
                     </div>
                   </article>
@@ -749,7 +749,7 @@ export default function DocsPage() {
                   className="rounded-2xl border border-border bg-surface p-5"
                 >
                   <item.icon className="h-5 w-5 text-brand-600" aria-hidden="true" />
-                  <h3 className="mt-4 font-bold">{item.title}</h3>
+                  <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                   <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
@@ -778,7 +778,11 @@ export default function DocsPage() {
                         <td
                           key={cell}
                           className={`px-5 py-4 ${
-                            index === 0 ? "font-semibold" : "font-mono text-xs"
+                            index === 0
+                              ? "font-semibold"
+                              : index === 1
+                                ? "type-ref"
+                                : ""
                           }`}
                         >
                           {cell}
@@ -793,7 +797,7 @@ export default function DocsPage() {
               <div className="flex gap-4">
                 <Sparkles className="mt-0.5 h-6 w-6 shrink-0 text-brand-700" aria-hidden="true" />
                 <div>
-                  <h3 className="font-bold">Production provider direction</h3>
+                  <h3 className="font-semibold">Production provider direction</h3>
                   <p className="mt-2 text-sm">
                     Replace free-tier key rotation with a direct enterprise
                     primary vendor under contract, retain a
@@ -832,7 +836,7 @@ export default function DocsPage() {
                       aria-hidden="true"
                     />
                     <div>
-                      <h3 className="font-bold">{title as string}</h3>
+                      <h3 className="font-semibold">{title as string}</h3>
                       <p className="mt-2 text-sm">{body as string}</p>
                     </div>
                   </article>
@@ -869,7 +873,7 @@ export default function DocsPage() {
                   })}
                 </div>
                 <div className="rounded-2xl border border-teal-400/25 bg-teal-400/10 p-5">
-                  <p className="font-mono text-xs uppercase tracking-[.16em] text-teal-100">
+                  <p className="type-eyebrow text-teal-100">
                     Managed core
                   </p>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -938,11 +942,11 @@ export default function DocsPage() {
                 >
                   <div className="flex items-center justify-between">
                     <item.icon className="h-6 w-6 text-brand-600" aria-hidden="true" />
-                    <span className="font-mono text-xs font-semibold text-brand-600">
+                    <span className="text-xs font-semibold tabular-nums text-brand-600">
                       {item.stage}
                     </span>
                   </div>
-                  <h3 className="mt-5 text-lg font-bold">{item.title}</h3>
+                  <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                   <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
@@ -973,7 +977,7 @@ export default function DocsPage() {
                     {item.level}
                   </span>
                   <div>
-                    <h3 className="font-bold">{item.title}</h3>
+                    <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
                     <p className="mt-2 text-sm">{item.body}</p>
                   </div>
                 </article>
@@ -985,13 +989,13 @@ export default function DocsPage() {
             <div className="overflow-hidden rounded-3xl bg-brand-600 p-8 text-white shadow-pop sm:p-10">
               <div className="grid gap-8 md:grid-cols-[1fr_auto] md:items-end">
                 <div>
-                  <p className="text-sm font-semibold uppercase tracking-[.18em] text-teal-100">
+                  <p className="type-eyebrow text-teal-100">
                     Documentation contract
                   </p>
-                  <h2 className="mt-4 max-w-2xl text-balance text-3xl font-bold">
+                  <h2 className="mt-4 max-w-2xl type-section-title">
                     The codebase remains the source of truth.
                   </h2>
-                  <p className="mt-4 max-w-2xl leading-7 text-white/80">
+                  <p className="mt-4 type-lead text-white/80">
                     Product claims, infrastructure diagrams and workflow rules
                     should change with implementation evidence. Historical
                     proposals must not silently return as current behavior.

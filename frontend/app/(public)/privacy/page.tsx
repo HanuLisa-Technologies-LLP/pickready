@@ -23,9 +23,9 @@ const SECTIONS = [
 export default function PrivacyPage() {
   return (
     <main id="main" className="mx-auto max-w-4xl px-6 py-20 lg:px-10 lg:py-28">
-      <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">Privacy notice</p>
-      <h1 className="mt-4 text-4xl font-bold">Your information should never be a mystery</h1>
-      <p className="mt-5 text-lg leading-8">
+      <p className="type-eyebrow text-brand-600">Privacy notice</p>
+      <h1 className="mt-4 type-section-title">Your information should never be a mystery</h1>
+      <p className="mt-5 type-lead">
         This notice explains how Vivekium handles digital personal data. It is designed to support the Digital Personal Data Protection Act, 2023 and the Digital Personal Data Protection Rules, 2025 as their provisions become applicable.
       </p>
       <p className="mt-3 text-sm">Effective: 29 July 2026</p>

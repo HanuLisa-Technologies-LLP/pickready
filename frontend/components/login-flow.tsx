@@ -3,10 +3,8 @@
 import * as React from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { signInWithEmailAndPassword, signInWithPopup } from "firebase/auth";
-import { useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
-import { ApiError } from "@/lib/api";
 import { createCandidateGoogleProvider, firebaseAuth } from "@/lib/firebase";
 import {
   exchangeFirebaseSession,
@@ -14,13 +12,18 @@ import {
   isContextsResponse,
   ROLE_LABEL,
   selectContext,
+  type ExchangePurpose,
   type FirebaseExchangeResult,
-  type RequestedPortal,
 } from "@/lib/firebase-session";
 import { homePathForRole, useAuth } from "@/lib/auth-context";
 import { currentNextPath, withNext } from "@/lib/next-destination";
 import type { AuthContextsResponse, AuthSession } from "@/lib/types";
 import { AuthDivider, AuthLink, AuthShell } from "@/components/auth-shell";
+import {
+  CAPTCHA_EMPTY_MESSAGE,
+  Captcha,
+  type CaptchaHandle,
+} from "@/components/captcha";
 import { InlineError } from "@/components/page-primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,33 +31,83 @@ import { Label } from "@/components/ui/label";
 import { GoogleMark } from "@/components/google-mark";
 import { ForgotPassword } from "@/components/forgot-password";
 
+/**
+ * Which sign-in page this is. The surface decides the security check's
+ * purpose, and the server reads that purpose as the portal: a candidate page
+ * opens the candidate workspace, the company page a company workspace, and the
+ * Provider and business development pages their consoles.
+ *
+ * Google is offered to candidates, the Provider and business development.
+ * NEVER on the company page: every company role signs in with an email and
+ * password, and the server refuses a Google sign-in for one even when a caller
+ * skips this screen (auth spec 2.6 and 8).
+ */
+export type SignInSurface = "candidate" | "company" | "provider" | "bd";
+
+const PURPOSE: Record<SignInSurface, ExchangePurpose> = {
+  candidate: "candidate_login",
+  company: "company_login",
+  provider: "provider_login",
+  bd: "bd_login",
+};
+
+const GOOGLE_ALLOWED: Record<SignInSurface, boolean> = {
+  candidate: true,
+  company: false,
+  provider: true,
+  bd: true,
+};
+
+const TITLES: Record<SignInSurface, string> = {
+  candidate: "Sign in to Vivekium",
+  company: "Sign in to your company workspace",
+  provider: "Provider sign in",
+  bd: "Business development sign in",
+};
+
+/**
+ * `/login`: the candidate sign-in page, which also carries the Provider and
+ * business development sign-ins behind `?portal=owner` and `?portal=bd`
+ * (each asks its own security check, so the surface is chosen before the
+ * check is drawn). `?portal=org` is the company page's sign-in; the company
+ * page itself lives at /company/login. `?portal=candidate`, which invitation
+ * links carry, is the candidate page.
+ */
+export function LoginPageFlow() {
+  const portal = useSearchParams().get("portal");
+  const surface: SignInSurface =
+    portal === "owner"
+      ? "provider"
+      : portal === "bd"
+        ? "bd"
+        : portal === "org"
+          ? "company"
+          : "candidate";
+  return <LoginFlow key={surface} surface={surface} title={TITLES[surface]} />;
+}
+
 export function LoginFlow({
   title,
   description,
+  surface,
 }: {
   title: string;
   description?: string;
+  surface: SignInSurface;
 }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { setSession } = useAuth();
-  const initialPortal = searchParams.get("portal");
-  const [requestedPortal] = React.useState<RequestedPortal | null>(
-    initialPortal === "candidate" ||
-      initialPortal === "org" ||
-      initialPortal === "bd" ||
-      initialPortal === "owner"
-      ? initialPortal
-      : null
-  );
+  const purpose = PURPOSE[surface];
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
   const [contexts, setContexts] = React.useState<AuthContextsResponse | null>(
     null
   );
+  const [resetOpen, setResetOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const captcha = React.useRef<CaptchaHandle>(null);
 
   const finish = React.useCallback(
     (session: AuthSession) => {
@@ -97,64 +150,87 @@ export function LoginFlow({
       return;
     }
     run(async () => {
+      // The security check first: a wrong answer costs no Firebase sign-in.
+      const proof = await captcha.current!.prove();
       const credential = await signInWithEmailAndPassword(
         firebaseAuth,
         email.trim(),
         password
       );
-      resolve(await exchangeFirebaseSession(credential.user, requestedPortal));
+      resolve(await exchangeFirebaseSession(credential.user, { proof, purpose }));
     });
   };
 
-  const googleSignIn = () =>
+  const googleSignIn = () => {
+    // The popup must open on the click itself or the browser blocks it, so
+    // the check is asked for BEFORE the popup and verified after it.
+    if (!captcha.current?.hasAnswer()) {
+      setError(CAPTCHA_EMPTY_MESSAGE);
+      return;
+    }
     run(async () => {
       const credential = await signInWithPopup(
         firebaseAuth,
         createCandidateGoogleProvider()
       );
-      resolve(await exchangeFirebaseSession(credential.user, requestedPortal));
+      const proof = await captcha.current!.prove();
+      resolve(await exchangeFirebaseSession(credential.user, { proof, purpose }));
     });
+  };
 
   /**
-   * Finalize the workspace choice.
-   *
-   * A `context_token` is single-use and short-lived: the backend answers 410
-   * once it has been spent and 401 once it has expired. Either way the token in
-   * React state is dead, and re-clicking a workspace used to fail forever, the
-   * visible symptom being "410 Gone, and re-logging in doesn't work". The
-   * Firebase sign-in is still valid at this point, so we mint a FRESH context
-   * token from it and retry the same choice once, transparently.
+   * Finalize the workspace choice. A `context_token` is single use and short
+   * lived; once it is spent or expired the person signs in again, which asks
+   * a fresh security check, rather than this screen re-minting one quietly.
    */
   const chooseContext = (userId: string) =>
     run(async () => {
       if (!contexts) return;
       try {
         finish(await selectContext(contexts.context_token, userId));
-        return;
-      } catch (error) {
-        const spent =
-          error instanceof ApiError &&
-          (error.status === 410 || error.status === 401);
-        if (!spent) throw error;
-      }
-
-      const account = firebaseAuth.currentUser;
-      if (!account) {
-        // Nothing left to re-mint from, send them back to a clean sign-in
-        // rather than leaving a chooser whose buttons all fail.
+      } catch (failure) {
         setContexts(null);
-        setError("That sign-in has expired. Please sign in again.");
-        return;
+        throw failure;
       }
-      const retry = await exchangeFirebaseSession(account, requestedPortal);
-      if (!isContextsResponse(retry)) {
-        // The account resolves to a single workspace now, that IS the session.
-        finish(retry);
-        return;
-      }
-      setContexts(retry);
-      finish(await selectContext(retry.context_token, userId));
     });
+
+  const footer = contexts ? null : surface === "candidate" ? (
+    <div className="space-y-2">
+      <p>
+        Need an account?{" "}
+        <AuthLink href={withNext("/register", currentNextPath())}>
+          Create one
+        </AuthLink>
+      </p>
+      <p>
+        Part of a company hiring team?{" "}
+        <AuthLink href="/company/login">Company login</AuthLink>
+      </p>
+      <p>
+        Vivekium staff:{" "}
+        <AuthLink href="/login?portal=owner">Provider</AuthLink>
+        {" · "}
+        <AuthLink href="/login?portal=bd">Business development</AuthLink>
+      </p>
+    </div>
+  ) : surface === "company" ? (
+    <div className="space-y-2">
+      <p>
+        New to Vivekium?{" "}
+        <AuthLink href="/company/register">Register your company</AuthLink>
+      </p>
+      <p>
+        Joining a team? Use the invitation email your company admin sent you.
+      </p>
+      <p>
+        Looking for jobs? <AuthLink href="/login">Candidate sign in</AuthLink>
+      </p>
+    </div>
+  ) : (
+    <p>
+      <AuthLink href="/login">Back to candidate sign in</AuthLink>
+    </p>
+  );
 
   return (
     <AuthShell
@@ -164,16 +240,7 @@ export function LoginFlow({
           ? "This email belongs to more than one Vivekium workspace."
           : description
       }
-      footer={
-        contexts ? null : (
-          <>
-            Need an account?{" "}
-            <AuthLink href={withNext("/register", currentNextPath())}>
-              Create one
-            </AuthLink>
-          </>
-        )
-      }
+      footer={footer}
     >
       {contexts ? (
         <div className="space-y-3">
@@ -189,7 +256,7 @@ export function LoginFlow({
                 {context.tenant_name ?? "Vivekium"}
               </span>
               <span className="mt-0.5 block text-xs">
-                {ROLE_LABEL[context.role]}
+                {ROLE_LABEL[context.role] ?? context.role}
               </span>
             </button>
           ))}
@@ -204,88 +271,93 @@ export function LoginFlow({
         </div>
       ) : (
         <div className="space-y-5">
-          {/* The workspace chooser was REMOVED on 2026-08-04. A person should
-              not be asked which kind of account they have -- the backend
-              already knows, from the invitation or account type recorded when
-              the account was created, and `exchangeFirebaseSession` routes to
-              the right portal from what it returns. Asking was also
-              misleading: picking "Provider owner" never granted provider
-              access, so the control could only ever produce a confusing
-              refusal for anyone who guessed wrong.
-
-              `requestedPortal` stays in state and is still passed to the
-              exchange, but now only ever holds a value deep-linked via
-              ?portal=, which existing candidate apply links depend on. Absent
-              that, it is null, which the backend reads as "resolve every
-              workspace for this identity". */}
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            className="w-full"
-            disabled={busy}
-            onClick={googleSignIn}
-          >
-            <GoogleMark />
-            Continue with Google
-          </Button>
-
-          <AuthDivider />
-
-          <form className="space-y-4" onSubmit={passwordSignIn}>
-            <div className="space-y-1.5">
-              <Label htmlFor="login-email">Email address</Label>
-              <Input
-                id="login-email"
-                type="email"
-                autoComplete="email"
-                placeholder="you@company.com"
-                value={email}
-                disabled={busy}
-                onChange={(event) => setEmail(event.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="login-password">Password</Label>
-              <div className="relative">
-                <Input
-                  id="login-password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  value={password}
-                  disabled={busy}
-                  className="pr-11"
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                />
-                <button
-                  type="button"
-                  className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => setShowPassword((visible) => !visible)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? (
-                    <EyeOff className="h-4 w-4" aria-hidden="true" />
-                  ) : (
-                    <Eye className="h-4 w-4" aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </div>
-            <Button size="lg" className="w-full" disabled={busy}>
-              {busy ? (
+          {!resetOpen ? (
+            <>
+              {GOOGLE_ALLOWED[surface] ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Signing in
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    className="w-full"
+                    disabled={busy}
+                    onClick={googleSignIn}
+                  >
+                    <GoogleMark />
+                    Continue with Google
+                  </Button>
+                  <AuthDivider />
                 </>
-              ) : (
-                "Sign in"
-              )}
-            </Button>
-          </form>
-          {/* Firebase owns recovery: this sends Firebase's own reset email. */}
-          <ForgotPassword initialEmail={email} idPrefix="login" />
+              ) : null}
+
+              <form className="space-y-4" onSubmit={passwordSignIn}>
+                <div className="space-y-1.5">
+                  <Label htmlFor="login-email">Email address</Label>
+                  <Input
+                    id="login-email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@company.com"
+                    value={email}
+                    disabled={busy}
+                    onChange={(event) => setEmail(event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="login-password">Password</Label>
+                  <div className="relative">
+                    <Input
+                      id="login-password"
+                      type={showPassword ? "text" : "password"}
+                      autoComplete="current-password"
+                      value={password}
+                      disabled={busy}
+                      className="pr-11"
+                      onChange={(event) => setPassword(event.target.value)}
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() => setShowPassword((visible) => !visible)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="h-4 w-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <Captcha
+                  ref={captcha}
+                  purpose={purpose}
+                  disabled={busy}
+                  idPrefix="login-captcha"
+                />
+                <Button size="lg" className="w-full" disabled={busy}>
+                  {busy ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Signing in
+                    </>
+                  ) : (
+                    "Sign in"
+                  )}
+                </Button>
+              </form>
+            </>
+          ) : null}
+          <ForgotPassword
+            initialEmail={email}
+            idPrefix="login"
+            onOpenChange={(open) => {
+              setResetOpen(open);
+              setError(null);
+            }}
+          />
         </div>
       )}
 
@@ -293,4 +365,3 @@ export function LoginFlow({
     </AuthShell>
   );
 }
-

@@ -54,6 +54,7 @@ from app.schemas.proctoring import (
 )
 from app.services import candidate_identity, job_assessment_retention
 from app.services import capabilities as caps
+from app.services import department_access
 from app.services.assessment_conversation import turns as assessment_turns
 from app.services.proctoring import audio as proctoring_audio
 from app.services.proctoring import catalog
@@ -387,7 +388,11 @@ async def get_proctoring_report(
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
     job = await session.get(Job, link.job_id)
-    if job is None:
+    if job is None or not department_access.in_scope(
+        # The department boundary (spec 2.11), before the closure gate.
+        await department_access.department_scope(session, user),
+        job.department_id,
+    ):
         raise HTTPException(status_code=404, detail="Report not found")
     await job_assessment_retention.require_readable(session, user, job)
     report = await proctoring_report.load_report_out(session, link.id)

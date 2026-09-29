@@ -187,7 +187,7 @@ export function JdEditor({
         {editing ? (
           <Textarea
             aria-label="Job description"
-            className="min-h-[420px] font-mono text-[13px] leading-6"
+            className="min-h-[420px] font-mono text-xs leading-6"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />

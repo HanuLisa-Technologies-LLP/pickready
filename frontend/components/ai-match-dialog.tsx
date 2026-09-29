@@ -71,7 +71,7 @@ export function AiMatchDialog({
           {row.reference_code ? (
             <p
               data-reference-code
-              className="select-all font-mono text-[11px] tracking-wider"
+              className="select-all type-ref"
             >
               {row.reference_code}
             </p>

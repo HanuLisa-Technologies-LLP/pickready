@@ -19,7 +19,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_tenant_db, require_capability
+from app.api.deps import CurrentUser, get_tenant_db, require_organisation_wide
 from app.schemas.intelligence import (
     AlertsOut,
     DashboardDetailOut,
@@ -53,7 +53,7 @@ def _summary(dashboard: dashboards.Dashboard) -> DashboardSummaryOut:
 @router.get("/dashboards", response_model=DashboardIndexOut)
 async def list_dashboards(
     user: CurrentUser = Depends(
-        require_capability(caps.VIEW_INTELLIGENCE_DASHBOARDS)
+        require_organisation_wide(caps.VIEW_INTELLIGENCE_DASHBOARDS)
     ),
 ) -> DashboardIndexOut:
     """The registry, grouped under its four tiers in taxonomy order.
@@ -103,7 +103,7 @@ async def dashboard_detail(
     since: dt.date | None = Query(default=None),
     until: dt.date | None = Query(default=None),
     user: CurrentUser = Depends(
-        require_capability(caps.VIEW_INTELLIGENCE_DASHBOARDS)
+        require_organisation_wide(caps.VIEW_INTELLIGENCE_DASHBOARDS)
     ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> DashboardDetailOut:
@@ -139,7 +139,7 @@ async def dashboard_detail(
 @router.get("/alerts", response_model=AlertsOut)
 async def alerts(
     user: CurrentUser = Depends(
-        require_capability(caps.VIEW_INTELLIGENCE_DASHBOARDS)
+        require_organisation_wide(caps.VIEW_INTELLIGENCE_DASHBOARDS)
     ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> AlertsOut:

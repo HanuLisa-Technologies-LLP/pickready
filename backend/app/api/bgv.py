@@ -56,7 +56,7 @@ from app.api.deps import (
     get_current_user,
     get_public_db,
     get_tenant_db,
-    require_capability,
+    require_organisation_wide,
 )
 from app.core.config import get_settings
 from app.models.bgv_documents import (
@@ -824,7 +824,7 @@ async def _candidate_bgv(
 @router.get(
     "/candidates/{candidate_id}",
     response_model=CandidateBGVOut,
-    dependencies=[Depends(require_capability(caps.VIEW_BGV))],
+    dependencies=[Depends(require_organisation_wide(caps.VIEW_BGV))],
 )
 async def candidate_bgv(
     candidate_id: uuid.UUID,
@@ -840,7 +840,7 @@ async def candidate_bgv(
 @router.post(
     "/candidates/{candidate_id}/initiate",
     response_model=CandidateBGVOut,
-    dependencies=[Depends(require_capability(caps.MANAGE_BGV))],
+    dependencies=[Depends(require_organisation_wide(caps.MANAGE_BGV))],
 )
 async def initiate(
     candidate_id: uuid.UUID,
@@ -1014,7 +1014,7 @@ async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID) -> str:
 @router.post(
     "/verifications/{verification_id}/draft",
     response_model=DraftOut,
-    dependencies=[Depends(require_capability(caps.MANAGE_BGV))],
+    dependencies=[Depends(require_organisation_wide(caps.MANAGE_BGV))],
 )
 async def draft(
     verification_id: uuid.UUID,
@@ -1101,7 +1101,7 @@ async def _one_verification(
 @router.post(
     "/verifications/{verification_id}/send",
     response_model=VerificationOut,
-    dependencies=[Depends(require_capability(caps.MANAGE_BGV))],
+    dependencies=[Depends(require_organisation_wide(caps.MANAGE_BGV))],
 )
 async def send(
     verification_id: uuid.UUID,
@@ -1231,7 +1231,7 @@ async def send(
 @router.post(
     "/verifications/{verification_id}/decision",
     response_model=CandidateBGVOut,
-    dependencies=[Depends(require_capability(caps.MANAGE_BGV))],
+    dependencies=[Depends(require_organisation_wide(caps.MANAGE_BGV))],
 )
 async def decide(
     verification_id: uuid.UUID,

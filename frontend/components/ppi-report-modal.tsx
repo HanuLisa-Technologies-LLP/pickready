@@ -141,7 +141,7 @@ export function PPIReportModal({
                 // the code in the candidate table can be compared character by
                 // character, and copied without catching the words around it.
                 // It identifies a row; it authorises nothing.
-                <p className="mt-1 select-all font-mono text-xs tracking-wider">
+                <p className="mt-1 select-all type-ref">
                   {report.reference_code}
                 </p>
               ) : null}

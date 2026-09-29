@@ -539,14 +539,87 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "exchanges a verified Firebase ID token for this product's cookies. "
         "The Firebase token IS the authentication."
     ),
-    "/api/v1/auth/password-changed": (
-        "revokes every app session for an account after a Firebase password "
-        "change. It verifies a FRESH Firebase ID token in the body and acts "
-        "only on the uid that token names, so the token IS the authentication, "
-        "exactly as it is for /auth/firebase/session. A cookie dependency "
-        "would defeat the purpose: the cookie it revokes may already be "
-        "expired, and the session most worth killing is the one whose holder "
-        "cannot sign in any more. It only ever REMOVES access."
+    "/api/v1/auth/captcha/challenge": (
+        "draws a CAPTCHA challenge for a sign-in, registration or password "
+        "surface. It is answered before anybody has a session, so it cannot "
+        "require one; it writes one short-lived Redis row holding only an "
+        "HMAC of the answer, and it is rate limited."
+    ),
+    "/api/v1/auth/captcha/verify": (
+        "judges a CAPTCHA answer and returns a single-use proof bound to one "
+        "purpose. Anonymous for the same reason as the challenge; three wrong "
+        "answers spend the challenge and every failure is audited."
+    ),
+    "/api/v1/auth/password-reset/request": (
+        "starts a forgotten-password reset for somebody who by definition "
+        "cannot sign in. It spends a single-use CAPTCHA proof first and "
+        "answers the same sentence whether or not the address has an account."
+    ),
+    "/api/v1/auth/password-reset/verify": (
+        "exchanges the six-digit security code that went to the mailbox for "
+        "a single-use reset ticket. The code is the authentication: HMAC in "
+        "Redis, five attempts, ten minutes."
+    ),
+    "/api/v1/auth/password-reset/complete": (
+        "sets the new password with the single-use ticket the verify step "
+        "minted, then revokes every session of the account. The ticket is "
+        "the authentication and it is consumed by this call."
+    ),
+    "/api/v1/companies/invites/{token}/setup-password": (
+        "creates the invited person's password sign-in for EXACTLY the "
+        "invited email, then opens their company session. The invite token "
+        "names one pending invitation and a single-use CAPTCHA proof is spent "
+        "first; the person has no account yet, so a session cannot be asked "
+        "for."
+    ),
+    "/api/v2/companies/invites/{token}/setup-password": (
+        "the same handler under the v2 prefix, where the companies router is "
+        "mounted a second time."
+    ),
+    # Company self-registration (owner spec 2026-09-29, section 5). The
+    # person registering has no account, so no route here can ask for a
+    # session. Each step is authorized by the proof the step before produced.
+    "/api/v1/company-onboarding/register": (
+        "spends a single-use company_register CAPTCHA proof before anything "
+        "else, then sends a security code (or, to an address that already has "
+        "an account, a notice) and answers the same sentence either way. "
+        "Rate limited."
+    ),
+    "/api/v1/company-onboarding/code/resend": (
+        "a new security code for a registration already started, sent only "
+        "to the mailbox that registration names; the resend window runs for "
+        "every address alike, so the answer discloses nothing. Rate limited."
+    ),
+    "/api/v1/company-onboarding/code/verify": (
+        "the six-digit security code from the mailbox is the authentication: "
+        "HMAC in Redis, five attempts, ten minutes. A right code creates the "
+        "onboarding company and sets the onboarding cookie."
+    ),
+    "/api/v1/company-onboarding/state": (
+        "where this browser's registration stands, read from the signed "
+        "onboarding cookie; with no cookie it answers the first step and "
+        "discloses nothing."
+    ),
+    "/api/v1/company-onboarding/pricing": (
+        "authorized by the signed onboarding cookie (its own audience, sixty "
+        "minutes, minted only by a right security code); prices the packs "
+        "for the one registration the cookie names."
+    ),
+    "/api/v1/company-onboarding/purchase": (
+        "authorized by the signed onboarding cookie; creates the first "
+        "Razorpay Order for the one registration it names, through the same "
+        "purchase path as the billing page."
+    ),
+    "/api/v1/company-onboarding/purchase/verify": (
+        "authorized by the signed onboarding cookie AND the Razorpay order "
+        "signature, recomputed on the server with the Key Secret; the order "
+        "must belong to the cookie's registration."
+    ),
+    "/api/v1/company-onboarding/activate": (
+        "authorized by the signed onboarding cookie AND a paid credit "
+        "purchase for its company, read from credit_purchases; it creates the "
+        "password sign-in for exactly the registered address and opens the "
+        "company session."
     ),
     "/api/v1/auth/refresh": (
         "reads the refresh cookie itself and re-mints for the SAME audience. "
@@ -607,6 +680,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     # contacts, billing or applicant counts, and hide non-public tenants
     # behind the same 404 an unknown slug gets.
     "/api/v1/employers": "the public employer directory search.",
+    # The published price list (owner spec 2026-09-29, section 4.2). The
+    # public /pricing page renders it, so it is read before any account
+    # exists. It reads no tenant and no table: the catalogue is code, the
+    # figures every checkout quote and GST invoice use, and it carries no
+    # account's setup-fee waiver or trial state. Rate limited.
+    "/api/v1/billing/public/credit-packs": (
+        "the platform's published credit price list for the public pricing "
+        "page, built from code constants; it reads no tenant and no row."
+    ),
     "/api/v1/employers/{slug}": "one public employer page with its careers list.",
     # Genuinely public, and each returns something already public.
     "/api/v1/telemetry/landing-view": (

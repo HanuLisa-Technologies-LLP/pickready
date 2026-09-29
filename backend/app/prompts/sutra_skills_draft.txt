@@ -5,8 +5,8 @@
 # Loaded through app/prompts/registry.py. Placeholders are $name (never
 # {name}): this prompt specifies a JSON return shape and is full of braces.
 #
-# $context_rules renders to the EMPTY STRING when the job has no Drishti lines
-# and no Company Profile narrative, so the request is byte-identical to the
+# $context_rules renders to the EMPTY STRING when the job has no leadership
+# context and no Company Profile narrative, so the request is byte-identical to the
 # plain case. It is glued to the end of a line for that reason: a placeholder
 # on its own line leaves a blank line behind when it is empty.
 #

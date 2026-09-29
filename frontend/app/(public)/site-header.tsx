@@ -10,15 +10,19 @@ import { REQUEST_ACCESS_HREF } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
 /**
- * The header's sections. The first three are ANCHORS INTO THE LANDING PAGE,
+ * The header's sections. The first two are ANCHORS INTO THE LANDING PAGE,
  * and each names a section id that `landing-page.tsx` mounts;
  * `lib/landing-links.test.ts` fails if one of them stops resolving. The rest
  * are routes under `app/(public)/` that the proxy admits without a session.
+ *
+ * Pricing is its own page (owner spec, 2026-09-29, section 4.1): the landing
+ * page no longer carries the price list inline, and "See pricing plans" opens
+ * `/pricing`, which renders the server's published catalogue.
  */
 const NAV = [
   { href: "/#how-it-works", label: "How it works" },
   { href: "/#features", label: "Platform" },
-  { href: "/#pricing", label: "Pricing" },
+  { href: "/pricing", label: "See pricing plans" },
   { href: "/about", label: "About" },
   { href: "/insights", label: "Insights" },
   { href: "/docs", label: "Docs" },

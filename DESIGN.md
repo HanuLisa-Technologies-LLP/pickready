@@ -163,29 +163,37 @@ at two sizes and two weights.
 
 | Role | Token | Family | Size / leading | Tracking | Weight |
 |---|---|---|---|---|---|
-| Display (marketing hero only) | `font-display` + arbitrary size | Fraunces | 34 to 54 / 1.06 | −0.02em | 600 |
-| Page title (the one h1 of a screen) | `type-page-title` | Inter Tight | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
-| Section heading (page h2, dialog and sheet title) | `text-heading` | Inter Tight | 20/28 | −0.012em | 600 |
-| Subsection heading, card title (h3) | `text-subheading` | Inter Tight | 16/24 | −0.006em | 600 |
-| Eyebrow / overline | `type-eyebrow` | Inter Tight | 12/16, uppercase | +0.08em | 600 |
-| Form label | `text-label` | Inter Tight | 14/20 | 0 | 500 |
-| Body, descriptions | `text-body` (= `text-sm`) | Inter Tight | 15/26 | 0 | 400 |
-| Body small, helper text | `text-body-sm` (= `text-xs`) | Inter Tight | 13/20 | 0 | 400 |
-| Metadata (timestamps, secondary lines) | `text-meta` | Inter Tight | 12/18 | +0.01em | 400 |
-| Table cell | `text-table` | Inter Tight | 14/20 | 0 | 400 |
-| Table header | `text-table-head` + `uppercase` | Inter Tight | 12/16 | +0.06em | 600 |
-| Reference code, IDs, code | `font-mono` | JetBrains Mono | 13/20 | 0 | 500 |
-| Figures (stats, money, counts) | `tabular-nums` | Inter Tight | the step it sits on | the step's | 600 |
+| **Marketing** | | | | | |
+| Display (the hero h1 of a public page, one per page) | `type-display` | Hubot Sans | 40 / 52 / 64px, 1.05 to 1.02 | −0.025em to −0.03em | 600 |
+| Section title (landing h2, plain public page h1) | `type-section-title` | Mona Sans | 32 / 40 / 48px, 1.15 to 1.08 | −0.018em to −0.025em | 600 |
+| Lead (under a hero or section title) | `type-lead` | Mona Sans | 18/29, 20/32 from `sm`; 54ch | 0 | 400 |
+| Marketing prose | `type-prose-lg` | Mona Sans | 17/28; 65ch | 0 | 400 |
+| **Product** | | | | | |
+| Page title (the one h1 of a screen) | `type-page-title` | Mona Sans | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
+| Section heading (page h2, dialog and sheet title, report section) | `text-heading` | Mona Sans | 20/28 | −0.012em | 600 |
+| Subsection heading, card title (h3) | `text-subheading` | Mona Sans | 16/24 | −0.006em | 600 |
+| Eyebrow / overline | `type-eyebrow` | Mona Sans | 12/16, uppercase | +0.1em | 600 |
+| Form label | `text-label` | Mona Sans | 14/20 | 0 | 500 |
+| Body, descriptions | `text-body` (= `text-sm`) | Mona Sans | 15/26 | 0 | 400 |
+| Body small, helper text | `text-body-sm` (= `text-xs`) | Mona Sans | 13/20 | 0 | 400 |
+| Metadata (timestamps, secondary lines) | `text-meta` | Mona Sans | 12/18 | +0.01em | 400 |
+| Table cell | `text-table` | Mona Sans | 14/20 | 0 | 400 |
+| Table header | `text-table-head` + `uppercase` | Mona Sans | 12/16 | +0.06em | 600 |
+| Chip (status, rating, evidence, count pill) | `text-chip` | Mona Sans | 11/16 | 0 | the chip's own |
+| Reference code, system id, filename, URL | `type-ref` | Geist Mono | 12/16, tabular | 0 | 500 |
+| Code (editor, JD markdown source, run output) | `font-mono` + a step | Geist Mono | the step it sits on | 0 | 400 |
+| Figures (stats, money, counts) | `tabular-nums` | Mona Sans | the step it sits on | the step's | 600 |
 
 - **Hierarchy is carried by size AND weight, never by colour.** Text is never
   grey (below), so a helper line differs from body by being a step smaller, a
   label from a value by being a step smaller and heavier, and a heading from a
-  label by size. Headings are 600, not 700: bold at 28px on Inter Tight reads
-  as shouting, and the old page title was exactly that.
+  label by size. Headings are 600, not 700: bold at 28px reads as shouting,
+  and the old page title was exactly that. The same holds on the public site,
+  where every section heading was 700 until 2026-09-28.
 - **Tracking follows size.** The raw steps `lg` to `5xl` carry negative
   tracking that grows with the size (−0.006em at 18px to −0.028em at 64px);
   text sizes keep the face's own spacing; uppercase gets positive tracking
-  (+0.06em to +0.08em) because capitals set tight collide. The old blanket
+  (+0.06em to +0.1em) because capitals set tight collide. The old blanket
   `tracking-tight` on every h1 to h4 crowded a 15px card heading to give a
   32px title its spacing, and is gone: the base heading rule is −0.011em and
   every sized step overrides it.
@@ -212,9 +220,17 @@ at two sizes and two weights.
   (`space-y-4`) between the blocks inside a card, and 8px or less inside a
   block. A heading sits closer to what it introduces than to what precedes it.
 
-The raw steps (`text-2xs` to `text-5xl`) remain for dense bespoke surfaces,
-the candidate dashboard's own cell sizes and marketing layouts. New work reaches
-for a role first.
+The raw steps (`text-2xs` to `text-5xl`) remain for dense bespoke surfaces and
+the odd marketing card. New work reaches for a role first, and no component
+sets a pixel or rem size by hand (`text-[11px]`): `lib/typography.test.ts`
+fails on one. The single exemption is `components/workflow-animation/`, which
+draws a miniature of the product at a fraction of its size, so its tiny sizes
+are geometry rather than typography.
+
+**Marketing is spacious, the product is dense.** The marketing roles are for
+the public site only and never appear on an app screen; a dashboard does not
+get more premium by getting bigger. The public site takes 48px section titles
+and 20px leads; a product screen tops out at a 28px page title.
 
 **The leading lives in the scale, not at the call site (2026-09-19).** Body was
 15/24 and small 13/18, and read congested in anything longer than a label. The
@@ -232,19 +248,40 @@ wrapped 18px heading at 30px read as two separate lines; the page-header
 description sits at `mt-2.5` under the smaller, lighter title; and heading
 tracking now follows size instead of one blanket `tracking-tight`.)
 
+**Three faces, one job each (2026-09-28).** Chosen for restraint and metrics
+rather than personality, and replacing Inter Tight, Fraunces and JetBrains Mono.
+
+- **Mona Sans** is the working face and the brand's voice: body, navigation,
+  buttons, forms, tables, cards, dialogs, reports, product page titles and
+  most marketing copy. A grotesque with open apertures and even colour, it
+  holds a dense 14px table and a 48px section title with the same drawing.
+  It is a touch wider than Inter Tight was, so a label that fit before is not
+  assumed to fit now.
+- **Hubot Sans** is the display face, and it stays rare: the hero h1 of the
+  home, About, Insights and Docs pages, through `type-display`, and nothing
+  else. Never a dashboard heading, a table, a form, a card, a dialog or a
+  report. It is bound only by the two public frames (`app/display-font.ts`,
+  imported by `landing-page.tsx` and `(public)/layout.tsx`), so no product
+  route downloads it; outside them `font-display` falls back to Mona Sans.
+- **Geist Mono** is the reference face: COMPANY-JOB-CANDIDATE codes, system
+  ids, filenames, URLs, model ids and code. A date, a count or a label is
+  metadata and stays in Mona Sans with `tabular-nums`; monospace is never used
+  to make ordinary text look technical.
+
+All three are variable fonts under the SIL Open Font License 1.1, which permits
+commercial use and self-hosting. They are loaded through next/font, which
+downloads them at BUILD time, subsets them to Latin, serves them from this
+origin and generates a metric-matched fallback face, so nothing is fetched from
+a font CDN at runtime, `font-src 'self'` in the CSP is complete, and the swap
+does not shift layout. `lib/typography.test.ts` keeps the retired faces out,
+keeps Hubot Sans behind `type-display` on the public site, and keeps
+`type-ref` monospace.
+
 **Not Inter-as-default.** Impeccable flags default Inter as a slop tell and it is
 right about the reason: it is the typeface a UI reaches for when nobody chose
-one. **This section described an intention rather than the product until
-2026-09-17**: `app/layout.tsx` loaded plain `Inter` for body, UI and display
-alike, citing a DESIGN_BRIEF this file had already superseded, so the one tell
-the design authority names explicitly was the one the product shipped. All three
-faces are now loaded through next/font, which self-hosts and subsets them, so
-nothing is fetched from Google at runtime and `font-src 'self'` in the CSP is
-complete. **Inter Tight** is the working face — tighter, more editorial, and it holds
-a dense table better at 13px. **Fraunces** appears on display type only, where
-the product has one chance to look like it was designed. **JetBrains Mono**
-carries the COMPANY-JOB-CANDIDATE reference code, which must be select-all and
-transcribable by eye.
+one. Until 2026-09-17 `app/layout.tsx` loaded plain `Inter` while this section
+said otherwise; the face in `app/layout.tsx` is the claim, and this section
+describes it.
 
 **Text is never grey.** A client decision from 2026-07-27 and it holds: every
 text token resolves to pure ink in light and pure white in dark, including
@@ -419,11 +456,14 @@ For an agent generating or modifying a Vivekium surface:
 > actions, navigation, the frame. Teal `#0D968B` for evidence — what is
 > corroborated, what is cited. Never purple, never violet, never a two-hue
 > gradient. Teal text on white must be `#096C64`, because the brand teal
-> measures 3.65:1 and fails AA for body text. Inter Tight for UI, Fraunces for
-> display, JetBrains Mono for reference codes — never default Inter. Set type
+> measures 3.65:1 and fails AA for body text. Mona Sans for everything, Hubot
+> Sans only for a public page's hero headline (`type-display`), Geist Mono only
+> for reference codes and code (`type-ref`), never default Inter. Set type
 > through the roles (`type-page-title`, `text-heading`, `text-subheading`,
 > `type-eyebrow`, `text-label`, `text-body`, `text-body-sm`, `text-meta`,
-> `text-table`), headings at 600, running text capped at `max-w-prose`. Text is
+> `text-table`, `text-chip`; on the public site `type-section-title`,
+> `type-lead`, `type-prose-lg`), headings at 600, running text capped at a
+> measure, and never a hand-written pixel size. Text is
 > never grey; grey is for borders and muted backgrounds only. Cards are a 1px
 > border and no shadow at rest, and never nested. No icon tile above a heading.
 > No `border-l-4` unless it is semantic and documented. 8px spacing scale, 1280

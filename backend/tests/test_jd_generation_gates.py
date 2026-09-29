@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from app.api import jobs as jobs_api
+from app.services import entitlements
 from tests import job_setup_api_fixtures as http
 from tests import skills_fixtures as fx
 
@@ -73,7 +74,7 @@ async def test_exhausted_credits_refuse_before_the_writer_is_reached(world, writ
     async with http.api(w) as api:
         response = await api.http.post(URL, json=BRIEF)
     assert response.status_code == 402, response.text
-    assert response.json()["detail"] == jobs_api.CREDITS_EXHAUSTED_DETAIL
+    assert response.json()["detail"] == entitlements.CREATE_JOB_DETAIL
     assert calls == []
     assert await http.read("SELECT id FROM jd_drafts WHERE tenant_id = :t", t=w.tenant) == []
 

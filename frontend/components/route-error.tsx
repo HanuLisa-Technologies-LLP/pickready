@@ -105,7 +105,7 @@ export function RouteError({
       {error.digest ? (
         <p className="mt-6 text-xs">
           Quote this reference if you contact support
-          <span className="mt-1 block select-all font-mono text-xs tracking-wider">
+          <span className="mt-1 block select-all type-ref">
             {error.digest}
           </span>
         </p>

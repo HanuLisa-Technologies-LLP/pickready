@@ -52,7 +52,7 @@ export function RatingLabel({
   return (
     <span
       className={cn(
-        "inline-block rounded px-1.5 py-0.5 text-[11px] font-bold leading-tight",
+        "inline-block rounded px-1.5 py-0.5 text-chip font-bold leading-tight",
         bandClassName(label),
         className
       )}

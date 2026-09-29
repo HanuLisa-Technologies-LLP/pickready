@@ -58,16 +58,16 @@ export function ReportSection() {
     >
       <div className="grid items-start gap-12 lg:grid-cols-2 lg:gap-14">
         <Reveal>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+          <p className="type-eyebrow text-brand-600">
             The PRISM Report
           </p>
           <h2
             id="report-title"
-            className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+            className="mt-4 type-section-title"
           >
             One page your hiring manager will actually read
           </h2>
-          <p className="mt-4 text-pretty text-base">
+          <p className="mt-4 type-lead">
             The report is the point of the whole product. It says what a
             candidate can do, in words, and it never puts a score in front of
             anyone. Four grades do all the rating: Highly Matching, Matching,

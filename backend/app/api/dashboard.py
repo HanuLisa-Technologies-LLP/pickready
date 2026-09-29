@@ -21,6 +21,7 @@ from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.schemas.dashboard import DashboardSummaryOut, JobMetricsOut
 from app.services import audit, capabilities as caps
+from app.services import department_access
 from app.services import telemetry_events
 
 router = APIRouter()
@@ -31,10 +32,16 @@ async def dashboard_summary(
     user: CurrentUser = Depends(require_capability(caps.VIEW_DASHBOARD)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> DashboardSummaryOut:
+    # The department boundary (spec 2.11): a Functional Head's figures are
+    # their own department's, so every count below is computed over the
+    # scoped job set and nothing else.
+    scope = await department_access.department_scope(session, user)
     jobs = (
         await session.execute(
             select(Job).where(
-                Job.tenant_id == user.tenant_id, Job.ratified_at.isnot(None)
+                Job.tenant_id == user.tenant_id,
+                Job.ratified_at.isnot(None),
+                department_access.job_scope_clause(scope, Job.department_id),
             ).order_by(Job.created_at.desc())
         )
     ).scalars().all()
@@ -358,6 +365,7 @@ async def dashboard_candidates(
         tenant_id=user.tenant_id,
         viewer_id=user.user_id,
         scoped_to_assignments=_is_scoped(user, caps.VIEW_CANDIDATE_RATINGS),
+        department_scope=await department_access.department_scope(session, user),
         job_id=job_id,
         source_types=source_type,
         stages=stage,

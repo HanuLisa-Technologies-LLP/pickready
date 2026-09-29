@@ -34,12 +34,12 @@ export function HowItWorks() {
       aria-labelledby="how-it-works-title"
     >
       <Reveal className="max-w-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+        <p className="type-eyebrow text-brand-600">
           How it works
         </p>
         <h2
           id="how-it-works-title"
-          className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+          className="mt-4 type-section-title"
         >
           Three steps, and the middle one is not your job
         </h2>
@@ -64,7 +64,7 @@ export function HowItWorks() {
                   strokeWidth={1.5}
                   aria-hidden="true"
                 />
-                <span className="text-xs font-semibold uppercase tracking-[0.18em]">
+                <span className="type-eyebrow">
                   Step {index + 1}
                 </span>
               </div>

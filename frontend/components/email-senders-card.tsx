@@ -195,15 +195,21 @@ export function EmailSendersCard() {
 
   const senders = data?.senders ?? [];
   const canAuthorize = data?.can_authorize ?? false;
+  // A reader who may not register senders (a CEO or MD, who holds only the
+  // view) is shown the list and no Add control: the server answers
+  // `can_manage` from the same grant the create route asks.
+  const canManage = data?.can_manage ?? false;
 
   return (
     <Section
       title="Email senders"
       description="Business mailboxes your company has authorized to send recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it. Email that does not name a sender goes out from your default sender, or from the Vivekium mailbox when none is set."
       actions={
-        <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4" aria-hidden="true" /> Add sender
-        </Button>
+        canManage ? (
+          <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4" aria-hidden="true" /> Add sender
+          </Button>
+        ) : undefined
       }
       contentClassName="space-y-3"
     >

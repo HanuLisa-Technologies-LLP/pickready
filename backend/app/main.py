@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import drishti as drishti_api
+from app.api import leadership as leadership_api
 from app.api import (
     bgv,
     assessment_coding,
@@ -25,6 +25,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    company_onboarding,
     conversations,
     dashboard,
     email_senders,
@@ -228,11 +229,19 @@ app.include_router(pipeline.router, prefix=f"{API_PREFIX}/pipeline", tags=["pipe
 app.include_router(provider.router, prefix=f"{API_PREFIX}/provider", tags=["provider"])
 # Business Development Portal, the fourth portal (/bd in the UI and the API).
 app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
-# Subscriptions + the credit ledger. Mounted at one path only (no /api/v2
-# alias): it is new in this release, so there is no v1 client to keep working
+# Credits, credit-pack purchases and the ledger. Mounted at one path only
+# (no /api/v2 alias): it is new in this release, so there is no v1 client to keep working
 # and a second prefix would just be a second URL for Razorpay's webhook to be
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
+# Company self-registration (owner spec 2026-09-29, section 5): the first
+# Company Super Admin registers, verifies the mailbox, buys the first credit
+# pack and sets a password. Public by design, one path only.
+app.include_router(
+    company_onboarding.router,
+    prefix=f"{API_PREFIX}/company-onboarding",
+    tags=["company-onboarding"],
+)
 # In-product customer support (2026-09-10), which replaced a deleted
 # third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
 # one write path: `router` is the customer's
@@ -247,7 +256,7 @@ app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["suppor
 # candidate session and everything else is behind require_capability on the
 # tenant session, so neither audience can reach the other's routes.
 app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
-app.include_router(drishti_api.router, prefix=f"{API_PREFIX}/drishti", tags=["drishti"])
+app.include_router(leadership_api.router, prefix=f"{API_PREFIX}/leadership", tags=["leadership"])
 # Native conversations (recruiter to candidate, and the BGV threads with an
 # employer's HR contact). The REST routes and the one WebSocket live together
 # because they authorise identically: the socket is a NOTIFICATION channel over

@@ -26,7 +26,7 @@ export function CallToAction() {
           <div className="mx-auto max-w-2xl">
             <h2
               id="cta-title"
-              className="text-balance text-2xl font-bold tracking-[-0.015em] text-white sm:text-3xl"
+              className="type-section-title text-white"
             >
               Start with one role and see the reports
             </h2>
@@ -71,6 +71,14 @@ export function CallToAction() {
                 </Button>
               </Pressable>
             </div>
+            <p className="mt-6 text-sm text-white">
+              <Link
+                href="/pricing"
+                className="font-medium underline underline-offset-4 hover:text-navy-50"
+              >
+                See pricing plans
+              </Link>
+            </p>
           </div>
         </div>
       </Reveal>

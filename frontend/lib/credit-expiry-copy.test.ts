@@ -59,9 +59,14 @@ describe("credit expiry copy", () => {
       join(frontendRoot, "app", "(org)", "org", "billing", "page.tsx"),
       "utf-8",
     );
-    const pricing = readFileSync(join(frontendRoot, "app", "(public)", "pricing.tsx"), "utf-8");
+    const pricing = readFileSync(
+      join(frontendRoot, "app", "(public)", "pricing", "pricing-catalogue.tsx"),
+      "utf-8",
+    );
     expect(billing).toContain("credit_validity_months");
     expect(billing).toContain(QUALIFIER);
     expect(pricing).toContain(QUALIFIER);
+    // The public page states the term the SERVER publishes, never a literal.
+    expect(pricing).toContain("credit_validity_months");
   });
 });

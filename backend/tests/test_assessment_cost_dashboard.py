@@ -179,8 +179,8 @@ class _World:
         self.job = uuid.uuid4()
         self.link = uuid.uuid4()
         self.candidate = uuid.uuid4()
-        self.plan = uuid.uuid4()
-        self.slug = f"tier-{self.plan.hex[:6]}"
+        #: The per-credit rate the seeded job bills at, which IS the tier.
+        self.tier = "STEM"
 
 
 async def _seed(session, world: _World) -> None:
@@ -189,30 +189,22 @@ async def _seed(session, world: _World) -> None:
         "job": str(world.job),
         "link": str(world.link),
         "candidate": str(world.candidate),
-        "plan": str(world.plan),
-        "slug": world.slug,
+        "tier": world.tier,
     }
     await session.execute(
         sa.text(
-            "INSERT INTO pricing_plans (id, slug, name, applications_per_month, "
-            " price_inr, rate_per_application_inr) "
-            "VALUES (:plan, :slug, 'Cost Test', 100, 10000, 100)"
-        ),
-        ids,
-    )
-    await session.execute(
-        sa.text(
-            "INSERT INTO tenants (id, name, domain, spf_dkim_status, "
-            " current_plan_id) "
-            "VALUES (:tenant, :name, :domain, 'pending', :plan)"
+            "INSERT INTO tenants (id, name, domain, spf_dkim_status) "
+            "VALUES (:tenant, :name, :domain, 'pending')"
         ),
         {**ids, "name": f"Cost-{world.tenant.hex[:6]}",
          "domain": f"{world.tenant.hex[:10]}.cost.test"},
     )
     await session.execute(
         sa.text(
-            "INSERT INTO jobs (id, tenant_id, title, jd_json, status) "
-            "VALUES (:job, :tenant, 'Data Engineer', CAST('{}' AS jsonb), 'draft')"
+            "INSERT INTO jobs (id, tenant_id, title, jd_json, status, "
+            " role_classification) "
+            "VALUES (:job, :tenant, 'Data Engineer', CAST('{}' AS jsonb), "
+            " 'draft', :tier)"
         ),
         ids,
     )
@@ -269,9 +261,9 @@ def test_two_flushes_accumulate_onto_one_application_and_the_owner_reads_them() 
                 async with superadmin_scope(session):
                     await _seed(session, world)
                     tier = await cost_telemetry.pricing_tier_for(
-                        session, world.tenant
+                        session, world.job
                     )
-                    assert tier == world.slug
+                    assert tier == world.tier
 
                     turn = cost_telemetry.UsageTally()
                     _spend(turn, "conversation_turn", llm_providers.MODEL_LUNA)
@@ -299,7 +291,7 @@ def test_two_flushes_accumulate_onto_one_application_and_the_owner_reads_them() 
                         ),
                         tally=scoring,
                         questions_asked=3,
-                        pricing_tier="a-later-plan-that-must-not-overwrite",
+                        pricing_tier="a-later-rate-that-must-not-overwrite",
                     )
 
     async def _read() -> dict:
@@ -341,10 +333,6 @@ def test_two_flushes_accumulate_onto_one_application_and_the_owner_reads_them() 
                         sa.text("DELETE FROM candidates WHERE id = :candidate"),
                         {"candidate": str(world.candidate)},
                     )
-                    await session.execute(
-                        sa.text("DELETE FROM pricing_plans WHERE id = :plan"),
-                        {"plan": str(world.plan)},
-                    )
 
     _run(_write())
     try:
@@ -366,7 +354,7 @@ def test_two_flushes_accumulate_onto_one_application_and_the_owner_reads_them() 
     # Siddhi's own line is the Terra call alone.
     assert float(row["synthesis_cost_usd"]) == pytest.approx(3.00)
     # Stamped once, on the first piece of spend, and never restamped.
-    assert row["pricing_tier"] == world.slug
+    assert row["pricing_tier"] == world.tier
     assert row["cost_basis"] == "estimated"
     assert set(row["models_json"]) == {
         llm_providers.MODEL_LUNA,
@@ -385,7 +373,7 @@ def test_two_flushes_accumulate_onto_one_application_and_the_owner_reads_them() 
     assert mine[0]["total_spend"]["usd"] == pytest.approx(4.00)
     assert mine[0]["total_spend"]["inr"] == pytest.approx(352.00)
     tiers = {entry["pricing_tier"] for entry in summary["by_pricing_tier"]}
-    assert world.slug in tiers
+    assert world.tier in tiers
     # The saving from prompt caching is counted and explicitly NOT priced.
     assert summary["prompt_cache"]["saving"]["status"] == "unavailable"
     assert summary["media_cost"]["status"] == "unavailable"

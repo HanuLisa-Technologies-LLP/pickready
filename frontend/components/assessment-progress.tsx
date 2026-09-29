@@ -45,7 +45,7 @@ export function AssessmentSteps({
                 <Circle className="h-5 w-5" aria-hidden="true" />
               )}
             </span>
-            <span className="hidden text-[11px] font-medium sm:block">
+            <span className="hidden text-chip font-medium sm:block">
               {label}
             </span>
           </li>

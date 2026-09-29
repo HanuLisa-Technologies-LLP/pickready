@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Company onboarding, auth hardening, credits only, Leadership Intelligence (2026-09-29) | CAPTCHA on every auth surface; security codes (not login OTP); company roles password-only; server-side password reset/change; self-registration activated by the first credit purchase; subscriptions deleted; CEO/MD/Functional Head and departments; Leadership Intelligence replaces Drishti across Sutra, SWOT, Yukti, Vaada and PRISM |
 | The Vivekium simplification release (2026-09-25) | CONTRACT v10 (2026-09-28): JD, Skills, the Final Job Posting, publish, and the freeze at the first application; the Skills step and the locked contract; Yukti and one blended rank; no number with no exception; the server-timed assessment; Path P pauses; recording retention; the Judge0 sandbox; Miti the sole grader; the insert-only report; Evidence RAG through tools; candidate identity; dispatch after commit; task RLS; the legacy scrap |
 | Tatva human authority (2026-09-23) | Sutra proposes; the Hiring Manager owns criteria; Save Matrix freezes the approved version; Company Profile is current company context |
 | The twenty two change requests and the harness (2026-09-22) | The four owner rulings; media IS stored now; one authority per consent; the harness and its three exit codes |
@@ -119,6 +120,57 @@ how the product works today.
 - **Stop when the requested implementation is complete, tested and verified.**
   Finishing is a state, not a feeling: the tests named in the task have run and
   passed, and anything left undone has been said out loud.
+
+## Current hard rules, company onboarding, auth hardening, credits only, Leadership Intelligence (2026-09-29)
+
+Owner spec: `readypick_auth_payment_leadership_spec.md` (2026-09-29). Migrations
+0132 to 0135. Where this section touches an older one, this one wins.
+
+- **CAPTCHA is server-side and on every auth surface** (`services/captcha.py`):
+  server-drawn SVG, HMAC-hashed answer in Redis, single-use purpose-bound
+  proof, FAILS CLOSED when Redis is down, and NO setting disables it. The
+  session exchange spends the proof before it reads the Firebase token, and
+  the proof's purpose must match the portal it opens. Tests mint real proofs
+  through `tests/captcha_support.py`.
+- **A security code is not a login OTP.** `services/security_codes.py` serves
+  exactly company registration and password reset/change; login never asks
+  for one. Copy says "security code" (the OTP sweeps stand). Codes go only
+  through `services/security_email.py` from the PLATFORM sender
+  (`PLATFORM_SECURITY_SENDER_EMAIL`, contact@readypick.ai), never a tenant
+  sender; production refuses a non-SES transport for them.
+- **SUPERSEDES rule 2's "Forgot password is Firebase's own reset email"**: the
+  server resets and changes passwords (code, then single-use ticket, then the
+  new password) and revokes every session and Firebase refresh token. The
+  client-side reset and `/auth/password-changed` are deleted.
+- **Google never authenticates a company role**, refused in
+  `firebase_auth.assert_provider_allowed` by reading `_ORG_ROLES` at call time.
+  Candidates keep Google. Team members are invite-only and the server creates
+  the password sign-in for EXACTLY the invited email.
+- **Self-registration**: register (CAPTCHA) -> security code -> onboarding
+  tenant (`tenants.status = onboarding`) -> first credit purchase ->
+  password -> active. Payment is DERIVED from `credit_purchases`, never stored;
+  a browser callback alone never activates; an onboarding tenant is refused at
+  EVERY session path before an invited user can be activated.
+- **Credits are the only commercial model.** Subscriptions, plans and their
+  columns are deleted (0132, guarded). `/pricing` renders
+  `GET /billing/public/credit-packs`; the frontend holds no price literal.
+  Every credit gate asks `services/entitlements.py`. Zero credits never block
+  login or reads.
+- **CEO, MD, Functional Head**: leaf roles under the Super Admin. CEO/MD read
+  everything and write only their own leadership input. A Functional Head is
+  bound to one `company_departments` row (DB CHECK) and every job, candidate,
+  report and dashboard read is scoped in `services/department_access.py` and in
+  `rbac.decide` (cross-department is the tenant-safe 404). Company-wide surfaces
+  use `deps.require_organisation_wide`. A shared candidate shows a Functional
+  Head only their own department's resume.
+- **Leadership Intelligence replaces Drishti** (code, routes, page and
+  `author_drishti_profile` deleted; the table stays as history). Versions are
+  INSERT-ONLY; the compiler is deterministic and drops non-observable or
+  protected-attribute lines with a reason; an AI draft is never saved.
+  Save Skills freezes a `job_leadership_contexts` row that the contract
+  carries (digest includes it only when present), so Yukti's company-need fit,
+  Vaada's questions and the PRISM "Leadership Alignment" section read the
+  FROZEN version. No leadership input, no prompt key: byte-identical prompts.
 
 ## Current hard rules, the Vivekium simplification release (2026-09-25)
 

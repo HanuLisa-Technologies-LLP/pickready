@@ -69,6 +69,8 @@ def test_every_task_name_is_namespaced() -> None:
         "app.workers.tasks_questions",
         # PLAN-p3 WP3: the spoken-answer transcription task.
         "app.workers.tasks_voice",
+        # The platform security email (auth hardening, 2026-09-29).
+        "app.workers.tasks_security_email",
         "app.workers.dispatch",
         "app.workers.runtime",
         "app.workers.entrypoints.lambda_worker",

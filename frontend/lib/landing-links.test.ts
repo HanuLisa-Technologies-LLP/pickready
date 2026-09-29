@@ -44,18 +44,16 @@ const LANDING_FILES = [
   "features.tsx",
   "report-section.tsx",
   "story-sections.tsx",
-  "pricing.tsx",
   "call-to-action.tsx",
 ].map((name) => join(publicDir, name));
 
 /**
  * Destinations a landing link may send somebody to that need a session, each
- * with the reason. Nothing else may.
+ * with the reason. Nothing else may. EMPTY since 2026-09-29: the inline
+ * pricing cards that sent a signed-in customer to `/org/billing` left the
+ * landing page for the public `/pricing` page.
  */
-const SIGNED_IN_TARGETS: Record<string, string> = {
-  "/org/billing":
-    "the pricing card sends a signed-in member of a customer team straight to billing; everybody else goes to /login with it as `next`",
-};
+const SIGNED_IN_TARGETS: Record<string, string> = {};
 
 /** Routes addressed by a single-use token: a bare link to one is a dead end. */
 const TOKEN_ROUTES = ["/join", "/assessments/invite", "/keep-profile", "/verify-employment"];
@@ -185,10 +183,16 @@ describe("the landing page's links", () => {
     expect(refused).toEqual([]);
   });
 
-  it("sends a signed-in destination through sign-in for everybody else", () => {
-    const pricing = read(join(publicDir, "pricing.tsx"));
-    expect(pricing).toContain('"/login?next=%2Forg%2Fbilling"');
-    expect(pricing).not.toContain("/register?next");
+  it("sends pricing to its own page, from the header, the footer and the close", () => {
+    // Owner spec 2026-09-29, section 4.1: no inline price list and no
+    // `/#pricing` anchor; "See pricing plans" opens `/pricing`.
+    expect(links.filter(({ target }) => target.includes("#pricing"))).toEqual([]);
+    for (const name of ["site-header.tsx", "site-footer.tsx", "call-to-action.tsx"]) {
+      const source = read(join(publicDir, name));
+      expect(source, name).toContain('"/pricing"');
+      expect(source, name).toContain("See pricing plans");
+    }
+    expect(read(join(publicDir, "landing-page.tsx"))).not.toMatch(/\bPricing\b/);
   });
 
   it("lands every anchor on a section the page mounts", () => {
@@ -226,5 +230,45 @@ describe("the landing page's links", () => {
       DEAD_PARAMETERS.some((parameter) => target.includes(parameter)),
     );
     expect(dead).toEqual([]);
+  });
+});
+
+/**
+ * The public /pricing page (owner spec 2026-09-29, sections 4.2 and 4.3). Its
+ * calls to action are named constants rather than inline literals, so they are
+ * read here by their declaration. Until company self-registration existed,
+ * "Register company" pointed at a page that was not there yet; it exists now,
+ * and so does the rule that it must.
+ */
+describe("the pricing page's links", () => {
+  const source = read(join(publicDir, "pricing", "pricing-catalogue.tsx"));
+  const targets = [
+    ...[...source.matchAll(/const [A-Z_]+_HREF\s*=\s*"([^"]+)"/g)].map((m) => m[1]),
+    ...[...source.matchAll(/href=\s*"([^"]+)"/g)].map((m) => m[1]),
+  ];
+
+  it("reads the calls to action", () => {
+    expect(targets).toContain("/company/register");
+    expect(targets).toContain("/company/login");
+  });
+
+  it("sends every internal link to a page a signed-out visitor may open", () => {
+    const routes = pageRoutes();
+    const prefixes = publicPrefixes();
+    const internal = targets.filter((target) => target.startsWith("/"));
+    expect(internal.filter((target) => !routeExists(pathOf(target), routes))).toEqual([]);
+    expect(
+      internal.filter((target) => !admittedSignedOut(pathOf(target), prefixes)),
+    ).toEqual([]);
+  });
+
+  it("writes to the enterprise line and nowhere else by mail", () => {
+    const mail = targets.filter((target) => target.startsWith("mailto:"));
+    expect(mail.length).toBeGreaterThan(0);
+    expect(
+      mail.filter(
+        (target) => target !== "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
+      ),
+    ).toEqual([]);
   });
 });

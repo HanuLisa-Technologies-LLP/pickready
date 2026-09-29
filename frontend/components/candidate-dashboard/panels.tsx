@@ -115,7 +115,7 @@ export function ReadyPickProfilePanel({
           <SheetTitle>Vivekium Profile</SheetTitle>
           <SheetDescription>
             {row?.full_name}
-            <span className="ml-2 select-all font-mono text-[11px]">
+            <span className="ml-2 select-all type-ref">
               {row?.system_id}
             </span>
           </SheetDescription>
@@ -166,12 +166,12 @@ export function ReadyPickProfilePanel({
                             <span className="italic">Not assessed</span>
                           )}
                           {dimension.insufficient_evidence ? (
-                            <span className="ml-2 rounded border border-border px-1.5 py-0.5 text-[11px]">
+                            <span className="ml-2 rounded border border-border px-1.5 py-0.5 text-chip">
                               Insufficient evidence
                             </span>
                           ) : null}
                         </dd>
-                        <dd className="mt-1 text-[12px] leading-5">
+                        <dd className="mt-1 text-meta leading-5">
                           {dimension.question}
                         </dd>
                       </div>
@@ -202,7 +202,7 @@ export function ReadyPickProfilePanel({
                   </section>
                 ) : null}
 
-                <section className="text-[12px] leading-5">
+                <section className="text-meta leading-5">
                   <h3 className="type-eyebrow">
                     Configuration
                   </h3>
@@ -395,7 +395,7 @@ export function TeamReviewSheet({
                           <p className="mt-1 whitespace-pre-wrap text-sm leading-6">
                             {entry.remarks}
                           </p>
-                          <p className="mt-1 text-[11px]">
+                          <p className="mt-1 text-meta tabular-nums">
                             {new Date(entry.updated_at).toLocaleString()}
                             {entry.editable ? " (yours)" : ""}
                           </p>
@@ -550,7 +550,7 @@ export function StageSheet({
                     <h3 className="type-eyebrow">
                       Integrity disposition
                     </h3>
-                    <p className="text-[12px] leading-5">
+                    <p className="text-meta leading-5">
                       Recording a decision is what unlocks the stage control.
                       All four are decisions; none of them is an approval, and
                       nothing here rejects the candidate on its own.

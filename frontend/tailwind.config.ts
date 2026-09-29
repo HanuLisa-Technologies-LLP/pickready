@@ -174,17 +174,18 @@ const config: Config = {
         "3xl": "0px",
       },
       // THREE FACES, ONE JOB EACH (DESIGN.md section 3). Each reads the CSS
-      // variable that `app/layout.tsx` binds via next/font, so the faces are
-      // self-hosted and subset at build time and nothing is fetched at runtime.
+      // variable a next/font call binds, so every face is self-hosted and
+      // subset at build time and nothing is fetched at runtime.
       //
-      // `font-sans` is the default for all UI because `body` carries it, so a
-      // component gets Inter Tight without asking. `font-display` is opt-in and
-      // belongs on page titles and hero headlines only. `font-mono` already had
-      // twenty-five call sites carrying reference codes and JD source, and they
-      // were resolving to whatever the browser happened to ship.
+      // `font-sans` is Mona Sans, the default for all UI because `body` carries
+      // it. `font-display` is Hubot Sans and is reached only through
+      // `.type-display`, the one hero headline of a marketing page; its
+      // variable is bound by the public frames alone (`app/display-font.ts`),
+      // so anywhere else it falls back to Mona Sans. `font-mono` is Geist Mono,
+      // for reference codes, identifiers, URLs and code, never for metadata.
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "var(--font-sans)", "Georgia", "serif"],
+        display: ["var(--font-display)", "var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       // THE TYPE SYSTEM (DESIGN.md section 3). Two layers, one scale.
@@ -192,10 +193,10 @@ const config: Config = {
       // 1. The STEPS: 12 / 13 / 15 / 16 / 18 / 24 / 32 / 40 / 48 / 64. Their
       //    line heights are unchanged from 2026-09-19 except `lg`, which is
       //    overwhelmingly a heading size and read gappy at 30px when it wrapped.
-      //    What is new is TRACKING THAT FOLLOWS SIZE: Inter Tight is already
-      //    tight, so the text sizes keep their natural spacing and every step
-      //    from `lg` up closes a little more as it grows. Large type set at body
-      //    spacing is what makes a heading look typed rather than set.
+      //    TRACKING FOLLOWS SIZE: Mona Sans is spaced for text, so the text
+      //    sizes keep their natural spacing and every step from `lg` up closes
+      //    a little more as it grows. Large type set at body spacing is what
+      //    makes a heading look typed rather than set.
       //
       // 2. The ROLES: named for what the text IS, each carrying its size, line
       //    height, tracking and weight, so a page title or a table header cannot
@@ -240,12 +241,40 @@ const config: Config = {
         meta: ["0.75rem", { lineHeight: "1.125rem", letterSpacing: "0.01em" }],
         // Eyebrow / overline: the small uppercase kicker. `.type-eyebrow`
         // adds the uppercase; the tracking is here so it is one value.
-        eyebrow: ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.08em", fontWeight: "600" }],
+        eyebrow: ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.1em", fontWeight: "600" }],
         // Table cell and table header. 14/20 in a py-3 cell is the 44px row
         // DESIGN.md section 4 specifies; 15/26 made every row 54px and wrapped
         // a job title onto three loose lines.
         table: ["0.875rem", { lineHeight: "1.25rem" }],
         "table-head": ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.06em", fontWeight: "600" }],
+        // Chip: the text inside a status, rating, evidence or procurement chip,
+        // and a count pill. The one size below `2xs`, and only for text that
+        // sits in a bordered box a row has to stay short around.
+        chip: ["0.6875rem", { lineHeight: "1rem" }],
+        // Reference: a COMPANY-JOB-CANDIDATE code or a system id, set in Geist
+        // Mono by `.type-ref`. 12px at 500 reads as a label, not as code.
+        ref: ["0.75rem", { lineHeight: "1rem", fontWeight: "500" }],
+
+        // --- marketing roles ------------------------------------------------
+        // The public site is spacious and expressive; the product stays dense.
+        // None of these belongs on an app screen. Each responsive pair or
+        // triple is switched by one class in `globals.css` (`.type-display`,
+        // `.type-section-title`, `.type-lead`), never at a call site.
+        //
+        // Display: the hero headline, in Hubot Sans. 40 / 52 / 64px.
+        display: ["4rem", { lineHeight: "1.02", letterSpacing: "-0.03em", fontWeight: "600" }],
+        "display-md": ["3.25rem", { lineHeight: "1.03", letterSpacing: "-0.028em", fontWeight: "600" }],
+        "display-sm": ["2.5rem", { lineHeight: "1.05", letterSpacing: "-0.025em", fontWeight: "600" }],
+        // Section title: a landing section's h2, or the h1 of a plain public
+        // page (legal, employer). Mona Sans. 32 / 40 / 48px.
+        section: ["3rem", { lineHeight: "1.08", letterSpacing: "-0.025em", fontWeight: "600" }],
+        "section-md": ["2.5rem", { lineHeight: "1.1", letterSpacing: "-0.022em", fontWeight: "600" }],
+        "section-sm": ["2rem", { lineHeight: "1.15", letterSpacing: "-0.018em", fontWeight: "600" }],
+        // Lead: the paragraph under a hero or a section title. 18 / 20px.
+        lead: ["1.25rem", { lineHeight: "2rem" }],
+        "lead-sm": ["1.125rem", { lineHeight: "1.8125rem" }],
+        // Marketing prose: running text on a public page. 17 / 28.
+        "prose-lg": ["1.0625rem", { lineHeight: "1.75rem" }],
       },
       boxShadow: {
         // ELEVATION IS FOR THINGS THAT FLOAT, AND FOR NOTHING ELSE.

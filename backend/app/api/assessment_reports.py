@@ -50,6 +50,7 @@ from app.schemas.assessments import (
     TranscriptExchangeOut,
     TranscriptOut,
 )
+from app.services import department_access
 from app.services import audit
 from app.services import capabilities as caps
 from app.services import (
@@ -105,6 +106,12 @@ async def _application_in_tenant(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail=not_found)
+    # The department boundary (spec 2.11): a report from a job outside a
+    # Functional Head's department answers like one in another tenant, and
+    # BEFORE the closure gate so a 410 cannot confirm it exists.
+    await department_access.require_link_in_scope(
+        session, user, link.id, detail=not_found
+    )
     await _require_assessment_records_readable(session, user, link)
     return link
 

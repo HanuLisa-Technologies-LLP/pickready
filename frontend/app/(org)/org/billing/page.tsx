@@ -1,43 +1,42 @@
 "use client";
 
-// Customer Portal → Billing (killer-spec §2.4, §3.4).
+// Customer Portal → Billing (per-credit only since 2026-09-29).
 //
 // Four things this page has to get right, because each of them is a question a
 // customer will otherwise ask by email:
 //
-//   * what plan am I on, and when does it renew;
 //   * how many credits do I have, in CREDITS, not in the sub-units the ledger
 //     stores (60 sub-units is one credit, and nobody should have to know that);
 //   * where did this month's usage go, broken down by what caused it;
-//   * why have my assessment invitations stopped, and what do I do about it.
+//   * why have my assessment invitations stopped, and what do I do about it;
+//   * how do I buy more, and where are my GST invoices.
 //
 // Reading is gated on `view_billing`, which the three staff roles hold, so a
-// recruiter can answer the fourth question for themselves. Changing the plan
-// needs `manage_billing`, which the Company Admin holds alone.
+// recruiter can answer the third question for themselves. Buying credits
+// needs `manage_billing`, which the Company Admin holds alone. There is no
+// plan, renewal or cancellation: credits are one-time purchases.
 
 import * as React from "react";
-import { AlertTriangle, ArrowUpRight, Download, Loader2 } from "lucide-react";
+import { AlertTriangle, Download } from "lucide-react";
 
 import { API_BASE, ApiError, apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { CAP } from "@/lib/permissions";
 import { usePermissions } from "@/lib/use-permissions";
-import { openCheckout, openOrderCheckout } from "@/lib/razorpay";
+import { openOrderCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
   CreditPack,
   CreditPacksResponse,
   CreditPurchaseRow,
-  PricingPlan,
   PurchaseCreateResponse,
-  SubscribeResponse,
 } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
-import { CancelSubscriptionDialog } from "@/components/billing/cancel-subscription-dialog";
 import {
   CREDIT_EVENT_LABELS,
   CreditStatement,
 } from "@/components/billing/credit-statement";
+import { CreditPackPicker, formatInr } from "@/components/billing/credit-pack-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -64,13 +63,6 @@ const EVENT_RATE: Record<string, string> = {
   old_profile_review: "20 per credit",
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  active: "Active",
-  past_due: "Payment pending",
-  cancelled: "Cancelled",
-  halted: "Halted",
-};
-
 /** Plain-text purchase statuses (directive Part 5 section 7.3): typography,
  *  not colored pills, tells the reader where a purchase stands. */
 const PURCHASE_STATUS_LABELS: Record<string, string> = {
@@ -80,14 +72,6 @@ const PURCHASE_STATUS_LABELS: Record<string, string> = {
   failed: "Failed",
   refunded: "Refunded",
 };
-
-function formatInr(value: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(value);
-}
 
 /**
  * Same-origin proxied invoice path (directive Part 5 section 7.3). A plain
@@ -126,7 +110,6 @@ export default function BillingPage() {
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [forbidden, setForbidden] = React.useState(false);
-  const [busySlug, setBusySlug] = React.useState<string | null>(null);
 
   // Credit pack purchase state (directive Part 5 sections 3 and 7.2). The two
   // pack calls fail SOFT: a backend that predates the credit-pack endpoints
@@ -262,92 +245,13 @@ export default function BillingPage() {
     [load, loadPacks, loadPurchases, toast, user]
   );
 
-  const choosePlan = React.useCallback(
-    async (plan: PricingPlan) => {
-      setBusySlug(plan.slug);
-      const hasSubscription = Boolean(data?.subscription.razorpay_subscription_id);
-      try {
-        if (hasSubscription) {
-          // Already subscribed: this is a plan CHANGE. Razorpay computes the
-          // proration; we never compute a second opinion that could disagree
-          // with the customer's card statement.
-          await apiPost("/billing/change-plan", { plan_slug: plan.slug });
-          toast({
-            title: "Plan changed",
-            description: `You are now on ${plan.name}. Razorpay will settle the difference.`,
-          });
-          await load();
-          return;
-        }
-        const session = await apiPost<SubscribeResponse>("/billing/subscribe", {
-          plan_slug: plan.slug,
-        });
-        const opened = await openCheckout({
-          keyId: session.razorpay_key_id,
-          subscriptionId: session.subscription_id,
-          planName: session.plan.name,
-          prefill: {
-            email: user?.email ?? undefined,
-            name: user?.full_name ?? undefined,
-          },
-          onSuccess: async (payload) => {
-            try {
-              await apiPost("/billing/checkout/verify", payload);
-              toast({
-                title: "Subscription active",
-                description: `Your ${session.plan.name} credits are in your pool.`,
-              });
-            } catch (error) {
-              toast({
-                variant: "destructive",
-                title: "We could not confirm that payment",
-                description:
-                  error instanceof Error
-                    ? error.message
-                    : "Reload this page in a moment to check its status.",
-              });
-            }
-            await load();
-          },
-        });
-        if (!opened) {
-          if (session.short_url) {
-            window.location.href = session.short_url;
-            return;
-          }
-          toast({
-            variant: "destructive",
-            title: "Checkout could not open",
-            description:
-              "Check that your browser is not blocking payment scripts, then retry.",
-          });
-        }
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: "That did not go through",
-          description:
-            error instanceof Error ? error.message : "Try again in a moment.",
-        });
-      } finally {
-        setBusySlug(null);
-      }
-    },
-    [data, load, toast, user]
-  );
-
-  // Hidden packs stay hidden: the trial card disappears after first use
-  // (directive Part 5 section 3.1) and the selection dies with it.
-  const availablePacks = packs?.packs.filter((pack) => pack.available) ?? [];
-  const selectedPack =
-    availablePacks.find((pack) => pack.slug === selectedSlug) ?? null;
 
   if (forbidden) {
     return (
       <>
         <PageHeader
           title="Billing"
-          description="Your plan, your credit pool and what used it."
+          description="Your credit pool, what used it, and your purchases."
         />
         <ErrorState
           title="Billing is not part of your access"
@@ -361,7 +265,7 @@ export default function BillingPage() {
     <>
       <PageHeader
         title="Billing"
-        description="Your plan, your credit pool and what used it."
+        description="Your credit pool, what used it, and your purchases."
       />
 
       {loading ? (
@@ -447,82 +351,35 @@ export default function BillingPage() {
             </div>
           ) : null}
 
-          {/* ── Plan + balance ─────────────────────────────────────────── */}
+          {/* ── Balance ────────────────────────────────────────────────── */}
           <Section
-            title="Your plan"
-            description={
-              data.subscription.plan
-                ? "Billed monthly. Unused credits roll over and nothing expires."
-                : "No plan yet. Pick one below to start running assessments."
-            }
+            title="Credit balance"
+            description="Credits are bought as one-time packs and drawn as assessments run. There is no plan to renew."
           >
-            <dl className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-              <DetailItem label="Plan">
-                {data.subscription.plan ? (
-                  <span className="font-semibold">
-                    {data.subscription.plan.name}
-                  </span>
-                ) : (
-                  "Not subscribed"
-                )}
-              </DetailItem>
-              <DetailItem label="Status">
-                {data.subscription.status ? (
-                  <Badge
-                    variant={
-                      data.subscription.status === "active" ? "brand" : "outline"
-                    }
-                  >
-                    {STATUS_LABELS[data.subscription.status] ??
-                      data.subscription.status}
-                  </Badge>
-                ) : (
-                  "Not subscribed"
-                )}
-              </DetailItem>
-              <DetailItem label="Next billing date">
-                {formatDate(data.subscription.current_end)}
-              </DetailItem>
+            <dl className="grid gap-6 sm:grid-cols-2">
               <DetailItem label="Credit balance">
                 <span className="text-2xl font-semibold tabular-nums">
                   {data.credits.balance_credits}
                 </span>{" "}
                 credits
-                <span className="mt-1 block text-sm font-medium">
-                  {data.credits.balance_inr !== null
-                    ? `${formatInr(Number(data.credits.balance_inr))} at your current plan rate`
-                    : "INR value available after a plan is selected"}
-                </span>
-                {/* Directive Part 3 §7.3: projected assessments remaining,
-                    split by role type. */}
-                {Number(data.credits.balance_credits) > 0 ? (
-                  <span className="mt-1 block text-sm">
-                    At 1.0 credit/report (Non-STEM): ~
-                    {Math.floor(Number(data.credits.balance_credits))} more
-                    reports. At 1.5 credits/report (STEM): ~
-                    {Math.floor(Number(data.credits.balance_credits) / 1.5)}{" "}
-                    more reports.
+                {data.credits.balance_inr !== null ? (
+                  <span className="mt-1 block text-sm font-medium">
+                    {`${formatInr(Number(data.credits.balance_inr))} at the list price per credit, excluding GST`}
                   </span>
                 ) : null}
               </DetailItem>
+              {/* Directive Part 3 §7.3: projected assessments remaining,
+                  split by role type. */}
+              {Number(data.credits.balance_credits) > 0 ? (
+                <DetailItem label="Roughly how many reports that covers">
+                  At 1.0 credit/report (Non-STEM): ~
+                  {Math.floor(Number(data.credits.balance_credits))} more
+                  reports. At 1.5 credits/report (STEM): ~
+                  {Math.floor(Number(data.credits.balance_credits) / 1.5)}{" "}
+                  more reports.
+                </DetailItem>
+              ) : null}
             </dl>
-            {/* Only the account's billing manager, only while there is a
-                live subscription to stop. A cancelled one has nothing left
-                to cancel, and the route would refuse it anyway. */}
-            {canManage &&
-            data.subscription.razorpay_subscription_id &&
-            data.subscription.status !== "cancelled" ? (
-              <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border pt-5">
-                <p className="min-w-0 flex-1 text-sm">
-                  Cancelling stops renewal at the end of this billing period.
-                  Credits already in your pool stay yours.
-                </p>
-                <CancelSubscriptionDialog
-                  subscription={data.subscription}
-                  onCancelled={load}
-                />
-              </div>
-            ) : null}
           </Section>
 
           {/* ── Usage this month ───────────────────────────────────────── */}
@@ -582,15 +439,14 @@ export default function BillingPage() {
 
           {/* ── Credit packs (directive Part 5 sections 3 and 7.2) ─────── */}
           {/* This wrapper carries the #billing-plans anchor the warning
-              banners scroll to: a top-up has to land on the packs, not on the
-              legacy subscription plans further down. */}
+              banners scroll to: a top-up has to land on the packs. */}
           <div id="billing-plans" className="scroll-mt-24">
             <Section
               title="Purchase Vivekium Intelligence Report Credits"
               description={
                 canManage
-                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`
-                  : `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Ask your Company Admin to buy credits.`
+                  ? `One-time purchases at ${packs ? formatInr(packs.price_per_credit_inr) : "the list price"} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`
+                  : `One-time purchases at ${packs ? formatInr(packs.price_per_credit_inr) : "the list price"} per credit. Ask your Company Admin to buy credits.`
               }
             >
               {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
@@ -617,234 +473,19 @@ export default function BillingPage() {
                 </div>
               ) : (
                 <>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    {availablePacks.map((pack) => {
-                      const selected = pack.slug === selectedSlug;
-                      return (
-                        <button
-                          key={pack.slug}
-                          type="button"
-                          aria-pressed={selected}
-                          onClick={() =>
-                            setSelectedSlug(selected ? null : pack.slug)
-                          }
-                          className={
-                            "flex flex-col rounded-xl border p-5 text-left transition-colors " +
-                            (selected
-                              ? "border-brand-600 ring-1 ring-brand-600/30"
-                              : "border-border hover:border-brand-600/50")
-                          }
-                        >
-                          <p className="text-2xl font-semibold tabular-nums">
-                            {pack.credits}
-                            <span className="ml-1 text-sm font-medium">
-                              credits
-                            </span>
-                          </p>
-                          {pack.trial ? (
-                            <p className="mt-1 type-eyebrow">
-                              Trial, first purchase only
-                            </p>
-                          ) : null}
-                          {pack.bonus_credits > 0 ? (
-                            <p className="mt-1 text-sm font-medium">
-                              +{pack.bonus_credits} bonus credits free
-                            </p>
-                          ) : null}
-                          <div className="flex-1" />
-                          <p className="mt-3 font-semibold">
-                            {formatInr(pack.total_inr)}
-                          </p>
-                          <p className="text-xs">
-                            one-time, incl. GST
-                          </p>
-                        </button>
-                      );
-                    })}
-                    {/* Custom volume is Enterprise, by conversation and never
-                        self-serve (directive Part 5 section 3.2). */}
-                    <a
-                      href="mailto:hello@pickready.app?subject=Enterprise%20credits"
-                      className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
-                    >
-                      <p className="text-2xl font-semibold tabular-nums">Custom</p>
-                      <p className="mt-1 text-sm">
-                        {packs.min_custom_credits}+ credits, priced by
-                        agreement. No self-serve checkout.
-                      </p>
-                      <div className="flex-1" />
-                      <p className="mt-3 inline-flex items-center gap-1 font-semibold underline">
-                        Talk to us about Enterprise
-                        <ArrowUpRight
-                          className="h-3.5 w-3.5"
-                          aria-hidden="true"
-                        />
-                      </p>
-                    </a>
-                  </div>
-
-                  {/* Live breakdown of the selected pack (directive Part 5
-                      section 3.3 step 2). Every figure below is the server's:
-                      the page renders the calculation, it never performs it. */}
-                  {selectedPack ? (
-                    <div className="mt-6 max-w-md rounded-xl border border-border bg-surface p-5">
-                      <p className="font-semibold">Order summary</p>
-                      <dl className="mt-3 space-y-2 text-sm">
-                        <div className="flex justify-between gap-4">
-                          <dt>Credits</dt>
-                          <dd className="font-medium">
-                            {selectedPack.credits}
-                          </dd>
-                        </div>
-                        {selectedPack.bonus_credits > 0 ? (
-                          <div className="flex justify-between gap-4">
-                            <dt>Bonus credits</dt>
-                            <dd className="font-medium">
-                              +{selectedPack.bonus_credits} free
-                            </dd>
-                          </div>
-                        ) : null}
-                        <div className="flex justify-between gap-4">
-                          <dt>Subtotal</dt>
-                          <dd className="font-medium">
-                            {formatInr(selectedPack.subtotal_inr)}
-                          </dd>
-                        </div>
-                        {selectedPack.setup_fee_inr > 0 ||
-                        selectedPack.setup_fee_waived ? (
-                          <div className="flex justify-between gap-4">
-                            <dt>Account setup fee</dt>
-                            <dd className="font-medium">
-                              {selectedPack.setup_fee_waived
-                                ? "Waived"
-                                : formatInr(selectedPack.setup_fee_inr)}
-                            </dd>
-                          </div>
-                        ) : null}
-                        <div className="flex justify-between gap-4">
-                          <dt>GST @ {packs.gst_rate_percent}%</dt>
-                          <dd className="font-medium">
-                            {formatInr(selectedPack.gst_inr)}
-                          </dd>
-                        </div>
-                        <div className="flex justify-between gap-4 border-t border-border pt-2">
-                          <dt className="font-semibold">Total payable</dt>
-                          <dd className="text-base font-semibold tabular-nums">
-                            {formatInr(selectedPack.total_inr)}
-                          </dd>
-                        </div>
-                      </dl>
-                      <Button
-                        className="mt-5 w-full"
-                        disabled={!canManage || payBusy}
-                        onClick={() => void buyPack(selectedPack)}
-                      >
-                        {payBusy ? (
-                          <>
-                            <Loader2
-                              className="h-4 w-4 animate-spin"
-                              aria-hidden="true"
-                            />
-                            Working
-                          </>
-                        ) : (
-                          "Proceed to Payment"
-                        )}
-                      </Button>
-                      {!canManage ? (
-                        <p className="mt-2 text-xs">
-                          Only your Company Admin can complete a purchase.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
+                  <CreditPackPicker
+                    packs={packs}
+                    selectedSlug={selectedSlug}
+                    onSelect={setSelectedSlug}
+                    onBuy={(pack) => void buyPack(pack)}
+                    busy={payBusy}
+                    canBuy={canManage}
+                    cannotBuyNote="Only your Company Admin can complete a purchase."
+                  />
                 </>
               )}
             </Section>
           </div>
-
-          {/* ── Legacy subscription plans ──────────────────────────────── */}
-          {/* Only for accounts that already hold a subscription. A new
-              customer buys credit packs above and never sees this section
-              (directive Part 5 section 3). */}
-          {data.subscription.plan ? (
-          <Section
-            title="Change plan"
-            description={
-              canManage
-                ? "The legacy subscription path, shown only because this account already has one. New credit is bought as packs above."
-                : "The legacy subscription path, shown only because this account already has one. Ask your Company Admin to change it."
-            }
-          >
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {data.plans.map((plan) => {
-                const current = plan.id === data.subscription.plan?.id;
-                return (
-                  <div
-                    key={plan.id}
-                    className={
-                      "flex flex-col rounded-xl border p-5 " +
-                      (current
-                        ? "border-brand-600 ring-1 ring-brand-600/30"
-                        : "border-border")
-                    }
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-semibold">{plan.name}</p>
-                      {current ? <Badge variant="brand">Current</Badge> : null}
-                    </div>
-                    <p className="mt-3 text-2xl font-semibold tabular-nums">
-                      {formatInr(plan.price_inr)}
-                      <span className="ml-1 text-sm font-medium">/ month</span>
-                    </p>
-                    <p className="mt-2 text-sm">
-                      {plan.applications_per_month} applications, at{" "}
-                      {formatInr(plan.rate_per_application_inr)} each
-                    </p>
-                    <div className="flex-1" />
-                    <Button
-                      className="mt-5 w-full"
-                      variant={current ? "outline" : "default"}
-                      disabled={
-                        !canManage ||
-                        current ||
-                        !plan.checkout_ready ||
-                        busySlug !== null
-                      }
-                      onClick={() => void choosePlan(plan)}
-                    >
-                      {busySlug === plan.slug ? (
-                        <>
-                          <Loader2
-                            className="h-4 w-4 animate-spin"
-                            aria-hidden="true"
-                          />
-                          Working
-                        </>
-                      ) : current ? (
-                        "Your plan"
-                      ) : data.subscription.razorpay_subscription_id ? (
-                        "Switch to this"
-                      ) : (
-                        "Subscribe"
-                      )}
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="mt-5 text-sm">
-              Need more than 200 applications a month?{" "}
-              <a
-                className="inline-flex items-center gap-1 underline"
-                href="mailto:hello@pickready.app?subject=Enterprise%20plan"
-              >
-                Talk to us about Enterprise
-                <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-              </a>
-            </p>
-          </Section>
-          ) : null}
 
           {/* ── Credit statement ───────────────────────────────────────── */}
           {/* Every credit movement, paged from GET /billing/ledger. The
@@ -985,11 +626,9 @@ export default function BillingPage() {
                       <TableRow key={row.id}>
                         <TableCell>{formatDate(row.created_at)}</TableCell>
                         <TableCell>
-                          {row.transaction_type === "subscription_charge"
-                            ? "Subscription"
-                            : row.transaction_type === "plan_change"
-                              ? "Plan change"
-                              : "Refund"}
+                          {row.transaction_type === "credit_pack"
+                            ? "Credit pack"
+                            : "Refund"}
                         </TableCell>
                         <TableCell>
                           <Badge

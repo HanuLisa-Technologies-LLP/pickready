@@ -27,7 +27,6 @@ from app.models.billing import (
     EVENT_NO_SHOW,
     EVENT_OLD_PROFILE_REVIEW,
     LEDGER_EVENT_TYPES,
-    SUBSCRIPTION_STATUSES,
     SUBUNITS_PER_CREDIT,
     BillingTransaction,
     CreditLedgerEntry,
@@ -35,7 +34,6 @@ from app.models.billing import (
     CreditLotDraw,
     CreditPurchase,
     OldProfileReview,
-    PricingPlan,
     WebhookEvent,
 )
 from app.models.agent import (
@@ -68,7 +66,12 @@ from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording, VideoRecordingSegment
 from app.models.voice import VoiceAnswer
 from app.models.project import CandidateProject
-from app.models.drishti import DrishtiProfile
+from app.models.leadership import (
+    JobLeadershipContext,
+    LeadershipDepartmentExpectation,
+    LeadershipProfile,
+)
+from app.models.department import CompanyDepartment
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -145,10 +148,16 @@ from app.models.job_skill_snapshot import JobSkillSnapshot
 # (migration 0124). The key is read and written only by
 # `services/coding_assessment/keys`.
 from app.models.coding import CodingQuestionKey, CodingRun, CodingSubmission
+# A company's public self-registration before it is a customer (migration
+# 0134). Read and written only by `api/company_onboarding`.
+from app.models.company_registration import CompanyRegistration
 from app.models.user import User
 
 __all__ = [
-    "DrishtiProfile",
+    "JobLeadershipContext",
+    "LeadershipDepartmentExpectation",
+    "LeadershipProfile",
+    "CompanyDepartment",
     "Base",
     "APPROVAL_CHAIN",
     "ApprovalDecision",
@@ -185,12 +194,11 @@ __all__ = [
     "EVENT_OLD_PROFILE_REVIEW",
     "LEDGER_EVENT_TYPES",
     "OldProfileReview",
-    "PricingPlan",
-    "SUBSCRIPTION_STATUSES",
     "SUBUNITS_PER_CREDIT",
     "WebhookEvent",
     "COMMERCIAL_DOCUMENT_TYPES",
     "Company",
+    "CompanyRegistration",
     "ComplianceDocument",
     "DOCUMENT_GROUPS",
     "DOCUMENT_LABELS",

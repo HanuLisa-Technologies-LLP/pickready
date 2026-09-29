@@ -48,7 +48,9 @@ from app.models.enums import Role
 from app.models.user import User
 
 __all__ = [
+    "DEPARTMENT_SCOPED_ROLES",
     "HIERARCHY",
+    "LEAF_ROLES",
     "MANAGEABLE_ROLES",
     "ROLE_LABELS",
     "ROLE_RANK",
@@ -90,6 +92,28 @@ ROLE_RANK: dict[Role, int] = {
     role: index for index, tier in enumerate(HIERARCHY) for role in tier
 }
 
+#: The leadership roles (2026-09-29, spec 2.4 and 12): LEAVES directly beneath
+#: the Super Admin, outside the chain above. Nobody sits beneath them, and
+#: nobody but the Super Admin may create, edit or re-permission them.
+#:
+#: WHY THEY ARE NOT A TIER OF `HIERARCHY`
+#: --------------------------------------
+#: A tier is a RANK, and a rank is transitive: a tier at index 1 would let a
+#: CEO manage every Recruiter (rank 2) and would let nobody at rank 1 manage a
+#: CEO, while a tier at the bottom would let a Recruitment Manager create a
+#: CEO. Neither is a product rule. A CEO reads the organisation and writes only
+#: their own Leadership Intelligence; they run nobody's seat. So the leaves are
+#: kept out of the rank arithmetic entirely and `can_manage` answers them by
+#: the one rule that holds: only the Super Admin.
+LEAF_ROLES: tuple[Role, ...] = (Role.ceo, Role.md, Role.functional_head)
+
+#: Roles whose holder belongs to exactly one department and reads only that
+#: department (spec 2.11, 13.2). DATA, read by the staff validation (the
+#: department is required) and mirrored by the database CHECK on `users`
+#: (migration 0133); the READ boundary itself is `services/department_access`,
+#: which asks the user's stored department rather than this set.
+DEPARTMENT_SCOPED_ROLES: frozenset[Role] = frozenset({Role.functional_head})
+
 ROLE_LABELS: dict[Role, str] = {
     Role.client: "Super Admin",
     Role.recruitment_manager: "Recruitment Manager",
@@ -97,6 +121,9 @@ ROLE_LABELS: dict[Role, str] = {
     Role.recruiter: "Recruiter",
     Role.hiring_manager: "Hiring Manager",
     Role.interview_manager: "Interview Manager",
+    Role.ceo: "CEO",
+    Role.md: "MD",
+    Role.functional_head: "Functional Head",
 }
 
 #: Roles a customer's own team can create. `client` is excluded: the Super
@@ -110,6 +137,7 @@ MANAGEABLE_ROLES: frozenset[Role] = frozenset(
         Role.recruiter,
         Role.hiring_manager,
         Role.interview_manager,
+        *LEAF_ROLES,
     }
 )
 
@@ -135,6 +163,13 @@ def can_manage(actor_role: Role | str | None, target_role: Role | str | None) ->
     and which makes the hierarchy meaningless: everyone at a level would hold
     everyone else's permissions.
     """
+    actor_leaf = _as_role(actor_role) in LEAF_ROLES
+    target_leaf = _as_role(target_role) in LEAF_ROLES
+    if actor_leaf:
+        # A leaf has nobody beneath it (see LEAF_ROLES).
+        return False
+    if target_leaf:
+        return _as_role(actor_role) == Role.client
     actor = rank(actor_role)
     target = rank(target_role)
     if actor >= _UNRANKED or target >= _UNRANKED:
@@ -142,16 +177,19 @@ def can_manage(actor_role: Role | str | None, target_role: Role | str | None) ->
     return actor < target
 
 
+def _as_role(role: Role | str | None) -> Role | None:
+    try:
+        return role if isinstance(role, Role) else Role(str(role))
+    except ValueError:
+        return None
+
+
 def subordinate_roles(actor_role: Role | str | None) -> list[Role]:
     """Every role this actor may create, in hierarchy order."""
-    actor = rank(actor_role)
-    if actor >= _UNRANKED:
-        return []
     return [
         role
-        for tier in HIERARCHY
-        for role in tier
-        if ROLE_RANK[role] > actor and role in MANAGEABLE_ROLES
+        for role in (*(r for tier in HIERARCHY for r in tier), *LEAF_ROLES)
+        if role in MANAGEABLE_ROLES and can_manage(actor_role, role)
     ]
 
 
@@ -166,9 +204,11 @@ def grantable_capabilities(actor_capabilities: set[str]) -> set[str]:
 
 # The hierarchy must place every manageable role, or a role would exist that
 # nobody can be above and nobody can be below.
-assert MANAGEABLE_ROLES <= set(ROLE_RANK)
+assert MANAGEABLE_ROLES <= set(ROLE_RANK) | set(LEAF_ROLES)
 assert Role.client in ROLE_RANK and ROLE_RANK[Role.client] == 0
-assert set(ROLE_LABELS) == set(ROLE_RANK)
+assert set(ROLE_LABELS) == set(ROLE_RANK) | set(LEAF_ROLES)
+assert not set(LEAF_ROLES) & set(ROLE_RANK)
+assert DEPARTMENT_SCOPED_ROLES <= set(LEAF_ROLES)
 # Strictly descending: every tier is below the one before it.
 assert all(
     ROLE_RANK[tier[0]] == index for index, tier in enumerate(HIERARCHY)

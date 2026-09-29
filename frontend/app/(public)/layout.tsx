@@ -1,3 +1,4 @@
+import { displayFont } from "@/app/display-font";
 import { SiteJsonLd } from "@/components/site-json-ld";
 
 import { SiteFooter } from "./site-footer";
@@ -8,8 +9,8 @@ import { SiteHeader } from "./site-header";
  * carries its own copy of this frame (see `landing-page.tsx`).
  *
  * The header and footer take no props: `/` always serves the landing page, so
- * their anchors into it (`/#how-it-works`, `/#features`, `/#pricing`) resolve
- * from every page that renders them.
+ * their anchors into it (`/#how-it-works`, `/#features`) resolve from every
+ * page that renders them.
  */
 export default function PublicLayout({
   children,
@@ -17,7 +18,9 @@ export default function PublicLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <div className="flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink">
+    <div
+      className={`${displayFont.variable} flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink`}
+    >
       <SiteJsonLd />
       <a
         href="#main"

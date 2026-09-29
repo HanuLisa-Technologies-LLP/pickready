@@ -1,33 +1,33 @@
-"""Subscriptions, checkout and the credit ledger API (killer-spec Parts 2 and 3).
+"""Credits, credit-pack purchases and the credit ledger API.
 
 Route shape:
 
-    GET  /billing/overview            customer: plan, balance, usage, history
-    GET  /billing/ledger              customer: paginated credit statement
-    POST /billing/subscribe           customer: create a Razorpay Subscription
-    POST /billing/checkout/verify     customer: verify the Checkout handler
-    POST /billing/change-plan         customer: upgrade / downgrade
-    POST /billing/cancel              customer: cancel at cycle end
-    POST /billing/webhook/razorpay    Razorpay: signature-verified, no session
+    GET  /billing/public/credit-packs  anyone: the published price list
+    GET  /billing/overview             customer: balance, usage, history
+    GET  /billing/ledger               customer: paginated credit statement
+    GET  /billing/credit-packs         customer: every pack priced for them
+    POST /billing/purchase             customer: create a Razorpay Order
+    POST /billing/purchase/verify      customer: verify the Checkout handler
+    GET  /billing/purchases            customer: purchase history
+    GET  /billing/purchases/{id}/invoice  customer: the GST invoice PDF
+    POST /billing/webhook/razorpay     Razorpay: signature-verified, no session
+    GET  /billing/provider/overview    Provider Portal: balances across customers
 
-The browser receives the Razorpay KEY ID on the responses that open Checkout
-(`/subscribe`, `/purchase`) and on `/overview`. There is no separate public
-config route: the one this module used to carry was DELETED in the Vivekium
-release (PLAN-p7 WP-B6). It had no caller, while comments across the repository
-claimed the browser read the key from it, and it was the one unauthenticated
-route and the one tenant-free cache key in this module.
+PER-CREDIT ONLY (owner spec, 2026-09-29, sections 2.1 and 23). The monthly
+subscription routes (`/subscribe`, `/checkout/verify`, `/change-plan`,
+`/cancel`) and the webhook's subscription events were deleted with the
+subscription model; `tests/test_subscription_removed.py` keeps them gone.
+Credits are bought as one-time Razorpay Orders and granted by ONE path,
+`credit_packs.settle_purchase`, which the verify route and the webhook both
+reach and which only one of them can win.
 
-Credits are granted by ONE code path (`_grant_for_payment`) shared by the
-webhook and the checkout-verify handler, keyed on the Razorpay payment id. Both
-can therefore run for the same payment, which they routinely do, since
-Checkout returns before the webhook lands, and the customer is granted exactly
-one month either way.
+The browser receives the Razorpay KEY ID on the response that opens Checkout
+(`/purchase`) and on `/overview`. There is no separate public config route.
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -50,21 +50,15 @@ from app.models.billing import (
     PURCHASE_CREATED,
     PURCHASE_FAILED,
     PURCHASE_PAID,
-    SUBSCRIPTION_ACTIVE,
-    SUBSCRIPTION_CANCELLED,
-    SUBSCRIPTION_HALTED,
-    SUBSCRIPTION_PAST_DUE,
     SUBUNITS_PER_CREDIT,
     BillingTransaction,
     CreditLedgerEntry,
     CreditPurchase,
-    PricingPlan,
     WebhookEvent,
 )
 from app.models.tenant import Tenant
 from app.schemas.billing import (
     BillingOverviewOut,
-    CheckoutVerifyIn,
     CreditLedgerEntryOut,
     CreditLotOut,
     CreditPackQuoteOut,
@@ -74,80 +68,28 @@ from app.schemas.billing import (
     CreditPurchaseOut,
     CreditPurchaseVerifyIn,
     CreditSummaryOut,
-    PlanOut,
     ProviderBillingRowOut,
-    SubscribeIn,
-    SubscribeOut,
-    SubscriptionOut,
+    PublishedBonusLevelOut,
+    PublishedCatalogueOut,
+    PublishedConsumptionOut,
+    PublishedPackOut,
     TransactionOut,
     UsageBreakdownOut,
 )
 from app.services import capabilities as caps
 from app.services import credit_packs, credits, razorpay
 from app.services.audit import audit
+from app.services.rate_limit import rate_limit
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Both credit-granting paths derive their idempotency key from this, so a
-# payment granted by checkout-verify cannot be granted again by the webhook.
-def _payment_key(payment_id: str) -> str:
-    return f"razorpay:payment:{payment_id}"
-
-
-def _plan_out(plan: PricingPlan) -> PlanOut:
-    """Serialise one plan.
-
-    `checkout_ready` asks "can a Subscribe button work right now?", which is a
-    question about the SERVER's credentials, not about whether this plan already
-    has a Razorpay id. Razorpay Plans are minted lazily on the first subscribe
-    (`_ensure_razorpay_plan`), so keying this off `razorpay_plan_id` disabled
-    every button on a fresh install and the only thing that could have populated
-    that column was the button it had just disabled.
-    """
-    return PlanOut(
-        id=plan.id,
-        slug=plan.slug,
-        name=plan.name,
-        applications_per_month=plan.applications_per_month,
-        price_inr=plan.price_inr,
-        rate_per_application_inr=plan.rate_per_application_inr,
-        is_active=plan.is_active,
-        checkout_ready=plan.is_active and razorpay.config().configured,
-    )
-
-
-async def _active_plans(session: AsyncSession) -> list[PricingPlan]:
-    return list(
-        (
-            await session.execute(
-                select(PricingPlan)
-                .where(PricingPlan.is_active.is_(True))
-                .order_by(PricingPlan.sort_order, PricingPlan.price_inr)
-            )
-        ).scalars().all()
-    )
-
-
-async def _plan_by_slug(session: AsyncSession, slug: str) -> PricingPlan:
-    plan = (
-        await session.execute(
-            select(PricingPlan).where(
-                PricingPlan.slug == slug, PricingPlan.is_active.is_(True)
-            )
-        )
-    ).scalars().first()
-    if plan is None:
-        raise HTTPException(status_code=404, detail="No such plan")
-    return plan
-
-
 # ── Customer: overview ───────────────────────────────────────────────────────
 
 _DEFICIT_MESSAGE = (
     "You are over your credit limit. New assessment invitations are paused "
-    "until your next billing date or you upgrade your plan."
+    "until you buy more credits."
 )
 
 #: Shown when the pool reads zero. Names BOTH blocked actions, because a
@@ -191,21 +133,10 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         summary.balance_subunits, average
     )
     stem_active = await credits.has_active_stem_jobs(session, tenant_id)
-    rate = (
-        await session.execute(
-            select(PricingPlan.rate_per_application_inr)
-            .join(Tenant, Tenant.current_plan_id == PricingPlan.id)
-            .where(Tenant.id == tenant_id)
-        )
-    ).scalar_one_or_none()
     return CreditSummaryOut(
         balance_subunits=summary.balance_subunits,
         balance_credits=summary.balance_credits,
-        balance_inr=(
-            (summary.balance_credits * Decimal(rate)).quantize(Decimal("0.01"))
-            if rate is not None
-            else None
-        ),
+        balance_inr=_at_list_price(summary.balance_credits),
         subunits_per_credit=SUBUNITS_PER_CREDIT,
         granted_subunits=summary.granted_subunits,
         consumed_subunits=summary.consumed_subunits,
@@ -259,6 +190,18 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
     )
 
 
+def _at_list_price(balance_credits: Decimal) -> Decimal:
+    """A credit balance at the list price per credit, excl. GST.
+
+    It used to be priced at the tenant's SUBSCRIPTION plan rate and was None
+    for everybody without a plan, which after the per-credit change is every
+    customer. There is one price per credit now, so there is one answer.
+    """
+    return (balance_credits * Decimal(PRICE_PER_CREDIT_INR)).quantize(
+        Decimal("0.01")
+    )
+
+
 async def _tenant_or_404(session: AsyncSession, tenant_id: uuid.UUID) -> Tenant:
     tenant = (
         await session.execute(select(Tenant).where(Tenant.id == tenant_id))
@@ -273,12 +216,7 @@ async def billing_overview(
     user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> BillingOverviewOut:
-    tenant = await _tenant_or_404(session, user.tenant_id)
-    plans = await _active_plans(session)
-    current = next((p for p in plans if p.id == tenant.current_plan_id), None)
-    if current is None and tenant.current_plan_id:
-        current = await session.get(PricingPlan, tenant.current_plan_id)
-
+    await _tenant_or_404(session, user.tenant_id)
     ledger = (
         await session.execute(
             select(CreditLedgerEntry)
@@ -297,14 +235,7 @@ async def billing_overview(
     ).scalars().all()
 
     return BillingOverviewOut(
-        subscription=SubscriptionOut(
-            plan=_plan_out(current) if current else None,
-            status=tenant.subscription_status,
-            razorpay_subscription_id=tenant.razorpay_subscription_id,
-            current_end=tenant.subscription_current_end,
-        ),
         credits=await _summary_out(session, user.tenant_id),
-        plans=[_plan_out(plan) for plan in plans],
         razorpay_key_id=razorpay.config().key_id or None,
         recent_ledger=[
             CreditLedgerEntryOut(
@@ -350,7 +281,7 @@ async def billing_ledger(
     ]
 
 
-# ── Customer: subscribe / change / cancel ────────────────────────────────────
+# ── Razorpay errors ──────────────────────────────────────────────────────────
 
 def _razorpay_or_503(exc: Exception) -> HTTPException:
     if isinstance(exc, razorpay.RazorpayNotConfigured):
@@ -361,271 +292,50 @@ def _razorpay_or_503(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
-async def _ensure_razorpay_plan(session: AsyncSession, plan: PricingPlan) -> str:
-    """Return the plan's Razorpay id, creating it on first use.
+# ── The published catalogue (the public /pricing page) ───────────────────────
 
-    Creating it lazily rather than in the migration keeps the migration offline
-    and idempotent: a schema upgrade that reaches out to a payment gateway would
-    fail on any machine without credentials, which is every CI runner.
+@router.get(
+    "/public/credit-packs",
+    response_model=PublishedCatalogueOut,
+    dependencies=[Depends(rate_limit("billing_public_catalogue", limit=60, window=60))],
+)
+async def published_credit_packs(response: Response) -> PublishedCatalogueOut:
+    """The platform's standard price list, for a visitor with no account.
+
+    ONE SOURCE OF TRUTH (owner spec, section 4.2): the public pricing page
+    renders this and holds no price of its own, so the figures a visitor
+    reads are the figures checkout charges. Built by
+    `credit_packs.published_catalogue` from the constants and the arithmetic
+    every tenant quote and every invoice uses.
+
+    Public by design, and it discloses nothing an account owns: no tenant is
+    read, so the setup-fee WAIVER state (a count across every customer) and
+    any account's trial state are never on it. The trial pack is marked as
+    new-accounts-only and the setup fee is stated as its rule. Rate limited
+    as an abuse control, the same as the public employer pages. No session,
+    no database: the catalogue is code.
     """
-    if plan.razorpay_plan_id:
-        return plan.razorpay_plan_id
-    plan_id = await razorpay.create_plan(
-        name=f"Vivekium {plan.name}",
-        price_inr=plan.price_inr,
-        notes={"pickready_plan_slug": plan.slug},
-    )
-    # Written with raw SQL: `pricing_plans` is a global table the tenant-scoped
-    # role can only SELECT, so this runs as one explicit, narrow statement.
-    await session.execute(
-        text("UPDATE pricing_plans SET razorpay_plan_id = :rid WHERE id = :pid"),
-        {"rid": plan_id, "pid": str(plan.id)},
-    )
-    plan.razorpay_plan_id = plan_id
-    return plan_id
-
-
-@router.post("/subscribe", response_model=SubscribeOut)
-async def subscribe(
-    body: SubscribeIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SubscribeOut:
-    """Create a Razorpay Subscription for this customer and hand its id back.
-
-    Credits are NOT granted here. A created subscription is an intent to pay;
-    the money arrives with `subscription.charged`, and that is what grants.
-    """
-    tenant = await _tenant_or_404(session, user.tenant_id)
-    plan = await _plan_by_slug(session, body.plan_slug)
-    if tenant.razorpay_subscription_id and tenant.subscription_status == SUBSCRIPTION_ACTIVE:
-        raise HTTPException(
-            status_code=409,
-            detail="This account already has an active subscription. Use Change Plan instead.",
-        )
-    try:
-        razorpay_plan_id = await _ensure_razorpay_plan(session, plan)
-        subscription = await razorpay.create_subscription(
-            plan_id=razorpay_plan_id,
-            customer_id=tenant.razorpay_customer_id,
-            notes={"tenant_id": str(tenant.id), "plan_slug": plan.slug},
-        )
-    except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
-        raise _razorpay_or_503(exc) from exc
-
-    tenant.razorpay_subscription_id = subscription["id"]
-    tenant.current_plan_id = plan.id
-    # Not active until it is charged. Recording it as active here would grant a
-    # month of credits to anyone who opened Checkout and then closed the tab.
-    tenant.subscription_status = SUBSCRIPTION_PAST_DUE
-    await audit(
-        session, tenant_id=tenant.id, actor_user_id=user.user_id,
-        action="subscription_created", target_type="tenant", target_id=tenant.id,
-        metadata={"plan": plan.slug, "subscription_id": subscription["id"]},
-    )
-    return SubscribeOut(
-        subscription_id=subscription["id"],
-        razorpay_key_id=razorpay.config().key_id,
-        plan=_plan_out(plan),
-        short_url=subscription.get("short_url"),
-    )
-
-
-async def _grant_for_payment(
-    session: AsyncSession,
-    *,
-    tenant: Tenant,
-    plan: PricingPlan | None,
-    payment_id: str,
-    amount_inr: int,
-    subscription_id: str | None,
-) -> bool:
-    """Record the charge and grant that month's credits. Idempotent.
-
-    Returns True when this call is the one that granted. Both the webhook and
-    checkout-verify reach this with the same `payment_id`, and only the first
-    writes anything.
-    """
-    if plan is None:
-        log.warning("billing.grant_without_plan tenant=%s payment=%s", tenant.id, payment_id)
-        return False
-    granted = await credits.grant(
-        session,
-        tenant_id=tenant.id,
-        subunits=plan.monthly_subunits,
-        idempotency_key=_payment_key(payment_id),
-        plan_id=plan.id,
-        metadata={
-            "applications_per_month": plan.applications_per_month,
-            "razorpay_payment_id": payment_id,
-        },
-    )
-    if not granted:
-        return False
-    session.add(
-        BillingTransaction(
-            tenant_id=tenant.id,
-            razorpay_payment_id=payment_id,
-            razorpay_subscription_id=subscription_id,
-            amount_inr=amount_inr,
-            status="success",
-            transaction_type="subscription_charge",
-            plan_id=plan.id,
-        )
-    )
-    tenant.subscription_status = SUBSCRIPTION_ACTIVE
-    # The subscription month clock starts at the FIRST successful charge and
-    # never moves again (change request 27). Not at /subscribe: a created
-    # subscription is an intent to pay, and counting months from it would put
-    # a customer whose card was declined into month 10 having paid nothing.
-    # Not on every charge either, which is why the guard is `is None`:
-    # restamping on each renewal would reset the clock to month 1 forever and
-    # the month 10 letter would never be sent to anybody.
-    if tenant.subscription_started_at is None:
-        tenant.subscription_started_at = datetime.now(timezone.utc)
-    # A top-up releases whatever finalisation was held for want of credits
-    # (spec 11). Enqueued rather than run inline: this is a payment path, and
-    # writing a batch of reports on it would make a customer's card confirmation
-    # wait on the slowest LLM call in the queue.
-    #
-    # Fired from this ONE helper, which both the webhook and checkout-verify go
-    # through, so a customer is released exactly once however their payment
-    # arrives. The task re-checks the balance per tenant, so an extra call
-    # costs a query and changes nothing.
-    #
-    # AFTER THE COMMIT: a release dispatched before it could run against a
-    # balance that does not yet include this grant and release nothing, or
-    # outlive a transaction that then rolled the grant back. A lost invoke is
-    # logged by the dispatcher and repaired by the hourly
-    # `pickready.release_held_assessments` sweep (`workers/schedule.py`).
-    from app.workers.dispatch import dispatch_after_commit
-
-    dispatch_after_commit(
-        session, "pickready.release_held_assessments", args=[str(tenant.id)]
-    )
-    return True
-
-
-@router.post("/checkout/verify", response_model=BillingOverviewOut)
-async def verify_checkout(
-    body: CheckoutVerifyIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> BillingOverviewOut:
-    """Verify the Checkout handler payload and activate the subscription.
-
-    This exists so the customer sees their credits immediately instead of
-    staring at a zero balance until the webhook arrives. It grants under the
-    same idempotency key the webhook uses, so the webhook that follows is a
-    no-op rather than a second month.
-    """
-    if not razorpay.verify_checkout_signature(
-        payment_id=body.razorpay_payment_id,
-        subscription_id=body.razorpay_subscription_id,
-        signature=body.razorpay_signature,
-    ):
-        raise HTTPException(status_code=400, detail="Payment could not be verified")
-
-    tenant = await _tenant_or_404(session, user.tenant_id)
-    if tenant.razorpay_subscription_id != body.razorpay_subscription_id:
-        # The signature proves Razorpay issued this payment, not that it belongs
-        # to the caller's account.
-        raise HTTPException(status_code=403, detail="This payment belongs to another account")
-
-    plan = await session.get(PricingPlan, tenant.current_plan_id) if tenant.current_plan_id else None
-    granted = await _grant_for_payment(
-        session,
-        tenant=tenant,
-        plan=plan,
-        payment_id=body.razorpay_payment_id,
-        amount_inr=plan.price_inr if plan else 0,
-        subscription_id=body.razorpay_subscription_id,
-    )
-    await audit(
-        session, tenant_id=tenant.id, actor_user_id=user.user_id,
-        action="subscription_checkout_verified", target_type="tenant", target_id=tenant.id,
-        metadata={"granted": granted, "payment_id": body.razorpay_payment_id},
-    )
-    return await billing_overview(user=user, session=session)
-
-
-@router.post("/change-plan", response_model=SubscriptionOut)
-async def change_plan(
-    body: SubscribeIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SubscriptionOut:
-    """Upgrade or downgrade. Razorpay computes the proration, not us."""
-    tenant = await _tenant_or_404(session, user.tenant_id)
-    if not tenant.razorpay_subscription_id:
-        raise HTTPException(
-            status_code=409, detail="There is no subscription to change yet."
-        )
-    plan = await _plan_by_slug(session, body.plan_slug)
-    if plan.id == tenant.current_plan_id:
-        raise HTTPException(status_code=409, detail="This is already your current plan.")
-    try:
-        razorpay_plan_id = await _ensure_razorpay_plan(session, plan)
-        await razorpay.update_subscription(
-            tenant.razorpay_subscription_id, plan_id=razorpay_plan_id
-        )
-    except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
-        raise _razorpay_or_503(exc) from exc
-
-    previous = tenant.current_plan_id
-    tenant.current_plan_id = plan.id
-    session.add(
-        BillingTransaction(
-            tenant_id=tenant.id,
-            razorpay_subscription_id=tenant.razorpay_subscription_id,
-            amount_inr=plan.price_inr,
-            status="success",
-            transaction_type="plan_change",
-            plan_id=plan.id,
-            notes=f"Changed from plan {previous} to {plan.slug}",
-        )
-    )
-    await audit(
-        session, tenant_id=tenant.id, actor_user_id=user.user_id,
-        action="subscription_plan_changed", target_type="tenant", target_id=tenant.id,
-        metadata={"to": plan.slug},
-    )
-    return SubscriptionOut(
-        plan=_plan_out(plan),
-        status=tenant.subscription_status,
-        razorpay_subscription_id=tenant.razorpay_subscription_id,
-        current_end=tenant.subscription_current_end,
-    )
-
-
-@router.post("/cancel", response_model=SubscriptionOut)
-async def cancel(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SubscriptionOut:
-    """Cancel at cycle end. Credits already in the pool are NOT clawed back:
-    they were paid for. Each lot keeps its own expiry, if it has one (credit
-    expiry applies to new grants only, 2026-09-22), and cancelling does not
-    shorten it."""
-    tenant = await _tenant_or_404(session, user.tenant_id)
-    if not tenant.razorpay_subscription_id:
-        raise HTTPException(status_code=409, detail="There is no subscription to cancel.")
-    try:
-        await razorpay.cancel_subscription(tenant.razorpay_subscription_id)
-    except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
-        raise _razorpay_or_503(exc) from exc
-    tenant.subscription_status = SUBSCRIPTION_CANCELLED
-    await audit(
-        session, tenant_id=tenant.id, actor_user_id=user.user_id,
-        action="subscription_cancelled", target_type="tenant", target_id=tenant.id,
-        metadata={},
-    )
-    plan = await session.get(PricingPlan, tenant.current_plan_id) if tenant.current_plan_id else None
-    return SubscriptionOut(
-        plan=_plan_out(plan) if plan else None,
-        status=tenant.subscription_status,
-        razorpay_subscription_id=tenant.razorpay_subscription_id,
-        current_end=tenant.subscription_current_end,
+    catalogue = credit_packs.published_catalogue()
+    # A price list changes with a deploy, never with a request. A short
+    # shared cache is safe and spares the API a hit per page view.
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return PublishedCatalogueOut(
+        price_per_credit_inr=catalogue.price_per_credit_inr,
+        gst_rate_percent=catalogue.gst_rate_percent,
+        subunits_per_credit=catalogue.subunits_per_credit,
+        credit_validity_months=catalogue.credit_validity_months,
+        min_custom_credits=catalogue.min_custom_credits,
+        setup_fee_inr=catalogue.setup_fee_inr,
+        setup_fee_gst_inr=catalogue.setup_fee_gst_inr,
+        setup_fee_waiver_limit=catalogue.setup_fee_waiver_limit,
+        bonus_levels=[
+            PublishedBonusLevelOut(**level.__dict__)
+            for level in catalogue.bonus_levels
+        ],
+        packs=[PublishedPackOut(**pack.__dict__) for pack in catalogue.packs],
+        consumption=[
+            PublishedConsumptionOut(**rate.__dict__) for rate in catalogue.consumption
+        ],
     )
 
 
@@ -662,9 +372,8 @@ async def create_credit_purchase(
 ) -> CreditPurchaseCreatedOut:
     """Validate the purchase and mint its Razorpay Order.
 
-    Credits are NOT granted here — a created Order is an intent to pay, and
-    the grant happens on payment confirmation (§3.3 step 5), exactly as the
-    subscription flow separates /subscribe from the charge event. The rule
+    Credits are NOT granted here: a created Order is an intent to pay, and
+    the grant happens on payment confirmation (§3.3 step 5). The rule
     violations (trial reuse, sub-50 amounts) are 422s with the service's own
     message, so the form can show the reason verbatim.
     """
@@ -714,10 +423,9 @@ async def verify_credit_purchase(
 ) -> BillingOverviewOut:
     """Verify the Checkout handler payload for an Order and settle.
 
-    Same shape as /checkout/verify and for the same reason: the customer sees
-    their credits the moment Checkout closes instead of staring at the old
-    balance until the webhook lands. Settlement is idempotent, so whichever of
-    this and the webhook runs second is a no-op.
+    The customer sees their credits the moment Checkout closes instead of
+    staring at the old balance until the webhook lands. Settlement is
+    idempotent, so whichever of this and the webhook runs second is a no-op.
     """
     if not razorpay.verify_order_signature(
         order_id=body.razorpay_order_id,
@@ -807,58 +515,27 @@ async def download_credit_invoice(
 
 # ── Razorpay webhook ─────────────────────────────────────────────────────────
 
+#: The Orders events a credit purchase needs, and nothing else. Every other
+#: event Razorpay may deliver is recorded (dedupe row) and answered "ignored".
 _HANDLED_EVENTS = {
     "payment.captured",
     "order.paid",
-    "subscription.charged",
-    "subscription.cancelled",
-    "subscription.halted",
-    "subscription.completed",
-    "subscription.pending",
     "payment.failed",
 }
-
-
-async def _tenant_for_subscription(
-    session: AsyncSession, subscription_id: str | None, notes: dict | None
-) -> Tenant | None:
-    """Resolve the customer from the subscription id, falling back to notes.
-
-    The notes fallback matters for the landing-page flow, where the subscription
-    is created before the tenant row has ever been written back with its id.
-    """
-    if subscription_id:
-        tenant = (
-            await session.execute(
-                select(Tenant).where(Tenant.razorpay_subscription_id == subscription_id)
-            )
-        ).scalars().first()
-        if tenant is not None:
-            return tenant
-    raw = (notes or {}).get("tenant_id")
-    if not raw:
-        return None
-    try:
-        tenant_id = uuid.UUID(str(raw))
-    except ValueError:
-        return None
-    return (
-        await session.execute(select(Tenant).where(Tenant.id == tenant_id))
-    ).scalars().first()
 
 
 @router.post("/webhook/razorpay", status_code=status.HTTP_200_OK)
 async def razorpay_webhook(
     request: Request, session: AsyncSession = Depends(get_public_db)
 ) -> dict:
-    """Signature-verified subscription events.
+    """Signature-verified credit-purchase payment events.
 
     Answers 200 for anything it has authenticated and HANDLED, including
     events it deliberately does not act on and redeliveries it has already
     recorded: a non-2xx makes Razorpay retry, and retrying an event we have
     deliberately ignored just fills the retry queue forever. A failure to
     RECORD the event is the opposite case and answers 5xx, because that retry
-    is the only thing that gets a paid charge granted.
+    is the only thing that gets a paid purchase settled.
     """
     raw = await request.body()
     signature = request.headers.get("X-Razorpay-Signature", "")
@@ -874,8 +551,8 @@ async def razorpay_webhook(
     #   * `RAZORPAY_WEBHOOK_SECRET` was never mounted on the api service, so
     #     `webhook_secret` was empty.
     #
-    # So an anonymous POST of a forged `subscription.charged` was accepted and
-    # granted credits, repeatably, because the attacker mints the idempotency
+    # So an anonymous forged payment event was accepted and granted credits,
+    # repeatably, because the attacker mints the idempotency
     # keys too. Unauthenticated, remote, and it issues the thing this product
     # sells.
     #
@@ -910,15 +587,15 @@ async def razorpay_webhook(
     # payload carries no event id of its own.
     event_id = request.headers.get("X-Razorpay-Event-Id") or f"{event_type}:{body.get('created_at')}"
 
-    # Dedupe FIRST. Razorpay delivers at least once and a replayed
-    # subscription.charged would otherwise grant a second month.
+    # Dedupe FIRST. Razorpay delivers at least once, and a replayed event must
+    # do nothing the first delivery has not already done.
     #
     # ON CONFLICT ON THE ONE CONSTRAINT, NEVER A CAUGHT EXCEPTION. This used to
     # be `except Exception` around the flush, answered 200 "duplicate". So a
     # DataError (an event type wider than its column), a lost connection or
     # any other failure of this INSERT told Razorpay the event was handled,
-    # Razorpay never retried it, and a paid `subscription.charged` granted
-    # nothing, silently. Stating the no-op in SQL means the database absorbs
+    # Razorpay never retried it, and a paid purchase was settled by nothing,
+    # silently. Stating the no-op in SQL means the database absorbs
     # the duplicate and nothing else; every other failure propagates, the
     # request answers 5xx, and Razorpay retries, which is exactly what a retry
     # queue is for. The same shape `conversations` uses for its participants.
@@ -943,7 +620,6 @@ async def razorpay_webhook(
         return {"status": "ignored"}
 
     payload = body.get("payload") or {}
-    subscription_entity = ((payload.get("subscription") or {}).get("entity")) or {}
     payment_entity = ((payload.get("payment") or {}).get("entity")) or {}
     order_entity = ((payload.get("order") or {}).get("entity")) or {}
 
@@ -990,82 +666,14 @@ async def razorpay_webhook(
                 {"eid": event_id},
             )
             return {"status": "ok"}
-    if event_type in {"payment.captured", "order.paid"}:
-        # A captured payment with no matching purchase row is a subscription
-        # charge's payment leg (subscription.charged handles those) or noise.
-        return {"status": "ignored"}
-
-    subscription_id = subscription_entity.get("id") or payment_entity.get("subscription_id")
-    tenant = await _tenant_for_subscription(
-        session, subscription_id, subscription_entity.get("notes") or payment_entity.get("notes")
+    # A payment event naming no credit purchase of ours: an order created
+    # outside this product, or one whose purchase row was never written.
+    # Recorded (the dedupe row above) and answered 200, because a retry would
+    # find the same nothing; logged with identifiers only so it can be chased.
+    log.warning(
+        "billing.webhook_unmatched event=%s order=%s", event_type, order_id or ""
     )
-    if tenant is None:
-        log.warning("billing.webhook_unmatched event=%s subscription=%s", event_type, subscription_id)
-        return {"status": "unmatched"}
-
-    plan = (
-        await session.get(PricingPlan, tenant.current_plan_id)
-        if tenant.current_plan_id
-        else None
-    )
-
-    if event_type == "subscription.charged":
-        payment_id = payment_entity.get("id") or f"sub:{subscription_id}:{body.get('created_at')}"
-        amount_paise = int(payment_entity.get("amount") or 0)
-        await _grant_for_payment(
-            session,
-            tenant=tenant,
-            plan=plan,
-            payment_id=payment_id,
-            amount_inr=amount_paise // razorpay.PAISE_PER_RUPEE,
-            subscription_id=subscription_id,
-        )
-        end = subscription_entity.get("current_end")
-        if end:
-            tenant.subscription_current_end = datetime.fromtimestamp(int(end), tz=timezone.utc)
-
-    elif event_type == "payment.failed":
-        # Do NOT keep granting. The customer is emailed and the subscription is
-        # marked past_due; the next successful charge flips it back.
-        tenant.subscription_status = SUBSCRIPTION_PAST_DUE
-        session.add(
-            BillingTransaction(
-                tenant_id=tenant.id,
-                razorpay_payment_id=payment_entity.get("id"),
-                razorpay_subscription_id=subscription_id,
-                amount_inr=int(payment_entity.get("amount") or 0) // razorpay.PAISE_PER_RUPEE,
-                status="failed",
-                transaction_type="subscription_charge",
-                plan_id=plan.id if plan else None,
-                notes=str(payment_entity.get("error_description") or "")[:500],
-            )
-        )
-        # After the commit: an email about a failure whose recording then
-        # rolled back would describe a state the account is not in. A lost
-        # invoke is logged by the dispatcher; the billing page shows the
-        # past-due status either way.
-        from app.workers.dispatch import dispatch_after_commit
-
-        dispatch_after_commit(
-            session, "pickready.send_payment_failed_email", args=[str(tenant.id)]
-        )
-
-    elif event_type in {"subscription.cancelled", "subscription.completed"}:
-        # Future grants stop. Unused credits stay in the pool — they were paid
-        # for, and the rollover rule still applies to what is already there.
-        tenant.subscription_status = SUBSCRIPTION_CANCELLED
-
-    elif event_type in {"subscription.halted", "subscription.pending"}:
-        tenant.subscription_status = (
-            SUBSCRIPTION_HALTED if event_type == "subscription.halted" else SUBSCRIPTION_PAST_DUE
-        )
-
-    await session.execute(
-        text("UPDATE webhook_events SET processed_at = now() WHERE provider = 'razorpay' "
-             "AND event_id = :eid"),
-        {"eid": event_id},
-    )
-    return {"status": "ok"}
+    return {"status": "unmatched"}
 
 
 # ── Provider Portal: billing overview across customers ───────────────────────
@@ -1076,7 +684,7 @@ async def provider_billing_overview(
     limit: int = Query(25, ge=1, le=100),
     session: AsyncSession = Depends(get_superadmin_db),
 ) -> list[ProviderBillingRowOut]:
-    """Which customers are on which plan, their status, and their balance.
+    """Every customer's credit balance.
 
     One query with a LEFT JOIN and a grouped ledger sum, not a per-customer
     balance lookup: 30 customers must not become 31 round trips.
@@ -1094,14 +702,9 @@ async def provider_billing_overview(
             select(
                 Tenant.id,
                 Tenant.name,
-                PricingPlan.name,
-                PricingPlan.rate_per_application_inr,
-                Tenant.subscription_status,
                 func.coalesce(balances.c.balance, 0),
-                Tenant.subscription_current_end,
             )
             .select_from(Tenant)
-            .outerjoin(PricingPlan, PricingPlan.id == Tenant.current_plan_id)
             .outerjoin(balances, balances.c.tenant_id == Tenant.id)
             .order_by(Tenant.name)
             .offset(skip)
@@ -1112,20 +715,10 @@ async def provider_billing_overview(
         ProviderBillingRowOut(
             tenant_id=tenant_id,
             customer_name=name,
-            plan_name=plan_name,
-            subscription_status=sub_status,
             balance_subunits=int(balance),
             balance_credits=credits.credits_from_subunits(int(balance)),
-            balance_inr=(
-                (
-                    credits.credits_from_subunits(int(balance))
-                    * Decimal(plan_rate)
-                ).quantize(Decimal("0.01"))
-                if plan_rate is not None
-                else None
-            ),
+            balance_inr=_at_list_price(credits.credits_from_subunits(int(balance))),
             in_deficit=int(balance) < 0,
-            current_end=current_end,
         )
-        for tenant_id, name, plan_name, plan_rate, sub_status, balance, current_end in rows
+        for tenant_id, name, balance in rows
     ]

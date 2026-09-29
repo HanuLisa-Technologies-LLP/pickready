@@ -78,6 +78,7 @@ from app.schemas.assessments import (
     SwotAnalysisOut,
     SwotAnalysisSectionsIn,
 )
+from app.services import department_access
 from app.services import assessment_contract, rbac, skills, swot_analysis
 from app.services import capabilities as caps
 from app.services.audit import record_action
@@ -95,6 +96,9 @@ async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    # The department boundary (spec 2.11): every setup read and write on a
+    # job outside a Functional Head's department answers like a missing job.
+    await department_access.require_job_in_scope(session, user, job.id)
     return job
 
 

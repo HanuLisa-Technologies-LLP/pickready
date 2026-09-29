@@ -34,6 +34,9 @@ const ROLE_LABELS: Record<string, string> = {
   hiring_manager: "Hiring Manager",
   // RBAC_SPECIFICATION.md 5 and 13, added 2026-08-29. A job may have several.
   interview_manager: "Interview Manager",
+  ceo: "CEO",
+  md: "MD",
+  functional_head: "Functional Head",
   client: "Company Admin",
 };
 

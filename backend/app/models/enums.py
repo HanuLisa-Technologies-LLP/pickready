@@ -27,6 +27,17 @@ class Role(str, enum.Enum):
     # specification allows; adding a role that holds less is the restrictive
     # direction.
     interview_manager = "interview_manager"
+    # Leadership roles (2026-09-29, the leadership release, spec 2.4 and 12).
+    # CEO and MD read the whole organisation and write nothing but their own
+    # Leadership Intelligence input; both are optional seats a company may
+    # leave empty. A Functional Head belongs to EXACTLY ONE department
+    # (`users.department_id`, required by a CHECK) and reads only that
+    # department's jobs, candidates and reports: `services/department_access`
+    # is the one implementation of that boundary. All three are leaf roles
+    # the Super Admin alone creates (`services/role_hierarchy`).
+    ceo = "ceo"
+    md = "md"
+    functional_head = "functional_head"
     candidate = "candidate"
     # Business Development. Vivekium's own staff, not a customer's: a bd user
     # has tenant_id NULL and works the sales pipeline in `bd_leads`. Sits in

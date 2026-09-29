@@ -241,7 +241,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
           </label>
 
           {controls?.scoped_to_assignments ? (
-            <p className="ml-auto text-[12px]">
+            <p className="ml-auto text-meta">
               Showing the jobs you are assigned to.
             </p>
           ) : null}
@@ -288,7 +288,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                   <TableHead
                     key={key}
                     className={cn(
-                      "text-[10.5px] uppercase tracking-wider",
+                      "text-table-head uppercase",
                       className
                     )}
                   >

@@ -62,7 +62,20 @@ USERS: dict[Role, uuid.UUID] = {
     Role.recruiter: uuid.UUID("00000000-0000-4000-8000-000000000003"),
     Role.hiring_manager: uuid.UUID("00000000-0000-4000-8000-000000000004"),
     Role.interview_manager: uuid.UUID("00000000-0000-4000-8000-000000000005"),
+    # The leadership release (2026-09-29): the Recruitment Manager joined
+    # CLIENT_ROLES (it was missing, and so denied every matrix row), and the
+    # three leadership roles arrived.
+    Role.recruitment_manager: uuid.UUID("00000000-0000-4000-8000-000000000006"),
+    Role.ceo: uuid.UUID("00000000-0000-4000-8000-000000000007"),
+    Role.md: uuid.UUID("00000000-0000-4000-8000-000000000008"),
+    Role.functional_head: uuid.UUID("00000000-0000-4000-8000-000000000009"),
 }
+
+#: The Functional Head's department. Every fixture job sits in it, so each
+#: matrix cell is asserted for the Functional Head exactly as for everybody
+#: else; the department boundary gets its own cases below.
+DEPT_A = uuid.UUID("dddddddd-0000-4000-8000-00000000000a")
+DEPT_OTHER = uuid.UUID("dddddddd-0000-4000-8000-00000000000b")
 
 #: The same five roles again, in tenant B. Used to prove that a valid session
 #: for the identical role reaches nothing in tenant A.
@@ -103,6 +116,8 @@ class JobRow:
     assignments: frozenset[tuple[str, str]]
     #: A `job_skill_snapshots` row exists: a candidate has started (D5).
     skills_locked: bool = False
+    #: `jobs.department_id` (migration 0133).
+    department_id: uuid.UUID | None = DEPT_A
 
 
 def _jobs(
@@ -164,6 +179,7 @@ class _FakeSession:
                         "tenant_id": row.tenant_id,
                         "lifecycle_state": row.lifecycle_state,
                         "skills_locked": row.skills_locked,
+                        "department_id": row.department_id,
                     }
                 ]
             )
@@ -172,6 +188,16 @@ class _FakeSession:
             if row is None:
                 return _Result([])
             return _Result([(a, u) for a, u in row.assignments])
+        if sql.startswith("SELECT department_id FROM users"):
+            # `department_access.department_scope`: the Functional Head (of
+            # either tenant) belongs to DEPT_A; nobody else has a department.
+            functional_heads = {
+                str(USERS[Role.functional_head]),
+                str(USERS_B[Role.functional_head]),
+            }
+            if str(params.get("uid")) in functional_heads:
+                return _Result([(DEPT_A,)])
+            return _Result([(None,)])
         if "FROM users" in sql or "permissions_json" in sql:
             # The per-user overlay. Empty: every case here is about the role's
             # own grant, and an overlay would mask which layer decided.
@@ -364,9 +390,28 @@ def test_every_matrix_row_names_every_client_role() -> None:
 
 
 def test_five_roles_not_four() -> None:
-    """spec-doc6 C4. RBAC 5 says "four" and then lists five; five is correct."""
-    assert len(caps.CLIENT_ROLES) == 5
-    assert Role.interview_manager in caps.CLIENT_ROLES
+    """spec-doc6 C4. RBAC 5 says "four" and then lists five; five is correct.
+
+    AMENDED 2026-09-29 (the leadership release): RBAC 5's five are all still
+    here, joined by the Recruitment Manager (ranked beside the HR Manager,
+    and missing from this tuple until now, which denied it every matrix row)
+    and the three leadership roles. Nine, asserted as a set so the next role
+    is a visible edit here rather than a silent DENY everywhere."""
+    rbac_section_5 = {
+        Role.client,
+        Role.hr_manager,
+        Role.recruiter,
+        Role.hiring_manager,
+        Role.interview_manager,
+    }
+    assert rbac_section_5 <= set(caps.CLIENT_ROLES)
+    assert set(caps.CLIENT_ROLES) == rbac_section_5 | {
+        Role.recruitment_manager,
+        Role.ceo,
+        Role.md,
+        Role.functional_head,
+    }
+    assert len(caps.CLIENT_ROLES) == 9
 
 
 def test_conservative_cells_are_distinguishable_from_plain_ones() -> None:
@@ -760,6 +805,14 @@ KNOWN_GRANTS_ABOVE_THE_CEILING: frozenset[tuple[Role, str]] = frozenset(
         # test_conservative_cells_are_distinguishable_from_plain_ones.
         (Role.hr_manager, caps.PUBLISH_JOB),
         (Role.recruiter, caps.MANAGE_STAFF),
+        # The Recruitment Manager carries the HR Manager's cells since the
+        # leadership release (2026-09-29), and so the HR Manager's three
+        # divergences too. They were refused before as well, by the DENY an
+        # absent row produced; what changed is that the refusal now names the
+        # conservative cell it comes from.
+        (Role.recruitment_manager, caps.MANAGE_STAFF),
+        (Role.recruitment_manager, caps.ASSIGN_ROLES),
+        (Role.recruitment_manager, caps.PUBLISH_JOB),
         (Role.hiring_manager, caps.PUBLISH_JOB),
         (Role.hiring_manager, caps.DECIDE_PROFILE),
         (Role.hiring_manager, caps.UPDATE_PIPELINE_STATUS),
@@ -1129,3 +1182,64 @@ def test_a_read_is_still_allowed_on_an_unknown_lifecycle_state() -> None:
     ):
         method, path = ROUTE_FOR_CAPABILITY[capability]
         assert _call(client, method, path, Role.recruiter, JOB_ASSIGNED) == 200, capability
+
+
+
+# ── The department boundary (the leadership release, spec 2.11, 14) ─────────
+
+def _jobs_in(department: uuid.UUID | None) -> dict[str, JobRow]:
+    state = JobLifecycleState.FINALIZED.value
+    return {
+        str(JOB_ASSIGNED): JobRow(
+            TENANT_A, state, ASSIGNMENTS_ON_ASSIGNED_JOB, False, department
+        ),
+        str(JOB_UNASSIGNED): JobRow(TENANT_A, state, frozenset(), False, department),
+        str(JOB_OTHER_TENANT): JobRow(TENANT_B, state, frozenset(), False, department),
+    }
+
+
+@pytest.mark.parametrize(
+    "department", [DEPT_OTHER, None], ids=["another_department", "no_department"]
+)
+def test_a_functional_head_reaches_no_job_outside_their_department(
+    department: uuid.UUID | None,
+) -> None:
+    """Spec 2.11 and 14.3, at the HTTP layer, through `require_authorized`:
+    every route answers a job in another department, or in none, with the
+    SAME 404 a missing job gets, so the refusal confirms nothing."""
+    client = _client(_jobs_in(department))
+    for method, path, _capability in PROTECTED_ROUTES:
+        outside = _call(client, method, path, Role.functional_head, JOB_UNASSIGNED)
+        missing = _call(client, method, path, Role.functional_head, JOB_NONEXISTENT)
+        assert outside == missing == 404, f"{method} {path}"
+
+
+def test_organisation_wide_roles_are_not_bounded_by_department() -> None:
+    """Spec 14.2: the CEO and MD read every department, and the operational
+    roles are untouched by the boundary (spec 26, "Existing")."""
+    client = _client(_jobs_in(DEPT_OTHER))
+    for role in (Role.ceo, Role.md, Role.client, Role.hr_manager):
+        assert _call(client, "GET", "/jobs/{job_id}", role, JOB_UNASSIGNED) == 200, role
+
+
+def test_the_leadership_roles_write_nothing_in_the_matrix() -> None:
+    """Spec 2.12 and 12: their only product write is their own Leadership
+    Intelligence, which is not an RBAC 24 row. Every write row refuses them,
+    and the refusal is DENY (a future specification may grant one), never a
+    silent absence."""
+    reads = {
+        caps.VIEW_COMPANY_JOBS,
+        caps.VIEW_REVIEW_SCREEN,
+        caps.VIEW_CANDIDATE_REPORTS,
+        caps.VIEW_CANDIDATE_RATINGS,
+    }
+    for role in (Role.ceo, Role.md, Role.functional_head):
+        for capability, row in caps.RBAC_INVARIANTS.items():
+            expected = Invariant.ALLOW if capability in reads else Invariant.DENY
+            assert row[role] is expected, (role.value, capability)
+
+
+def test_the_recruitment_manager_carries_the_hr_managers_cells() -> None:
+    """It ranks beside the HR Manager (spec v4), cell for cell."""
+    for capability, row in caps.RBAC_INVARIANTS.items():
+        assert row[Role.recruitment_manager] is row[Role.hr_manager], capability

@@ -22,7 +22,8 @@ THE ORDER, AND WHY IT IS THIS ORDER
 
   * the system prompt is shared by every call of that task type, anywhere;
   * the job description is shared by every candidate on that job;
-  * Drishti's and Bodha's outputs are job-level derivations, shared the same way;
+  * Leadership Intelligence's and Bodha's outputs are job-level derivations,
+    shared the same way;
   * the assessment matrix is the job's frozen criteria, shared the same way;
   * the candidate's own material is shared across that candidate's turns only;
   * the per-turn material is shared with nothing.
@@ -37,7 +38,7 @@ THIS MODULE INVENTS NO CONTENT
 --------------------------------
 `assemble` places the segments a caller SUPPLIES into the canonical order and
 omits the rest. It never fabricates a segment, and in particular it does not
-put Drishti or Bodha into a prompt that was not already carrying them: adding
+put leadership context or Bodha into a prompt that was not already carrying them: adding
 material to a prompt that decides what a candidate is graded on is a product
 change, and this is an ordering change. A caller that has nothing for a segment
 passes nothing and the prefix is simply shorter.
@@ -66,7 +67,7 @@ from app.core import cache
 #: different separator. Two calls assembled by different versions do not share
 #: a prefix even when every segment matches, so an identity that ignored this
 #: would assert a shared prefix across a deploy boundary that broke it.
-PREFIX_VERSION = "2026.09.22"
+PREFIX_VERSION = "2026.09.29"
 
 #: The static, most-shared segment first; the volatile, least-shared segment
 #: last. DATA rather than an ordered set of function calls, so the ordering is
@@ -74,7 +75,7 @@ PREFIX_VERSION = "2026.09.22"
 SEGMENT_ORDER: tuple[str, ...] = (
     "system",
     "job_description",
-    "drishti",
+    "leadership",
     "bodha",
     "matrix",
     "candidate",
@@ -98,7 +99,7 @@ _BODY_SEGMENTS: tuple[str, ...] = tuple(
 #: so counting it as part of the job-level prefix would make two candidates'
 #: identities differ for a reason the job-level prefix does not care about.
 STATIC_SEGMENTS: frozenset[str] = frozenset(
-    {"job_description", "drishti", "bodha", "matrix"}
+    {"job_description", "leadership", "bodha", "matrix"}
 )
 
 

@@ -14,8 +14,18 @@ import {
 } from "lucide-react";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
-import type { Role, StaffMember, StaffRole } from "@/lib/types";
+import type { StaffMember, StaffRole } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
+import {
+  STAFF_ROLE_LABELS as ROLE_LABELS,
+  isPlausiblePhone,
+  manageableRoles as manageableRolesFor,
+  requiresDepartment,
+} from "@/lib/staff-roles";
+import { ReadOnlyNotice } from "@/components/permission-notice";
+import { DepartmentPicker } from "@/components/department-picker";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import {
@@ -55,31 +65,20 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const ROLE_LABELS: Record<StaffRole, string> = {
-  recruitment_manager: "Recruitment Manager",
-  hr_manager: "HR Manager",
-  recruiter: "Recruiter",
-  hiring_manager: "Hiring Manager",
-};
-const ROLE_RANK: Partial<Record<Role, number>> = {
-  client: 0,
-  recruitment_manager: 1,
-  hr_manager: 1,
-  recruiter: 2,
-  hiring_manager: 3,
-};
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function StaffPage() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const manageableRoles = React.useMemo(() => {
-    const actorRank = user ? ROLE_RANK[user.role] : undefined;
-    if (actorRank === undefined) return [] as StaffRole[];
-    return (Object.keys(ROLE_LABELS) as StaffRole[]).filter(
-      (role) => (ROLE_RANK[role] ?? -1) > actorRank
-    );
-  }, [user]);
+  const { can } = usePermissions();
+  // The team list is a READ (view_staff); every control on it is a WRITE
+  // (manage_staff), and each row also carries the server's own `can_manage`.
+  const canManageStaff = can(CAP.manageStaff);
+  const manageableRoles = React.useMemo(
+    () => (canManageStaff ? manageableRolesFor(user?.role) : ([] as StaffRole[])),
+    [user, canManageStaff]
+  );
+
   const [staff, setStaff] = React.useState<StaffMember[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -95,12 +94,15 @@ export default function StaffPage() {
   const [form, setForm] = React.useState({
     email: "",
     full_name: "",
+    phone: "",
     role: "recruiter" as StaffRole,
+    department_id: "",
   });
   const [editForm, setEditForm] = React.useState({
     full_name: "",
     phone: "",
     role: "recruiter" as StaffRole,
+    department_id: "",
   });
 
   const load = React.useCallback(async () => {
@@ -124,6 +126,12 @@ export default function StaffPage() {
     void load();
   }, [load]);
 
+  const formComplete =
+    Boolean(form.full_name.trim()) &&
+    EMAIL_RE.test(form.email.trim()) &&
+    isPlausiblePhone(form.phone) &&
+    (!requiresDepartment(form.role) || Boolean(form.department_id));
+
   React.useEffect(() => {
     const fallback = manageableRoles[0];
     if (!fallback) return;
@@ -142,18 +150,22 @@ export default function StaffPage() {
     setForm({
       email: "",
       full_name: "",
+      phone: "",
       role: manageableRoles[0] ?? "hiring_manager",
+      department_id: "",
     });
   };
 
   const create = async () => {
-    if (!form.full_name.trim() || !EMAIL_RE.test(form.email.trim())) return;
+    if (!formComplete) return;
     setCreating(true);
     try {
       const member = await apiPost<StaffMember>("/companies/me/staff", {
         email: form.email.trim(),
         full_name: form.full_name.trim(),
+        phone: form.phone.trim(),
         role: form.role,
+        department_id: requiresDepartment(form.role) ? form.department_id : null,
       });
       setStaff((current) => [...current, { ...member, invite_link: null }]);
       setInviteResult(member);
@@ -250,12 +262,17 @@ export default function StaffPage() {
       full_name: member.full_name || "",
       phone: member.phone || "",
       role: member.role,
+      department_id: member.department_id || "",
     });
     setEditing(member);
   };
 
+  const editComplete =
+    Boolean(editForm.full_name.trim()) &&
+    (!requiresDepartment(editForm.role) || Boolean(editForm.department_id));
+
   const saveEdit = async () => {
-    if (!editing || !editForm.full_name.trim()) return;
+    if (!editing || !editComplete) return;
     setSavingEdit(true);
     try {
       const updated = await apiPut<StaffMember>(
@@ -265,6 +282,9 @@ export default function StaffPage() {
           phone: editForm.phone.trim() || null,
           role: editForm.role,
           approval_level: null,
+          department_id: requiresDepartment(editForm.role)
+            ? editForm.department_id
+            : null,
         }
       );
       setStaff((current) =>
@@ -294,8 +314,9 @@ export default function StaffPage() {
         title="Team"
         description={`${active} active team member${
           active === 1 ? "" : "s"
-        }. Manage permissions for the roles beneath you.`}
+        }.${canManageStaff ? " Manage permissions for the roles beneath you." : ""}`}
         actions={
+          canManageStaff ? (
           <Dialog
             open={open}
             onOpenChange={(next) => (next ? setOpen(true) : closeDialog())}
@@ -313,7 +334,7 @@ export default function StaffPage() {
                 <DialogDescription>
                   {inviteResult
                     ? "Share this single-use link if the email does not arrive."
-                    : "They will create or use a Vivekium account with email/password or Google."}
+                    : "They set their own password from the invitation sent to this email address."}
                 </DialogDescription>
               </DialogHeader>
               {inviteResult ? (
@@ -409,11 +430,32 @@ export default function StaffPage() {
                         }
                       />
                     </FormField>
+                    <FormField label="Mobile number" htmlFor="team-phone" required>
+                      <Input
+                        id="team-phone"
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        value={form.phone}
+                        aria-invalid={
+                          Boolean(form.phone) && !isPlausiblePhone(form.phone)
+                        }
+                        onChange={(event) =>
+                          setForm({ ...form, phone: event.target.value })
+                        }
+                      />
+                    </FormField>
                     <FormField label="Role" required>
                       <Select
                         value={form.role}
                         onValueChange={(role) =>
-                          setForm({ ...form, role: role as StaffRole })
+                          setForm({
+                            ...form,
+                            role: role as StaffRole,
+                            department_id: requiresDepartment(role as StaffRole)
+                              ? form.department_id
+                              : "",
+                          })
                         }
                       >
                         <SelectTrigger>
@@ -428,6 +470,20 @@ export default function StaffPage() {
                         </SelectContent>
                       </Select>
                     </FormField>
+                    {requiresDepartment(form.role) ? (
+                      <DepartmentPicker
+                        id="team-department"
+                        required
+                        hint="A Functional Head sees this department's jobs, candidates and reports, and no other."
+                        value={form.department_id}
+                        onChange={(department) =>
+                          setForm((current) => ({
+                            ...current,
+                            department_id: department.id,
+                          }))
+                        }
+                      />
+                    ) : null}
                   </div>
                   <DialogFooter>
                     <Button
@@ -438,11 +494,7 @@ export default function StaffPage() {
                       Cancel
                     </Button>
                     <Button
-                      disabled={
-                        creating ||
-                        !form.full_name.trim() ||
-                        !EMAIL_RE.test(form.email.trim())
-                      }
+                      disabled={creating || !formComplete}
                       onClick={() => void create()}
                     >
                       {creating ? "Creating" : "Add member"}
@@ -452,7 +504,14 @@ export default function StaffPage() {
               )}
             </DialogContent>
           </Dialog>
+          ) : undefined
         }
+      />
+
+      <ReadOnlyNotice
+        canEdit={canManageStaff}
+        resource="your team"
+        className="mb-6"
       />
 
       {loadError ? (
@@ -471,7 +530,11 @@ export default function StaffPage() {
         <EmptyState
           icon={Users}
           title="No team members yet"
-          description="Add a team member in a role beneath yours, then choose the permissions they need."
+          description={
+            canManageStaff
+              ? "Add a team member in a role beneath yours, then choose the permissions they need."
+              : "Nobody has been added to the team yet."
+          }
         />
       ) : (
         <>
@@ -482,6 +545,7 @@ export default function StaffPage() {
                 <TableHead>Name</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
+                <TableHead>Department</TableHead>
                 <TableHead>Account</TableHead>
                 <TableHead>Invitation</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -504,6 +568,7 @@ export default function StaffPage() {
                           {ROLE_LABELS[member.role] ?? member.role}
                         </Badge>
                       </TableCell>
+                      <TableCell>{member.department_name ?? ""}</TableCell>
                       <TableCell>
                         <Badge variant={disabled ? "outline" : "secondary"} className="capitalize">
                           {member.status}
@@ -515,6 +580,7 @@ export default function StaffPage() {
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
+                        {member.can_manage ? (
                         <div className="flex justify-end gap-2">
                           <Button
                             variant="ghost"
@@ -571,6 +637,7 @@ export default function StaffPage() {
                             </ConfirmButton>
                           )}
                         </div>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   );
@@ -597,10 +664,14 @@ export default function StaffPage() {
                     </Badge>
                   }
                 >
+                  {member.department_name ? (
+                    <p className="text-xs">Department: {member.department_name}</p>
+                  ) : null}
                   <p className="text-xs capitalize">
                     Account: {member.status}, invitation:{" "}
                     {member.invite_status ?? (disabled ? "revoked" : "accepted")}
                   </p>
+                  {member.can_manage ? (
                   <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
@@ -655,6 +726,7 @@ export default function StaffPage() {
                       </ConfirmButton>
                     )}
                   </div>
+                  ) : null}
                 </RowCard>
               </li>
             );
@@ -697,7 +769,13 @@ export default function StaffPage() {
               <Select
                 value={editForm.role}
                 onValueChange={(role) =>
-                  setEditForm({ ...editForm, role: role as StaffRole })
+                  setEditForm({
+                    ...editForm,
+                    role: role as StaffRole,
+                    department_id: requiresDepartment(role as StaffRole)
+                      ? editForm.department_id
+                      : "",
+                  })
                 }
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -708,6 +786,19 @@ export default function StaffPage() {
                 </SelectContent>
               </Select>
             </FormField>
+            {requiresDepartment(editForm.role) ? (
+              <DepartmentPicker
+                id="edit-team-department"
+                required
+                value={editForm.department_id}
+                onChange={(department) =>
+                  setEditForm((current) => ({
+                    ...current,
+                    department_id: department.id,
+                  }))
+                }
+              />
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -718,7 +809,7 @@ export default function StaffPage() {
               Cancel
             </Button>
             <Button
-              disabled={savingEdit || !editForm.full_name.trim()}
+              disabled={savingEdit || !editComplete}
               onClick={() => void saveEdit()}
             >
               {savingEdit ? "Saving" : "Save changes"}
@@ -735,3 +826,4 @@ export default function StaffPage() {
     </div>
   );
 }
+

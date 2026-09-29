@@ -104,6 +104,18 @@ export interface ClaimEvidence {
 }
 
 /**
+ * Leadership Alignment (2026-09-29, spec 22.9). Every line is a statement the
+ * server rendered through the citation chokepoint; a withheld one never
+ * arrives. `kind` separates a leader's expectation (`finding`, the requirement
+ * source) from evidence the candidate gave (`grade`), a gap (`gap`) and a
+ * follow-up question (`probe`).
+ */
+export interface LeadershipAlignment {
+  note?: string;
+  groups: { title: string; lines: { kind: string; text: string }[] }[];
+}
+
+/**
  * One spoke of one radar chart, built server-side (spec §10.4).
  *
  * Two shapes are plotted on the same axes: what the job requires and what the
@@ -176,6 +188,9 @@ export const REPORT_SECTION_ORDER = [
   "must_have",
   "nice_to_have",
   "behavioural",
+  // Leadership Alignment reads the grades above it against what the company's
+  // leaders asked for, so it follows them directly (spec 22.9).
+  "leadership_alignment",
   // The Evidence vs Claim Summary sits with the rated sections and the
   // Recommended Human Validation Points sit with the plan, which is why they
   // are not adjacent. The first annotates the grades above it; the second is
@@ -245,6 +260,9 @@ export interface FunctionalReport {
   gap_analysis?: GapAnalysis;
   /** Evidence vs Claim Summary. Absent on a report written before it. */
   claim_evidence?: ClaimEvidence;
+  /** Leadership Alignment. Absent (null) when the job had no leadership input,
+   *  and on every report written before the section existed. */
+  leadership_alignment?: LeadershipAlignment | null;
   /** Recommended Human Validation Points. Same reading of absent. */
   validation_points?: ValidationPoints;
   /** RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
@@ -318,7 +336,7 @@ function DimensionSection({
   if (dimensions.length === 0) return null;
   return (
     <section aria-label={title}>
-      <h3 className="mb-3 text-lg font-semibold">{title}</h3>
+      <h3 className="mb-3 text-heading">{title}</h3>
       {chart ? <DualRadar chart={chart} series={series} /> : null}
       <div className="grid gap-3 md:grid-cols-2">
         {dimensions.map((dimension) => (
@@ -517,8 +535,8 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
 
   return (
     <section aria-label="Validation">
-      <h3 className="mb-1 text-lg font-semibold">Validation</h3>
-      <p className="mb-3 text-xs">
+      <h3 className="mb-1 text-heading">Validation</h3>
+      <p className="mb-3 max-w-prose text-body-sm">
         Submitted by the candidate on their application and profile, shown exactly as written.
         Nothing here is rated or interpreted.
       </p>
@@ -611,6 +629,12 @@ export function FunctionalSkillsReportView({
         series={series}
       />
     ),
+    leadership_alignment: (
+      <LeadershipAlignmentSection
+        key="leadership_alignment"
+        alignment={report.leadership_alignment ?? null}
+      />
+    ),
     claim_evidence: (
       <ClaimEvidenceSection key="claim_evidence" summary={report.claim_evidence} />
     ),
@@ -650,8 +674,8 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
   if (!snapshot && legacy.length === 0) return null;
   return (
     <section aria-label={AI_MATCH_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{AI_MATCH_TITLE}</h3>
-      <p className="mb-3 text-xs">
+      <h3 className="mb-1 text-heading">{AI_MATCH_TITLE}</h3>
+      <p className="mb-3 max-w-prose text-body-sm">
         A resume-based check made before the assessment. A close match with the Tatva
         Assessment below confirms the resume was accurate; a gap between them is itself
         worth knowing.
@@ -725,7 +749,7 @@ function OverallSection({
   const chart = chartFor(report, "overall");
   return (
       <section aria-label="Overall Assessment">
-        <h3 className="mb-1 text-lg font-semibold">Overall Assessment</h3>
+        <h3 className="mb-1 text-heading">Overall Assessment</h3>
         <div className="rounded-lg border bg-muted/30 p-5">
           <div className="mb-2 flex items-center gap-3">
             <p className="type-eyebrow">Overall</p>
@@ -763,7 +787,7 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
 
   return (
     <section aria-label="Gap Analysis and Action Plan">
-      <h3 className="mb-3 text-lg font-semibold">Gap Analysis &amp; Action Plan</h3>
+      <h3 className="mb-3 text-heading">Gap Analysis &amp; Action Plan</h3>
       {gaps.focus_summary ? (
         <p className="mb-4 rounded-md border bg-muted/30 p-4 font-medium leading-7">
           {gaps.focus_summary}
@@ -820,6 +844,33 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
   );
 }
 
+export const LEADERSHIP_ALIGNMENT_TITLE = "Leadership Alignment";
+
+/** Leadership Alignment: absent entirely when the report has none. */
+function LeadershipAlignmentSection({ alignment }: { alignment: LeadershipAlignment | null }) {
+  if (!alignment || alignment.groups.length === 0) return null;
+  return (
+    <section aria-label={LEADERSHIP_ALIGNMENT_TITLE}>
+      <h3 className="mb-1 text-heading">{LEADERSHIP_ALIGNMENT_TITLE}</h3>
+      {alignment.note ? <p className="mb-3 max-w-prose text-body-sm">{alignment.note}</p> : null}
+      <div className="space-y-4">
+        {alignment.groups.map((group) => (
+          <div key={group.title}>
+            <p className="mb-1 font-semibold">{group.title}</p>
+            <ul className="list-disc space-y-1 pl-5">
+              {group.lines.map((line, index) => (
+                <li key={`${group.title}-${index}`} className="max-w-prose text-sm leading-7">
+                  {line.text}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export const CLAIM_EVIDENCE_TITLE = "Evidence vs Claim Summary";
 export const VALIDATION_POINTS_TITLE = "Recommended Human Validation Points";
 
@@ -839,8 +890,8 @@ function ClaimEvidenceSection({ summary }: { summary?: ClaimEvidence }) {
 
   return (
     <section aria-label={CLAIM_EVIDENCE_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{CLAIM_EVIDENCE_TITLE}</h3>
-      {summary.note ? <p className="mb-3 text-xs">{summary.note}</p> : null}
+      <h3 className="mb-1 text-heading">{CLAIM_EVIDENCE_TITLE}</h3>
+      {summary.note ? <p className="mb-3 max-w-prose text-body-sm">{summary.note}</p> : null}
       {entries.length === 0 ? (
         <p className="rounded-md border p-3 text-sm">{statement}</p>
       ) : (
@@ -883,8 +934,8 @@ function ValidationPointsSection({ points }: { points?: ValidationPoints }) {
 
   return (
     <section aria-label={VALIDATION_POINTS_TITLE}>
-      <h3 className="mb-1 text-lg font-semibold">{VALIDATION_POINTS_TITLE}</h3>
-      {points.note ? <p className="mb-3 text-xs">{points.note}</p> : null}
+      <h3 className="mb-1 text-heading">{VALIDATION_POINTS_TITLE}</h3>
+      {points.note ? <p className="mb-3 max-w-prose text-body-sm">{points.note}</p> : null}
       {rows.length === 0 ? (
         <p className="rounded-md border p-3 text-sm">{statement}</p>
       ) : (
@@ -941,8 +992,8 @@ const FINDING_GROUPS: Array<{ key: keyof ProctoringReport["findings"]; label: st
 function ProctoringSection({ report }: { report: ProctoringReport | null }) {
   return (
     <section aria-label="Proctoring Report">
-      <h3 className="mb-1 text-lg font-semibold">{PROCTORING_TITLE}</h3>
-      <p className="mb-3 text-xs">{PROCTORING_NOTE}</p>
+      <h3 className="mb-1 text-heading">{PROCTORING_TITLE}</h3>
+      <p className="mb-3 max-w-prose text-body-sm">{PROCTORING_NOTE}</p>
       {report === null ? (
         <p className="rounded-md border p-3 text-sm">{PROCTORING_ABSENT}</p>
       ) : (
@@ -984,7 +1035,7 @@ function ProctoringSection({ report }: { report: ProctoringReport | null }) {
                   <tbody>
                     {report.activity_log.map((row, index) => (
                       <tr key={`log-${index}`} className="border-b border-border align-top">
-                        <td className="py-2 pr-4 font-mono text-xs">{row.time}</td>
+                        <td className="py-2 pr-4 text-xs tabular-nums">{row.time}</td>
                         <td className="py-2 pr-4">{row.what_happened}</td>
                         <td className="py-2 pr-4">{row.how_long}</td>
                         <td className="py-2">{row.what_the_system_did}</td>

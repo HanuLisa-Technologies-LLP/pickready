@@ -7,6 +7,13 @@ export type Role =
   | "hr_manager"
   | "recruiter"
   | "hiring_manager"
+  | "interview_manager"
+  // The leadership roles (2026-09-29): CEO and MD read the whole company and
+  // write only their own Leadership Intelligence; a Functional Head reads one
+  // department. All three are org-portal roles.
+  | "ceo"
+  | "md"
+  | "functional_head"
   | "candidate"
   // Business Development: Vivekium's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
@@ -192,7 +199,18 @@ export type StaffRole =
   | "recruitment_manager"
   | "hr_manager"
   | "recruiter"
-  | "hiring_manager";
+  | "hiring_manager"
+  | "interview_manager"
+  | "ceo"
+  | "md"
+  | "functional_head";
+
+/** Row from GET /companies/departments (the leadership release, spec 13). */
+export interface Department {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
 
 /** Row from GET /companies/me/staff (contract rev 2). */
 export interface StaffMember {
@@ -203,6 +221,15 @@ export interface StaffMember {
   role: StaffRole;
   status: string;
   approval_level?: string | null;
+  /** A Functional Head's one department. */
+  department_id?: string | null;
+  department_name?: string | null;
+  /**
+   * Whether THE CALLER may edit, re-invite, deactivate or re-permission this
+   * person. The server answers it per row; a view-only reader (a CEO or MD)
+   * sees every row with it false.
+   */
+  can_manage?: boolean;
   created_at?: string | null;
   invite_status?: "pending" | "accepted" | "revoked" | "expired" | null;
   invite_sent_at?: string | null;
@@ -305,6 +332,8 @@ export interface Job {
   id: string;
   title: string;
   department: string;
+  /** The job's department row (the leadership release, spec 13). */
+  department_id?: string | null;
   // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
   // free-text seniority any more. The grade and the experience band replaced
   // it; the column survives in the database as history only.
@@ -942,7 +971,7 @@ export interface DashboardSummary {
 // page, the component, the route and its response schemas all went in the same
 // change, so these types described a payload nothing sends.
 
-// ---- Billing, subscriptions and credits (killer-spec Parts 2 and 3) ----
+// ---- Billing and credits (per-credit only since 2026-09-29) ----
 
 /**
  * Credits are exchanged in SUB-UNITS everywhere except display. One credit is
@@ -952,8 +981,6 @@ export interface DashboardSummary {
  * the sub-units.
  */
 export const SUBUNITS_PER_CREDIT = 60;
-
-export type SubscriptionStatus = "active" | "past_due" | "cancelled" | "halted";
 
 export type CreditEventType =
   | "grant"
@@ -966,39 +993,6 @@ export type CreditEventType =
   // grants only). The ledger has written it since then; the type had not.
   | "expiry";
 
-export interface PricingPlan {
-  id: string;
-  slug: string;
-  name: string;
-  applications_per_month: number;
-  price_inr: number;
-  rate_per_application_inr: number;
-  is_active: boolean;
-  /** False until a Razorpay Plan exists; Subscribe is disabled rather than failing. */
-  checkout_ready: boolean;
-}
-
-export interface BillingConfig {
-  razorpay_key_id: string | null;
-  configured: boolean;
-  currency: "INR";
-  plans: PricingPlan[];
-}
-
-export interface SubscribeResponse {
-  subscription_id: string;
-  razorpay_key_id: string;
-  plan: PricingPlan;
-  short_url: string | null;
-}
-
-export interface SubscriptionSummary {
-  plan: PricingPlan | null;
-  status: SubscriptionStatus | null;
-  razorpay_subscription_id: string | null;
-  current_end: string | null;
-}
-
 export interface UsageBreakdown {
   completed_assessment: number;
   incomplete_assessment: number;
@@ -1010,6 +1004,7 @@ export interface UsageBreakdown {
 export interface CreditSummary {
   balance_subunits: number;
   balance_credits: string;
+  /** The balance at the list price per credit, excl. GST. */
   balance_inr: string | null;
   subunits_per_credit: number;
   granted_subunits: number;
@@ -1051,14 +1046,12 @@ export interface BillingTransaction {
   razorpay_payment_id: string | null;
   amount_inr: number;
   status: "success" | "failed" | "refunded";
-  transaction_type: "subscription_charge" | "plan_change" | "refund";
+  transaction_type: "credit_pack" | "refund";
   created_at: string;
 }
 
 export interface BillingOverview {
-  subscription: SubscriptionSummary;
   credits: CreditSummary;
-  plans: PricingPlan[];
   razorpay_key_id: string | null;
   recent_ledger: CreditLedgerEntry[];
   transactions: BillingTransaction[];
@@ -1095,6 +1088,18 @@ export interface CreditPacksResponse {
   trial_used: boolean;
 }
 
+/**
+ * GET /company-onboarding/state: where this browser's company registration
+ * stands. DERIVED by the server on every read from the registration row and
+ * the paid purchase, so the register page never keeps its own copy.
+ */
+export interface OnboardingState {
+  stage: "details" | "verify_email" | "choose_pack" | "set_password" | "done";
+  email?: string | null;
+  first_name?: string | null;
+  company_name?: string | null;
+}
+
 /** POST /billing/purchase: a Razorpay Order created and waiting for payment. */
 export interface PurchaseCreateResponse {
   purchase_id: string;
@@ -1127,13 +1132,59 @@ export interface CreditPurchaseRow {
 export interface ProviderBillingRow {
   tenant_id: string;
   customer_name: string;
-  plan_name: string | null;
-  subscription_status: SubscriptionStatus | null;
   balance_subunits: number;
   balance_credits: string;
-  balance_inr: string | null;
+  /** At the list price per credit, excl. GST. */
+  balance_inr: string;
   in_deficit: boolean;
-  current_end: string | null;
+}
+
+// ── The published price list: GET /billing/public/credit-packs ─────────────
+
+/**
+ * One pack at the STANDARD price, for a visitor with no account. Excludes the
+ * one-time setup fee, which depends on the account and is stated once on the
+ * catalogue. Every figure is the server's: the pricing page holds no price.
+ */
+export interface PublishedPack {
+  slug: string;
+  label: string;
+  credits: number;
+  bonus_credits: number;
+  credits_total: number;
+  subtotal_inr: number;
+  gst_inr: number;
+  total_inr: number;
+  /** The trial pack: sold once per account, as its first purchase. */
+  new_accounts_only: boolean;
+  validity_months: number;
+}
+
+/** What one billable event draws from the pool, in integer sub-units. */
+export interface PublishedConsumption {
+  event_type: CreditEventType;
+  label: string;
+  non_stem_subunits: number;
+  stem_subunits: number;
+}
+
+export interface PublishedBonusLevel {
+  min_credits: number;
+  bonus_credits: number;
+}
+
+export interface PublishedCatalogue {
+  price_per_credit_inr: number;
+  gst_rate_percent: number;
+  subunits_per_credit: number;
+  credit_validity_months: number;
+  min_custom_credits: number;
+  setup_fee_inr: number;
+  setup_fee_gst_inr: number;
+  setup_fee_waiver_limit: number;
+  bonus_levels: PublishedBonusLevel[];
+  packs: PublishedPack[];
+  consumption: PublishedConsumption[];
 }
 
 /**

@@ -23,6 +23,7 @@ Python, FastAPI, PostgreSQL
 
 const completeForm: JobFormValues = {
   title: "Senior Backend Engineer",
+  department_id: "11111111-2222-4333-8444-555555555555",
   department: "Engineering",
   grade: "managerial",
   requirement_period: "Q4 2026",
@@ -58,6 +59,16 @@ describe("buildJobCreatePayload", () => {
     expect(payload).not.toHaveProperty("jd");
     expect(payload.reporting_to).toBe("Engineering Director");
     expect(buildJobCreatePayload({ ...completeForm, reporting_to: "  " }).reporting_to).toBeNull();
+  });
+
+  it("sends the department by id, never as free text", () => {
+    // A Functional Head is confined to a department by its id, so the create
+    // body names the picked row; the name only seeds the AI brief.
+    const payload = buildJobCreatePayload(completeForm);
+    expect(payload.department_id).toBe("11111111-2222-4333-8444-555555555555");
+    expect(payload).not.toHaveProperty("department");
+    expect(buildJobCreatePayload({ ...completeForm, department_id: "" }).department_id).toBeNull();
+    expect(buildJdGeneratePayload(completeForm, "brief").department).toBe("Engineering");
   });
 
   it("sends the grade as the API's literal, not a trimmed display label", () => {

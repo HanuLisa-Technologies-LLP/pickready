@@ -70,7 +70,7 @@ export function StageBadge({
   return (
     <span
       className={cn(
-        "inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-semibold",
+        "inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-chip font-semibold",
         STAGE_STYLES[stage] ?? "border-border bg-muted text-foreground",
         className
       )}
@@ -274,7 +274,7 @@ export function PipelineFunnel({
             >
               {stage.count}
             </p>
-            <p className="text-[11px] leading-tight">
+            <p className="text-chip leading-tight">
               {PIPELINE_SHORT_LABELS[stage.status] ?? stage.label}
             </p>
             <div

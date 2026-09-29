@@ -80,13 +80,13 @@ export const STATES_WITHOUT_A_GRADE = new Set([
 /**
  * Column 3's ONLY styling.
  *
- * Transparent background, hairline border, regular weight, 11px, ink text. No
+ * Transparent background, hairline border, regular weight, 11px (`text-chip`), ink text. No
  * fill, no brand colour, no ramp colour, no bold. A grade is still a signal
  * and still legible; what it is not is a verdict.
  */
 export const AI_MATCH_CLASS =
   "inline-flex items-center rounded-md border border-border bg-transparent " +
-  "px-1.5 py-0.5 text-[11px] font-normal leading-4 text-foreground";
+  "px-1.5 py-0.5 text-chip font-normal leading-4 text-foreground";
 
 /**
  * Class fragments that would turn column 3 into a verdict.

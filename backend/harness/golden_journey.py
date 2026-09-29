@@ -95,13 +95,29 @@ SWOT = {
     "threats": "A regulator audit lands in six months.",
 }
 
+#: What the company's leaders saved before the job was created (Leadership
+#: Intelligence, 2026-09-29). Observable, job-related lines, so the compiler
+#: keeps both and they reach Sutra, Yukti, the questions and the report.
+LEADERSHIP_CEO = (
+    "We need people who have led the response to a production incident and "
+    "written the review that changed how their team worked."
+)
+LEADERSHIP_HEAD = (
+    "Settlement engineers here have reconciled a multi bank settlement break "
+    "and fixed the ledger before the next posting run."
+)
+#: The department the job and its Functional Head belong to, seeded by the
+#: world (a department row is what onboarding leaves behind).
+DEPARTMENT = "Settlements"
+
 #: The ordered gates. The pytest module judges state at every one of these,
-#: the harness records each as a trajectory stage. CONTRACT v10's order: the
-#: JD, the skills drafted from it, the SWOT as separate intelligence (its save
-#: drafts nothing), Save Skills, the Final Job Posting preview, publish, and
-#: the first genuine application FREEZES the JD and skills; the start binds
-#: the snapshot the application took.
+#: the harness records each as a trajectory stage. The leaders save first
+#: (2026-09-29); then CONTRACT v10's order: the JD, the skills drafted from it,
+#: the SWOT as separate intelligence (its save drafts nothing), Save Skills,
+#: the Final Job Posting preview, publish, and the first genuine application
+#: FREEZES the JD and skills; the start binds the snapshot the application took.
 GATES = (
+    "leadership_saved",
     "job_created",
     "jd_saved",
     "skills_drafted",
@@ -356,6 +372,9 @@ class Client(Protocol):
         """Act as a candidate the world seeded: `candidate` (assessed) or
         `rival` (applies and is never invited)."""
 
+    def as_leader(self, who: str) -> None:
+        """Act as a leader the world seeded: `ceo` or `functional_head`."""
+
     def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]: ...
 
 
@@ -367,6 +386,8 @@ class JourneyState:
     staff: uuid.UUID
     candidate: uuid.UUID
     rival: uuid.UUID
+    #: The seeded department the job is created in, when the world has one.
+    department: uuid.UUID | None = None
     job: uuid.UUID | None = None
     link: uuid.UUID | None = None
     rival_link: uuid.UUID | None = None
@@ -559,6 +580,22 @@ def _answer_every_turn(client: Client, state: JourneyState, opened: dict[str, An
 
 def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
     """The journey, from an empty funded tenant to the recruiter reading words."""
+    # ── Leadership Intelligence: the CEO and the department's head save ───
+    client.as_leader("ceo")
+    status, body = client.call(
+        "leadership_ceo", "PUT", f"{V1}/leadership/me",
+        json={"company_requirements": LEADERSHIP_CEO},
+    )
+    _expect("leadership_ceo", status, body, 200)
+    client.as_leader("functional_head")
+    status, body = client.call(
+        "leadership_head", "PUT", f"{V1}/leadership/me",
+        json={"department_requirements": LEADERSHIP_HEAD},
+    )
+    _expect("leadership_head", status, body, 200)
+    state.responses["leadership_head"] = body
+    gate("leadership_saved", state)
+
     # ── Job setup ─────────────────────────────────────────────────────────
     client.as_staff()
     status, body = client.call(
@@ -571,6 +608,7 @@ def drive(client: Client, state: JourneyState, gate: Gate) -> JourneyState:
             "jd_markdown": JD_MARKDOWN,
             "experience_min_years": 4,
             "experience_max_years": 8,
+            **({"department_id": str(state.department)} if state.department else {}),
         },
     )
     _expect("create_job", status, body, 201)

@@ -60,18 +60,18 @@ PATTERN = re.compile(
 EXEMPT = (
     # This file has to name what it forbids.
     BACKEND / "tests" / "test_tatva_matrix_editor_removed.py",
-    # These two assert, by name, that the deleted symbols are ABSENT
+    # This one asserts, by name, that the deleted symbols are ABSENT
     # (`hasattr(...)` is False, the prompt is not registered). A test of an
-    # absence has to spell the absence.
+    # absence has to spell the absence. (`test_drishti.py` left the list with
+    # Drishti's code on 2026-09-29; `test_drishti_removed.py` keeps that gone.)
     BACKEND / "tests" / "test_ppi.py",
-    BACKEND / "tests" / "test_drishti.py",
 )
 
 #: Every hand-off has landed: the frontend package (PLAN-p1 WP-D) deleted the
 #: matrix editor and the categories card and replaced the job page's setup
 #: section, and WP-E moved the harness onto the Skills step. The check below
 #: stays so a future hand-off entry cannot outlive its reason.
-PENDING_HAND_OFFS = EXEMPT[3:]
+PENDING_HAND_OFFS = EXEMPT[2:]
 
 
 def test_no_live_source_names_the_retired_editor_or_its_machinery() -> None:

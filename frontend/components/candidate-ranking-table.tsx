@@ -589,7 +589,7 @@ export function CandidateRankingTable({
                     {row.reference_code ? (
                       <span
                         data-reference-code
-                        className="mt-0.5 block select-all font-mono text-[11px] font-normal tracking-wider"
+                        className="mt-0.5 block select-all type-ref"
                         title="Company, job and candidate reference"
                       >
                         {row.reference_code}

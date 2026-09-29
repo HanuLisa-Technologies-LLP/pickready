@@ -44,6 +44,7 @@ from app.models.invite import StaffInvite, hash_invite_token, invite_expiry
 from app.models.tenant import AuditLog, Tenant
 from app.models.user import User
 from app.schemas.auth import FirebaseSessionIn
+from tests.captcha_support import captcha_proof
 from app.services import firebase_auth, login_context, staff_invites
 from app.services.firebase_auth import FirebaseIdentity
 
@@ -226,7 +227,15 @@ async def test_the_firebase_sign_in_accepts_the_invitation(world, monkeypatch) -
     )
     monkeypatch.setattr(firebase_auth, "verify_id_token", lambda _token: identity)
     async with factory() as session:
-        await firebase_session(FirebaseSessionIn(id_token="t" * 40), Response(), session)
+        await firebase_session(
+            FirebaseSessionIn(
+                id_token="t" * 40,
+                captcha_proof=await captcha_proof("company_login"),
+                captcha_purpose="company_login",
+            ),
+            Response(),
+            session,
+        )
 
     user, invite, audits = await _stored(factory, uid)
     assert user.status == UserStatus.active, "signing in activates the account"

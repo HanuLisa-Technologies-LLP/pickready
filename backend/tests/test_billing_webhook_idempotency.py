@@ -1,4 +1,4 @@
-"""A redelivered Razorpay webhook must grant one month, not two.
+"""A redelivered Razorpay webhook must settle a credit purchase once, not twice.
 
 WHAT EXISTS ALREADY, AND THE ONE THING IT CANNOT SEE
 ------------------------------------------------------
@@ -7,14 +7,13 @@ calls `credits.grant` twice with the same key and proves the ledger dedupes.
 `test_credit_packs.py::test_duplicate_settlement_grants_nothing_twice` does the
 same for `settle_purchase`. Both are right and both are about the SERVICE.
 
-Nothing has ever POSTed to `/billing/webhook/razorpay`. That is the gap,
-because the idempotency key is not chosen by the service: it is DERIVED IN THE
-ROUTE, from `payment_entity["id"]`, through `_payment_key`. A refactor that
-read the wrong field, or fell through to the
-`f"sub:{subscription_id}:{created_at}"` default on a payload that did carry a
-payment id, would leave `credits.grant` perfectly idempotent over a key that
-is different every delivery, and every service-level test would still pass
-while the customer was granted a month per retry.
+This file POSTs to `/billing/webhook/razorpay`, because the PURCHASE is not
+chosen by the service: the ROUTE resolves it from the payload's order id. A
+refactor that read the wrong field would leave `settle_purchase` perfectly
+idempotent over a purchase that is the wrong one, and every service-level test
+would still pass. (This file was written against the monthly subscription
+events, which were retired on 2026-09-29; it now drives the one event family
+the product still handles, a credit purchase's payment.)
 
 Razorpay delivers AT LEAST ONCE. A duplicate is the default behaviour unless
 something prevents it, so this is not a hypothetical.
@@ -30,7 +29,9 @@ THE TWO LAYERS ARE EXERCISED SEPARATELY, AND THAT IS THE POINT
 ----------------------------------------------------------------
 The webhook dedupes twice over. `webhook_events` is UNIQUE on
 (provider, event_id) and short-circuits on the delivery id header. Underneath
-it, the ledger's UNIQUE `idempotency_key` dedupes on the PAYMENT. The first is
+it, `settle_purchase` flips the purchase from `created` to `paid` in the same
+UPDATE that checks it, and the grant's UNIQUE `idempotency_key` is derived
+from the ORDER. The first is
 the one a test naturally exercises, and it is the WEAKER of the two: it only
 fires when the redelivery reuses the header. So there is a test for a
 redelivery that changes the header, which is the case the outer guard cannot
@@ -66,15 +67,15 @@ WEBHOOK = "/api/v1/billing/webhook/razorpay"
 #: and every test below would pass without the signature ever being checked.
 WEBHOOK_SECRET = "readypick-test-webhook-secret-not-a-real-one"
 
-#: 60 sub-units per credit. A plan granting 50 credits a month is 3000.
-from app.models.billing import SUBUNITS_PER_CREDIT
+from app.models.billing import CREDIT_PACKS, SUBUNITS_PER_CREDIT  # noqa: E402
 
-#: Seeded onto the plan row. DERIVED, not typed twice: `monthly_subunits` is
-#: `applications_per_month * SUBUNITS_PER_CREDIT` on the model, so hardcoding
-#: the product is how the expectation drifts away from the thing it checks.
-PLAN_APPLICATIONS = 50
-PLAN_SUBUNITS = PLAN_APPLICATIONS * SUBUNITS_PER_CREDIT
-PLAN_PRICE_INR = 4999
+#: The purchase seeded below: the standard 50-credit pack. DERIVED from the
+#: catalogue rather than typed twice, so the expectation cannot drift away
+#: from the thing it checks.
+PACK_SLUG = "standard_50"
+PACK_CREDITS, PACK_BONUS = CREDIT_PACKS[PACK_SLUG]
+PACK_SUBUNITS = (PACK_CREDITS + PACK_BONUS) * SUBUNITS_PER_CREDIT
+PACK_TOTAL_INR = 35_400
 
 
 def _run(coro):
@@ -120,8 +121,12 @@ async def _reachable() -> bool:
 class World:
     def __init__(self) -> None:
         self.tenant = uuid.uuid4()
-        self.plan = uuid.uuid4()
-        self.subscription_id = f"sub_{uuid.uuid4().hex[:14]}"
+        #: Two purchases, so a genuinely different payment can be delivered.
+        self.orders = [f"order_{uuid.uuid4().hex[:14]}" for _ in range(2)]
+
+    @property
+    def order_id(self) -> str:
+        return self.orders[0]
 
 
 @pytest.fixture
@@ -145,44 +150,38 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
                 async with superadmin_scope(session):
                     await session.execute(
                         sa.text(
-                            # `monthly_subunits` IS NOT A COLUMN. It is a
-                            # derived property on the model,
-                            # `applications_per_month * SUBUNITS_PER_CREDIT`.
-                            # This INSERT named it anyway, so it raised
-                            # UndefinedColumnError on every run, which the
-                            # broken reachability probe above then hid as a
-                            # skip. `rate_per_application_inr` is NOT NULL and
-                            # was missing too.
-                            "INSERT INTO pricing_plans "
-                            "(id, slug, name, applications_per_month, "
-                            " price_inr, rate_per_application_inr, is_active) "
-                            "VALUES (:id, :slug, 'Webhook Test Plan', "
-                            " :apps, :price, :rate, true)"
-                        ),
-                        {
-                            "id": str(w.plan),
-                            "slug": f"webhook-test-{w.plan.hex[:8]}",
-                            "apps": PLAN_APPLICATIONS,
-                            "price": PLAN_PRICE_INR,
-                            "rate": PLAN_PRICE_INR // PLAN_APPLICATIONS,
-                        },
-                    )
-                    await session.execute(
-                        sa.text(
                             "INSERT INTO tenants "
-                            "(id, name, domain, spf_dkim_status, "
-                            " current_plan_id, razorpay_subscription_id) "
-                            "VALUES (:id, :name, :domain, 'pending', :plan, "
-                            " :sub_id)"
+                            "(id, name, domain, spf_dkim_status) "
+                            "VALUES (:id, :name, :domain, 'pending')"
                         ),
                         {
                             "id": str(w.tenant),
                             "name": f"Webhook-{w.tenant.hex[:6]}",
                             "domain": f"{w.tenant.hex[:10]}.hook.test",
-                            "plan": str(w.plan),
-                            "sub_id": w.subscription_id,
                         },
                     )
+                    for order_id in w.orders:
+                        await session.execute(
+                            sa.text(
+                                "INSERT INTO credit_purchases "
+                                "(id, tenant_id, pack_slug, credits_purchased, "
+                                " bonus_credits, subtotal_inr, gst_inr, "
+                                " total_inr, status, razorpay_order_id) "
+                                "VALUES (:id, :tenant, :slug, :credits, :bonus, "
+                                " :subtotal, :gst, :total, 'created', :order)"
+                            ),
+                            {
+                                "id": str(uuid.uuid4()),
+                                "tenant": str(w.tenant),
+                                "slug": PACK_SLUG,
+                                "credits": PACK_CREDITS,
+                                "bonus": PACK_BONUS,
+                                "subtotal": 30_000,
+                                "gst": 5_400,
+                                "total": PACK_TOTAL_INR,
+                                "order": order_id,
+                            },
+                        )
 
     async def _teardown() -> None:
         async with sessions() as session:
@@ -191,10 +190,6 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
                     await session.execute(
                         sa.text("DELETE FROM tenants WHERE id = :id"),
                         {"id": str(w.tenant)},
-                    )
-                    await session.execute(
-                        sa.text("DELETE FROM pricing_plans WHERE id = :id"),
-                        {"id": str(w.plan)},
                     )
                     # `webhook_events` has no tenant and is not cascaded.
                     await session.execute(
@@ -220,22 +215,21 @@ def http(world: World) -> Iterator[TestClient]:
         yield client
 
 
-def _charged_payload(world: World, payment_id: str, created_at: int = 1_760_000_000):
+def _captured_payload(
+    order_id: str, payment_id: str, created_at: int = 1_760_000_000
+) -> dict:
+    """A `payment.captured` for one credit purchase, shaped as Razorpay sends
+    it: the payment entity names the ORDER, which is what the route resolves
+    the purchase by."""
     return {
-        "event": "subscription.charged",
+        "event": "payment.captured",
         "created_at": created_at,
         "payload": {
-            "subscription": {
-                "entity": {
-                    "id": world.subscription_id,
-                    "current_end": created_at + 2_592_000,
-                }
-            },
             "payment": {
                 "entity": {
                     "id": payment_id,
-                    "amount": PLAN_PRICE_INR * 100,
-                    "subscription_id": world.subscription_id,
+                    "order_id": order_id,
+                    "amount": PACK_TOTAL_INR * 100,
                 }
             },
         },
@@ -304,27 +298,28 @@ async def _balance(tenant: uuid.UUID) -> int:
 # ── The ordinary delivery ───────────────────────────────────────────────────
 
 
-def test_one_delivery_grants_exactly_one_month(http: TestClient, world: World) -> None:
+def test_one_delivery_grants_exactly_one_pack(http: TestClient, world: World) -> None:
     """The control. Without it every "did not grant twice" assertion below is
     also satisfied by a handler that never granted at all."""
     payment_id = f"pay_{uuid.uuid4().hex[:14]}"
     accepted = _deliver(
         http,
-        _charged_payload(world, payment_id),
+        _captured_payload(world.order_id, payment_id),
         event_id=f"evt_{world.tenant.hex[:8]}_1",
     )
     assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "ok", accepted.text
 
     rows = _run(_ledger(world.tenant))
     assert len(rows) == 1, rows
     event_type, delta, key = rows[0]
     assert event_type == "grant"
-    assert delta == PLAN_SUBUNITS
-    # The key is derived from the PAYMENT, which is the fact that is stable
+    assert delta == PACK_SUBUNITS
+    # The key is derived from the ORDER, which is the fact that is stable
     # across redeliveries. A key carrying the delivery id or a timestamp would
     # be unique per attempt and would dedupe nothing.
-    assert key == f"razorpay:payment:{payment_id}"
-    assert _run(_balance(world.tenant)) == PLAN_SUBUNITS
+    assert key == f"credit-pack:{world.order_id}"
+    assert _run(_balance(world.tenant)) == PACK_SUBUNITS
 
 
 # ── The redelivery, both ways it arrives ────────────────────────────────────
@@ -337,8 +332,7 @@ def test_the_same_delivery_twice_grants_once(http: TestClient, world: World) -> 
     `webhook_events(provider, event_id)`, which is why the second answer says
     "duplicate" rather than "ok".
     """
-    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
-    payload = _charged_payload(world, payment_id)
+    payload = _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     event_id = f"evt_{world.tenant.hex[:8]}_2"
 
     first = _deliver(http, payload, event_id=event_id)
@@ -347,7 +341,7 @@ def test_the_same_delivery_twice_grants_once(http: TestClient, world: World) -> 
     assert first.status_code == 200 and second.status_code == 200
     assert second.json()["status"] == "duplicate", second.text
     assert len(_run(_ledger(world.tenant))) == 1
-    assert _run(_balance(world.tenant)) == PLAN_SUBUNITS
+    assert _run(_balance(world.tenant)) == PACK_SUBUNITS
 
 
 def test_a_redelivery_with_a_new_delivery_id_still_grants_once(
@@ -361,12 +355,12 @@ def test_a_redelivery_with_a_new_delivery_id_still_grants_once(
     handler's own fallback -- `f"{event_type}:{created_at}"` -- is not unique
     either, because two genuine events can share a second.
 
-    What must hold underneath is that the same PAYMENT ID grants once,
-    forever, and that is the ledger's job. Asserted by delivering the same
-    payment under three different delivery ids and reading the balance.
+    What must hold underneath is that the same PURCHASE settles once,
+    forever: the status flip and the order-keyed grant. Asserted by
+    delivering the same payment under three different delivery ids and
+    reading the balance.
     """
-    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
-    payload = _charged_payload(world, payment_id)
+    payload = _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}")
 
     for attempt in range(3):
         response = _deliver(
@@ -378,36 +372,36 @@ def test_a_redelivery_with_a_new_delivery_id_still_grants_once(
     assert len(rows) == 1, (
         f"{len(rows)} ledger rows for one payment: {rows}"
     )
-    assert _run(_balance(world.tenant)) == PLAN_SUBUNITS, (
-        "a redelivery with a fresh delivery id granted a second month"
+    assert _run(_balance(world.tenant)) == PACK_SUBUNITS, (
+        "a redelivery with a fresh delivery id settled the purchase twice"
     )
 
 
-def test_a_genuinely_different_payment_does_grant_again(
+def test_a_genuinely_different_purchase_does_grant_again(
     http: TestClient, world: World
 ) -> None:
     """THE DIRECTION THAT LOSES REVENUE.
 
-    Next month's charge is a different payment id and must be granted. A
-    dedupe keyed on the subscription, the tenant or the plan would refuse it
-    and the customer would silently stop being topped up, which nothing in the
-    product would report because a refused grant looks exactly like a webhook
-    that never arrived.
+    A second purchase is a different order and must be granted. A dedupe
+    keyed on the tenant or the pack would refuse it and the customer would
+    silently not receive what they paid for, which nothing in the product
+    would report because a refused grant looks exactly like a webhook that
+    never arrived.
     """
-    for index in range(2):
+    for index, order_id in enumerate(world.orders):
         response = _deliver(
             http,
-            _charged_payload(
-                world,
+            _captured_payload(
+                order_id,
                 f"pay_{uuid.uuid4().hex[:14]}",
-                created_at=1_760_000_000 + index * 2_592_000,
+                created_at=1_760_000_000 + index * 60,
             ),
             event_id=f"evt_{world.tenant.hex[:8]}_4_{index}",
         )
         assert response.status_code == 200, response.text
 
     assert len(_run(_ledger(world.tenant))) == 2
-    assert _run(_balance(world.tenant)) == PLAN_SUBUNITS * 2
+    assert _run(_balance(world.tenant)) == PACK_SUBUNITS * 2
 
 
 # ── The forgery ─────────────────────────────────────────────────────────────
@@ -418,7 +412,7 @@ def test_an_unsigned_delivery_grants_nothing(http: TestClient, world: World) -> 
     is the HMAC, so an unsigned POST must write neither a ledger row nor a
     `webhook_events` row -- the second half matters because a recorded event
     id would let a forgery suppress the genuine delivery that follows it."""
-    payload = _charged_payload(world, f"pay_{uuid.uuid4().hex[:14]}")
+    payload = _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     forged = http.post(
         WEBHOOK,
@@ -436,13 +430,13 @@ def test_an_unsigned_delivery_grants_nothing(http: TestClient, world: World) -> 
 def test_a_signature_over_different_bytes_is_refused(
     http: TestClient, world: World
 ) -> None:
-    """Signed correctly, then the body swapped for one naming a bigger plan.
+    """Signed correctly, then the body swapped for one naming a bigger amount.
 
     The route hashes `await request.body()` rather than a re-serialization of
     the parsed JSON, and this is what proves it: a handler that re-serialized
     would compute the digest over the bytes it is holding and accept anything.
     """
-    honest = _charged_payload(world, f"pay_{uuid.uuid4().hex[:14]}")
+    honest = _captured_payload(world.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     raw_honest = json.dumps(honest, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(
         WEBHOOK_SECRET.encode("utf-8"), raw_honest, hashlib.sha256
@@ -466,19 +460,17 @@ def test_a_signature_over_different_bytes_is_refused(
     assert _run(_ledger(world.tenant)) == []
 
 
-def test_a_webhook_for_an_unknown_subscription_grants_nothing(
+def test_a_webhook_for_an_unknown_order_grants_nothing(
     http: TestClient, world: World
 ) -> None:
-    """Correctly signed, but naming a subscription no tenant holds.
+    """Correctly signed, but naming an order no purchase of ours carries.
 
     A signed payload is authentic, not authorized: the signature proves
     Razorpay sent it and says nothing about whose account it belongs to. This
     is the shape a credit-granting confused-deputy bug takes, and the answer
     has to be `unmatched` with no row rather than a grant to a guessed tenant.
     """
-    payload = _charged_payload(world, f"pay_{uuid.uuid4().hex[:14]}")
-    payload["payload"]["subscription"]["entity"]["id"] = "sub_does_not_exist"
-    payload["payload"]["payment"]["entity"]["subscription_id"] = "sub_does_not_exist"
+    payload = _captured_payload("order_does_not_exist", f"pay_{uuid.uuid4().hex[:14]}")
 
     response = _deliver(http, payload, event_id=f"evt_{world.tenant.hex[:8]}_7")
     assert response.status_code == 200
@@ -534,7 +526,7 @@ def test_an_unsigned_delivery_is_refused_when_no_secret_is_configured(
     product can ask for again, while accepting an unsigned payment event grants
     money and cannot be taken back.
     """
-    payload = _charged_payload(unconfigured, f"pay_{uuid.uuid4().hex[:14]}")
+    payload = _captured_payload(unconfigured.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
     answer = http.post(
@@ -563,7 +555,7 @@ def test_even_a_correctly_signed_delivery_is_refused_with_no_secret(
     only rejected the obviously-forged case would leave the attacker free to
     sign with the empty string.
     """
-    payload = _charged_payload(unconfigured, f"pay_{uuid.uuid4().hex[:14]}")
+    payload = _captured_payload(unconfigured.order_id, f"pay_{uuid.uuid4().hex[:14]}")
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(b"", raw, hashlib.sha256).hexdigest()
 

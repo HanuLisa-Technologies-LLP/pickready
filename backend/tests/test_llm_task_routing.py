@@ -108,6 +108,9 @@ SPEC_B3_ASSIGNMENT = {
     # role needs and the hidden assessment context WRITES what every candidate
     # is assessed against -> the reasoning tier, both
     "skills_drafting": llm_providers.MODEL_TERRA,
+    # Leadership Intelligence (2026-09-29): the leader's draft WRITES what a
+    # hiring team later reads as criteria, so the Terra half.
+    "leadership_draft": llm_providers.MODEL_TERRA,
     "assessment_context": llm_providers.MODEL_TERRA,
     # Bodha -- the Job SWOT document -> the reasoning tier (writing)
     "swot_analysis": llm_providers.MODEL_TERRA,
