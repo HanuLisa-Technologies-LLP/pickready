@@ -43,7 +43,7 @@ from app.workers.dispatch import dispatch_after_commit
 from app.api.deps import CurrentUser, get_current_user, get_superadmin_db
 from app.models.compliance import DOCUMENT_GROUPS, DOCUMENT_LABELS, ComplianceDocument
 from app.models.enums import Role, UserStatus
-from app.models.tenant import CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED, Tenant
+from app.models.tenant import CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED, CUSTOMER_STATUSES, Tenant
 from app.models.user import User
 from app.schemas.provider import (
     ClassificationReviewItem,
@@ -262,6 +262,13 @@ async def list_customers(
             )
         stmt = stmt.where(Tenant.status == status_filter)
         count_stmt = count_stmt.where(Tenant.status == status_filter)
+    else:
+        # "all" means every CUSTOMER, live or archived. A BD `prospect` and a
+        # self-registering company still `onboarding` are not customers yet,
+        # and `CustomerOut.status` cannot even state either word, so a row of
+        # one here would fail the whole page (company onboarding, 2026-09-29).
+        stmt = stmt.where(Tenant.status.in_(CUSTOMER_STATUSES))
+        count_stmt = count_stmt.where(Tenant.status.in_(CUSTOMER_STATUSES))
 
     needle = (search or "").strip()
     if needle:

@@ -25,6 +25,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    company_onboarding,
     conversations,
     dashboard,
     email_senders,
@@ -233,6 +234,14 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # and a second prefix would just be a second URL for Razorpay's webhook to be
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
+# Company self-registration (owner spec 2026-09-29, section 5): the first
+# Company Super Admin registers, verifies the mailbox, buys the first credit
+# pack and sets a password. Public by design, one path only.
+app.include_router(
+    company_onboarding.router,
+    prefix=f"{API_PREFIX}/company-onboarding",
+    tags=["company-onboarding"],
+)
 # In-product customer support (2026-09-10), which replaced a deleted
 # third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
 # one write path: `router` is the customer's

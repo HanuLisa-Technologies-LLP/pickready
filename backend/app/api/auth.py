@@ -65,6 +65,7 @@ from app.schemas.auth import (
     UserOut,
 )
 from app.services import auth_sessions, candidate_identity, login_context
+from app.services import company_onboarding
 from app.services import captcha, password_policy, security_codes, security_email
 from app.services import firebase_auth
 from app.services import rbac
@@ -375,6 +376,13 @@ async def firebase_session(
         # Stage A is stamped where it is shown (PUT /portal/me/profile-form).
         eligible = [user]
 
+    # ── A company still ONBOARDING opens no session ─────────────────────────
+    # Before the provider gate and before `_finalize_single`, which flips an
+    # invited account to active: a Firebase sign-up with a registered address
+    # must not open a workspace nobody has paid for. Refuses with the fixed
+    # sentence when no other workspace is left (services/company_onboarding).
+    eligible = await company_onboarding.without_onboarding(session, eligible)
+
     # ── Provider gate on every resolved context ─────────────────────────────
     for user in eligible:
         firebase_auth.assert_provider_allowed(identity, user.role.value)
@@ -498,6 +506,8 @@ async def available_workspaces(
         await login_context.find_users(session, identifier),
         owner_email=get_settings().owner_email,
     )
+    # A company still onboarding is never offered (services/company_onboarding).
+    eligible = await company_onboarding.without_onboarding(session, eligible)
     contexts = await login_context.build_contexts(session, eligible)
     token = login_context.make_context_token(
         identifier,
@@ -518,6 +528,12 @@ async def select_context(
 ) -> SessionOut:
     """Exchange a context_token (proof of a verified identity) for cookies as
     one of the identifier's users (contract rev 2). Single-use."""
+    # A company still ONBOARDING is refused before the token is spent and
+    # before `select_context` flips an invited account to active
+    # (services/company_onboarding).
+    chosen = await session.get(User, body.user_id)
+    if chosen is not None:
+        await company_onboarding.without_onboarding(session, [chosen])
     try:
         result = await login_context.select_context(
             session, context_token=body.context_token, user_id=body.user_id
