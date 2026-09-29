@@ -498,8 +498,8 @@ export default function BillingPage() {
                     <p className="mt-2 text-sm">{plan.assessments.toLocaleString("en-IN")} completed assessments</p>
                     <p className="mt-2 text-xs">GST {formatInr(plan.gst_inr)}. Total {formatInr(plan.total_inr)}.</p>
                     <p className="mt-3 text-sm font-medium">Unused credits roll over for {plan.rollover_months} months, then expire.</p>
-                    <Button className="mt-4 w-full" variant="outline" disabled={!canManage || planBusy || currentPlan?.plan_slug === plan.slug} onClick={() => void selectPlan(plan)}>
-                      {currentPlan?.plan_slug === plan.slug ? "Current plan" : currentPlan?.status === "active" ? "Switch next month" : "Choose plan"}
+                    <Button className="mt-4 w-full" variant="outline" disabled={!canManage || planBusy || ["created", "pending", "cancelling"].includes(currentPlan?.status ?? "") || (currentPlan?.status === "active" && currentPlan.plan_slug === plan.slug)} onClick={() => void selectPlan(plan)}>
+                      {currentPlan?.status === "active" && currentPlan.plan_slug === plan.slug ? "Current plan" : currentPlan?.status === "active" ? "Switch next month" : "Choose plan"}
                     </Button>
                   </div>
                 ))}
