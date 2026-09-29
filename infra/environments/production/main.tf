@@ -570,6 +570,12 @@ module "ecs" {
     # `app/main.py` is keyed on it, so a wrong value here is a job link that
     # goes nowhere and a browser that refuses every API call.
     FRONTEND_URL = "https://${var.domain_name}"
+    # THE PLATFORM SECURITY SENDER. Every security code and account notice
+    # leaves from this identity and never from a tenant's corporate sender
+    # (`services/security_email`). The API validates it at boot; the task
+    # worker, which actually sends, carries the same two values below.
+    PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
+    PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
   }
 
   services = {
@@ -858,6 +864,10 @@ module "lambda" {
         RESUME_SIGNED_URL_TTL_SECONDS   = "300"
         TASK_DISPATCH_BACKEND           = "aws"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+        # `pickready.send_security_email` runs here, so this is the hop that
+        # names the platform sender as the From address.
+        PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
+        PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
       }
     }
 

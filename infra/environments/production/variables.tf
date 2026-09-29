@@ -218,3 +218,20 @@ variable "monthly_budget_usd" {
     error_message = "A budget of zero or less notifies on the first cent of spend, every month, for ever, which is how a billing alert gets muted."
   }
 }
+
+variable "platform_security_sender_email" {
+  description = <<-EOT
+    The From address of every platform security email: a registration or
+    password security code, and the notice that an address already has an
+    account. Never a tenant sender. Under SES its domain must be a verified
+    identity in this account and region; the application refuses to boot on
+    a value without an "@".
+  EOT
+  type        = string
+  default     = "contact@readypick.ai"
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.platform_security_sender_email))
+    error_message = "platform_security_sender_email must be an email address."
+  }
+}

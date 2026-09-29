@@ -1312,6 +1312,13 @@ module "ecs" {
     # incoming message against; empty there means refuse everything.
     SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
     SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
+    # THE PLATFORM SECURITY SENDER. Every security code and account notice
+    # leaves from this identity and never from a tenant's corporate sender
+    # (`services/security_email`); with ENVIRONMENT=production a transport
+    # other than SES refuses to send it. The API validates the value at boot;
+    # the task worker, which sends, carries the same two values.
+    PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
+    PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
     # THE DOMAIN A REPLY COMES BACK TO, and the domain the application builds a
     # thread's Reply-To on. Both halves read this ONE value, so the address a
     # verification request asks an employer to reply to and the address SES is
@@ -1738,6 +1745,10 @@ module "lambda" {
         # not a free-text display address: it must be a verified sender.
         SMTP_FROM_EMAIL = var.platform_from_email
         SMTP_FROM_NAME  = "ReadyPick"
+        # `pickready.send_security_email` runs here: the security codes and the
+        # account notice leave from this identity, SES only, never SMTP.
+        PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
+        PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
         # This function is the hop that actually writes the Reply-To header, so
         # it needs the same value the API used to build the address.
         INBOUND_EMAIL_DOMAIN = local.has_inbound ? local.reply_domain : ""

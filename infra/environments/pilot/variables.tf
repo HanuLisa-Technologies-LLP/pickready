@@ -380,3 +380,21 @@ variable "image_builder_bucket_name" {
   type        = string
   default     = ""
 }
+
+variable "platform_security_sender_email" {
+  description = <<-EOT
+    The From address of every platform security email: a registration or
+    password security code, and the notice that an address already has an
+    account. Never a tenant sender. The readypick.ai domain identity is
+    verified in SES in this account and region, and `ses_send` grants
+    SendRawEmail on every verified identity, so no IAM change goes with it.
+    The application refuses to boot on a value without an "@".
+  EOT
+  type        = string
+  default     = "contact@readypick.ai"
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.platform_security_sender_email))
+    error_message = "platform_security_sender_email must be an email address."
+  }
+}
