@@ -3,7 +3,7 @@
 // AI Reach: find companies that are hiring, in two clearly separated segments.
 //
 // SEGMENT ORDER IS NOT COSMETIC. "Similar to our customers" is computed from
-// Vivekium's own customer database and makes no network call at all, so it is
+// ReadyPick's own customer database and makes no network call at all, so it is
 // asked for first and it keeps working on a deployment with no web search key.
 // "From the internet" is the agentic Tavily segment, time boxed at 30 seconds
 // on the server. The two FAIL INDEPENDENTLY: an internet timeout must never
@@ -247,10 +247,10 @@ export function AIReachPage() {
         </div>
       ) : result ? (
         <div className="mt-8 space-y-10">
-          {/* Computed from Vivekium's own customers. Rendered first, always. */}
+          {/* Computed from ReadyPick's own customers. Rendered first, always. */}
           <Segment
             title="Similar to our customers"
-            hint="Matched against Vivekium's customer database."
+            hint="Matched against ReadyPick's customer database."
             icon={Users}
             segment={result.similar_to_customers}
           />

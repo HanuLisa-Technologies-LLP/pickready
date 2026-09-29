@@ -64,7 +64,7 @@ export const skillsToArray = (value: string): string[] =>
 /**
  * The body of `POST /jobs`. It creates a DRAFT and nothing else.
  *
- * WHY THERE IS NO `publish` ARGUMENT ANY MORE (Vivekium release, Phase 1)
+ * WHY THERE IS NO `publish` ARGUMENT ANY MORE (ReadyPick release, Phase 1)
  * ---------------------------------------------------------------------
  * This helper used to take `publish = true` from the Create Job screen, and
  * the server published the job inside the create call under `create_job`

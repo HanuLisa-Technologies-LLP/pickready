@@ -8,13 +8,13 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/about",
   title: "About",
   description:
-    "The experience, philosophy and people behind Vivekium's evidence-led candidate profiles.",
+    "The experience, philosophy and people behind ReadyPick's evidence-led candidate profiles.",
 });
 
 /**
  * The three principles, each a claim about the product as it ships
  * (2026-09-28). "Human validation" promised a final check by somebody at
- * Vivekium before every profile reached a customer; no such step exists, and
+ * ReadyPick before every profile reached a customer; no such step exists, and
  * the human in the loop is the customer's own team, which the product
  * enforces (no flag rejects anybody, a person decides). "A flat job
  * subscription" was the pricing model before credits: a customer buys credits
@@ -44,12 +44,12 @@ export default function AboutPage() {
       <section className="relative overflow-hidden border-b border-border py-20 lg:py-28">
         <div aria-hidden="true" className="absolute -top-40 left-1/2 h-[32rem] w-[48rem] -translate-x-1/2 rounded-full bg-brand-600/15 blur-[120px]" />
         <FadeIn className="relative mx-auto max-w-4xl px-6 text-center lg:px-10">
-          <p className="type-eyebrow text-brand-600">About Vivekium</p>
+          <p className="type-eyebrow text-brand-600">About ReadyPick</p>
           <h1 className="mx-auto mt-5 type-display">
             Built from inside HR, for the decisions HR has to defend
           </h1>
           <p className="mx-auto mt-6 type-lead">
-            Vivekium is the next chapter of a long operating journey: learning what teams need when sourcing, screening, validation and decision support have to work as one.
+            ReadyPick is the next chapter of a long operating journey: learning what teams need when sourcing, screening, validation and decision support have to work as one.
           </p>
         </FadeIn>
       </section>
@@ -63,13 +63,13 @@ export default function AboutPage() {
           </FadeIn>
           <FadeIn delay={0.08} className="space-y-5 type-prose-lg">
             <p>
-              Before Vivekium, Recruitrix.ai brought profiles, assessments, verification and delivery into one platform when many teams were still assembling those pieces separately. Its remote-ready model supported more than 60 customers across India, delivered more than 10,000 jobs and led to an acquisition.
+              Before ReadyPick, Recruitrix.ai brought profiles, assessments, verification and delivery into one platform when many teams were still assembling those pieces separately. Its remote-ready model supported more than 60 customers across India, delivered more than 10,000 jobs and led to an acquisition.
             </p>
             <p>
-              The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. Vivekium takes the practical lessons from that journey and rebuilds the operating model from first principles.
+              The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. ReadyPick takes the practical lessons from that journey and rebuilds the operating model from first principles.
             </p>
             <p>
-              Vivekium turns the job&apos;s skills, the evidence in each resume and one proctored assessment into one clear assessment trail, so teams can spend interview time on the questions that matter.
+              ReadyPick turns the job&apos;s skills, the evidence in each resume and one proctored assessment into one clear assessment trail, so teams can spend interview time on the questions that matter.
             </p>
           </FadeIn>
         </div>
@@ -122,7 +122,7 @@ export default function AboutPage() {
                 He reviewed more than 600 HR technology platforms, advised over 50 companies on where their people processes break and mentored more than 100 HR professionals. Those conversations shaped a simple standard: technology should give time back, not add another system to manage.
               </p>
               <p>
-                Vivekium is not a side project. It is the operating belief that teams deserve clear evidence, candidates deserve clarity and the final decision must stay human.
+                ReadyPick is not a side project. It is the operating belief that teams deserve clear evidence, candidates deserve clarity and the final decision must stay human.
               </p>
             </div>
           </FadeIn>

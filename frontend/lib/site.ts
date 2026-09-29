@@ -14,7 +14,7 @@ import type { Metadata } from "next";
 export const SITE_URL = "https://readypick.ai";
 
 /** The product name, as it appears in a title, a share card and a schema. */
-export const SITE_NAME = "Vivekium";
+export const SITE_NAME = "ReadyPick";
 
 /**
  * The one-sentence description of the product, used as the site-wide meta
@@ -29,13 +29,13 @@ export const SITE_NAME = "Vivekium";
  * The `ppi` identifiers in CODE stay exactly as they are; this is copy.
  */
 export const SITE_DESCRIPTION =
-  "Vivekium ranks applicants on resume evidence against the job's skills, runs one proctored assessment, and gives your team a PRISM Report per candidate.";
+  "ReadyPick helps companies hire with confidence.";
 
 /**
- * How a company gets a Vivekium workspace: it asks for one.
+ * How a company gets a ReadyPick workspace: it asks for one.
  *
  * There is no employer self sign-up. A customer IS a tenant, and a tenant is
- * created when Vivekium's own team records a signed agreement (the Business
+ * created when ReadyPick's own team records a signed agreement (the Business
  * Development portal), after which the customer's first user is invited.
  * `/register` creates a CANDIDATE account (or binds an already invited staff
  * email), so a public "Get started" pointing there turned an employer into a
@@ -44,7 +44,7 @@ export const SITE_DESCRIPTION =
  * subject line that says what the message is.
  */
 export const REQUEST_ACCESS_HREF =
-  "mailto:manjuchro@gmail.com?subject=Vivekium%20access%20request";
+  "mailto:manjuchro@gmail.com?subject=ReadyPick%20access%20request";
 
 /**
  * The home page's title, which is also the site-wide default title and the
@@ -53,7 +53,7 @@ export const REQUEST_ACCESS_HREF =
  * name the product three ways. It is the product tagline the hero sets as
  * its h1.
  */
-export const LANDING_TITLE = "Vivekium, know every candidate before you meet them";
+export const LANDING_TITLE = "ReadyPick";
 
 /**
  * The generated share card, `app/opengraph-image.tsx`, named explicitly.
@@ -67,7 +67,7 @@ export const SHARE_CARD = {
   url: "/opengraph-image",
   width: 1200,
   height: 630,
-  alt: "Vivekium, the candidate intelligence platform",
+  alt: "ReadyPick",
 };
 
 /**
@@ -79,7 +79,7 @@ export const SHARE_CARD = {
  * /employers all served:
  *
  *     og:url          https://readypick.ai
- *     og:title        Vivekium, know every candidate before you meet them
+ *     og:title        ReadyPick, know every candidate before you meet them
  *     og:description  Rank every applicant against the role, ...
  *
  * A share of the privacy notice therefore advertised the home page, and every
@@ -112,7 +112,7 @@ export function publicPageMetadata({
 }: {
   /** Absolute path on this site, leading slash, no host and no trailing slash. */
   path: string;
-  /** The page name only. The root layout appends "| Vivekium" to the tab title. */
+  /** The page name only. The root layout appends "| ReadyPick" to the tab title. */
   title: string;
   description: string;
 }): Metadata {

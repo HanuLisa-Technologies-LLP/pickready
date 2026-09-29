@@ -203,7 +203,7 @@ export function EmailSendersCard() {
   return (
     <Section
       title="Email senders"
-      description="Business mailboxes your company has authorized to send recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it. Email that does not name a sender goes out from your default sender, or from the Vivekium mailbox when none is set."
+      description="Business mailboxes your company has authorized to send recruitment email. ReadyPick never asks for a mailbox password. A new address stays pending until your Super Admin approves it. Email that does not name a sender goes out from your default sender, or from the ReadyPick mailbox when none is set."
       actions={
         canManage ? (
           <Button type="button" size="sm" onClick={() => setAddOpen(true)}>

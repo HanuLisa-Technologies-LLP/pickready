@@ -67,8 +67,8 @@ const HEADERS: Array<[key: string, label: string, className: string]> = [
   ["candidate", "Candidate", "min-w-[220px]"],
   ["source", "Source", "hidden md:table-cell"],
   ["ai_match", "AI Match", "hidden md:table-cell"],
-  ["ready_pick_grade", "Vivekium Grade", "min-w-[210px]"],
-  ["ready_pick_note", "Vivekium Note", "hidden lg:table-cell"],
+  ["ready_pick_grade", "ReadyPick Grade", "min-w-[210px]"],
+  ["ready_pick_note", "ReadyPick Note", "hidden lg:table-cell"],
   ["ready_pick_profile", "Profile", ""],
   ["team_review", "Team Review", ""],
   ["stage", "Stage", ""],
@@ -189,8 +189,8 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                 setPage(1);
               }}
             >
-              <option value="grade:desc">Vivekium Grade, strongest first</option>
-              <option value="grade:asc">Vivekium Grade, weakest first</option>
+              <option value="grade:desc">ReadyPick Grade, strongest first</option>
+              <option value="grade:asc">ReadyPick Grade, weakest first</option>
               <option value="name:asc">Name</option>
               <option value="added:desc">Date added, newest first</option>
               <option value="source:asc">Source</option>

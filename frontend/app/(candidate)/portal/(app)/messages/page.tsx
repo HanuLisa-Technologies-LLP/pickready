@@ -72,7 +72,7 @@ import { InlineError, LoadingRows } from "@/components/page-primitives";
 const PARTY_LABEL: Record<string, string> = {
   recruiter: "Recruitment team",
   candidate: "You",
-  system: "Vivekium",
+  system: "ReadyPick",
 };
 
 export default function CandidateMessagesPage() {

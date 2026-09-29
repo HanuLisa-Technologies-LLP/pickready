@@ -9,7 +9,7 @@
 //     gone. The AI drafts a single formatted document, the recruitment team
 //     edits it behind an explicit Edit button, and the structured fields the
 //     API still stores are derived from that document.
-//   * This screen SAVES A DRAFT and nothing else (Vivekium release, Phase 1).
+//   * This screen SAVES A DRAFT and nothing else (ReadyPick release, Phase 1).
 //     It used to publish inside the create call, which skipped the real
 //     publish gate: the `publish_job` capability plus a saved JD, a saved SWOT
 //     and saved skills. The recruiter now lands on the job page, where the

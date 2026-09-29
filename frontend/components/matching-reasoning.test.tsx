@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The inline AI matching progress panel. What is pinned here is the Vivekium
+// The inline AI matching progress panel. What is pinned here is the ReadyPick
 // release's addition: a DEGRADED run is shown as degraded, with the server's
 // own sentences, and is never announced as a plain "finished".
 

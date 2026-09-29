@@ -39,7 +39,7 @@ afterEach(cleanup);
 const wrap = (node: React.ReactNode) =>
   render(<TooltipProvider>{node}</TooltipProvider>);
 
-describe("Vivekium Grade", () => {
+describe("ReadyPick Grade", () => {
   it("shows the grade word and no number (D3)", () => {
     // spec-doc6 D8 once licensed a 0-100 number here. D3 removed it with no
     // exception: the cell is the word the server chose, and nothing else.
@@ -116,10 +116,10 @@ describe("Vivekium Grade", () => {
   });
 });
 
-describe("Vivekium Note", () => {
+describe("ReadyPick Note", () => {
   it("renders the pending sentence rather than an empty cell", () => {
     wrap(<NoteCell row={row()} />);
-    expect(screen.getAllByText("Vivekium Profile not written yet.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ReadyPick Profile not written yet.").length).toBeGreaterThan(0);
   });
 
   it("is never bold and never coloured", () => {
@@ -135,7 +135,7 @@ describe("Vivekium Note", () => {
   });
 });
 
-describe("Vivekium Profile button", () => {
+describe("ReadyPick Profile button", () => {
   it("is disabled with an explanation before a profile exists", () => {
     wrap(<ProfileButton row={row()} onOpen={() => undefined} />);
     const button = screen.getByRole("button", { name: /not available/i });
@@ -143,7 +143,7 @@ describe("Vivekium Profile button", () => {
   });
 
   it("names the PRISM Report as a different document in its explanation", () => {
-    // spec-doc6 C15: the row's pending state refers to the Vivekium Profile,
+    // spec-doc6 C15: the row's pending state refers to the ReadyPick Profile,
     // not to the delivered PRISM Report.
     expect(row().profile_pending_reason).toContain("PRISM Report");
   });
@@ -158,7 +158,7 @@ describe("Vivekium Profile button", () => {
         onOpen={() => undefined}
       />
     );
-    const button = screen.getByRole("button", { name: /Open the Vivekium Profile/i });
+    const button = screen.getByRole("button", { name: /Open the ReadyPick Profile/i });
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 });

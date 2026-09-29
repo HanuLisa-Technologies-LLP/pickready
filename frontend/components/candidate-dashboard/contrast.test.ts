@@ -115,7 +115,7 @@ const GRADE_PAIRS: Array<[string, string, string]> = [
 //: 1.4.3's definition (18.66px bold / 24px regular), so the full 4.5 applies.
 const TEXT_MINIMUM = 4.5;
 
-describe("the Vivekium Grade, light theme", () => {
+describe("the ReadyPick Grade, light theme", () => {
   it.each(GRADE_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(ratio(LIGHT[`${fg}-fg`], LIGHT[bg])).toBeGreaterThanOrEqual(
       TEXT_MINIMUM
@@ -136,7 +136,7 @@ describe("the Vivekium Grade, light theme", () => {
   });
 });
 
-describe("the Vivekium Grade, dark theme", () => {
+describe("the ReadyPick Grade, dark theme", () => {
   it.each(GRADE_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(
       ratio(darkToken(`${fg}-fg`), darkToken(bg))

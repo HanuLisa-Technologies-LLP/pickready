@@ -214,7 +214,7 @@ export function CompanyRegisterFlow() {
           keyId: order.razorpay_key_id,
           orderId: order.razorpay_order_id,
           amountInr: order.total_inr,
-          name: "Vivekium",
+          name: "ReadyPick",
           description: `${order.credits} Intelligence Report credits, first purchase`,
           prefill: { email, name: state?.first_name ?? undefined },
           onSuccess: (payload) => {

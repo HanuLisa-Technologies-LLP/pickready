@@ -2,7 +2,7 @@
 
 // Customer Portal → Compliance. The WRITE half of the Provider Portal's
 // compliance section: the HR Head files their company's own tax and commercial
-// records here, and Vivekium reads them read-only.
+// records here, and ReadyPick reads them read-only.
 //
 // Readable by a holder of `view_compliance_documents` (the leadership release:
 // the CEO and MD read these), writable by a holder of
@@ -105,7 +105,7 @@ export default function CompliancePage() {
       <PageHeader
         eyebrow="Customer Portal"
         title="Compliance and legal documents"
-        description="Your company's tax and commercial records. Vivekium can view these; only your company can upload or replace them."
+        description="Your company's tax and commercial records. ReadyPick can view these; only your company can upload or replace them."
       />
 
       {forbidden ? (

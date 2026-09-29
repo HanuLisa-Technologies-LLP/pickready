@@ -5,12 +5,12 @@
 //
 // Columns (new spec, 2026-07-28; Assessment added by the 2026-09-05
 // dashboard/video spec; AI Match replaced the Match percentage and the
-// AI Rating & Report column in the Vivekium release):
+// AI Rating & Report column in the ReadyPick release):
 //   Name | AI Match | CTC Match | Notice Period | Education | BGV Status |
 //   Type of Procurement | Status | Assessment | Resume | PRISM Report | Q&A |
 //   Validation | Team review | Decision
 //
-// AI Match (Vivekium release, PLAN-p2 WP-D) is ONE column: the grade WORD the
+// AI Match (ReadyPick release, PLAN-p2 WP-D) is ONE column: the grade WORD the
 // server derives from the resume check (and, once there is one, the Tatva
 // Assessment), the evidence tags the server flagged for the row, and a
 // Details button. It replaced two things that each broke a rule: the Match

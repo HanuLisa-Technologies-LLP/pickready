@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Publishing a job (Vivekium release, Phase 1).
+ * Publishing a job (ReadyPick release, Phase 1).
  *
  * THE ONE PLACE A JOB GOES LIVE
  * -----------------------------

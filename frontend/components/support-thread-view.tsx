@@ -25,7 +25,7 @@ import { Badge } from "@/components/ui/badge";
 // drift the first time a state was added, and the two portals would then
 // disagree about what a thread is doing.
 export const SUPPORT_STATUS_LABEL: Record<SupportThreadStatus, string> = {
-  open: "Waiting on Vivekium",
+  open: "Waiting on ReadyPick",
   awaiting_customer: "Waiting on you",
   resolved: "Resolved",
 };
@@ -88,7 +88,7 @@ export function SupportMessageBubble({
   const mine = message.author_side === viewerSide;
   const who =
     message.author_side === "staff"
-      ? "Vivekium"
+      ? "ReadyPick"
       : message.author_name ?? "Your team";
   return (
     <li

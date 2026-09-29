@@ -18,7 +18,7 @@ import { ImageResponse } from "next/og";
  * the Tailwind token layer.
  */
 
-export const alt = "Vivekium, the candidate intelligence platform";
+export const alt = "ReadyPick";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -60,8 +60,8 @@ export default function OpengraphImage() {
           {/* The product name, split where the site wordmark splits it
               (`components/brand/logo.tsx`). The card spelled the previous
               name, so every share of readypick.ai carried it. */}
-          <span>Vivek</span>
-          <span style={{ color: TEAL }}>ium</span>
+          <span>Ready</span>
+          <span style={{ color: TEAL }}>Pick</span>
         </div>
         <div
           style={{
@@ -73,7 +73,7 @@ export default function OpengraphImage() {
             color: "#FFFFFF",
           }}
         >
-          The candidate intelligence platform
+          Hiring, made simple
         </div>
         <div
           style={{

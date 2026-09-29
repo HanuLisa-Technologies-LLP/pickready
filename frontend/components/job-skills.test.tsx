@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The Skills step (Vivekium release, Phase 1). What the interface owns, and
+// The Skills step (ReadyPick release, Phase 1). What the interface owns, and
 // therefore what is tested here: every action reaches the right route with the
 // right body, a refusal is shown in the server's own words, the locked state is
 // a state sentence rather than a permission sentence, a re-draft never happens

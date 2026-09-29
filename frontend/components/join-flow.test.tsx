@@ -77,7 +77,7 @@ describe("JoinFlow", () => {
 
   it("moves an existing sign-in to the sign-in tab with the server's sentence", async () => {
     const sentence =
-      "This email address already has a Vivekium sign-in. Sign in with your existing password to join.";
+      "This email address already has a ReadyPick sign-in. Sign in with your existing password to join.";
     serve(() => {
       throw new ApiError(409, { detail: sentence });
     });

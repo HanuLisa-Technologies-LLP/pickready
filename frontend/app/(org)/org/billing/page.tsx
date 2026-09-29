@@ -188,7 +188,7 @@ export default function BillingPage() {
           keyId: order.razorpay_key_id,
           orderId: order.razorpay_order_id,
           amountInr: order.total_inr,
-          name: "Vivekium",
+          name: "ReadyPick",
           description: `${order.credits} Intelligence Report credits, one-time purchase`,
           prefill: {
             email: user?.email ?? undefined,
@@ -442,7 +442,7 @@ export default function BillingPage() {
               banners scroll to: a top-up has to land on the packs. */}
           <div id="billing-plans" className="scroll-mt-24">
             <Section
-              title="Purchase Vivekium Intelligence Report Credits"
+              title="Purchase ReadyPick Intelligence Report Credits"
               description={
                 canManage
                   ? `One-time purchases at ${packs ? formatInr(packs.price_per_credit_inr) : "the list price"} per credit. Credits bought now stay valid for ${data.credits.credit_validity_months} months from purchase; credits granted before expiry was introduced never expire. Volume packs add bonus credits free.`

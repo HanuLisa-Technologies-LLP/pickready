@@ -34,7 +34,7 @@
  * green. A degraded run that looks complete is the failure this is here to
  * prevent.
  *
- * DEGRADED IS A RUN-LEVEL STATE TOO (Vivekium release). A skipped row says
+ * DEGRADED IS A RUN-LEVEL STATE TOO (ReadyPick release). A skipped row says
  * which step did not run; it does not say that some candidates could not be
  * assessed at all, which happens inside a step that did run. So the run
  * carries `degraded` and the server's own `degraded_reasons`, and when it is

@@ -4,7 +4,7 @@
  * The eight columns' cells. One component per column, in the specified order.
  *
  * Split out of the table so each cell's rule is testable on its own: AI
- * Match's muted styling rule, the Vivekium Grade's gradeless and under-review
+ * Match's muted styling rule, the ReadyPick Grade's gradeless and under-review
  * states, and the Note's truncation are each a property of one component
  * rather than of a row. No cell renders a number: every word is the server's.
  */
@@ -116,7 +116,7 @@ export function AiMatchCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 4: Vivekium Grade ────────────────────────────────────────────── */
+/* ── Column 4: ReadyPick Grade ────────────────────────────────────────────── */
 
 export function ReadyPickGradeCell({ row }: { row: DashboardRow }) {
   return (
@@ -158,7 +158,7 @@ export function ReadyPickGradeCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 5: Vivekium Note ───────────────────────────────────────────── */
+/* ── Column 5: ReadyPick Note ───────────────────────────────────────────── */
 
 export function NoteCell({ row }: { row: DashboardRow }) {
   return (
@@ -182,7 +182,7 @@ export function NoteCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 6: Vivekium Profile ────────────────────────────────────────── */
+/* ── Column 6: ReadyPick Profile ────────────────────────────────────────── */
 
 export function ProfileButton({
   row,
@@ -202,11 +202,11 @@ export function ProfileButton({
       className={cn("h-8", !available && "cursor-not-allowed")}
       aria-label={
         available
-          ? `Open the Vivekium Profile for ${row.full_name}`
-          : `Vivekium Profile not available for ${row.full_name}`
+          ? `Open the ReadyPick Profile for ${row.full_name}`
+          : `ReadyPick Profile not available for ${row.full_name}`
       }
     >
-      {available ? "Vivekium Profile" : "Awaiting Profile"}
+      {available ? "ReadyPick Profile" : "Awaiting Profile"}
     </Button>
   );
   if (available) return button;

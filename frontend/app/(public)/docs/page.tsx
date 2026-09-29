@@ -45,7 +45,7 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/docs",
   title: "Docs",
   description:
-    "Implementation-aligned product and technical documentation for Vivekium.",
+    "Implementation-aligned product and technical documentation for ReadyPick.",
 });
 
 const CONTENTS = [
@@ -296,7 +296,7 @@ export default function DocsPage() {
               <span className="text-gradient-brand">documented as built.</span>
             </h1>
             <p className="mt-7 type-lead">
-              A code-aligned guide to what Vivekium does, how each workspace
+              A code-aligned guide to what ReadyPick does, how each workspace
               fits together, and how the platform should mature from its
               current deployment into a production-scale service.
             </p>
@@ -400,7 +400,7 @@ export default function DocsPage() {
             <SectionIntro
               eyebrow="Product documentation"
               title="Hiring operations built around evidence, not disconnected tools"
-              body="Vivekium connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
+              body="ReadyPick connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
             />
 
             <div className="mt-10 rounded-3xl border border-brand-500/25 bg-gradient-to-br from-brand-100 via-surface to-surface p-7 sm:p-9">
@@ -1005,7 +1005,7 @@ export default function DocsPage() {
                   href="/login?initial_context=all"
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-5 text-sm font-semibold text-brand-700 transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 >
-                  Open Vivekium
+                  Open ReadyPick
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </a>
               </div>

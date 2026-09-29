@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The AI Match details dialog (Vivekium release, PLAN-p2 WP-D).
+// The AI Match details dialog (ReadyPick release, PLAN-p2 WP-D).
 //
 // A recruiter never sees the parts the resume check is built from (D2): not
 // their names, not their order, not their share. The dialog shows a grade

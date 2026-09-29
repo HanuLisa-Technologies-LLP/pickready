@@ -1,6 +1,6 @@
 "use client";
 
-// Delete My Profile on My Profile (VIVEKIUM_SPRINT_FEATURES.md feature 7, and
+// Delete My Profile on My Profile (READYPICK_SPRINT_FEATURES.md feature 7, and
 // India's Digital Personal Data Protection Act, 2023).
 //
 // THIS COMPONENT AUTHORS NO COPY ABOUT WHAT DELETION DOES. Every warning line,

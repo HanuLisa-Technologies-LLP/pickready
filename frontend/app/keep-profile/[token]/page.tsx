@@ -64,7 +64,7 @@ export default function KeepProfilePage() {
     <main className="mx-auto flex min-h-screen max-w-xl items-center px-4">
       <Card className="w-full">
         <CardHeader>
-          <CardTitle>Keep my profile on Vivekium</CardTitle>
+          <CardTitle>Keep my profile on ReadyPick</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {done ? (

@@ -4,7 +4,7 @@ import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 /**
  * Site-level structured data: who publishes this site, and what the site is.
  *
- * TWO NODES, ONE GRAPH. `Organization` describes Vivekium and `WebSite`
+ * TWO NODES, ONE GRAPH. `Organization` describes ReadyPick and `WebSite`
  * describes readypick.ai. They are emitted together in an `@graph` so the
  * WebSite can name its publisher by `@id` rather than repeating the
  * organisation inline, which is what stops a consumer reading two different
@@ -22,9 +22,8 @@ import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
  *    really served. An invented path here would produce a logo property
  *    pointing at a 404, which is worse than no logo property, so this one
  *    moved with the file rather than after it.
- *  - `parentOrganization` is Varpitech LLP, which the public site
- *    footer states on every page ("A Varpitech LLP product"). It
- *    is the one corporate fact this site actually publishes.
+ *  - No `parentOrganization`: the public site names no company behind the
+ *    product (owner, 2026-09-29).
  *  - `inLanguage` is "en", which is what `<html lang>` declares.
  *
  * WHAT IS DELIBERATELY ABSENT, and none of it is an oversight:
@@ -72,10 +71,6 @@ export function SiteJsonLd() {
             url: SITE_URL,
             logo: `${SITE_URL}/icon`,
             description: SITE_DESCRIPTION,
-            parentOrganization: {
-              "@type": "Organization",
-              name: "Varpitech LLP",
-            },
           },
           {
             "@type": "WebSite",

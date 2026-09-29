@@ -1,6 +1,6 @@
 "use client";
 
-// "Forgot password?", run by Vivekium's server (auth spec 9.2).
+// "Forgot password?", run by ReadyPick's server (auth spec 9.2).
 //
 // THREE STEPS, EACH PROVEN BY THE ONE BEFORE. The address and a security check
 // ask the server to email a six-digit security code; the code is exchanged for

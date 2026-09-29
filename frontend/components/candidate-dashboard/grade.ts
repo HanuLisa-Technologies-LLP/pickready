@@ -20,7 +20,7 @@
  * NO NUMBER AND NO LETTER (D3, CONTRACT C8)
  * -----------------------------------------
  * Both columns render one of the four grade words, or a status word, chosen
- * by the server. The numeric Vivekium Score and its five-band vocabulary
+ * by the server. The numeric ReadyPick Score and its five-band vocabulary
  * (Ready to Pick, Strong ... Not Recommended) are gone, as is the A / B / C /
  * Hold letter. The browser styles by the STATE the server sends beside the
  * word; it never derives a state from a word or a word from a number.

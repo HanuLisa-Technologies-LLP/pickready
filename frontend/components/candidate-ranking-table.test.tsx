@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The job page's ranked candidate table (Vivekium release, PLAN-p2 WP-D).
+// The job page's ranked candidate table (ReadyPick release, PLAN-p2 WP-D).
 //
 // What is pinned here is what the TABLE owns: it renders the server's header
 // sentence verbatim, it renders rows in the server's order (no client sort),

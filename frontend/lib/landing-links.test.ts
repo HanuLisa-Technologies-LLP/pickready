@@ -38,13 +38,6 @@ const LANDING_FILES = [
   "landing-page.tsx",
   "site-header.tsx",
   "site-footer.tsx",
-  "hero.tsx",
-  "how-it-works.tsx",
-  "workflow-showcase.tsx",
-  "features.tsx",
-  "report-section.tsx",
-  "story-sections.tsx",
-  "call-to-action.tsx",
 ].map((name) => join(publicDir, name));
 
 /**
@@ -157,10 +150,10 @@ function pathOf(target: string): string {
 describe("the landing page's links", () => {
   const links = destinations();
 
-  it("reads a real number of links from every section", () => {
+  it("reads a real number of links from the page and the header", () => {
     // A parser that matched nothing would make every assertion below pass.
-    expect(links.length).toBeGreaterThan(20);
-    for (const name of ["hero.tsx", "site-header.tsx", "site-footer.tsx", "call-to-action.tsx"]) {
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    for (const name of ["landing-page.tsx", "site-header.tsx"]) {
       expect(links.some((link) => link.file.endsWith(name)), name).toBe(true);
     }
   });
@@ -183,27 +176,19 @@ describe("the landing page's links", () => {
     expect(refused).toEqual([]);
   });
 
-  it("sends pricing to its own page, from the header, the footer and the close", () => {
+  it("sends pricing to its own page, from the header and the page", () => {
     // Owner spec 2026-09-29, section 4.1: no inline price list and no
     // `/#pricing` anchor; "See pricing plans" opens `/pricing`.
     expect(links.filter(({ target }) => target.includes("#pricing"))).toEqual([]);
-    for (const name of ["site-header.tsx", "site-footer.tsx", "call-to-action.tsx"]) {
+    for (const name of ["site-header.tsx", "landing-page.tsx"]) {
       const source = read(join(publicDir, name));
       expect(source, name).toContain('"/pricing"');
       expect(source, name).toContain("See pricing plans");
     }
-    expect(read(join(publicDir, "landing-page.tsx"))).not.toMatch(/\bPricing\b/);
   });
 
-  it("lands every anchor on a section the page mounts", () => {
-    const ids = mountedIds();
-    const anchors = links
-      .map(({ target }) => target)
-      .filter((target) => target.includes("#"))
-      .map((target) => target.split("#")[1]);
-    expect(anchors.length).toBeGreaterThan(3);
-    const dead = anchors.filter((id) => !ids.has(id));
-    expect(dead).toEqual([]);
+  it("carries no in-page anchor, because the page is one screen", () => {
+    expect(links.filter(({ target }) => target.includes("#"))).toEqual([]);
   });
 
   it("writes to the request-access mailbox and nowhere else by mail", () => {
@@ -215,9 +200,15 @@ describe("the landing page's links", () => {
     expect(mail.filter(({ target }) => !allowed.has(target))).toEqual([]);
   });
 
-  it("puts the request-access action in the header, the hero and the close", () => {
-    for (const name of ["site-header.tsx", "hero.tsx", "call-to-action.tsx", "site-footer.tsx"]) {
-      expect(read(join(publicDir, name)), name).toContain("REQUEST_ACCESS_HREF");
+  it("offers company login and company registration from the header", () => {
+    const header = read(join(publicDir, "site-header.tsx"));
+    expect(header).toContain('"/company/login"');
+    expect(header).toContain('"/company/register"');
+  });
+
+  it("names no company and no previous product name (owner, 2026-09-29)", () => {
+    for (const file of LANDING_FILES) {
+      expect(read(file), file).not.toMatch(/Vivekium|Varpitech|HanuLisa/i);
     }
   });
 

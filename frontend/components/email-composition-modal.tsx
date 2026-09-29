@@ -18,7 +18,7 @@
 // person who may see the senders list now picks one, starting from the
 // tenant's default. Everybody else posts no sender and the server resolves the
 // same rule it applies to automatic email: the default sender, else the
-// Vivekium mailbox. The picker never offers a "platform mailbox" choice while a
+// ReadyPick mailbox. The picker never offers a "platform mailbox" choice while a
 // default exists, because omitting the sender means "the default" on the
 // server and a choice the request cannot express would be a promise the send
 // breaks.
@@ -72,7 +72,7 @@ type Mode = "ai" | "manual";
 
 /** The picker's value for "post no sender", offered only when the tenant has
  *  no default, which is the one case where omitting the sender means the
- *  Vivekium mailbox. Not a UUID, so it can never collide with a sender id. */
+ *  ReadyPick mailbox. Not a UUID, so it can never collide with a sender id. */
 const PLATFORM_MAILBOX = "platform-mailbox";
 
 interface SenderChoice {
@@ -309,7 +309,7 @@ export function EmailCompositionModal({
           {senderError ? (
             <InlineError>
               Your senders could not be loaded ({senderError}). This email will
-              go out from your default sender, or the Vivekium mailbox when
+              go out from your default sender, or the ReadyPick mailbox when
               none is set.
             </InlineError>
           ) : senderChoice && senderChoice.senders.length > 0 ? (
@@ -326,7 +326,7 @@ export function EmailCompositionModal({
                 <SelectContent>
                   {senderChoice.senders.some((s) => s.is_default) ? null : (
                     <SelectItem value={PLATFORM_MAILBOX}>
-                      Vivekium mailbox
+                      ReadyPick mailbox
                     </SelectItem>
                   )}
                   {senderChoice.senders.map((sender) => (
@@ -345,7 +345,7 @@ export function EmailCompositionModal({
             </FormField>
           ) : !canChooseSender || senderChoice ? (
             <p className="text-xs">
-              Sent from your company&apos;s default sender, or the Vivekium
+              Sent from your company&apos;s default sender, or the ReadyPick
               mailbox when none is set.
             </p>
           ) : null}

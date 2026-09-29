@@ -10,7 +10,7 @@ import { ImageResponse } from "next/og";
  *
  * The three files this replaces (`favicon.ico`, `icon.png`,
  * `apple-touch-icon.png`) were the previous logo, so every tab of a product
- * named Vivekium was flying the OLD NAME'S INITIALS. Rename change 01 covers
+ * named ReadyPick was flying the OLD NAME'S INITIALS. Rename change 01 covers
  * all screens, and a favicon is the one that follows the user into their tab
  * strip and their bookmarks.
  *
@@ -39,14 +39,14 @@ export default function Icon() {
       >
         <svg width="512" height="512" viewBox="0 0 32 32">
           <path
-            d="M7 7.5 L16 25"
+            d="M9 25 V7 H18 A5.5 5.5 0 0 1 18 18 H9"
             stroke="#012654"
             strokeWidth="5"
             strokeLinecap="square"
             fill="none"
           />
           <path
-            d="M25 7.5 L16 25"
+            d="M17 18 L24 25"
             stroke="#00888A"
             strokeWidth="5"
             strokeLinecap="square"

@@ -33,18 +33,9 @@ import sitemap from "../sitemap";
  */
 const NOTES: Record<string, string> = {
   "/": "Home page.",
-  "/employers":
-    "Directory of companies hiring through Vivekium, each with a public page and its currently open roles.",
-  "/pricing":
-    "Credit pricing: one rate per credit, one-time packs, GST, validity, bonus credits and the setup fee, from the live price list.",
-  "/about": "Who builds Vivekium and the principles the product is built on.",
-  "/insights":
-    "Articles on evidence-led candidate decisions, assessment design and consent.",
-  "/docs":
-    "Product and technical documentation: the workspaces, the hiring flow, the assessment, the architecture and the stated limitations.",
-  "/privacy":
-    "Privacy notice covering candidate, customer and visitor information.",
-  "/terms": "Terms governing access to and use of Vivekium.",
+  "/pricing": "Credit pricing, from the live price list.",
+  "/privacy": "Privacy notice.",
+  "/terms": "Terms of use.",
 };
 
 /** The path a sitemap entry addresses, with no host and no trailing slash. */

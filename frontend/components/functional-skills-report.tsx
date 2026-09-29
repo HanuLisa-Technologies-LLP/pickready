@@ -222,7 +222,7 @@ export interface AiMatchTag {
   polarity: "positive" | "negative";
 }
 
-/** The AI Match of a report written from the Vivekium release on: the
+/** The AI Match of a report written from the ReadyPick release on: the
  *  pre-assessment check, frozen when the report was written. A grade word, a
  *  header sentence and evidence tags; no remark, no chart, no number. */
 export interface AiMatchSnapshot {
@@ -240,7 +240,7 @@ export interface FunctionalReport {
   reference_code?: string;
   grade: string;
   /** LEGACY: the four resume-only rows of a report written before the
-   *  Vivekium release. Empty on a newer report, which carries
+   *  ReadyPick release. Empty on a newer report, which carries
    *  `ai_score_snapshot`. The key keeps its stored name. */
   ai_score: ReportDimension[];
   ai_score_snapshot?: AiMatchSnapshot | null;
@@ -662,7 +662,7 @@ export const AI_MATCH_TITLE = "AI Match";
  * The AI Match: the resume check made before the assessment, frozen when the
  * report was written (spec doc 4, part 3).
  *
- * A report written from the Vivekium release on carries the snapshot: a grade
+ * A report written from the ReadyPick release on carries the snapshot: a grade
  * word, the server's header sentence and evidence tags, each marked with a
  * check or a cross icon (never an emoji) and named for a screen reader. An
  * older report carries the four legacy rows it was written with, rendered as

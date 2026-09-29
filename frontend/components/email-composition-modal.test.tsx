@@ -127,7 +127,7 @@ describe("EmailCompositionModal sender", () => {
     renderModal();
 
     expect(
-      screen.getByText(/default sender, or the Vivekium mailbox/)
+      screen.getByText(/default sender, or the ReadyPick mailbox/)
     ).toBeTruthy();
     const body = await sendManually();
     expect(api.apiGet).not.toHaveBeenCalled();

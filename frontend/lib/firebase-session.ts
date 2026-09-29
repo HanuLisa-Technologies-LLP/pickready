@@ -13,7 +13,7 @@ import type { CaptchaPurpose } from "@/components/captcha";
 import { CaptchaError } from "@/components/captcha";
 
 /**
- * Result of trading a Firebase ID token for a Vivekium session.
+ * Result of trading a Firebase ID token for a ReadyPick session.
  * The backend returns EITHER a finalized single-user session (cookies set)
  * OR a multi-workspace identity that still needs `select-context`.
  */
@@ -39,7 +39,7 @@ export { isContextsResponse };
 
 /**
  * POST /auth/firebase/session, trade a freshly minted Firebase ID token and a
- * single-use security check proof for a Vivekium session. Single-user →
+ * single-use security check proof for a ReadyPick session. Single-user →
  * {user, capabilities} (cookies set). Multi-workspace → {contexts,
  * context_token} (no cookies yet).
  */

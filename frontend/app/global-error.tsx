@@ -69,7 +69,7 @@ export default function GlobalError({
               letterSpacing: "-0.015em",
             }}
           >
-            Vivekium could not start
+            ReadyPick could not start
           </h1>
 
           <p
@@ -125,7 +125,7 @@ export default function GlobalError({
                 textDecoration: "none",
               }}
             >
-              Reload Vivekium
+              Reload ReadyPick
             </a>
           </div>
 
