@@ -65,9 +65,15 @@ _CACHE_KEY = "department_access.scope"
 
 
 class _Principal(Protocol):
-    user_id: Any
-    tenant_id: Any
-    role: Any
+    # Read-only members, so a frozen dataclass (`rbac.Principal`) satisfies it.
+    @property
+    def user_id(self) -> Any: ...
+
+    @property
+    def tenant_id(self) -> Any: ...
+
+    @property
+    def role(self) -> Any: ...
 
 
 def _role(value: Any) -> Role | None:
