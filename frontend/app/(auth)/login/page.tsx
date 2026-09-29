@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 
-import { LoginFlow } from "@/components/login-flow";
+import { LoginPageFlow } from "@/components/login-flow";
 
 // A sign-in form is not content. `index: false` keeps it out of results;
 // `follow` is left alone so the links out of the page still carry weight.
@@ -10,13 +10,14 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
-// ONE login for everyone (contract rev 2): Owner, all client-org roles and
-// candidates. Firebase sign-in (Google / email+password / phone); routing after
-// exchange is portal-driven. Suspense guards any client-only hooks in the flow.
+// The CANDIDATE sign-in page (Google or email and password, with a security
+// check). Company team members sign in at /company/login; the Provider and
+// business development sign-ins are `?portal=owner` and `?portal=bd` here.
+// Suspense guards the search-param read in the flow.
 export default function LoginPage() {
   return (
     <Suspense>
-      <LoginFlow title="Sign in to Vivekium" />
+      <LoginPageFlow />
     </Suspense>
   );
 }

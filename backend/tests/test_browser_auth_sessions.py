@@ -15,7 +15,6 @@ from app.api.deps import ACCESS_COOKIE, REFRESH_COOKIE, _authenticated_user
 from app.core.security import AUDIENCE_ORG
 from app.core.security import decode_token
 from app.models.enums import Role, UserStatus
-from app.schemas.auth import FirebaseSessionIn
 from app.services import auth_sessions
 
 
@@ -168,7 +167,7 @@ async def _async_user(user):
 
 
 @pytest.mark.asyncio
-async def test_logout_and_password_change_revoke_server_records(store, user, monkeypatch):
+async def test_logout_and_password_change_revoke_server_records(store, user):
     first = Response()
     second = Response()
     await auth._issue_session(first, user, AUDIENCE_ORG)
@@ -183,12 +182,11 @@ async def test_logout_and_password_change_revoke_server_records(store, user, mon
     assert (await _authenticated_user(
         request_with_cookies(**{ACCESS_COOKIE: second_access}), second_access, AUDIENCE_ORG,
     )).user_id == user.id
-    monkeypatch.setattr(auth.firebase_auth, "verify_id_token", lambda _: SimpleNamespace(uid="firebase-user"))
-    result = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [user.id]))
-    session = SimpleNamespace(execute=lambda _: _async_user(result))
-    assert await auth.password_changed(
-        FirebaseSessionIn(id_token="x" * 40), Response(), session,
-    ) == {"sessions_revoked": True}
+    # A password change or reset revokes every session of the account
+    # (`api/auth.password_change_complete` and `password_reset_complete` call
+    # exactly this; tests/test_password_flows.py drives the routes). The
+    # retired route that revoked on a fresh Firebase token is gone.
+    await auth_sessions.revoke_all(user.id)
     with pytest.raises(Exception, match="Session expired or revoked"):
         await _authenticated_user(
             request_with_cookies(**{ACCESS_COOKIE: second_access}), second_access, AUDIENCE_ORG,

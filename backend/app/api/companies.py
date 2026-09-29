@@ -87,6 +87,21 @@ from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers import agent_client
 from app.workers.dispatch import dispatch_after_commit
 
+# The invitation's password setup (auth hardening, 2026-09-29).
+import logging
+
+from sqlalchemy.exc import IntegrityError
+from starlette.concurrency import run_in_threadpool
+
+from app.core.db import get_identity_session
+from app.core.security import audience_for_role
+from app.schemas.auth import InviteSetupPasswordIn, SessionOut
+from app.services import captcha, firebase_auth, password_policy, staff_invites
+from app.services.audit import AUTH_LOGIN_SUCCEEDED, record_auth_event
+from app.services.rate_limit import rate_limit
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 MAX_HIRING_MANAGERS = 5  # FR-2.2
@@ -907,6 +922,100 @@ async def accept_invite(
         accepted=True,
         role=invite.role,
         company_name=await _tenant_name(session, invite.tenant_id),
+    )
+
+
+# ── Invitation account setup (auth spec 11.4) ────────────────────────────────
+#
+# THE SERVER CREATES THE PASSWORD IDENTITY, FOR EXACTLY THE INVITED EMAIL.
+# The /join page used to create a Firebase user in the browser for whatever
+# address it held and then exchange it; now the address comes from the
+# invitation row and nowhere else, so an invitation cannot be spent on a
+# different mailbox. No Google here: every company role signs in with a
+# password (firebase_auth.providers_for_role). An address that already has an
+# identity gets a 409 and the screen offers "sign in with your existing
+# password", which goes through the ordinary exchange with purpose
+# `invite_join` and then `/accept`.
+
+INVITE_IDENTITY_EXISTS_DETAIL = (
+    "This email address already has a Vivekium sign-in. Sign in with your "
+    "existing password to join."
+)
+
+
+@router.post(
+    "/invites/{token}/setup-password",
+    response_model=SessionOut,
+    dependencies=[Depends(rate_limit("invite_setup", limit=10, window=600))],
+)
+async def setup_invite_password(
+    token: str,
+    body: InviteSetupPasswordIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
+) -> SessionOut:
+    """Create the invited person's password sign-in, bind it, accept the
+    invitation and open their company session, in that order.
+
+    The rule and the CAPTCHA come first; the token is resolved before any
+    identity is created; the Firebase identity is created before the rows are
+    written, and deleted again when the rows cannot be committed, so a failed
+    setup never leaves a sign-in that no account owns.
+    """
+    from app.api import auth as auth_api
+
+    password_policy.require_valid(body.password)
+    await captcha.consume_proof(body.captcha_proof, "invite_join")
+    invite = await _resolve_invite(session, token)
+    staff_user = await session.get(User, invite.user_id)
+    if staff_user is None or staff_user.status == UserStatus.disabled:
+        raise HTTPException(
+            status_code=403,
+            detail="This invitation is no longer available. Ask your admin for a new one.",
+        )
+    if staff_user.firebase_uid:
+        raise HTTPException(status_code=409, detail=INVITE_IDENTITY_EXISTS_DETAIL)
+    name = (body.full_name or "").strip() or staff_user.full_name
+    try:
+        uid = await firebase_auth.create_password_user(invite.email, body.password, name)
+    except firebase_auth.IdentityAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=INVITE_IDENTITY_EXISTS_DETAIL) from exc
+    except firebase_auth.IdentityOperationFailed as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="We could not set up your sign-in right now. Please try again in a moment.",
+        ) from exc
+
+    staff_user.firebase_uid = uid
+    staff_user.auth_providers = sorted(set((staff_user.auth_providers or []) + ["password"]))
+    staff_user.email_verified_at = staff_user.email_verified_at or datetime.now(timezone.utc)
+    if name and not staff_user.full_name:
+        staff_user.full_name = name
+    if staff_user.status == UserStatus.invited:
+        staff_user.status = UserStatus.active
+    # Writes the `staff_invite_accepted` audit row in the same transaction.
+    await staff_invites.accept_pending_invite(session, staff_user.id)
+    await record_auth_event(
+        session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=staff_user.id,
+        tenant_id=staff_user.tenant_id,
+        metadata={"provider": "password", "via": "invite_setup"},
+    )
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        # The identity exists and no account owns it: take it back out.
+        try:
+            await run_in_threadpool(firebase_auth.delete_identity, uid)
+        except firebase_auth.IdentityDeletionFailed:
+            logger.error("invite_setup.orphan_identity_left")
+        raise HTTPException(
+            status_code=409, detail="This sign-in could not be linked to an account"
+        ) from exc
+    await auth_api._issue_session(response, staff_user, audience_for_role(staff_user.role))  # noqa: SLF001
+    return SessionOut(
+        user=await auth_api._user_out(session, staff_user),  # noqa: SLF001
+        capabilities=await auth_api._capabilities(session, staff_user),  # noqa: SLF001
     )
 
 

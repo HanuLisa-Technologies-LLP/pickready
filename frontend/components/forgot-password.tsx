@@ -1,175 +1,261 @@
 "use client";
 
-// "Forgot password?" for an email and password account.
+// "Forgot password?", run by Vivekium's server (auth spec 9.2).
 //
-// FIREBASE OWNS RECOVERY, SO THIS IS ONE CALL. The product stores no password
-// and builds no reset flow of its own (claude.md section 3 rule 2): this sends
-// Firebase's own reset email, and the link in it lands on Firebase's own page.
-// There is no token, no route and no table on our side.
+// THREE STEPS, EACH PROVEN BY THE ONE BEFORE. The address and a security check
+// ask the server to email a six-digit security code; the code is exchanged for
+// a single-use reset ticket; the ticket and a new password set the password,
+// and every session on the account is signed out. Firebase still stores the
+// credential, but the browser no longer asks Firebase for a reset email: that
+// path went around the security check and the security code entirely.
 //
-// THE ANSWER IS THE SAME WHETHER OR NOT THE ACCOUNT EXISTS. Saying "no account
-// uses that address" would turn the sign-in screen into a way to test which
-// addresses are registered. So a missing account reads exactly like a sent
-// email; only an answer that tells the person something they can act on (a
-// malformed address, too many attempts, no network) differs.
+// THE ANSWER IS THE SAME WHETHER OR NOT THE ACCOUNT EXISTS. The server says one
+// sentence for every address, so this screen cannot be used to test which
+// addresses are registered. Only an answer the person can act on (a malformed
+// address, a wrong code, too many attempts) differs, and nothing fails
+// silently.
 
 import * as React from "react";
-import { sendPasswordResetEmail } from "firebase/auth";
 import { Loader2, MailCheck } from "lucide-react";
 
-import { firebaseAuth } from "@/lib/firebase";
+import { apiPost } from "@/lib/api";
+import { friendlyAuthError } from "@/lib/firebase-session";
+import { Captcha, type CaptchaHandle } from "@/components/captcha";
 import { InlineError } from "@/components/page-primitives";
+import {
+  PasswordRules,
+  isPasswordValid,
+  passwordRules,
+} from "@/components/password-rules";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** The one sentence a person reads after asking, whatever the account state. */
+/** The server's one sentence after a request, whatever the account state. */
 export const RESET_SENT_MESSAGE =
-  "If an account uses this address, we have emailed it a link to reset the password. Check your inbox and your spam folder.";
+  "If an account uses this address, we have sent a security code to it. Check your inbox and your spam folder.";
 
-export type ResetOutcome = { sent: true } | { sent: false; message: string };
+type Step = "request" | "code" | "password" | "done";
 
-/**
- * Ask Firebase to email a reset link.
- *
- * `auth/user-not-found` is deliberately an ordinary success (see the header).
- * Every other failure is said, never swallowed: a reset that silently did
- * nothing would leave somebody waiting for an email that is not coming.
- */
-export async function requestPasswordReset(email: string): Promise<ResetOutcome> {
-  const address = email.trim();
-  if (!EMAIL_RE.test(address)) {
-    return { sent: false, message: "Enter the email address you sign in with." };
-  }
-  try {
-    await sendPasswordResetEmail(firebaseAuth, address);
-    return { sent: true };
-  } catch (failure) {
-    const code =
-      typeof failure === "object" && failure !== null && "code" in failure
-        ? String((failure as { code: unknown }).code)
-        : "";
-    switch (code) {
-      case "auth/user-not-found":
-        return { sent: true };
-      case "auth/invalid-email":
-      case "auth/missing-email":
-        return { sent: false, message: "Enter the email address you sign in with." };
-      case "auth/too-many-requests":
-        return {
-          sent: false,
-          message: "Too many attempts. Please wait a few minutes and try again.",
-        };
-      case "auth/network-request-failed":
-        return {
-          sent: false,
-          message: "We could not reach the sign-in service. Check your connection and try again.",
-        };
-      default:
-        return {
-          sent: false,
-          message: "We could not send the reset email right now. Please try again.",
-        };
+function onEnter(action: () => void) {
+  return (event: React.KeyboardEvent) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      action();
     }
-  }
+  };
 }
 
 /**
  * An inline "Forgot password?" control. Collapsed it is one link-styled
- * button; opened it asks for the address (prefilled from the sign-in form)
- * and states the outcome in place, so nobody is sent to another page.
+ * button; opened it walks the three steps in place. `onOpenChange` lets the
+ * sign-in screen hide its own form (and its own security check) while this
+ * one is open, so a person is never asked two security checks at once.
  */
 export function ForgotPassword({
   initialEmail = "",
   idPrefix,
+  onOpenChange,
 }: {
   initialEmail?: string;
-  /** Distinguishes the field when two sign-in forms share a page. */
+  /** Distinguishes the fields when two sign-in forms share a page. */
   idPrefix: string;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = React.useState(false);
+  const [step, setStep] = React.useState<Step>("request");
   const [email, setEmail] = React.useState(initialEmail);
+  const [code, setCode] = React.useState("");
+  const [ticket, setTicket] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [sent, setSent] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const fieldId = `${idPrefix}-reset-email`;
+  const captcha = React.useRef<CaptchaHandle>(null);
+  const rules = passwordRules(password);
+
+  const toggle = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+    if (next) {
+      setEmail(initialEmail);
+      setStep("request");
+      setCode("");
+      setTicket("");
+      setPassword("");
+      setNotice(null);
+      setError(null);
+    }
+  };
+
+  const run = (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    void action()
+      .catch((failure) => setError(friendlyAuthError(failure) ?? "Please try again."))
+      .finally(() => setBusy(false));
+  };
 
   if (!open) {
     return (
       <button
         type="button"
         className="text-sm font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => {
-          setEmail(initialEmail);
-          setSent(false);
-          setError(null);
-          setOpen(true);
-        }}
+        onClick={() => toggle(true)}
       >
         Forgot password?
       </button>
     );
   }
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const outcome = await requestPasswordReset(email);
-    setBusy(false);
-    if (outcome.sent) {
-      setSent(true);
-    } else {
-      setError(outcome.message);
+  const requestCode = () => {
+    const address = email.trim();
+    if (!EMAIL_RE.test(address)) {
+      setError("Enter the email address you sign in with.");
+      return;
     }
+    run(async () => {
+      const proof = await captcha.current!.prove();
+      const sent = await apiPost<{ message: string }>("/auth/password-reset/request", {
+        email: address,
+        captcha_proof: proof,
+      });
+      setNotice(sent.message || RESET_SENT_MESSAGE);
+      setStep("code");
+    });
+  };
+
+  const verifyCode = () => {
+    if (!/^\d{6}$/.test(code.trim())) {
+      setError("Enter the six-digit security code from the email.");
+      return;
+    }
+    run(async () => {
+      const verified = await apiPost<{ reset_token: string }>(
+        "/auth/password-reset/verify",
+        { email: email.trim(), code: code.trim() }
+      );
+      setTicket(verified.reset_token);
+      setNotice(null);
+      setStep("password");
+    });
+  };
+
+  const setNewPassword = () => {
+    if (!isPasswordValid(rules)) {
+      setError("Use at least 8 characters with uppercase, lowercase, and a number.");
+      return;
+    }
+    run(async () => {
+      const done = await apiPost<{ message: string }>("/auth/password-reset/complete", {
+        reset_token: ticket,
+        password,
+      });
+      setPassword("");
+      setNotice(done.message);
+      setStep("done");
+    });
   };
 
   return (
-    <div className="space-y-3 rounded-xl border border-border p-4">
-      {sent ? (
+    <div className="space-y-3 rounded-xl border border-border p-4" role="group" aria-label="Reset your password">
+      <p className="text-sm font-semibold">Reset your password</p>
+      {notice ? (
         <p role="status" className="flex items-start gap-2 text-sm">
-          <MailCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          {RESET_SENT_MESSAGE}
+          <MailCheck className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" aria-hidden="true" />
+          {notice}
         </p>
-      ) : (
-        // A plain group, not a nested <form>: this renders inside the sign-in
-        // form, and a form inside a form is invalid HTML whose submit button
-        // submits the outer one.
-        <div className="space-y-3" role="group" aria-label="Reset your password">
+      ) : null}
+
+      {step === "request" ? (
+        <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor={fieldId}>Email address for the reset link</Label>
+            <Label htmlFor={`${idPrefix}-reset-email`}>Email address</Label>
             <Input
-              id={fieldId}
+              id={`${idPrefix}-reset-email`}
               type="email"
               autoComplete="email"
               value={email}
               disabled={busy}
               onChange={(event) => setEmail(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void submit(event);
-              }}
+              onKeyDown={onEnter(requestCode)}
             />
           </div>
-          {error ? <InlineError>{error}</InlineError> : null}
-          <Button type="button" size="sm" disabled={busy} onClick={(event) => void submit(event)}>
-            {busy ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                Sending
-              </>
-            ) : (
-              "Email me a reset link"
-            )}
+          <Captcha ref={captcha} purpose="password_reset" disabled={busy} idPrefix={`${idPrefix}-reset-captcha`} />
+          <Button type="button" size="sm" disabled={busy} onClick={requestCode}>
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+            Email me a security code
           </Button>
         </div>
-      )}
+      ) : null}
+
+      {step === "code" ? (
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-reset-code`}>Security code</Label>
+            <Input
+              id={`${idPrefix}-reset-code`}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={code}
+              disabled={busy}
+              onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))}
+              onKeyDown={onEnter(verifyCode)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="button" size="sm" disabled={busy} onClick={verifyCode}>
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+              Verify code
+            </Button>
+            <button
+              type="button"
+              className="text-sm font-medium underline underline-offset-4"
+              onClick={() => {
+                setCode("");
+                setNotice(null);
+                setError(null);
+                setStep("request");
+              }}
+            >
+              Send a new code
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {step === "password" ? (
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-reset-password`}>New password</Label>
+            <Input
+              id={`${idPrefix}-reset-password`}
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              disabled={busy}
+              aria-describedby={`${idPrefix}-reset-rules`}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={onEnter(setNewPassword)}
+            />
+            <PasswordRules id={`${idPrefix}-reset-rules`} rules={rules} />
+          </div>
+          <Button type="button" size="sm" disabled={busy || !isPasswordValid(rules)} onClick={setNewPassword}>
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+            Set new password
+          </Button>
+        </div>
+      ) : null}
+
+      {error ? <InlineError>{error}</InlineError> : null}
       <button
         type="button"
         className="text-sm font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => setOpen(false)}
+        onClick={() => toggle(false)}
       >
         Back to sign in
       </button>

@@ -33,6 +33,7 @@ from app.services import firebase_auth
 from app.services.login_context import decode_context_token
 from app.services.firebase_auth import FirebaseIdentity, assert_provider_allowed
 from fastapi import HTTPException, Response
+from tests.captcha_support import captcha_proof
 
 
 # ── DB-free: provider gate (Google = candidates only) ────────────────────────
@@ -50,9 +51,32 @@ def test_google_allowed_for_candidate() -> None:
     assert_provider_allowed(_identity(provider="google.com"), "candidate")  # no raise
 
 
-@pytest.mark.parametrize("role", ["super_admin", "hr_manager", "recruiter", "hiring_manager", "client"])
-def test_google_allowed_for_all_roles(role: str) -> None:
+@pytest.mark.parametrize("role", ["super_admin", "bd"])
+def test_google_allowed_for_the_platform_roles(role: str) -> None:
+    """The Provider owner and BD keep the policy they had (auth spec 2.6)."""
     assert_provider_allowed(_identity(provider="google.com"), role)
+
+
+def _org_roles() -> list[str]:
+    from app.core.security import _ORG_ROLES
+
+    return sorted(_ORG_ROLES)
+
+
+@pytest.mark.parametrize("role", _org_roles())
+def test_google_is_refused_for_every_company_role(role: str) -> None:
+    """Every company role signs in with a password only (auth spec 2.6, 8).
+    Parametrised over `core.security._ORG_ROLES` itself, so a role added to
+    the org portal is swept the day it exists."""
+    with pytest.raises(HTTPException) as exc:
+        assert_provider_allowed(_identity(provider="google.com"), role)
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Google sign-in is available to candidates only"
+
+
+@pytest.mark.parametrize("role", _org_roles())
+def test_password_is_allowed_for_every_company_role(role: str) -> None:
+    assert_provider_allowed(_identity(provider="password"), role)
 
 
 @pytest.mark.parametrize("role", ["candidate", "super_admin", "hr_manager", "recruiter", "client"])
@@ -102,10 +126,19 @@ def _cookie_names(response: Response) -> list[str]:
             if k == b"set-cookie"]
 
 
-async def _call(session, identity, monkeypatch) -> tuple[Response, object]:
+async def _call(
+    session, identity, monkeypatch, purpose: str = "candidate_login"
+) -> tuple[Response, object]:
+    """The route as a browser reaches it: a REAL CAPTCHA proof for the
+    surface (`tests/captcha_support`), then the exchange."""
     _set_verify(monkeypatch, identity)
     response = Response()
-    out = await firebase_session(FirebaseSessionIn(id_token="t" * 40), response, session)
+    body = FirebaseSessionIn(
+        id_token="t" * 40,
+        captcha_proof=await captcha_proof(purpose),
+        captcha_purpose=purpose,
+    )
+    out = await firebase_session(body, response, session)
     return response, out
 
 
@@ -146,7 +179,7 @@ async def test_owner_google_login_succeeds_for_configured_email() -> None:
     try:
         ident = _identity(provider="google.com", email=get_settings().owner_email.upper())
         async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
+            response, out = await _call(session, ident, monkeypatch, "provider_login")
         assert out.user.role == Role.super_admin
         assert "pr_access" in _cookie_names(response)
     finally:
@@ -197,7 +230,7 @@ async def test_staff_first_login_links_uid_and_preserves_role() -> None:
 
         ident = _identity(provider="password", email=email)
         async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
+            response, out = await _call(session, ident, monkeypatch, "company_login")
         assert out.user is not None
         assert out.user.role == Role.hr_manager
         assert out.user.id == created[0]
@@ -241,7 +274,7 @@ async def test_multi_context_returns_chooser_then_select_issues_cookies() -> Non
 
         ident = _identity(provider="password", email=email)
         async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
+            response, out = await _call(session, ident, monkeypatch, "company_login")
         assert out.user is None
         assert out.context_token is not None
         assert len(out.contexts) == 2
@@ -348,8 +381,10 @@ async def test_disabled_user_gets_403() -> None:
         await engine.dispose()
 
 
-async def test_google_staff_login_succeeds() -> None:
-    """A pre-seeded staff identity may prove its invited email with Google."""
+async def test_google_staff_login_is_refused_by_the_backend() -> None:
+    """A company account may NOT sign in with Google, even when a caller
+    skips the screen that hides the button (auth spec 7.2, 8). The refusal
+    comes before anything is bound: the account keeps no Google uid."""
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch = pytest.MonkeyPatch()
@@ -366,9 +401,13 @@ async def test_google_staff_login_succeeds() -> None:
 
         ident = _identity(provider="google.com", email=email)
         async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
-        assert out.user.role == Role.recruiter
-        assert "pr_access" in _cookie_names(response)
+            with pytest.raises(HTTPException) as exc:
+                await _call(session, ident, monkeypatch, "company_login")
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "Google sign-in is available to candidates only"
+        async with factory() as session:
+            row = await session.get(User, created[0])
+            assert row.firebase_uid is None
     finally:
         monkeypatch.undo()
         await _cleanup_users(factory, created, [tid])

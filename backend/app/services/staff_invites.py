@@ -34,13 +34,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invite import StaffInvite
-from app.services.audit import audit
+from app.services.audit import AUTH_STAFF_INVITE_ACCEPTED, audit
 
 __all__ = ["STAFF_INVITE_ACCEPTED", "accept_pending_invite"]
 
 #: The same audit action the /join handler writes, so "who accepted, when"
 #: has one name whichever door the invitee came through.
-STAFF_INVITE_ACCEPTED = "staff_invite_accepted"
+STAFF_INVITE_ACCEPTED = AUTH_STAFF_INVITE_ACCEPTED
 
 
 async def accept_pending_invite(

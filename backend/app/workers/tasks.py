@@ -3139,3 +3139,6 @@ from app.workers import tasks_invitations  # noqa: E402,F401
 from app.workers import coding_tasks  # noqa: E402,F401
 # The semantic index repair sweep (PLAN-p5 WP5-E), registered the same way.
 from app.workers import tasks_retrieval  # noqa: E402,F401
+# The platform security email (auth hardening, 2026-09-29), registered the
+# same way.
+from app.workers import tasks_security_email  # noqa: E402,F401

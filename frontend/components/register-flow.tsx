@@ -22,6 +22,11 @@ import { homePathForRole, useAuth } from "@/lib/auth-context";
 import { currentNextPath, withNext } from "@/lib/next-destination";
 import type { AuthContextsResponse, AuthSession } from "@/lib/types";
 import { AuthDivider, AuthLink, AuthShell } from "@/components/auth-shell";
+import {
+  CAPTCHA_EMPTY_MESSAGE,
+  Captcha,
+  type CaptchaHandle,
+} from "@/components/captcha";
 import { InlineError } from "@/components/page-primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +54,7 @@ export function RegisterFlow() {
   const [error, setError] = React.useState<string | null>(null);
   const rules = passwordRules(password);
   const passwordValid = isPasswordValid(rules);
+  const captcha = React.useRef<CaptchaHandle>(null);
 
   const finish = React.useCallback(
     (session: AuthSession) => {
@@ -102,24 +108,44 @@ export function RegisterFlow() {
       return;
     }
     run(async () => {
+      // The security check first: a wrong answer creates no sign-in.
+      const proof = await captcha.current!.prove();
       const credential = await createUserWithEmailAndPassword(
         firebaseAuth,
         email.trim(),
         password
       );
       await updateProfile(credential.user, { displayName: name.trim() });
-      resolve(await exchangeFirebaseSession(credential.user));
+      resolve(
+        await exchangeFirebaseSession(credential.user, {
+          proof,
+          purpose: "candidate_register",
+        })
+      );
     });
   };
 
-  const registerGoogle = () =>
+  const registerGoogle = () => {
+    // The popup must open on the click itself, so the check is asked for
+    // before it and verified after it.
+    if (!captcha.current?.hasAnswer()) {
+      setError(CAPTCHA_EMPTY_MESSAGE);
+      return;
+    }
     run(async () => {
       const credential = await signInWithPopup(
         firebaseAuth,
         createCandidateGoogleProvider()
       );
-      resolve(await exchangeFirebaseSession(credential.user));
+      const proof = await captcha.current!.prove();
+      resolve(
+        await exchangeFirebaseSession(credential.user, {
+          proof,
+          purpose: "candidate_register",
+        })
+      );
     });
+  };
 
   const chooseContext = (userId: string) =>
     run(async () => {
@@ -133,7 +159,7 @@ export function RegisterFlow() {
       description={
         contexts
           ? "Your invited email belongs to more than one workspace."
-          : "Use your invited email if you are joining a company team."
+          : "Create a candidate account to apply for jobs. Company team members join through the invitation their admin sends."
       }
       footer={
         contexts ? null : (
@@ -160,7 +186,7 @@ export function RegisterFlow() {
                 {context.tenant_name ?? "Vivekium"}
               </span>
               <span className="mt-0.5 block text-xs">
-                {ROLE_LABEL[context.role]}
+                {ROLE_LABEL[context.role] ?? context.role}
               </span>
             </button>
           ))}
@@ -236,6 +262,12 @@ export function RegisterFlow() {
               </div>
               <PasswordRules id="password-requirements" rules={rules} />
             </div>
+            <Captcha
+              ref={captcha}
+              purpose="candidate_register"
+              disabled={busy}
+              idPrefix="register-captcha"
+            />
             <Button
               size="lg"
               className="w-full"

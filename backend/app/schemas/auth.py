@@ -65,9 +65,134 @@ class MeOut(BaseModel):
     capabilities: list[str] = []
 
 
+#: The CAPTCHA purposes (services/captcha.PURPOSES), spelled for the schema.
+CaptchaPurpose = Literal[
+    "candidate_login",
+    "candidate_register",
+    "company_login",
+    "company_register",
+    "invite_join",
+    "provider_login",
+    "bd_login",
+    "password_change",
+    "password_reset",
+]
+
+#: The purposes a SESSION EXCHANGE may carry. Each names the surface the
+#: person signed in on, and the surface narrows which workspaces the proven
+#: identity may enter (api/auth.EXCHANGE_PURPOSE_PORTAL). The two password
+#: purposes and company registration never mint a session through here.
+ExchangePurpose = Literal[
+    "candidate_login",
+    "candidate_register",
+    "company_login",
+    "invite_join",
+    "provider_login",
+    "bd_login",
+]
+
+_PROOF = Field(min_length=16, max_length=128)
+
+
 class FirebaseSessionIn(BaseModel):
+    """A verified Firebase identity plus a CAPTCHA proof for its surface.
+
+    The proof is REQUIRED (auth spec 6.4): the application session is the
+    boundary, so a caller who skips the sign-in page and posts a Firebase
+    token directly still has to pass the check. The portal field is gone:
+    the purpose IS the portal intent now, and it is a filter over the
+    database's own roles, never a grant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     id_token: str = Field(min_length=20)
-    # Optional portal intent from the unified sign-in screen. This is a filter,
-    # never an authority grant: the resolved database role must already belong
-    # to the requested portal or sign-in is refused.
-    requested_portal: Literal["candidate", "org", "bd", "owner"] | None = None
+    captcha_proof: str = _PROOF
+    captcha_purpose: ExchangePurpose
+
+
+class CaptchaChallengeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    purpose: CaptchaPurpose
+
+
+class CaptchaChallengeOut(BaseModel):
+    challenge_id: str
+    #: `data:image/svg+xml;base64,...`, drawn on the server. Carries no text.
+    image: str
+    expires_in: int
+
+
+class CaptchaVerifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    challenge_id: str = Field(min_length=1, max_length=64)
+    answer: str = Field(min_length=1, max_length=32)
+    purpose: CaptchaPurpose
+
+
+class CaptchaVerifyOut(BaseModel):
+    captcha_proof: str
+
+
+class SecurityCodeSentOut(BaseModel):
+    """The same answer whether or not an account exists (enumeration safe)."""
+    sent: bool = True
+    message: str
+
+
+class PasswordResetRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=320)
+    captcha_proof: str = _PROOF
+
+
+class PasswordResetVerifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=320)
+    code: str = Field(min_length=6, max_length=12)
+
+
+class PasswordResetVerifyOut(BaseModel):
+    reset_token: str
+
+
+class PasswordResetCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reset_token: str = Field(min_length=16, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChangeRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    captcha_proof: str = _PROOF
+
+
+class PasswordChangeVerifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=6, max_length=12)
+
+
+class PasswordChangeVerifyOut(BaseModel):
+    change_token: str
+
+
+class PasswordChangeCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    change_token: str = Field(min_length=16, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class InviteSetupPasswordIn(BaseModel):
+    """`POST /companies/invites/{token}/setup-password`. There is no email
+    field on purpose: the address is the invitation's, never the browser's."""
+
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(min_length=1, max_length=256)
+    captcha_proof: str = _PROOF
+    full_name: str | None = Field(default=None, max_length=200)
+
+
+class PasswordChangedOut(BaseModel):
+    password_changed: bool = True
+    #: Sentence the screen shows as it stands.
+    message: str
