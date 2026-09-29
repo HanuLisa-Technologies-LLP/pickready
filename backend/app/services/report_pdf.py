@@ -83,12 +83,18 @@ SECTION_ORDER: tuple[str, ...] = (
     "must_have",
     "nice_to_have",
     "behavioural",
+    "leadership_alignment",
     "claim_evidence",
     "gap_analysis",
     "validation_points",
     "validation",
     "proctoring",
 )
+
+#: Leadership Alignment (0135, spec 22.9), immediately after Behavioural: it
+#: reads the grades above it against what the company's leaders asked for.
+#: Verbatim in both renderers and in `siddhi.synthesis.SECTION_TITLES`.
+LEADERSHIP_ALIGNMENT_TITLE = "Leadership Alignment"
 
 #: The two 0107 headings, verbatim in both renderers and in
 #: `siddhi.synthesis.SECTION_TITLES`.
@@ -485,6 +491,27 @@ def _claim_evidence(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]
     return story
 
 
+def _leadership_alignment(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """Leadership Alignment (0135). A report with no such section prints
+    nothing at all: a job with no leadership input, or any report written
+    before the section existed, reads exactly as it did."""
+    payload = _value(report, "leadership_alignment", None)
+    if not payload:
+        return []
+    groups = list(_value(payload, "groups", []) or [])
+    story: list[Any] = [Paragraph(LEADERSHIP_ALIGNMENT_TITLE, styles["Section"])]
+    note = _value(payload, "note", "")
+    if note:
+        story.append(Paragraph(_text(note), styles["Body"]))
+        story.append(Spacer(1, 2 * mm))
+    for group in groups:
+        story.append(Paragraph(f"<b>{_text(_value(group, 'title', ''))}</b>", styles["Body"]))
+        for line in _value(group, "lines", []) or []:
+            story.append(Paragraph(f"&bull; {_text(_value(line, 'text', ''))}", styles["Body"]))
+        story.append(Spacer(1, 2.5 * mm))
+    return story
+
+
 def _validation_points(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
     """Recommended Human Validation Points (0107).
 
@@ -755,6 +782,7 @@ def render_report_pdf(
         "behavioural": lambda: _dimension_cards(
             "Behavioural Competencies", _value(report, "behavioural", []), styles
         ),
+        "leadership_alignment": lambda: _leadership_alignment(report, styles),
         "claim_evidence": lambda: _claim_evidence(report, styles),
         "gap_analysis": lambda: _gap_analysis(report, styles),
         "validation_points": lambda: _validation_points(report, styles),

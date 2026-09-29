@@ -173,7 +173,20 @@ JD_CHARS = 6000
 #: because a model handed half a sentence completes it from its own priors.
 MAX_NEEDS = 12
 MAX_NEED_CHARS = 320
-NEED_SOURCES: tuple[str, ...] = ("weakness", "opportunity", "threat")
+SWOT_NEED_SOURCES: tuple[str, ...] = ("weakness", "opportunity", "threat")
+#: Needs read from the CONTRACT's frozen leadership context (Leadership
+#: Intelligence, 2026-09-29, spec 22.4): the same part (company-need fit) and
+#: the same weight, never a bonus of their own. At most this many, so leadership
+#: lines cannot crowd the team's own SWOT out of `MAX_NEEDS`; the SWOT takes the
+#: rest. The strings are `services/leadership/context.SOURCES`, restated because
+#: this module is data and imports no service.
+LEADERSHIP_NEED_SOURCES: tuple[str, ...] = (
+    "leadership_ceo",
+    "leadership_md",
+    "leadership_functional_head",
+)
+MAX_LEADERSHIP_NEEDS = 4
+NEED_SOURCES: tuple[str, ...] = SWOT_NEED_SOURCES + LEADERSHIP_NEED_SOURCES
 
 # ── Grounding and tags ───────────────────────────────────────────────────────
 

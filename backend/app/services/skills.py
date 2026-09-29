@@ -68,7 +68,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from typing import Any, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,6 +93,7 @@ from app.services import (
 from app.services.assessment_contract import SkillsLocked
 from app.services.audit import record_action, record_agent_action
 from app.services.hiring import sutra
+from app.services.leadership import context as leadership_context
 from app.services.hiring_pipeline import DRAFTING_STATES, JobLifecycleState
 from app.workers.dispatch import TaskHandle, dispatch_after_commit
 
@@ -828,12 +829,20 @@ async def save(
     before = _signature(rows)
     swot = await swot_analysis.get(db, job)
     submitted = [(row.category, row.name) for row in rows]
+    # Resolved ONCE, before the model call and outside the lock: the context
+    # the writer reads and the `job_leadership_contexts` row written below are
+    # this one value (spec 21). None when no leadership input applies.
+    leadership = await leadership_context.resolve_for_job(db, job)
     try:
         # Only a SWOT the team SAVED is context. A model draft nobody has read
         # is not the team's analysis, and must not shape what every candidate
         # is assessed against.
         context = await sutra.build_context(
-            db, job, submitted, swot.sections() if swot_analysis.is_saved(swot) else None
+            db,
+            job,
+            submitted,
+            swot.sections() if swot_analysis.is_saved(swot) else None,
+            leadership=leadership,
         )
     except sutra.SutraUnavailable as exc:
         raise SkillsContextUnavailable() from exc
@@ -861,6 +870,19 @@ async def save(
         "prompt_version": context.prompt_version,
         "generated_at": now.isoformat(),
     }
+    frozen_leadership = None
+    if leadership is not None:
+        # The leadership context this save was made with, frozen as a row the
+        # contract names (`leadership_context_id`), with where each saved skill
+        # came from. Written only when a context exists: absent leadership
+        # leaves the save, the contract and its digest exactly as before.
+        frozen_leadership = await leadership_context.record_for_job(
+            db, job, leadership, {str(row.id): _source(row) for row in current}
+        )
+        job.assessment_context_json = {
+            **job.assessment_context_json,
+            "leadership_context_id": str(frozen_leadership.id),
+        }
     first_save = job.finalized_at is None
     job.framework_approved_at = now
     if job.lifecycle_state is None or job.lifecycle_state in DRAFTING_STATES:
@@ -896,6 +918,14 @@ async def save(
             "criteria_version": job.criteria_version,
             "jd_version": job_version.jd_version(job),
             "contract_digest": contract.digest,
+            **(
+                {
+                    "leadership_context_id": str(frozen_leadership.id),
+                    "leadership_context_version": frozen_leadership.version,
+                }
+                if frozen_leadership is not None
+                else {}
+            ),
         },
     )
     await record_agent_action(
@@ -1124,13 +1154,17 @@ async def draft(
         if row.is_active:
             row.is_active = False
             row.updated_at = now
-    provenance = {
+    provenance: dict[str, Any] = {
         "generated_by": "sutra",
         "model_id": result.model_id,
         "prompt_version": result.prompt_version,
         # None when the draft read no saved SWOT, which is a normal state now.
         "swot_version": swot_version,
     }
+    if result.leadership is not None:
+        # Which leadership versions the draft READ (spec 22.2). Provenance
+        # only: what a candidate is assessed against is frozen at Save Skills.
+        provenance["leadership"] = dict(result.leadership.sources)
     for skill in result.skills:
         found = _find(rows, skill.bucket, skill.name)
         if found is not None:

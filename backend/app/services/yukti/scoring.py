@@ -249,13 +249,22 @@ class YuktiOutcome:
 
 
 def _base_provenance(ctx: inputs.JobContext, *, model_id: str, prompt_version: str) -> dict[str, Any]:
-    return {
+    provenance: dict[str, Any] = {
         "contract_digest": ctx.contract_digest,
         "contract_version": ctx.contract_version,
         "model_id": model_id,
         "prompt_version": prompt_version,
         "task_type": config.TASK_TYPE,
     }
+    if ctx.leadership_context_id is not None:
+        # Which frozen leadership context the company-need part read (spec
+        # 22.4). An id and a content digest: never a number, never a bonus.
+        provenance["leadership_context_id"] = ctx.leadership_context_id
+        provenance["leadership_digest"] = ctx.leadership_digest
+        provenance["leadership_needs"] = sorted(
+            {need.source for need in ctx.needs if need.source in config.LEADERSHIP_NEED_SOURCES}
+        )
+    return provenance
 
 
 def outcome_from_judgement(

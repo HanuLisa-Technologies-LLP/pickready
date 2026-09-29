@@ -365,6 +365,29 @@ class ClaimEvidenceOut(BaseModel):
     no_claims_statement: str | None = None
 
 
+class LeadershipAlignmentLineOut(BaseModel):
+    """One rendered statement of the Leadership Alignment section. `kind` says
+    what it is: `finding` (a leader's expectation, the requirement source),
+    `grade` (evidence demonstrated), `gap` (evidence not demonstrated) or
+    `probe` (a follow-up question). Words only."""
+
+    kind: str
+    text: str
+
+
+class LeadershipAlignmentGroupOut(BaseModel):
+    title: str
+    lines: list[LeadershipAlignmentLineOut] = []
+
+
+class LeadershipAlignmentOut(BaseModel):
+    """Leadership Alignment (0135, spec 22.9). Absent (None) on a report whose
+    contract carried no leadership context, and on every report before it."""
+
+    note: str = ""
+    groups: list[LeadershipAlignmentGroupOut] = []
+
+
 class AiScoreTagOut(BaseModel):
     """One evidence tag on the AI Score snapshot: a phrase, for or against."""
 
@@ -456,6 +479,9 @@ class FunctionalReportOut(NumberFreeDelivery):
     claim_evidence: ClaimEvidenceOut = ClaimEvidenceOut()
     #: Recommended Human Validation Points (0107). Same reading of empty.
     validation_points: ValidationPointsOut = ValidationPointsOut()
+    #: Leadership Alignment (0135), immediately after Behavioural in both
+    #: renderers. None when the report has no such section.
+    leadership_alignment: LeadershipAlignmentOut | None = None
     #: RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
     #: before Draft v4, so an old report opened today still renders what it was
     #: actually written with rather than an empty section.

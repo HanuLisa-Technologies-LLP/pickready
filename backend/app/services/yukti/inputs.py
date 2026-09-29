@@ -91,7 +91,7 @@ class NamedNeed:
     """One sentence of the saved SWOT the model may cite evidence against."""
 
     ref: str      # "n1".. opaque to the model, stable within one run
-    source: str   # "weakness" | "opportunity" | "threat"
+    source: str   # one of `config.NEED_SOURCES`
     text: str
 
 
@@ -112,6 +112,10 @@ class JobContext:
     contract_digest: str
     contract_version: int
     jd_redacted: bool
+    #: The frozen leadership context the needs were read from, or None.
+    #: Provenance only (an id and a content digest; no number).
+    leadership_context_id: str | None = None
+    leadership_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +255,58 @@ _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 _BULLET = re.compile(r"^\s*(?:[-*\u2022\u25cf\u00b7]+|\d+[.)])\s*")
 
 
+def _need_text(sentence: str) -> str | None:
+    """A sentence usable as a need, or None (too short, too long, or pay)."""
+    clean = " ".join(sentence.split())
+    if len(clean.split()) < 3 or len(clean) > config.MAX_NEED_CHARS:
+        return None
+    if compensation_guard.mentions_compensation(clean):
+        return None
+    return clean
+
+
+def needs_from_leadership(leadership: Any) -> tuple[tuple[str, str], ...]:
+    """(source, text) needs from a contract's FROZEN leadership context. Pure.
+
+    Never the live leadership input: a candidate is read against what the
+    contract froze (spec 21). At most `MAX_LEADERSHIP_NEEDS`, in the context's
+    own order (department expectations before company-wide lines), with the
+    same length, pay and duplicate rules as a SWOT need.
+    """
+    if leadership is None:
+        return ()
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for line in leadership.context.lines:
+        if line.source not in config.LEADERSHIP_NEED_SOURCES:
+            continue
+        text = _need_text(line.text)
+        if text is None or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        out.append((line.source, text))
+        if len(out) >= config.MAX_LEADERSHIP_NEEDS:
+            break
+    return tuple(out)
+
+
+def combined_needs(
+    swot: tuple[NamedNeed, ...], leadership: tuple[tuple[str, str], ...]
+) -> tuple[NamedNeed, ...]:
+    """The SWOT's needs, then the leadership needs, renumbered, within
+    `MAX_NEEDS`. Leadership keeps its reserved share; the SWOT the rest."""
+    room = config.MAX_NEEDS - len(leadership)
+    kept: list[tuple[str, str]] = [(need.source, need.text) for need in swot[:room]]
+    seen = {text.casefold() for _, text in kept}
+    for source, text in leadership:
+        if text.casefold() not in seen:
+            seen.add(text.casefold())
+            kept.append((source, text))
+    return tuple(
+        NamedNeed(f"n{index}", source, text) for index, (source, text) in enumerate(kept, 1)
+    )
+
+
 def needs_from_swot(
     weaknesses: str | None, opportunities: str | None, threats: str | None
 ) -> tuple[NamedNeed, ...]:
@@ -266,7 +322,7 @@ def needs_from_swot(
     """
     needs: list[NamedNeed] = []
     seen: set[str] = set()
-    for source, body in zip(config.NEED_SOURCES, (weaknesses, opportunities, threats)):
+    for source, body in zip(config.SWOT_NEED_SOURCES, (weaknesses, opportunities, threats)):
         for line in str(body or "").splitlines():
             for sentence in _SENTENCE_BREAK.split(_BULLET.sub("", line)):
                 clean = " ".join(sentence.split())
@@ -341,6 +397,11 @@ async def job_context(db: AsyncSession, job: Any) -> JobContext:
         needs = needs_from_swot(
             swot_row.weaknesses, swot_row.opportunities, swot_row.threats
         )
+    # Leadership needs come from the CONTRACT (frozen at Save Skills and at the
+    # freeze), never from the live leadership input.
+    leadership_needs = needs_from_leadership(contract.leadership)
+    if leadership_needs:
+        needs = combined_needs(needs, leadership_needs)
     markdown = str(getattr(job, "jd_markdown", None) or "").strip()
     source = markdown or jd_text(job)
     redaction = compensation_guard.redact(source)
@@ -363,6 +424,12 @@ async def job_context(db: AsyncSession, job: Any) -> JobContext:
         contract_digest=contract.digest,
         contract_version=contract.version,
         jd_redacted=redaction.removed,
+        leadership_context_id=(
+            str(contract.leadership.context_id) if contract.leadership is not None else None
+        ),
+        leadership_digest=(
+            contract.leadership.digest if contract.leadership is not None else None
+        ),
     )
 
 

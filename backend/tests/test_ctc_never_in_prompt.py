@@ -103,8 +103,13 @@ PROMPT_BUILDERS: dict[str, Builder] = {
         CANARY,
         "the same redacted `_payload`",
     ),
-    "app/services/hiring/drishti_conversation.py::_deepen._execute": Builder(
-        "Phase 1", "the hiring team's own answer in the Drishti conversation", REVIEWED
+    # ── Leadership Intelligence (2026-09-29, spec 17) ───────────────────────
+    "app/services/leadership/draft.py::draft_for._execute": Builder(
+        "W5 Leadership",
+        "the Company Profile, the department's JDs and the leader's previous "
+        "text, each redacted; public pages about the company",
+        CANARY,
+        "tests/test_leadership_draft.py::test_the_leadership_draft_carries_no_compensation",
     ),
     # ── Phase 3 / 4: the assessment ─────────────────────────────────────────
     "app/services/assessment_questions/generate.py::_write_prose.execute": Builder(
@@ -515,20 +520,62 @@ def _job_namespace() -> SimpleNamespace:
 async def test_the_swot_prompt_carries_no_compensation(monkeypatch) -> None:
     from app.services import swot_analysis
 
+    from app.services.leadership import context as leadership_context
+
     router = CapturingRouter(
         lambda task, messages: json.dumps(
             {"strengths": "a", "weaknesses": "b", "opportunities": "c", "threats": "d"}
         )
     )
     _install(monkeypatch, router)
+
+    # Leadership lines reach the SWOT too (spec 22.3), and a leader can type
+    # pay into one: the line is redacted like every other client string.
+    async def _leadership(_session, _job):
+        return _leadership_context_with_pay()
+
+    monkeypatch.setattr(leadership_context, "resolve_for_job", _leadership)
     await swot_analysis.draft(None, _job_namespace())
     _assert_no_pay(router)
+    assert "production incidents" in router.sent[0][1]["content"]
+
+
+def _leadership_context_with_pay():
+    from app.services.leadership.context import LeadershipContext, LeadershipLine
+
+    return LeadershipContext(
+        department_id=None,
+        department_name=None,
+        lines=(
+            LeadershipLine(
+                ref="l1",
+                source="leadership_ceo",
+                scope="company",
+                list_name="company_priorities",
+                text="We need people who have led the response to production incidents.",
+                profile_id=str(uuid.uuid4()),
+                version=1,
+            ),
+            LeadershipLine(
+                ref="l2",
+                source="leadership_ceo",
+                scope="company",
+                list_name="company_priorities",
+                text=f"We offer a CTC of {AMOUNT} for this band, {SENTINEL}.",
+                profile_id=str(uuid.uuid4()),
+                version=1,
+            ),
+        ),
+    )
 
 
 def test_the_sutra_payload_carries_no_compensation() -> None:
     from app.services.hiring import sutra
 
-    payload = sutra._payload(_job_namespace(), dict(fx.SWOT), [])
+    payload = sutra._payload(
+        _job_namespace(), dict(fx.SWOT), _leadership_context_with_pay().prompt_lines()
+    )
+    assert payload["leadership_context"], "the leadership canary reached no payload"
     router = CapturingRouter(lambda task, messages: "{}")
     router.sent.append([{"role": "user", "content": json.dumps(payload)}])
     _assert_no_pay(router)

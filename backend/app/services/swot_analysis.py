@@ -199,8 +199,21 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
         experience = f"{jd.get('experience_years')} years"
 
     from app.services.job_candidates import grade_label  # noqa: PLC0415
+    from app.services.leadership import context as leadership_context  # noqa: PLC0415
 
-    return {
+    # Leadership Intelligence (spec 22.3) as STRATEGIC CONTEXT: the compiled
+    # lines only, redacted, and the key is ABSENT when none apply, so the plain
+    # request is byte-identical. The SWOT stays the team's: this shapes a
+    # draft they edit, and a saved SWOT is never rewritten by it.
+    leadership = await leadership_context.resolve_for_job(session, job)
+    leadership_text = ""
+    if leadership is not None:
+        leadership_text = " ".join(
+            _clean(compensation_guard.redact_text(line["text"]))
+            for line in leadership.prompt_lines()
+        )
+
+    context = {
         "title": _clean(job.title),
         "department": _clean(job.department),
         # The GRADE, never `jobs.level`: `level` is a pre-2026-07-28 free-text
@@ -218,6 +231,9 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
         "work_life": _clean(compensation_guard.redact_text(job.work_life)),
         "benefits": _clean(compensation_guard.redact_text(job.benefits)),
     }
+    if leadership_text:
+        context["leadership_expectations"] = leadership_text
+    return context
 
 
 def _user_message(context: dict[str, str]) -> str:
@@ -238,6 +254,9 @@ def _user_message(context: dict[str, str]) -> str:
         ("Work life", "work_life"),
         ("Benefits", "benefits"),
         ("Job description", "jd_document"),
+        # Present only when leadership input applies (the key is absent
+        # otherwise), so a job with none sends the bytes it always sent.
+        ("What the company's leaders want from hires", "leadership_expectations"),
     ]
     lines = [f"{label}: {context[key]}" for label, key in labels if context.get(key)]
     return "\n".join(lines)

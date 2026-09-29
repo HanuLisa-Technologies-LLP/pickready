@@ -646,6 +646,12 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: 0130. The locked contract this report was graded against, copied.
     contract_version: Mapped[int | None] = mapped_column(Integer)
     contract_digest: Mapped[str | None] = mapped_column(String(64))
+    #: 0135. The Leadership Alignment section (`siddhi.leadership_alignment`),
+    #: built from the RENDERED statements only, so a withheld statement is
+    #: never stored. Carries the frozen leadership context's id and version it
+    #: was composed from. NULL when the contract had no leadership context, and
+    #: on every report written before 0135: the section is then absent.
+    leadership_alignment_json: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):

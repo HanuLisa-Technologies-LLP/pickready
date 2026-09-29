@@ -64,7 +64,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from app.services import evidence_confidence
 from app.services.siddhi import citations, claim_evidence, numbers
-from app.services.siddhi import validation_points
+from app.services.siddhi import leadership_alignment, validation_points
 from app.services.siddhi.evidence import KIND_SEARCHED, EvidenceIndex, EvidenceNode
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,7 @@ SECTION_TITLES: dict[str, str] = {
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",
     "behavioural": "Behavioural Competencies",
+    leadership_alignment.SECTION_KEY: leadership_alignment.TITLE,
     "claim_evidence": "Evidence vs Claim Summary",
     "gap_analysis": "Gap Analysis & Action Plan",
     "validation_points": "Recommended Human Validation Points",
@@ -260,6 +261,7 @@ def assemble(
     claim_evidence: Mapping[str, Any] | None = None,
     extra_nodes: Sequence[EvidenceNode] = (),
     passages: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+    leadership: Mapping[str, Any] | None = None,
 ) -> Assembled:
     """Assemble every statement the report would make, WITHOUT rendering it.
 
@@ -301,6 +303,7 @@ def assemble(
     report = citations.Report(known_refs=index.refs)
 
     _compose_rated_sections(report, rated, index)
+    _compose_leadership_alignment(report, index, leadership)
     _compose_overall(report, rated, index, overall_summary, overall_grade)
     _compose_claim_evidence(report, index, claim_evidence)
     _compose_gap_section(report, index, aspect_nodes, gap_groups, focus_summary)
@@ -410,6 +413,105 @@ def _compose_rated_sections(
                         citations.KIND_GRADE,
                         f"{name}: evidence confidence {confidence}",
                         refs,
+                        item=name,
+                    )
+                )
+
+
+def _compose_leadership_alignment(
+    report: citations.Report,
+    index: EvidenceIndex,
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Leadership Alignment (spec 22.9), composed from the plan in
+    `siddhi.leadership_alignment.build_payload`, when the contract carried a
+    leadership context. Absent otherwise: no section, not an empty one.
+
+    An expectation is a FINDING about the requirement, citing its leadership
+    node; a demonstrated skill is a GRADE citing the candidate's answers; a
+    skill not demonstrated is a GAP citing the answers or what was searched;
+    a follow-up is the Gap Analysis probe for that item, citing the same. Any
+    statement whose citation cannot be made is withheld by the chokepoint,
+    like every other.
+    """
+    if not payload:
+        return
+    key = leadership_alignment.SECTION_KEY
+    section = report.section(key, SECTION_TITLES[key])
+    section.add(citations.Statement(citations.KIND_HEADING, SECTION_TITLES[key]))
+    section.add(citations.Statement(citations.KIND_CONNECTIVE, leadership_alignment.NOTE))
+    titles = leadership_alignment.GROUP_TITLES
+    for group in (leadership_alignment.GROUP_COMPANY, leadership_alignment.GROUP_DEPARTMENT):
+        entries = [e for e in payload.get("expectations") or [] if e.get("group") == group]
+        if not entries:
+            continue
+        section.add(citations.Statement(citations.KIND_HEADING, titles[group]))
+        for entry in entries:
+            section.add(
+                citations.Statement(
+                    citations.KIND_FINDING,
+                    _clean(entry.get("text")),
+                    (str(entry["ref"]),),
+                    item=f"leadership:{group}",
+                )
+            )
+    skills = list(payload.get("skills") or [])
+    if not skills:
+        section.add(
+            citations.Statement(
+                citations.KIND_CONNECTIVE, leadership_alignment.NO_LEADERSHIP_SKILLS
+            )
+        )
+        return
+    shown = [s for s in skills if s.get("demonstrated")]
+    gaps = [s for s in skills if not s.get("demonstrated")]
+    if shown:
+        section.add(
+            citations.Statement(
+                citations.KIND_HEADING, titles[leadership_alignment.GROUP_DEMONSTRATED]
+            )
+        )
+        for skill in shown:
+            name = str(skill["name"])
+            section.add(
+                citations.Statement(
+                    citations.KIND_GRADE,
+                    f"{name}, from the {skill['label']}'s expectations: {skill['grade']}",
+                    index.grounding(name),
+                    item=name,
+                )
+            )
+    if gaps:
+        section.add(
+            citations.Statement(
+                citations.KIND_HEADING, titles[leadership_alignment.GROUP_NOT_DEMONSTRATED]
+            )
+        )
+        for skill in gaps:
+            name = str(skill["name"])
+            grade = str(skill.get("grade") or NOT_ASSESSED_WORD)
+            section.add(
+                citations.Statement(
+                    citations.KIND_GAP,
+                    f"{name}, from the {skill['label']}'s expectations: {grade}",
+                    index.grounding(name) or index.searched(name),
+                    item=name,
+                )
+            )
+        probes = [(s, probe) for s in gaps for probe in s.get("probes") or []]
+        if probes:
+            section.add(
+                citations.Statement(
+                    citations.KIND_HEADING, titles[leadership_alignment.GROUP_FOLLOW_UP]
+                )
+            )
+            for skill, probe in probes:
+                name = str(skill["name"])
+                section.add(
+                    citations.Statement(
+                        citations.KIND_PROBE,
+                        _clean(probe),
+                        index.grounding(name) or index.searched(name),
                         item=name,
                     )
                 )

@@ -121,3 +121,15 @@ class JobSkillSnapshot(Base, UUIDPKMixin, CreatedAtMixin):
         ),
     )
     locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The leadership context the skills were SAVED with (migration 0135), or
+    #: NULL when no leadership input applied to the job. Copied from
+    #: `jobs.assessment_context_json` at the freeze, so the contract names the
+    #: exact leadership version its candidates are assessed against, and the
+    #: digest covers that context's content (`assessment_contract`).
+    leadership_context_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "job_leadership_contexts.id",
+            name="fk_job_skill_snapshots_leadership_context",
+        ),
+    )

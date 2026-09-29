@@ -291,6 +291,7 @@ async def compose_prism(
     embed: support.Embedder | None,
     threshold: float | None = None,
     passage_source: support.PassageSource | None = None,
+    leadership: Mapping[str, Any] | None = None,
 ) -> ComposedPrism:
     """Compose the PRISM Report. Never raises over a statement it cannot cite.
 
@@ -320,6 +321,7 @@ async def compose_prism(
         claim_evidence=claim_evidence,
         extra_nodes=extra_nodes,
         passages=passages,
+        leadership=leadership,
     )
     sections, withheld = assembled.report.render_collect()
     for held in withheld:

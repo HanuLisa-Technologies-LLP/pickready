@@ -241,6 +241,43 @@ def _parse_prose(raw: str, *, total: int, max_chars: int) -> _ProseAttempt:
     return _ProseAttempt(valid, tuple(reasons))
 
 
+def _slot_payload(
+    slot: composition.Slot,
+    skills: dict[uuid.UUID, ContractSkill],
+    contract: AssessmentContract,
+    resume_passages: Mapping[uuid.UUID, str] | None,
+) -> dict[str, Any]:
+    """One slot as the question writer reads it.
+
+    `leadership_expectations` (Leadership Intelligence, spec 22.6) is present
+    ONLY on a slot whose skill was drafted from a leadership line, and it is
+    read from the CONTRACT's frozen leadership context, never the live input:
+    the question stays bounded by the finalized skill, and a slot with no
+    leadership source sends exactly the keys it always sent.
+    """
+    entry: dict[str, Any] = {
+        "index": slot.index,
+        "bucket": slot.category,
+        "skill": slot.skill_name,
+        "what_good_evidence_looks_like": skills[slot.competency_id].evidence_line,
+        # The parts of THIS resume that bear on the skill (the Evidence
+        # RAG), redacted like every other resume text in the request.
+        "resume_passages_for_this_skill": compensation_guard.redact_text(
+            (resume_passages or {}).get(slot.competency_id, "")
+        ),
+    }
+    leadership = getattr(contract, "leadership", None)
+    if leadership is not None:
+        expectations = [
+            compensation_guard.redact_text(line.text).strip()
+            for line in leadership.lines_for_skill(slot.competency_id)
+        ]
+        expectations = [text for text in expectations if text]
+        if expectations:
+            entry["leadership_expectations"] = expectations
+    return entry
+
+
 async def _write_prose(
     session: AsyncSession,
     *,
@@ -264,20 +301,7 @@ async def _write_prose(
     payload = {
         "job": {"title": job.title, "grade": contract.grade},
         "role_summary": contract.role_summary,
-        "slots": [
-            {
-                "index": slot.index,
-                "bucket": slot.category,
-                "skill": slot.skill_name,
-                "what_good_evidence_looks_like": skills[slot.competency_id].evidence_line,
-                # The parts of THIS resume that bear on the skill (the Evidence
-                # RAG), redacted like every other resume text in the request.
-                "resume_passages_for_this_skill": compensation_guard.redact_text(
-                    (resume_passages or {}).get(slot.competency_id, "")
-                ),
-            }
-            for slot in slots
-        ],
+        "slots": [_slot_payload(slot, skills, contract, resume_passages) for slot in slots],
         # Redacted HERE, at the one place the request is assembled, so a
         # caller that hands in raw text still sends no pay (the CTC canary in
         # tests/test_ctc_never_in_prompt.py calls this function directly).
