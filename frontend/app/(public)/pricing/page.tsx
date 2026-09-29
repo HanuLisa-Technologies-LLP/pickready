@@ -18,7 +18,7 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/pricing",
   title: "Pricing",
   description:
-    "Vivekium credit pricing: one rate per credit, bought in one-time packs, with GST, validity and bonus credits stated up front.",
+    "ReadyPick credit pricing: one rate per credit, bought in one-time packs, with GST, validity and bonus credits stated up front.",
 });
 
 export default function PricingPage() {

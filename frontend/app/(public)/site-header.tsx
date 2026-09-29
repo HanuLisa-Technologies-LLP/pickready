@@ -6,39 +6,14 @@ import { Menu, X } from "lucide-react";
 
 import { Logo } from "@/components/brand";
 import { Button } from "@/components/ui/button";
-import { REQUEST_ACCESS_HREF } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
-/**
- * The header's sections. The first two are ANCHORS INTO THE LANDING PAGE,
- * and each names a section id that `landing-page.tsx` mounts;
- * `lib/landing-links.test.ts` fails if one of them stops resolving. The rest
- * are routes under `app/(public)/` that the proxy admits without a session.
- *
- * Pricing is its own page (owner spec, 2026-09-29, section 4.1): the landing
- * page no longer carries the price list inline, and "See pricing plans" opens
- * `/pricing`, which renders the server's published catalogue.
- */
-const NAV = [
-  { href: "/#how-it-works", label: "How it works" },
-  { href: "/#features", label: "Platform" },
-  { href: "/pricing", label: "See pricing plans" },
-  { href: "/about", label: "About" },
-  { href: "/insights", label: "Insights" },
-  { href: "/docs", label: "Docs" },
-];
+/** The header's one section link: the published price list. */
+const NAV = [{ href: "/pricing", label: "See pricing plans" }];
 
 /**
- * Public site header. Glass is used here and in the hero only, per
- * the public design system, and only once the page has scrolled so the top of
- * the page reads as one uninterrupted surface.
- *
- * TWO ACTIONS, NOT THREE. It carried Contact, Log in and "Get started", and
- * "Get started" opened CANDIDATE sign-up: an employer who clicked it came out
- * the other side as a candidate with no workspace. A company is given a
- * workspace by Vivekium, so the primary action is Request access, and it is
- * the same mailbox Contact opened, which is why Contact is not repeated beside
- * it.
+ * Public site header: the price list, candidate sign in, company sign in and
+ * company registration. Glass only once the page has scrolled.
  */
 export function SiteHeader() {
   const [scrolled, setScrolled] = React.useState(false);
@@ -82,10 +57,11 @@ export function SiteHeader() {
           <Button asChild variant="ghost" size="sm">
             <Link href="/login">Log in</Link>
           </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/company/login">Company login</Link>
+          </Button>
           <Button asChild size="sm">
-            <a href={REQUEST_ACCESS_HREF} target="_blank" rel="noopener noreferrer">
-              Request access
-            </a>
+            <Link href="/company/register">Register company</Link>
           </Button>
         </div>
 
@@ -126,10 +102,11 @@ export function SiteHeader() {
             <Button asChild variant="outline">
               <Link href="/login">Log in</Link>
             </Button>
+            <Button asChild variant="outline">
+              <Link href="/company/login">Company login</Link>
+            </Button>
             <Button asChild>
-              <a href={REQUEST_ACCESS_HREF} target="_blank" rel="noopener noreferrer">
-                Request access
-              </a>
+              <Link href="/company/register">Register company</Link>
             </Button>
           </div>
         </div>

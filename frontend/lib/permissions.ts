@@ -90,7 +90,7 @@ export const CAP = {
   addCompensation: "add_compensation",
   integrityDisposition: "integrity_disposition",
   /**
-   * The job's skills, one capability per bucket (Vivekium release, Phase 1).
+   * The job's skills, one capability per bucket (ReadyPick release, Phase 1).
    * Editing a skill is the Hiring Manager's authority, not `create_job`'s:
    * the skills are what every candidate on the job is assessed against. The
    * skills payload carries the per-job answer (`can_edit` per bucket,

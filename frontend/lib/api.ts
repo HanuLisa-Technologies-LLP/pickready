@@ -1,4 +1,4 @@
-// Typed fetch wrapper for the Vivekium backend.
+// Typed fetch wrapper for the ReadyPick backend.
 // Routes must match docs/API_CONTRACT.md verbatim.
 import { ACTIVITY_HEADER, activityHeaders } from "./user-activity";
 import { apiErrorMessage } from "./validation-errors";

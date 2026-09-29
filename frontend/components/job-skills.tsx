@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The Skills step (Vivekium release, Phase 1; owner ruling D1).
+ * The Skills step (ReadyPick release, Phase 1; owner ruling D1).
  *
  * WHAT THIS REPLACED
  * ------------------

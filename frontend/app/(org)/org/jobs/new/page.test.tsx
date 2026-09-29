@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Create Job (Vivekium release, Phase 1): it saves a DRAFT and opens the job
+// Create Job (ReadyPick release, Phase 1): it saves a DRAFT and opens the job
 // page, and it never publishes. A JD the server returned from its template
 // carries a notice saying so until the recruiter edits it.
 

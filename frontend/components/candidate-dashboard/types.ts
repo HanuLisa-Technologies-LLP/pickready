@@ -11,7 +11,7 @@
  * NO NUMBER, AND NO LETTER
  * ------------------------
  * Nothing in these types is a score (D3, CONTRACT C8). Columns 3 and 4 carry a
- * WORD the server chose and a STATE to style by; the numeric Vivekium Score
+ * WORD the server chose and a STATE to style by; the numeric ReadyPick Score
  * that spec-doc6 D8 once licensed here is gone, and so is the A / B / C / Hold
  * letter. Nothing in this folder computes a grade, a state or a label from a
  * number: the server sends every word and every spoken label, so a rendering
@@ -44,7 +44,7 @@ export interface DashboardRow {
   ai_match_screen_reader_label: string;
   ai_match_note: string;
 
-  /** Column 4, Vivekium Grade: the word for the rank the ranked table sorts
+  /** Column 4, ReadyPick Grade: the word for the rank the ranked table sorts
    *  by. "Under Review" while an integrity finding is open. */
   ranking_state: string;
   ranking_label: string;

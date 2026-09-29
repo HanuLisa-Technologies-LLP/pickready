@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// "Forgot password?" runs on Vivekium's server now (auth spec 9.2). Pinned:
+// "Forgot password?" runs on ReadyPick's server now (auth spec 9.2). Pinned:
 //
 // * the request carries the address and a security check proof, and the
 //   screen shows the server's one sentence, whatever the account state;

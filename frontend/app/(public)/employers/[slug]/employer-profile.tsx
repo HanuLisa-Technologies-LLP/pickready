@@ -72,10 +72,10 @@ interface EmployerPageData {
  * subject rather than a classification code.
  *
  * IT CARRIES AN `@id`, AND THAT IS NOT DECORATION. This page sits inside the
- * (public) group, so `app/(public)/layout.tsx` also emits Vivekium's own
+ * (public) group, so `app/(public)/layout.tsx` also emits ReadyPick's own
  * Organization node on it. Two Organization nodes on one page, one the
  * platform and one the hiring company, is an ambiguity a consumer resolves by
- * guessing unless each one is named. Vivekium's node is
+ * guessing unless each one is named. ReadyPick's node is
  * `<site>/#organization` and is what the WebSite node points at as its
  * publisher; the employer's is its own page, so they cannot be merged.
  */
@@ -160,7 +160,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
         <EmptyState
           icon={Building2}
           title="Employer page not found"
-          description="This page does not exist or is not public. Browse the directory for companies hiring through Vivekium."
+          description="This page does not exist or is not public. Browse the directory for companies hiring through ReadyPick."
           action={
             <Button asChild variant="outline">
               <Link href="/employers">Browse employers</Link>
@@ -270,7 +270,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
           </div>
           <p className="mt-2 leading-7">
             Every application goes straight to the hiring team through
-            Vivekium.
+            ReadyPick.
           </p>
         </FadeIn>
 

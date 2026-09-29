@@ -41,12 +41,12 @@ export function row(overrides: Partial<DashboardRow> = {}): DashboardRow {
     confidence_indicator: "grayed",
     confidence_label: "No assessment yet",
 
-    note: "Vivekium Profile not written yet.",
+    note: "ReadyPick Profile not written yet.",
     note_is_pending: true,
 
     profile: null,
     profile_pending_reason:
-      "The Vivekium Profile has not been written yet. This says nothing about the PRISM Report, which is a different document.",
+      "The ReadyPick Profile has not been written yet. This says nothing about the PRISM Report, which is a different document.",
 
     team_review_count: 0,
     own_verdict: null,

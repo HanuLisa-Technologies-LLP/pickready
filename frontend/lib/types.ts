@@ -15,7 +15,7 @@ export type Role =
   | "md"
   | "functional_head"
   | "candidate"
-  // Business Development: Vivekium's own sales staff. Platform staff, so
+  // Business Development: ReadyPick's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
   | "bd";
 
@@ -65,7 +65,7 @@ export function isContextsResponse(
     && (res as AuthContextsResponse).contexts.length > 0;
 }
 
-// ---- Provider Portal (the Vivekium owner's view of its customers) ----
+// ---- Provider Portal (the ReadyPick owner's view of its customers) ----
 //
 // A "customer" is one onboarded client company. It is the same underlying row
 // the Owner console has always called a tenant, `Tenant` below stays for the
@@ -239,7 +239,7 @@ export interface StaffMember {
 }
 
 /**
- * Row from GET /admin/bd-users, Vivekium's own Business Development team.
+ * Row from GET /admin/bd-users, ReadyPick's own Business Development team.
  *
  * There is no tenant on this record and there never will be: a BD user is
  * platform staff. `signed_in` is false until Firebase binds an identity on the
@@ -334,7 +334,7 @@ export interface Job {
   department: string;
   /** The job's department row (the leadership release, spec 13). */
   department_id?: string | null;
-  // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
+  // `level` is gone (ReadyPick release, Phase 1): nothing writes or reads the
   // free-text seniority any more. The grade and the experience band replaced
   // it; the column survives in the database as history only.
   /** The experience band this role expects, in years. */
@@ -622,7 +622,7 @@ export interface RankedCandidate {
   /** Where this applicant came from (spec §1.1). */
   application_source?: "direct" | "sourced" | "external_link" | null;
   /** How this candidate was procured. Applied means they came through
-   *  Vivekium themselves, sourced means a third-party link, databank means
+   *  ReadyPick themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
    *  matched and assessed identically; this is display and filtering only. */
   source_type: CandidateProcurement;
@@ -1533,7 +1533,7 @@ export interface VideoDelivery {
 // ── In-product support (2026-09-10) ─────────────────────────────────────────
 //
 // Two audiences, one conversation. `SupportThread` is what a customer sees of
-// their own thread; `ProviderSupportThread` adds the fact Vivekium staff need
+// their own thread; `ProviderSupportThread` adds the fact ReadyPick staff need
 // and the customer already knows, which is WHOSE thread it is.
 //
 // The status names WHO OWES THE NEXT MOVE, which is the only thing a support
@@ -1600,7 +1600,7 @@ export interface ProviderSupportThreadPage {
   total_pages: number;
   has_next: boolean;
   has_previous: boolean;
-  /** Threads waiting on Vivekium across every customer, UNNARROWED by the
+  /** Threads waiting on ReadyPick across every customer, UNNARROWED by the
    *  page filters: it answers how much is owed, not how much is on screen. */
   open_total: number;
 }
@@ -1610,7 +1610,7 @@ export interface ProviderSupportThreadPage {
 /**
  * not_generated | generating | generated | failed | edited.
  *
- * `generating` (Vivekium release, Phase 1): generation is DISPATCHED work now,
+ * `generating` (ReadyPick release, Phase 1): generation is DISPATCHED work now,
  * so the document says it is being drafted and the panel polls. A draft that
  * outlives the server's stale window is served as `failed`, never as
  * generating for ever.

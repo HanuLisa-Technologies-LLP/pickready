@@ -160,7 +160,7 @@ export function ChangePasswordCard() {
         password: next,
       });
       // Firebase's own tokens for this identity were revoked by the server, so
-      // the browser's Firebase sign-in is stale; the Vivekium session is fresh.
+      // the browser's Firebase sign-in is stale; the ReadyPick session is fresh.
       try {
         await firebaseAuth.signOut();
       } catch {

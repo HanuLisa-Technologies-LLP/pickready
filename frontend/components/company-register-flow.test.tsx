@@ -173,7 +173,7 @@ describe("register your company", () => {
       "/company-onboarding/activate": (body) => {
         activations += 1;
         if (activations === 1) {
-          throw new ApiError(409, { detail: "This email address already has a Vivekium sign-in." });
+          throw new ApiError(409, { detail: "This email address already has a ReadyPick sign-in." });
         }
         expect(body).toEqual({ id_token: "id-token" });
         return { user: { id: "u1", role: "client" }, capabilities: [] };

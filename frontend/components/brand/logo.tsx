@@ -2,8 +2,8 @@ import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 
-/** Vivekium's standalone product mark and wordmark, rendered from native UI. */
-const ALT = "Vivekium";
+/** ReadyPick's standalone product mark and wordmark, rendered from native UI. */
+const ALT = "ReadyPick";
 
 export interface LogoProps {
   variant?: "full" | "mark";
@@ -31,7 +31,7 @@ export function Logo({
     //
     // THE MARK IS A V, AND IT USED TO BE AN R+P. The previous asset was the
     // old logo cropped tight, so it rendered the PREVIOUS PRODUCT'S INITIALS
-    // beside the word Vivekium on every page: a leftover of the old name
+    // beside the word ReadyPick on every page: a leftover of the old name
     // rather than a design choice. Rename change 01 covers all screens, and
     // glyphs that spell ReadyPick are an instance of it.
     //
@@ -55,16 +55,16 @@ export function Logo({
         role="presentation"
       >
         <path
-          d="M7 7.5 L16 25"
+          d="M9 25 V7 H18 A5.5 5.5 0 0 1 18 18 H9"
           stroke="#012654"
-          strokeWidth="5"
+          strokeWidth="4.5"
           strokeLinecap="square"
           fill="none"
         />
         <path
-          d="M25 7.5 L16 25"
+          d="M17 18 L24 25"
           stroke="#00888A"
-          strokeWidth="5"
+          strokeWidth="4.5"
           strokeLinecap="square"
           fill="none"
         />
@@ -83,7 +83,7 @@ export function Logo({
           style={{ fontSize: Math.max(18, Math.round(height * 0.72)) }}
         >
           {/* The wordmark keeps the two-tone treatment: the tail carries the
-              TEAL the way "Pick" did before the Vivekium rename. `teal-700`
+              TEAL the way "Pick" did before the ReadyPick rename. `teal-700`
               rather than `teal-600` because this is TEXT and the brand teal
               measures 4.30:1 -- below AA. See DESIGN.md §2.
 
@@ -93,7 +93,7 @@ export function Logo({
               bar in BOTH themes while asserting teal-600 only at the 3:1
               non-text bar. The dark-mode override this replaces was the one
               place in the product that printed words in the fill token. */}
-          Vivek<span className="text-teal-700">ium</span>
+          Ready<span className="text-teal-700">Pick</span>
         </span>
       ) : null}
     </span>

@@ -26,7 +26,7 @@
  * regeneration over edited content asks before it replaces anything, and can
  * be undone after it does.
  *
- * GENERATION IS DISPATCHED WORK (Vivekium release, Phase 1)
+ * GENERATION IS DISPATCHED WORK (ReadyPick release, Phase 1)
  * ---------------------------------------------------------
  * The model call used to run inside the request, which rule 4 forbids. Now
  * Generate answers at once with the document in a `generating` state, and the

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The Publish card (Vivekium release, Phase 1). The gate itself is the API's
+// The Publish card (ReadyPick release, Phase 1). The gate itself is the API's
 // (PUBLISH_JOB plus a saved JD and saved skills; since CONTRACT v10 the SWOT
 // is not a prerequisite); what the card owns is that it reads the checklist
 // from the server, shows the server's blocking

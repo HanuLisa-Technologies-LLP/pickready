@@ -129,7 +129,7 @@ describe("API mount parity", () => {
   });
 
   it("every job skills and job setup path carries the /api/v2/assessments mount", () => {
-    // The Skills step and the setup checklist (Vivekium release, Phase 1) live
+    // The Skills step and the setup checklist (ReadyPick release, Phase 1) live
     // on the assessments router, their paths start with the job id, and the
     // Skills panel composes them through a helper rather than inside the
     // api*() call, so neither grep above can see them. Any template literal

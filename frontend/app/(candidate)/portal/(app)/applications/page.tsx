@@ -354,7 +354,7 @@ function ApplicationsView() {
         actions={
           applications.length ? (
             <ExportXlsxButton
-              fileName="vivekium-my-applications"
+              fileName="readypick-my-applications"
               rows={applications.map((application) => ({
                 role: application.job_title,
                 company: application.company_name ?? "",

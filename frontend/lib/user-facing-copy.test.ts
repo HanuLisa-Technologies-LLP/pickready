@@ -1,6 +1,6 @@
 // The words a reader sees name the product's own concepts, and only those.
 //
-// CONTRACT v4 item 5 (the Vivekium release): recruiter-visible copy uses JD,
+// CONTRACT v4 item 5 (the ReadyPick release): recruiter-visible copy uses JD,
 // SWOT, Skills, AI Match, Tatva Assessment, PRISM Report and Proctoring Report.
 // It does not say PPI (the retired name of the Tatva Assessment), matrix,
 // framework or matching categories (the internal shapes behind Skills), AI

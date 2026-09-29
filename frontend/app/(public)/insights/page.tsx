@@ -24,7 +24,7 @@ export default function InsightsPage() {
   return (
     <main id="main" className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28">
       <FadeIn className="max-w-3xl">
-        <p className="type-eyebrow text-brand-600">Vivekium Insights</p>
+        <p className="type-eyebrow text-brand-600">ReadyPick Insights</p>
         <h1 className="mt-4 type-display">Better evidence. Better conversations.</h1>
         <p className="mt-6 type-lead">
           Practical notes for people teams building faster, clearer and more accountable candidate decisions.
@@ -37,7 +37,7 @@ export default function InsightsPage() {
               <Badge variant="outline" className="self-start">{tag}</Badge>
               <h2 className="mt-6 text-xl font-semibold">{title}</h2>
               <p className="mt-4 text-sm leading-7">{body}</p>
-              <p className="mt-auto pt-8 type-eyebrow text-brand-600">Vivekium editorial</p>
+              <p className="mt-auto pt-8 type-eyebrow text-brand-600">ReadyPick editorial</p>
             </article>
           </StaggerItem>
         ))}

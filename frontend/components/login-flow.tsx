@@ -59,7 +59,7 @@ const GOOGLE_ALLOWED: Record<SignInSurface, boolean> = {
 };
 
 const TITLES: Record<SignInSurface, string> = {
-  candidate: "Sign in to Vivekium",
+  candidate: "Sign in to ReadyPick",
   company: "Sign in to your company workspace",
   provider: "Provider sign in",
   bd: "Business development sign in",
@@ -207,7 +207,7 @@ export function LoginFlow({
         <AuthLink href="/company/login">Company login</AuthLink>
       </p>
       <p>
-        Vivekium staff:{" "}
+        ReadyPick staff:{" "}
         <AuthLink href="/login?portal=owner">Provider</AuthLink>
         {" · "}
         <AuthLink href="/login?portal=bd">Business development</AuthLink>
@@ -216,7 +216,7 @@ export function LoginFlow({
   ) : surface === "company" ? (
     <div className="space-y-2">
       <p>
-        New to Vivekium?{" "}
+        New to ReadyPick?{" "}
         <AuthLink href="/company/register">Register your company</AuthLink>
       </p>
       <p>
@@ -237,7 +237,7 @@ export function LoginFlow({
       title={contexts ? "Choose your workspace" : title}
       description={
         contexts
-          ? "This email belongs to more than one Vivekium workspace."
+          ? "This email belongs to more than one ReadyPick workspace."
           : description
       }
       footer={footer}
@@ -253,7 +253,7 @@ export function LoginFlow({
               className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-left shadow-card transition-colors duration-150 hover:border-brand-600/50 hover:bg-brand-100/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
             >
               <span className="block text-sm font-semibold">
-                {context.tenant_name ?? "Vivekium"}
+                {context.tenant_name ?? "ReadyPick"}
               </span>
               <span className="mt-0.5 block text-xs">
                 {ROLE_LABEL[context.role] ?? context.role}
