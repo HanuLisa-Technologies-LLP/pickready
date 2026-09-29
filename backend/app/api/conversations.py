@@ -72,7 +72,7 @@ from app.api.deps import (
     get_current_candidate,
     get_current_user,
     get_tenant_db,
-    require_capability,
+    require_organisation_wide,
 )
 from app.core.db import get_session_factory, tenant_scope
 from app.core.security import AUDIENCE_ORG
@@ -84,6 +84,7 @@ from app.models.conversation import (
     PARTY_CANDIDATE,
     PARTY_RECRUITER,
 )
+from app.services import department_access
 from app.services import capabilities as caps
 from app.services import candidate_identity, conversations, object_storage, rbac, realtime
 from app.workers.dispatch import dispatch_after_commit
@@ -315,7 +316,7 @@ async def _load_conversation(
 @router.get(
     "",
     response_model=list[ConversationOut],
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def list_conversations(
     candidate_id: uuid.UUID | None = None,
@@ -363,7 +364,7 @@ async def list_conversations(
 
 @router.get(
     "/unread",
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def unread(
     user: CurrentUser = Depends(get_current_user),
@@ -383,7 +384,7 @@ async def unread(
 @router.post(
     "/candidate/{candidate_id}",
     response_model=ConversationOut,
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def open_candidate_conversation(
     candidate_id: uuid.UUID,
@@ -436,7 +437,7 @@ async def open_candidate_conversation(
 @router.get(
     "/{conversation_id}/messages",
     response_model=list[MessageOut],
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def messages(
     conversation_id: uuid.UUID,
@@ -476,7 +477,7 @@ async def messages(
 @router.post(
     "/{conversation_id}/messages",
     response_model=MessageOut,
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def send_message(
     conversation_id: uuid.UUID,
@@ -526,7 +527,7 @@ async def send_message(
 
 @router.post(
     "/{conversation_id}/read",
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def mark_read(
     conversation_id: uuid.UUID,
@@ -579,7 +580,7 @@ def _publish_after_commit(
 @router.post(
     "/{conversation_id}/attachments",
     response_model=MessageOut,
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def upload_attachment(
     conversation_id: uuid.UUID,
@@ -698,7 +699,7 @@ async def upload_attachment(
 
 @router.get(
     "/attachments/{attachment_id}/url",
-    dependencies=[Depends(require_capability(caps.USE_CONVERSATIONS))],
+    dependencies=[Depends(require_organisation_wide(caps.USE_CONVERSATIONS))],
 )
 async def attachment_url(
     attachment_id: uuid.UUID,
@@ -778,7 +779,14 @@ async def stream(websocket: WebSocket, conversation_id: uuid.UUID) -> None:
                     caps.USE_CONVERSATIONS,
                     user.user_id,
                 )
-                if not allowed:
+                # The same organisation-wide rule the REST routes apply
+                # (`deps.require_organisation_wide`): conversations span a
+                # candidate's applications in every department, so a
+                # department-scoped account holds no socket onto them.
+                if not allowed or (
+                    await department_access.department_scope(session, user)
+                    is not None
+                ):
                     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                     return
                 try:

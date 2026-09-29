@@ -82,6 +82,8 @@ from app.services import approval_fsm as fsm
 from app.services import assessment_contract
 from app.services import capabilities as caps
 from app.services import credits
+from app.services import department_access
+from app.services import departments
 from app.services import job_assessment_retention
 from app.services import job_candidates
 from app.services import job_posting
@@ -315,6 +317,12 @@ async def _get_visible_job(
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:  # defense in depth; RLS is the boundary
         raise HTTPException(status_code=404, detail="Job not found")
+    # The department boundary (spec 2.11): a job outside a Functional Head's
+    # department answers exactly like a job in another tenant.
+    if not department_access.in_scope(
+        await department_access.department_scope(session, user), job.department_id
+    ):
+        raise HTTPException(status_code=404, detail="Job not found")
     # Terminal/HR-visibility marker is ratified_at, NOT the status value: a job
     # pending at an active "ratified" level also carries status ratified.
     if job.ratified_at is None and not await _can_see_pre_ratified(session, user):
@@ -443,7 +451,6 @@ async def create_job(
     job = Job(
         tenant_id=user.tenant_id,
         title=body.title,
-        department=body.department,
         requirement_period=body.requirement_period,
         jd_json=jd_sections,
         jd_markdown=document,
@@ -479,6 +486,15 @@ async def create_job(
         # is where the flow starts; nothing rewrites it afterwards.
         correlation_id=f"job-{_uuid4().hex}",
     )
+    # The department, through its one writer, BEFORE the insert, so the row is
+    # never written outside a department-scoped creator's own department.
+    await departments.assign_job_department(
+        session,
+        job,
+        department_id=body.department_id,
+        name=body.department,
+        scope=await department_access.department_scope(session, user),
+    )
     session.add(job)
     await session.flush()
 
@@ -493,7 +509,7 @@ async def create_job(
         correlation_id=job.correlation_id,
         payload={
             "title": body.title,
-            "department": body.department,
+            "department": job.department,
             "grade": body.grade,
             "role_classification": role_classification,
         },
@@ -1173,7 +1189,11 @@ async def status_hygiene_precheck(
     action, and inventing a new capability for a read the creator already
     implies would be a seeding migration for nothing.
     """
-    return await status_hygiene.unresolved_summary(session, user.tenant_id)
+    return await status_hygiene.unresolved_summary(
+        session,
+        user.tenant_id,
+        department_scope=await department_access.department_scope(session, user),
+    )
 
 
 @router.post("/{job_id}/archive", response_model=JobOut)
@@ -1237,9 +1257,15 @@ async def list_jobs(
     staying above any realistic single-screen need, and `skip` is there for the
     customers who outgrow it.
     """
+    scope = await department_access.department_scope(session, user)
     stmt = (
         select(Job)
-        .where(Job.tenant_id == user.tenant_id)
+        .where(
+            Job.tenant_id == user.tenant_id,
+            # The department boundary (spec 2.11): a Functional Head lists
+            # their own department's jobs and nothing else.
+            department_access.job_scope_clause(scope, Job.department_id),
+        )
         # `id` makes the order total so a page boundary cannot drop a job that
         # shares a created_at with its neighbour.
         .order_by(Job.created_at.desc(), Job.id)
@@ -1346,8 +1372,14 @@ async def patch_job(
 
     if "title" in sent and body.title is not None:
         job.title = body.title
-    if "department" in sent:
-        job.department = body.department
+    if "department" in sent or "department_id" in sent:
+        await departments.assign_job_department(
+            session,
+            job,
+            department_id=body.department_id,
+            name=body.department,
+            scope=await department_access.department_scope(session, user),
+        )
     if "requirement_period" in sent:
         job.requirement_period = body.requirement_period
     for field in ("experience_min_years", "experience_max_years"):

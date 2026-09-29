@@ -27,7 +27,7 @@ from app.core.security import (
     decode_token,
 )
 from app.models.enums import Role
-from app.services import auth_sessions, rbac
+from app.services import auth_sessions, department_access, rbac
 from app.services.audit import audit
 
 logger = logging.getLogger(__name__)
@@ -429,3 +429,39 @@ def require_capability(capability: str):
 
     return dependency
 
+
+
+#: The refusal a department-scoped principal (a Functional Head) reads on a
+#: surface that is the whole company's and cannot be narrowed to one
+#: department. One sentence, served verbatim by every such route.
+ORGANISATION_WIDE_DETAIL = (
+    "This view covers the whole company, so it is not available to an account "
+    "limited to one department."
+)
+
+
+def require_organisation_wide(capability: str):
+    """`require_capability`, and a refusal for a department-scoped principal.
+
+    Some surfaces are company-wide by nature (the intelligence dashboards'
+    aggregates, the team list, the compliance documents, the corporate
+    senders): there is no department-shaped subset of them to show a
+    Functional Head, so a grant of one (by a per-user overlay, since the
+    template grants none) must not become a window onto every department
+    (spec 2.11, 27.2). The scope is read by `department_access`, the one
+    place it is decided.
+    """
+    capability_gate = require_capability(capability)
+
+    async def dependency(
+        user: CurrentUser = Depends(capability_gate),
+        session: AsyncSession = Depends(get_tenant_db),
+    ) -> CurrentUser:
+        if await department_access.department_scope(session, user) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ORGANISATION_WIDE_DETAIL,
+            )
+        return user
+
+    return dependency

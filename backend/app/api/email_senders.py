@@ -52,7 +52,13 @@ from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_public_db, get_tenant_db, require_capability
+from app.api.deps import (
+    CurrentUser,
+    get_public_db,
+    get_tenant_db,
+    require_capability,
+    require_organisation_wide,
+)
 from app.core.config import get_settings
 from app.models.email_log import (
     EMAIL_TYPE_BGV_VERIFICATION,
@@ -162,11 +168,15 @@ async def _sender_out(sender: ClientEmailSender) -> SenderOut:
 
 @router.get("", response_model=SenderListOut)
 async def list_senders(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_SENDERS)),
+    user: CurrentUser = Depends(require_organisation_wide(caps.VIEW_EMAIL_SENDERS)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SenderListOut:
     """Every sender this tenant has registered, plus what the CALLER may do,
-    so the UI renders only reachable controls."""
+    so the UI renders only reachable controls.
+
+    READ behind VIEW_EMAIL_SENDERS (the leadership release, spec 15): a CEO
+    or MD reads the list and changes nothing, so `can_manage` is now asked of
+    the grant rather than assumed from the gate."""
     rows = (
         (
             await session.execute(
@@ -178,12 +188,15 @@ async def list_senders(
         .scalars()
         .all()
     )
+    can_manage = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.MANAGE_EMAIL_SENDERS, user.user_id
+    )
     can_authorize = await rbac.has_capability(
         session, user.tenant_id, user.role, caps.AUTHORIZE_EMAIL_SENDERS, user.user_id
     )
     return SenderListOut(
         senders=[await _sender_out(r) for r in rows],
-        can_manage=True,  # the capability gate above already proved it
+        can_manage=can_manage,
         can_authorize=can_authorize,
     )
 

@@ -75,6 +75,11 @@ def test_staff_roles_are_exactly_the_manageable_ones() -> None:
         Role.recruiter,
         Role.hiring_manager,
         Role.interview_manager,
+        # The leadership roles (2026-09-29, spec 11.1): invited by the Super
+        # Admin from the same Staff page, and by nobody else.
+        Role.ceo,
+        Role.md,
+        Role.functional_head,
     }
     assert Role.client not in STAFF_ROLES
 
@@ -178,7 +183,12 @@ def test_subordinate_roles_are_offered_in_hierarchy_order() -> None:
     """
     offered = role_hierarchy.subordinate_roles(Role.client)
     assert offered[0] in (Role.recruitment_manager, Role.hr_manager)
-    assert offered[-1] == Role.interview_manager
+    # The leadership leaves follow the chain (2026-09-29): they sit directly
+    # beneath the Super Admin and outside the chain, so the chain's order is
+    # what is asserted, and Interview Manager is still its last tier.
+    chain = [role for role in offered if role not in role_hierarchy.LEAF_ROLES]
+    assert chain[-1] == Role.interview_manager
+    assert offered[len(chain):] == list(role_hierarchy.LEAF_ROLES)
     assert offered.index(Role.recruiter) < offered.index(Role.hiring_manager)
     assert offered.index(Role.hiring_manager) < offered.index(Role.interview_manager)
     assert Role.client not in offered

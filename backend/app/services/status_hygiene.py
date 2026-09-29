@@ -92,6 +92,8 @@ async def unresolved_summary(
     session: AsyncSession,
     tenant_id: uuid.UUID,
     now: datetime | None = None,
+    *,
+    department_scope: uuid.UUID | None = None,
 ) -> StatusHygieneSummary:
     """Per-job counts of unresolved applications on this tenant's earlier jobs.
 
@@ -103,7 +105,12 @@ async def unresolved_summary(
     the concept that drifts the day the window rules change.
 
     The tenant filter is defense in depth; RLS is the real boundary.
+    `department_scope` confines the list to one department
+    (`services/department_access`), for a department-scoped caller.
     """
+    from app.services import department_access
+
+    scope_sql, scope_params = department_access.job_scope_sql(department_scope, "j")
     rows = (
         await session.execute(
             text(
@@ -116,12 +123,17 @@ async def unresolved_summary(
                 "  AND j.archived_at IS NULL "
                 "  AND l.archived_at IS NULL "
                 "  AND l.status NOT IN :resolved "
+                f"  AND {scope_sql} "
                 "GROUP BY j.id, j.title, j.posting_start_date, "
                 "         j.posting_end_date, j.grace_period_end_date, "
                 "         j.closed_at "
                 "ORDER BY COUNT(l.id) DESC, j.title, j.id"
             ).bindparams(bindparam("resolved", expanding=True)),
-            {"tid": str(tenant_id), "resolved": sorted(RESOLVED_STATUSES)},
+            {
+                "tid": str(tenant_id),
+                "resolved": sorted(RESOLVED_STATUSES),
+                **scope_params,
+            },
         )
     ).mappings().all()
 

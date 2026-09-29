@@ -87,6 +87,11 @@ class StaffCreateIn(BaseModel):
     phone: str | None = Field(default=None, max_length=20)
     role: str = Field(min_length=1, max_length=30)
     approval_level: str | None = None  # a JobStatus value if pre-assigned (HMs only)
+    #: The one department a Functional Head belongs to (spec 11.2, 13.2):
+    #: required for that role, refused for every other, and it must be one of
+    #: THIS tenant's departments. Checked in the handler, where the role and
+    #: the tenant are both known, and by the database CHECK behind it.
+    department_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _valid_level(self) -> "StaffCreateIn":
@@ -102,6 +107,8 @@ class StaffUpdateIn(BaseModel):
     phone: str | None = Field(default=None, max_length=20)
     role: str = Field(min_length=1, max_length=30)
     approval_level: str | None = None
+    #: As on create: required for a Functional Head, refused otherwise.
+    department_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _valid_level(self) -> "StaffUpdateIn":
@@ -128,6 +135,15 @@ class StaffOut(BaseModel):
     role: str
     status: str
     approval_level: str | None = None  # hiring managers only
+    #: A Functional Head's department, by id and by its display name.
+    department_id: uuid.UUID | None = None
+    department_name: str | None = None
+    #: Whether THE CALLER may edit, re-invite, deactivate or re-permission
+    #: this person: they hold `manage_staff` and this person sits beneath
+    #: them (`role_hierarchy.can_manage`). A view-only reader (a CEO or MD
+    #: holding `view_staff`) sees every row with this false, so the screen
+    #: renders no control the server would refuse.
+    can_manage: bool = False
     created_at: datetime | None = None
     # Invite lifecycle — pending | accepted | revoked | expired | None (no invite)
     invite_status: str | None = None
@@ -187,3 +203,19 @@ class CompanyProfileResearchOut(BaseModel):
     #: `message` instead of an empty form that looks like a finished draft.
     degraded: bool = False
     message: str | None = None
+
+
+class DepartmentOut(BaseModel):
+    """One of the tenant's departments (the leadership release, spec 13)."""
+
+    id: uuid.UUID
+    name: str
+    is_active: bool
+
+
+class DepartmentCreateIn(BaseModel):
+    """POST /companies/departments. The name is trimmed and matched case-
+    insensitively (`services/departments.normalize`), so creating a name that
+    exists answers the existing department rather than a second one."""
+
+    name: str = Field(min_length=1, max_length=255)

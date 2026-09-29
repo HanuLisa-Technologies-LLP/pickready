@@ -107,6 +107,10 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         # corporate sender is manager-level work (the organisation-wide pair),
         # not the Recruiter's; ACTIVATING one stays the Super Admin's alone.
         "manage_email_senders",
+        # The leadership release (2026-09-29, spec 15) split READ from the
+        # sender list's write, and a role's VIEW grant equals its MANAGE
+        # grant, so the new read diverges exactly where the write already did.
+        "view_email_senders",
         # Vivekium feature 1 (Drishti). The brief names its audience in one
         # line and excludes one role BY NAME: "MD, CEO, Functional Heads (CTO,
         # CFO, COO). NOT the Hiring Manager." That exclusion is a product rule,

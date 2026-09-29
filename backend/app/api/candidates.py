@@ -52,6 +52,7 @@ from app.schemas.candidates import (
     )
 from app.services import candidate_identity, hiring_pipeline
 from app.services import capabilities as caps
+from app.services import department_access
 from app.services import email_render
 from app.services import rbac
 from app.services import team_review
@@ -74,7 +75,34 @@ async def _get_link(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:  # defense in depth
         raise HTTPException(status_code=404, detail="Link not found")
+    # The department boundary (spec 2.11): an application on a job outside a
+    # Functional Head's department answers like one in another tenant.
+    await department_access.require_link_in_scope(
+        session, user, link.id, detail="Link not found"
+    )
     return link
+
+
+async def _link_for_profile_in_scope(
+    session: AsyncSession, user: CurrentUser, profile_id: uuid.UUID
+) -> JobCandidateLink | None:
+    """An application in this tenant AND the caller's department scope that
+    carries this resume, or None. One statement, so a profile reused across a
+    Finance and an Engineering application is readable by the Engineering
+    Functional Head through the Engineering one only."""
+    scope = await department_access.department_scope(session, user)
+    return (
+        await session.execute(
+            select(JobCandidateLink)
+            .join(Job, Job.id == JobCandidateLink.job_id)
+            .where(
+                JobCandidateLink.profile_id == profile_id,
+                JobCandidateLink.tenant_id == user.tenant_id,
+                department_access.job_scope_clause(scope, Job.department_id),
+            )
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 @router.post(
@@ -102,6 +130,7 @@ async def upload_resume(
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    await department_access.require_job_in_scope(session, user, job.id)
     if job.ratified_at is None:
         # ASSUMPTION: sourcing starts once the job has reached HR (FR-3.4).
         raise HTTPException(status_code=409, detail="Job is not ratified yet")
@@ -196,6 +225,7 @@ async def get_profile(
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    await department_access.require_candidate_in_scope(session, user, candidate_id)
 
     await _require_full_profile_access(session, user)
 
@@ -217,10 +247,15 @@ async def get_profile(
         scoped_profile_link = (
             await session.execute(
                 select(JobCandidateLink.id)
+                .join(Job, Job.id == JobCandidateLink.job_id)
                 .where(
                     JobCandidateLink.candidate_id == candidate_id,
                     JobCandidateLink.tenant_id == user.tenant_id,
                     JobCandidateLink.profile_id == profile_id,
+                    department_access.job_scope_clause(
+                        await department_access.department_scope(session, user),
+                        Job.department_id,
+                    ),
                 )
                 .limit(1)
             )
@@ -280,6 +315,7 @@ async def get_project_evidence(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    await department_access.require_candidate_in_scope(session, user, candidate_id)
     await _require_full_profile_access(session, user)
     return {"projects": await project_context.recruiter_views(session, candidate_id)}
 
@@ -301,14 +337,7 @@ async def preview_resume(
     profile = await session.get(Profile, profile_id)
     if profile is None or not profile.resume_url:
         raise HTTPException(status_code=404, detail="Resume not found")
-    link = (
-        await session.execute(
-            select(JobCandidateLink).where(
-                JobCandidateLink.profile_id == profile.id,
-                JobCandidateLink.tenant_id == user.tenant_id,
-            )
-        )
-    ).scalars().first()
+    link = await _link_for_profile_in_scope(session, user, profile.id)
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
     await _require_full_profile_access(session, user)
@@ -382,14 +411,7 @@ async def resume_file(
     profile = await session.get(Profile, profile_id)
     if profile is None or not profile.resume_url:
         raise HTTPException(status_code=404, detail="Resume not found")
-    link = (
-        await session.execute(
-            select(JobCandidateLink).where(
-                JobCandidateLink.profile_id == profile.id,
-                JobCandidateLink.tenant_id == user.tenant_id,
-            )
-        )
-    ).scalars().first()
+    link = await _link_for_profile_in_scope(session, user, profile.id)
     if link is None:
         raise HTTPException(status_code=404, detail="Resume not found")
     await _require_full_profile_access(session, user)
@@ -781,6 +803,7 @@ async def get_bgv_results(
     ).scalars().first()
     if linked is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    await department_access.require_candidate_in_scope(session, user, candidate_id)
     await _require_full_profile_access(session, user)
 
     inquiries = (

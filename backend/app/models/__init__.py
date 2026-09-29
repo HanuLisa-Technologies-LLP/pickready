@@ -69,6 +69,7 @@ from app.models.dual_mode import AssessmentConsent, VideoRecording, VideoRecordi
 from app.models.voice import VoiceAnswer
 from app.models.project import CandidateProject
 from app.models.drishti import DrishtiProfile
+from app.models.department import CompanyDepartment
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -149,6 +150,7 @@ from app.models.user import User
 
 __all__ = [
     "DrishtiProfile",
+    "CompanyDepartment",
     "Base",
     "APPROVAL_CHAIN",
     "ApprovalDecision",
