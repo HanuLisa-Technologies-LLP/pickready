@@ -292,6 +292,12 @@ export function homePathForRole(role: Role): string {
     case "hr_manager":
     case "recruiter":
     case "hiring_manager":
+    // interview_manager fell through to /login until 2026-09-29, which sent a
+    // signed-in Interview Manager back to the sign-in page.
+    case "interview_manager":
+    case "ceo":
+    case "md":
+    case "functional_head":
       return "/org";
     default:
       return "/login";

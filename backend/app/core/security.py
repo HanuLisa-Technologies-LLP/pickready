@@ -50,6 +50,10 @@ _ORG_ROLES = frozenset(
         "recruiter",
         "hiring_manager",
         "interview_manager",
+        # The leadership roles (2026-09-29). Org portal, like every tenant role.
+        "ceo",
+        "md",
+        "functional_head",
     }
 )
 

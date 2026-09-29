@@ -450,12 +450,31 @@ def permits(cell: "Invariant") -> bool:
 #: RBAC 5 says "four internal role categories" and then lists five. spec-doc6
 #: C4 settles it: five is correct and the count is an editorial defect in the
 #: source document. Do not implement four.
+#:
+#: EXTENDED 2026-09-29 (the leadership release). Two kinds of addition:
+#:
+#: * `recruitment_manager`, which was MISSING. It predates RBAC 5's list (the
+#:   hierarchy release, 2026-08-14) and ranks beside the HR Manager by rule,
+#:   but it was never added here, so `invariant_for` DENIED it every
+#:   capability that has a row below: a Recruitment Manager could not open a
+#:   job's candidates, read a report, create a JD or edit skills through any
+#:   route that runs `rbac.authorize`, and `/auth/me` withheld all of those
+#:   from their screen. It now carries the HR Manager's cells, exactly.
+#: * The three leadership roles (spec 2.4, 12, 26): CEO and MD read the whole
+#:   organisation and the Functional Head reads one department; none of them
+#:   holds any write cell of this matrix. The department boundary is NOT a
+#:   cell (it binds every capability a Functional Head holds, not one row):
+#:   `rbac.decide` applies it from `Principal.department_id`.
 CLIENT_ROLES: tuple[Role, ...] = (
-    Role.client,             # Client Super Admin
-    Role.hr_manager,         # HR Manager
-    Role.recruiter,          # Recruiter
-    Role.hiring_manager,     # Hiring Manager
-    Role.interview_manager,  # Interview Manager
+    Role.client,               # Client Super Admin
+    Role.recruitment_manager,  # Recruitment Manager (beside the HR Manager)
+    Role.hr_manager,           # HR Manager
+    Role.recruiter,            # Recruiter
+    Role.hiring_manager,       # Hiring Manager
+    Role.interview_manager,    # Interview Manager
+    Role.ceo,                  # CEO (organisation-wide read)
+    Role.md,                   # MD (organisation-wide read)
+    Role.functional_head,      # Functional Head (one department, read)
 )
 
 _A = Invariant.ALLOW
@@ -610,6 +629,28 @@ RBAC_INVARIANTS: dict[str, dict[Role, Invariant]] = {
         Role.hiring_manager: _D, Role.interview_manager: _D,
     },
 }
+
+
+#: RBAC 24 read rows a leadership role holds, unscoped by assignment. Every
+#: other row is a write, or a staff or integrity act, and is DENY: "their only
+#: product write authority is their own Leadership Intelligence input unless a
+#: future specification explicitly grants another write capability" (spec
+#: 2.12). DENY rather than NEVER for exactly that reason: the specification
+#: names the future grant as possible.
+_LEADERSHIP_READ_ROWS: frozenset[str] = frozenset(
+    {
+        VIEW_COMPANY_JOBS,
+        VIEW_REVIEW_SCREEN,
+        VIEW_CANDIDATE_REPORTS,
+        VIEW_CANDIDATE_RATINGS,
+    }
+)
+
+for _capability, _row in RBAC_INVARIANTS.items():
+    # The Recruitment Manager ranks beside the HR Manager, cell for cell.
+    _row[Role.recruitment_manager] = _row[Role.hr_manager]
+    for _leader in (Role.ceo, Role.md, Role.functional_head):
+        _row[_leader] = _A if _capability in _LEADERSHIP_READ_ROWS else _D
 
 
 def invariant_for(role: Role | str, capability: str) -> Invariant:
@@ -906,3 +947,133 @@ for _role in (Role.recruitment_manager, Role.hr_manager):
     DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})
 for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
     DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})
+
+
+# ── The view / manage splits (the leadership release, 2026-09-29, spec 15) ───
+#
+# Three surfaces combined read and write under one capability, which made a
+# read-only seat unstatable: a CEO who may READ the compliance documents had
+# to be given the capability that deletes them. Each gains a VIEW capability
+# and the MANAGE capability keeps every write route. The company profile and
+# billing were already split (the profile GET is open to every org session;
+# billing has VIEW_BILLING beside MANAGE_BILLING).
+#
+# MANAGE IMPLIES VIEW THROUGH THE GRANTS, NOT THROUGH CODE. Every role that
+# holds a MANAGE grant in this template holds the VIEW grant too (below), and
+# migration 0133 mirrored every existing tenant row and per-user overlay of a
+# MANAGE capability onto its VIEW twin, so no seat lost a screen it could read
+# the day before. A route never asks "view OR manage": one capability per gate.
+VIEW_STAFF = "view_staff"
+VIEW_COMPLIANCE_DOCUMENTS = "view_compliance_documents"
+VIEW_EMAIL_SENDERS = "view_email_senders"
+
+#: The VIEW twin of each split MANAGE capability. Read by migration 0133's
+#: mirror (as literals) and by the tests that pin the mirror.
+VIEW_FOR_MANAGE: dict[str, str] = {
+    MANAGE_STAFF: VIEW_STAFF,
+    MANAGE_COMPLIANCE_DOCUMENTS: VIEW_COMPLIANCE_DOCUMENTS,
+    MANAGE_EMAIL_SENDERS: VIEW_EMAIL_SENDERS,
+}
+
+# ── Leadership Intelligence (the leadership release, 2026-09-29, spec 2.13) ──
+#
+# AUTHOR is "write my own leadership input": the CEO's, the MD's, or the
+# Functional Head's for their one department. VIEW is reading the tenant's
+# leadership artifacts without authoring them (the Super Admin's "admin
+# visibility", spec 26). The routes that read these arrive with the
+# Leadership Intelligence package; the grants and their seeding land here,
+# with the roles they belong to, because a capability constant is only half a
+# change and a role without its grants is a role nobody can use.
+AUTHOR_LEADERSHIP_INTELLIGENCE = "author_leadership_intelligence"
+VIEW_LEADERSHIP_INTELLIGENCE = "view_leadership_intelligence"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle.
+ALL_CAPABILITIES.extend(
+    [
+        VIEW_STAFF,
+        VIEW_COMPLIANCE_DOCUMENTS,
+        VIEW_EMAIL_SENDERS,
+        AUTHOR_LEADERSHIP_INTELLIGENCE,
+        VIEW_LEADERSHIP_INTELLIGENCE,
+    ]
+)
+
+# Existing roles: each VIEW grant equals that role's MANAGE grant, so the
+# split changes nothing any existing seat can read ("existing-role behavior
+# should not be changed unnecessarily", spec 26). An explicit False where the
+# MANAGE grant is absent, so the template states the refusal.
+for _role in (
+    Role.client,
+    Role.recruitment_manager,
+    Role.hr_manager,
+    Role.recruiter,
+    Role.hiring_manager,
+    Role.interview_manager,
+):
+    _grants = DEFAULT_PERMISSION_MATRIX[_role]
+    for _manage, _view in VIEW_FOR_MANAGE.items():
+        _grants[_view] = bool(_grants.get(_manage, False))
+    # The Super Admin sees every leadership artifact and authors none of them:
+    # the input is the leader's own (spec 26, "Admin visibility").
+    _grants[VIEW_LEADERSHIP_INTELLIGENCE] = _role is Role.client
+    _grants[AUTHOR_LEADERSHIP_INTELLIGENCE] = False
+
+# The leadership roles: READ ONLY, plus their own Leadership Intelligence.
+#
+# Every capability this module knows is written for them, the ungranted ones
+# as an explicit False, so the template states each refusal: a CEO with no
+# `manage_billing` row reads as an omission, an allowed=false row reads as a
+# decision. None of them holds OPEN_SUPPORT_THREADS: raising a ticket is a
+# write, and the specification grants them none.
+_LEADERSHIP_READS: frozenset[str] = frozenset(
+    {
+        VIEW_DASHBOARD,
+        VIEW_COMPANY_JOBS,
+        VIEW_REVIEW_SCREEN,
+        VIEW_CANDIDATE_REPORTS,
+        VIEW_CANDIDATE_RATINGS,
+    }
+)
+
+#: CEO and MD: organisation-wide read (spec 2.12, 15, 26).
+CEO_MD_GRANTS: frozenset[str] = _LEADERSHIP_READS | frozenset(
+    {
+        VIEW_INTELLIGENCE_DASHBOARDS,
+        VIEW_BILLING,
+        VIEW_COMPLIANCE_DOCUMENTS,
+        VIEW_STAFF,
+        VIEW_EMAIL_SENDERS,
+        # Read-only background verification status. MANAGE_BGV stays refused.
+        VIEW_BGV,
+        AUTHOR_LEADERSHIP_INTELLIGENCE,
+        VIEW_LEADERSHIP_INTELLIGENCE,
+    }
+)
+
+#: Functional Head: one department's hiring, read (spec 2.11, 27.2). No
+#: billing, staff, compliance, email senders or intelligence dashboards: each
+#: of those is tenant-wide and cannot be narrowed to one department.
+FUNCTIONAL_HEAD_GRANTS: frozenset[str] = _LEADERSHIP_READS | frozenset(
+    {AUTHOR_LEADERSHIP_INTELLIGENCE}
+)
+
+#: Capabilities no customer role's template lists at all, true or false:
+#: EDIT_ROLE_PERMISSIONS rewrites the matrix itself and stays the Owner's,
+#: and the three Business Development grants belong to the platform `bd`
+#: role (see DEFAULT_PERMISSION_MATRIX's own note).
+_NEVER_IN_A_CUSTOMER_TEMPLATE: frozenset[str] = frozenset(
+    {EDIT_ROLE_PERMISSIONS, MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH}
+)
+
+for _role, _granted in (
+    (Role.ceo, CEO_MD_GRANTS),
+    (Role.md, CEO_MD_GRANTS),
+    (Role.functional_head, FUNCTIONAL_HEAD_GRANTS),
+):
+    DEFAULT_PERMISSION_MATRIX[_role] = {
+        capability: capability in _granted
+        for capability in ALL_CAPABILITIES
+        if capability not in _NEVER_IN_A_CUSTOMER_TEMPLATE
+    }

@@ -111,6 +111,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { FormField } from "@/components/ui/form";
+import { DepartmentPicker } from "@/components/department-picker";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -190,7 +191,9 @@ function NarrativeSection({
 /** The job's details: everything a recruiter edits that is not the document. */
 type DetailsDraft = {
   title: string;
-  department: string;
+  /** The department's id (the leadership release, spec 13), picked from the
+   * company's list; "" when the job has none. */
+  department_id: string;
   grade: JobGrade | "";
   requirement_period: string;
   experience_min_years: string;
@@ -203,7 +206,7 @@ type DetailsDraft = {
 function detailsFromJob(job: Job): DetailsDraft {
   return {
     title: job.title ?? "",
-    department: job.department ?? "",
+    department_id: job.department_id ?? "",
     grade: job.grade ?? "",
     requirement_period: job.requirement_period ?? "",
     experience_min_years:
@@ -472,7 +475,12 @@ export default function OrgJobDetailPage() {
     setSavingDetails(true);
     try {
       const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
-        department: details.department.trim() || null,
+        // Sent only when it changed: re-pointing a job's department moves it
+        // between Functional Heads, so a save that touched nothing else must
+        // not restate it.
+        ...(details.department_id !== (job.department_id ?? "")
+          ? { department_id: details.department_id || null }
+          : {}),
         requirement_period: details.requirement_period.trim() || null,
         ...(frozen
           ? {}
@@ -961,15 +969,13 @@ export default function OrgJobDetailPage() {
                     onChange={(e) => setDetails({ ...details, title: e.target.value })}
                   />
                 </FormField>
-                <FormField label="Department" htmlFor="job-dept">
-                  <Input
-                    id="job-dept"
-                    value={details.department}
-                    onChange={(e) =>
-                      setDetails({ ...details, department: e.target.value })
-                    }
-                  />
-                </FormField>
+                <DepartmentPicker
+                  id="job-dept"
+                  value={details.department_id}
+                  onChange={(department) =>
+                    setDetails({ ...details, department_id: department.id })
+                  }
+                />
                 <FormField
                   label="Grade"
                   htmlFor="job-grade"

@@ -37,6 +37,7 @@ from app.schemas.outreach import (
     ResolvedEmail,
     SkippedRecipient,
 )
+from app.services import department_access
 from app.services import capabilities as caps
 from app.services import engagement
 from app.services import outreach_content
@@ -97,6 +98,9 @@ async def _load_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID)
     # RLS already scopes the read; the explicit check keeps the 404 honest.
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    # The department boundary (spec 2.11). `_load_links` reads only links on
+    # THIS job, so scoping the job scopes them too.
+    await department_access.require_job_in_scope(session, user, job.id)
     return job
 
 

@@ -372,6 +372,11 @@ class Principal:
     role: Role
     #: The executing agent, for an AI-initiated action. None for a human one.
     agent: str | None = None
+    #: The one department this principal is confined to (spec 2.11), or None
+    #: for unrestricted. `authorize` fills it from the database on every call
+    #: (`department_access.department_scope`), so a caller cannot widen it by
+    #: leaving it out; a caller of the pure `decide` states it.
+    department_id: uuid.UUID | str | None = None
 
     def __post_init__(self) -> None:
         if self.agent is not None and self.user_id is None:
@@ -416,6 +421,10 @@ class Resource:
     #: skills, started). Read from the TABLE by `load_job_resource`, never
     #: from a timestamp (rule 8).
     skills_locked: bool = False
+    #: The owning job's department (`jobs.department_id`, migration 0133), for
+    #: the department boundary. None is a job in no department, which is
+    #: outside every department-scoped principal's reach.
+    department_id: uuid.UUID | str | None = None
 
 
 @dataclass(frozen=True)
@@ -480,6 +489,22 @@ def decide(
             return Authorization(
                 Decision.NOT_FOUND, "cross_tenant", invariant
             )
+
+    # 1b. Department (spec 2.11, 14). A department-scoped principal (a
+    #     Functional Head) reaches only its own department's jobs, and a job
+    #     outside it answers exactly like a job in another tenant: NOT_FOUND,
+    #     so the refusal confirms nothing (spec 14.3's tenant-safe 404). Only a
+    #     resource that belongs to a job is department-bound.
+    if (
+        principal.department_id is not None
+        and resource is not None
+        and resource.job_id is not None
+        and (
+            resource.department_id is None
+            or str(resource.department_id) != str(principal.department_id)
+        )
+    ):
+        return Authorization(Decision.NOT_FOUND, "cross_department", invariant)
 
     # 2. The 24 ceiling. NEVER is refused before the grant is even consulted,
     #    because a NEVER cell is precisely the one a grant must not be able to
@@ -658,7 +683,7 @@ async def load_job_resource(
     row = (
         await session.execute(
             text(
-                "SELECT j.id, j.tenant_id, j.lifecycle_state, "
+                "SELECT j.id, j.tenant_id, j.lifecycle_state, j.department_id, "
                 "EXISTS (SELECT 1 FROM job_skill_snapshots s WHERE s.job_id = j.id) "
                 "AS skills_locked "
                 "FROM jobs j WHERE j.id = :jid"
@@ -677,6 +702,7 @@ async def load_job_resource(
         lifecycle_state=row["lifecycle_state"],
         assignments=assignments,
         skills_locked=bool(row["skills_locked"]),
+        department_id=row.get("department_id"),
     )
 
 
@@ -760,7 +786,19 @@ async def authorize(
     capability: str,
     resource: Resource | None = None,
 ) -> Authorization:
-    """Resolve the grant, then run `decide`. One database read, one answer."""
+    """Resolve the grant and the department scope, then run `decide`.
+
+    The department is READ here, never taken from the caller: a Principal
+    built without one must not be a way round the boundary.
+    """
+    from dataclasses import replace
+
+    from app.services import department_access
+
+    principal = replace(
+        principal,
+        department_id=await department_access.department_scope(session, principal),
+    )
     granted = await has_capability(
         session,
         principal.tenant_id,

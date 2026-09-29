@@ -120,6 +120,22 @@ export const CAP = {
    * open; it never extends the thirty day retention window.
    */
   retrieveDisputedAssessment: "retrieve_disputed_assessment",
+  /**
+   * The READ halves of three surfaces that used to be read and written under
+   * one capability (the leadership release, 2026-09-29, spec 15). A CEO or MD
+   * holds the view and not the manage; a navigation entry asks the view, and
+   * every write control on the page asks the manage.
+   */
+  viewStaff: "view_staff",
+  viewComplianceDocuments: "view_compliance_documents",
+  viewEmailSenders: "view_email_senders",
+  /**
+   * Leadership Intelligence (spec 2.13): AUTHOR is a leader's own input (the
+   * CEO's, the MD's, a Functional Head's for their department), VIEW is the
+   * Super Admin's visibility of all of it.
+   */
+  authorLeadershipIntelligence: "author_leadership_intelligence",
+  viewLeadershipIntelligence: "view_leadership_intelligence",
 } as const;
 
 export type CapabilityName = (typeof CAP)[keyof typeof CAP];

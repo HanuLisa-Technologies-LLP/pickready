@@ -798,6 +798,7 @@ def _ai_match_clause(grades: Sequence[str]) -> tuple[str, dict[str, Any]]:
 def _scope_clause(
     *,
     scoped_to_assignments: bool,
+    department_scope: uuid.UUID | None = None,
     job_id: uuid.UUID | str | None,
     source_types: Sequence[str] | None,
     stages: Sequence[str] | None,
@@ -821,6 +822,18 @@ def _scope_clause(
             "WHERE ja.job_id = link.job_id AND ja.user_id = :viewer_id "
             "AND ja.active)"
         )
+
+    if department_scope is not None:
+        # The department boundary (spec 2.11), beside the assignment scope
+        # and from the one module that states it (`department_access`): a
+        # Functional Head sees the candidates on their own department's jobs.
+        from app.services import department_access
+
+        dept_sql, dept_params = department_access.job_scope_sql(department_scope, "dj")
+        clauses.append(
+            f"EXISTS (SELECT 1 FROM jobs dj WHERE dj.id = link.job_id AND {dept_sql})"
+        )
+        params.update(dept_params)
 
     if job_id is not None:
         clauses.append("link.job_id = :job_id")
@@ -860,6 +873,7 @@ async def candidates_page(
     tenant_id: uuid.UUID | str,
     viewer_id: uuid.UUID | str,
     scoped_to_assignments: bool,
+    department_scope: uuid.UUID | None = None,
     job_id: uuid.UUID | str | None = None,
     source_types: Sequence[str] | None = None,
     stages: Sequence[str] | None = None,
@@ -880,6 +894,7 @@ async def candidates_page(
     resolved_page, resolved_size = normalize_page(page, page_size)
     where, params = _scope_clause(
         scoped_to_assignments=scoped_to_assignments,
+        department_scope=department_scope,
         job_id=job_id,
         source_types=source_types,
         stages=stages,

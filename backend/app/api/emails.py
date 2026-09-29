@@ -40,6 +40,7 @@ from app.schemas.emails import (
     EmailSendOut,
 )
 from app.services import capabilities as caps
+from app.services import department_access
 from app.services import generation_sufficiency
 from app.services import assessment_invite, email_outbox, lifecycle_email
 from app.services.audit import audit
@@ -76,6 +77,7 @@ async def _load_targets(
     """
     targets: list[tuple[JobCandidateLink, Candidate, Job]] = []
     skipped: list[dict] = []
+    scope = await department_access.department_scope(session, user)
 
     unique_ids = list(dict.fromkeys(link_ids))
     links_by_id: dict[uuid.UUID, JobCandidateLink] = {}
@@ -130,7 +132,13 @@ async def _load_targets(
             continue
         candidate = candidates_by_id.get(link.candidate_id)
         job = jobs_by_id.get(link.job_id)
-        if candidate is None or job is None:
+        # The department boundary (spec 2.11): an application outside the
+        # caller's department is skipped exactly like one in another tenant.
+        if (
+            candidate is None
+            or job is None
+            or not department_access.in_scope(scope, job.department_id)
+        ):
             skipped.append({"link_id": str(link_id), "reason": "Application not found"})
             continue
         if not candidate.email:
@@ -327,5 +335,16 @@ async def list_email_log(
         stmt = stmt.where(EmailLog.job_id == job_id)
     if candidate_id is not None:
         stmt = stmt.where(EmailLog.candidate_id == candidate_id)
+    scope = await department_access.department_scope(session, user)
+    if scope is not None:
+        # The department boundary (spec 2.11): a department-scoped reader sees
+        # the mail about their own department's jobs and nothing tenant-wide.
+        stmt = stmt.where(
+            EmailLog.job_id.in_(
+                select(Job.id).where(
+                    department_access.job_scope_clause(scope, Job.department_id)
+                )
+            )
+        )
     rows = (await session.execute(stmt)).scalars().all()
     return [EmailLogOut.model_validate(r) for r in rows]

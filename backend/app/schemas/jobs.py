@@ -209,7 +209,12 @@ class JobCreateIn(ExperienceBandMixin):
     """
 
     title: str = Field(min_length=1, max_length=255)
+    #: The department, by id (the picker) or by name (an "add department"
+    #: typed on the form, resolved or created). `department_id` wins when both
+    #: are sent; `services/departments.assign_job_department` is the one
+    #: writer and refuses an id that is not this tenant's.
     department: str | None = Field(default=None, max_length=255)
+    department_id: uuid.UUID | None = None
     requirement_period: str | None = Field(default=None, max_length=100)
     #: Who the role reports to, from the Create Job dropdown. The one JD fact
     #: the document does not carry as its own section, so it is stored into
@@ -269,6 +274,7 @@ class JobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
+    department_id: uuid.UUID | None = None
     status: JobStatus
     requirement_period: str | None
     created_by: uuid.UUID | None
@@ -672,7 +678,11 @@ class JobPatchIn(ExperienceBandMixin):
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = Field(default=None, max_length=255)
+    #: Either names the department (see JobCreateIn); sending either one
+    #: re-points the job, and sending `department: null` without an id takes
+    #: the job out of every department.
     department: str | None = Field(default=None, max_length=255)
+    department_id: uuid.UUID | None = None
     requirement_period: str | None = Field(default=None, max_length=100)
     #: Refused with 409 once the skills are locked: the grade decides the
     #: question budget every candidate on the job receives (D5).

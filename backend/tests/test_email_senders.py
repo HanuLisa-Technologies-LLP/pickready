@@ -351,8 +351,15 @@ def test_every_route_is_behind_the_right_capability() -> None:
                     "async def disable_sender", "async def enable_sender",
                     "async def revoke_sender"):
         assert "require_capability(caps.AUTHORIZE_EMAIL_SENDERS)" in _handler_block(handler), handler
-    for handler in ("async def list_senders", "async def create_sender"):
-        assert "require_capability(caps.MANAGE_EMAIL_SENDERS)" in _handler_block(handler), handler
+    assert "require_capability(caps.MANAGE_EMAIL_SENDERS)" in _handler_block(
+        "async def create_sender"
+    )
+    # The list is a READ behind its own capability since the leadership
+    # release (2026-09-29, spec 15), so a CEO or MD reads it and writes
+    # nothing; it is company-wide, so a department-scoped account is refused.
+    assert "require_organisation_wide(caps.VIEW_EMAIL_SENDERS)" in _handler_block(
+        "async def list_senders"
+    )
 
 
 def test_the_otp_routes_are_gone_not_merely_unlinked() -> None:

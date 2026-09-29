@@ -122,6 +122,11 @@ GATES = (
     # route renders says `Depends(dependency)` and names nothing. `_gate_for`
     # unwraps the parameter defaults for exactly that reason.
     "require_authorized",
+    # `deps.require_organisation_wide` (the leadership release, 2026-09-29):
+    # `require_capability` itself, plus a refusal for a department-scoped
+    # account on a company-wide surface. A closure, spelled as a qualname
+    # fragment for the reason above.
+    "require_organisation_wide",
     "require_bd_capability",
     "get_superadmin_db",
     "get_current_candidate",

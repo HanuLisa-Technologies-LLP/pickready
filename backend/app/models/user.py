@@ -71,3 +71,13 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
 
+    # ── The one department a Functional Head belongs to (migration 0133) ─────
+    # Required for `functional_head` and NULL for every other role, by a
+    # database CHECK (`ck_users_department_iff_functional_head`), and it can
+    # only name a department of the user's OWN tenant (a composite foreign key
+    # onto company_departments(id, tenant_id)). `services/department_access`
+    # reads this column, never the role, to decide what a person may see.
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+

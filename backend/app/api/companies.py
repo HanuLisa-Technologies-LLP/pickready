@@ -34,6 +34,7 @@ from app.api.deps import (
     get_public_db,
     get_tenant_db,
     require_capability,
+    require_organisation_wide,
 )
 from app.core.config import get_settings
 from app.models.company import Company, EmailTemplate, HiringManager
@@ -56,6 +57,7 @@ from app.models.invite import (
     invite_state,
 )
 from app.models.tenant import Tenant
+from app.models.department import CompanyDepartment
 from app.models.user import User
 from app.schemas.companies import (
     CompanyProfileResearchOut,
@@ -68,6 +70,8 @@ from app.schemas.companies import (
     StaffPermissionsOut,
     StaffUpdateIn,
     StaffOut,
+    DepartmentCreateIn,
+    DepartmentOut,
 )
 # The compliance slot shapes are shared with api/provider.py on purpose: the
 # HR Head who files a document and the owner who reads it must be looking at
@@ -78,6 +82,8 @@ from app.schemas.provider import (
     document_slots,
 )
 from app.services import capabilities as caps
+from app.services import department_access
+from app.services import departments
 from app.services import document_storage
 from app.services import rbac
 from app.services import role_hierarchy
@@ -326,10 +332,14 @@ def _staff_out(
     *,
     invite_link: str | None = None,
     email_dispatch: str | None = None,
+    department_name: str | None = None,
+    can_manage: bool = False,
 ) -> StaffOut:
     return StaffOut(
         id=u.id, email=u.email or "", full_name=u.full_name, phone=u.phone,
         role=u.role.value, status=u.status.value, approval_level=approval_level,
+        department_id=u.department_id, department_name=department_name,
+        can_manage=can_manage,
         created_at=u.created_at,
         invite_status=(
             invite_state(
@@ -497,6 +507,41 @@ async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> st
     return tenant.name if tenant is not None else "Vivekium"
 
 
+#: The two refusals a department choice can earn, each a sentence the invite
+#: form shows as written.
+DEPARTMENT_REQUIRED_DETAIL = "A Functional Head belongs to one department. Choose it."
+DEPARTMENT_NOT_APPLICABLE_DETAIL = (
+    "Only a Functional Head belongs to a department. Leave the department empty "
+    "for this role."
+)
+
+
+async def _department_for_role(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    role: Role,
+    department_id: uuid.UUID | None,
+) -> CompanyDepartment | None:
+    """The department a staff seat carries (spec 11.2, 13.2), checked here and
+    again by the database CHECK behind it: required for a department-scoped
+    role (`role_hierarchy.DEPARTMENT_SCOPED_ROLES`), refused for every other,
+    and only ever one of THIS tenant's departments."""
+    if role in role_hierarchy.DEPARTMENT_SCOPED_ROLES:
+        if department_id is None:
+            raise HTTPException(status_code=422, detail=DEPARTMENT_REQUIRED_DETAIL)
+        return await departments.require_department(session, tenant_id, department_id)
+    if department_id is not None:
+        raise HTTPException(status_code=422, detail=DEPARTMENT_NOT_APPLICABLE_DETAIL)
+    return None
+
+
+async def _department_name(session: AsyncSession, staff_user: User) -> str | None:
+    if staff_user.department_id is None:
+        return None
+    department = await session.get(CompanyDepartment, staff_user.department_id)
+    return department.name if department is not None else None
+
+
 async def _load_staff(
     session: AsyncSession, user: CurrentUser, user_id: uuid.UUID
 ) -> User:
@@ -516,11 +561,25 @@ async def _load_staff(
 
 @router.get("/me/staff", response_model=list[StaffOut])
 async def list_staff(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_STAFF)),
+    user: CurrentUser = Depends(require_organisation_wide(caps.VIEW_STAFF)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> list[StaffOut]:
-    """Staff beneath the caller in the customer hierarchy."""
-    visible_roles = role_hierarchy.subordinate_roles(user.role)
+    """The team, as the caller may see it.
+
+    A caller who MANAGES staff sees the people beneath them, as before, each
+    row marked `can_manage`. A caller who only VIEWS staff (a CEO or MD,
+    spec 12 and 26) sees the whole team read-only: the view-only reader
+    manages nobody, so there is no subset of the hierarchy that is "theirs"
+    and filtering it by rank would show them nothing. The team is company-wide,
+    so a department-scoped account is refused (`require_organisation_wide`).
+    """
+    manages = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.MANAGE_STAFF, user.user_id
+    )
+    if manages:
+        visible_roles = role_hierarchy.subordinate_roles(user.role)
+    else:
+        visible_roles = sorted(STAFF_ROLES, key=lambda r: r.value)
     if not visible_roles:
         return []
     rows = (
@@ -536,7 +595,22 @@ async def list_staff(
         )
     ).all()
     invites = await _latest_invites(session, user.tenant_id)
-    return [_staff_out(u, level, invites.get(u.id)) for u, level in rows]
+    names = {
+        d.id: d.name
+        for d in await departments.list_departments(
+            session, user.tenant_id, include_inactive=True
+        )
+    }
+    return [
+        _staff_out(
+            u,
+            level,
+            invites.get(u.id),
+            department_name=names.get(u.department_id),
+            can_manage=manages and role_hierarchy.can_manage(user.role, u.role),
+        )
+        for u, level in rows
+    ]
 
 
 @router.post("/me/staff", response_model=StaffOut, status_code=status.HTTP_201_CREATED)
@@ -557,6 +631,9 @@ async def create_staff(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     # Spec §29: a person may only create a role BELOW their own.
     ensure_can_manage(user.role, role)
+    department = await _department_for_role(
+        session, user.tenant_id, role, body.department_id
+    )
 
     if role == Role.hiring_manager:
         # FR-2.2: server-side cap on ACTIVE (not disabled) Hiring Managers.
@@ -601,6 +678,7 @@ async def create_staff(
     staff_user = User(
         tenant_id=user.tenant_id, role=role, email=str(body.email),
         phone=body.phone, full_name=body.full_name, status=UserStatus.invited,
+        department_id=department.id if department is not None else None,
         # The reporting line: whoever created this seat. Recorded for display
         # and for a future org chart; who may MANAGE whom is decided by rank in
         # `services/role_hierarchy`, so a missing manager never grants access.
@@ -624,7 +702,11 @@ async def create_staff(
 
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="staff_created", target_type="user", target_id=staff_user.id,
-                metadata={"role": role.value, "email": str(body.email)})
+                metadata={
+                    "role": role.value,
+                    "email": str(body.email),
+                    "department_id": str(department.id) if department else None,
+                })
 
     # New staff activate on their first verified Firebase sign-in — Vivekium
     # never generates a password or an app OTP for them (rule 2).
@@ -638,7 +720,9 @@ async def create_staff(
                 action="staff_invited", target_type="user", target_id=staff_user.id,
                 metadata={"invite_id": str(invite.id), "email_dispatch": dispatch})
     return _staff_out(
-        staff_user, approval_level, invite, invite_link=link, email_dispatch=dispatch
+        staff_user, approval_level, invite, invite_link=link, email_dispatch=dispatch,
+        department_name=department.name if department is not None else None,
+        can_manage=True,
     )
 
 
@@ -660,6 +744,9 @@ async def update_staff(
     # moved to decides whether the edit is a promotion past the actor.
     ensure_can_manage(user.role, staff_user.role)
     ensure_can_manage(user.role, role)
+    department = await _department_for_role(
+        session, user.tenant_id, role, body.department_id
+    )
 
     if (
         role == Role.hiring_manager
@@ -703,9 +790,13 @@ async def update_staff(
         await session.delete(hm)
 
     previous_role = staff_user.role
+    previous_department = staff_user.department_id
     staff_user.full_name = body.full_name.strip()
     staff_user.phone = body.phone
+    # The role and the department change in ONE flush: the database CHECK
+    # (`ck_users_department_iff_functional_head`) holds them together.
     staff_user.role = role
+    staff_user.department_id = department.id if department is not None else None
     await session.flush()
     await audit(
         session,
@@ -714,13 +805,24 @@ async def update_staff(
         action="staff_updated",
         target_type="user",
         target_id=staff_user.id,
-        metadata={"previous_role": previous_role.value, "role": role.value},
+        metadata={
+            "previous_role": previous_role.value,
+            "role": role.value,
+            "previous_department_id": (
+                str(previous_department) if previous_department else None
+            ),
+            "department_id": str(staff_user.department_id)
+            if staff_user.department_id
+            else None,
+        },
     )
     invites = await _latest_invites(session, user.tenant_id)
     return _staff_out(
         staff_user,
         body.approval_level if role == Role.hiring_manager else None,
         invites.get(staff_user.id),
+        department_name=department.name if department is not None else None,
+        can_manage=True,
     )
 
 
@@ -758,7 +860,11 @@ async def resend_staff_invite(
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="staff_invite_resent", target_type="user", target_id=staff_user.id,
                 metadata={"invite_id": str(invite.id), "email_dispatch": dispatch})
-    return _staff_out(staff_user, None, invite, invite_link=link, email_dispatch=dispatch)
+    return _staff_out(
+        staff_user, None, invite, invite_link=link, email_dispatch=dispatch,
+        department_name=await _department_name(session, staff_user),
+        can_manage=True,
+    )
 
 
 @router.post("/me/staff/{user_id}/reactivate", response_model=StaffOut)
@@ -783,7 +889,13 @@ async def reactivate_staff(
                 action="staff_reactivated", target_type="user", target_id=staff_user.id,
                 metadata={"role": staff_user.role.value, "status": staff_user.status.value})
     invites = await _latest_invites(session, user.tenant_id)
-    return _staff_out(staff_user, None, invites.get(staff_user.id))
+    return _staff_out(
+        staff_user,
+        None,
+        invites.get(staff_user.id),
+        department_name=await _department_name(session, staff_user),
+        can_manage=True,
+    )
 
 
 @router.delete("/me/staff/{user_id}", response_model=StaffOut)
@@ -816,7 +928,73 @@ async def deactivate_staff(
                 action="staff_deactivated", target_type="user", target_id=staff_user.id,
                 metadata={"role": staff_user.role.value})
     invites = await _latest_invites(session, user.tenant_id)
-    return _staff_out(staff_user, None, invites.get(staff_user.id))
+    return _staff_out(
+        staff_user,
+        None,
+        invites.get(staff_user.id),
+        department_name=await _department_name(session, staff_user),
+        can_manage=True,
+    )
+
+
+# ── Departments (the leadership release, 2026-09-29, spec 13) ────────────────
+
+
+def _department_out(department: CompanyDepartment) -> DepartmentOut:
+    return DepartmentOut(
+        id=department.id, name=department.name, is_active=department.is_active
+    )
+
+
+@router.get("/departments", response_model=list[DepartmentOut])
+async def list_company_departments(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[DepartmentOut]:
+    """The tenant's active departments, for the job and staff pickers.
+
+    Open to every org session, like the company profile it sits beside: a
+    department's NAME is company context, not a hiring record. A
+    department-scoped caller (a Functional Head) is listed their own
+    department and no other, so the picker cannot become a directory of the
+    departments they are kept out of.
+    """
+    scope = await department_access.department_scope(session, user)
+    rows = await departments.list_departments(session, user.tenant_id)
+    return [
+        _department_out(d) for d in rows if department_access.in_scope(scope, d.id)
+    ]
+
+
+@router.post(
+    "/departments",
+    response_model=DepartmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_company_department(
+    body: DepartmentCreateIn,
+    user: CurrentUser = Depends(require_organisation_wide(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> DepartmentOut:
+    """Add a department ("add department" on the Create Job and staff forms).
+
+    Behind CREATE_JOB because a department exists to hold jobs, and every role
+    that invites staff already holds it; a new capability for one row per
+    department would be a seeding migration for nothing. Idempotent on the
+    name (`departments.resolve_or_create`): adding "engineering" where
+    "Engineering" exists answers the existing department.
+    """
+    department = await departments.resolve_or_create(session, user.tenant_id, body.name)
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="department_saved",
+        target_type="company_department",
+        target_id=department.id,
+        metadata={"name": department.name},
+    )
+    return _department_out(department)
 
 
 # ── Invitation acceptance (/join) ────────────────────────────────────────────
@@ -1239,7 +1417,9 @@ def _own_tenant(user: CurrentUser) -> uuid.UUID:
 
 @router.get("/me/compliance-documents", response_model=list[ComplianceDocumentSlot])
 async def list_compliance_documents(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_COMPLIANCE_DOCUMENTS)),
+    user: CurrentUser = Depends(
+        require_organisation_wide(caps.VIEW_COMPLIANCE_DOCUMENTS)
+    ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> list[ComplianceDocumentSlot]:
     """The customer's own seven compliance slots, in fixed spec order."""
@@ -1335,7 +1515,9 @@ async def remove_compliance_document(
 async def download_own_compliance_document(
     document_type: str,
     inline: bool = False,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_COMPLIANCE_DOCUMENTS)),
+    user: CurrentUser = Depends(
+        require_organisation_wide(caps.VIEW_COMPLIANCE_DOCUMENTS)
+    ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
     """View or download one of the customer's own filed documents.

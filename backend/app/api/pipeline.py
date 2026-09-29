@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
 from app.services import assessment_invitations, capabilities as caps
+from app.services import department_access
 from app.services import email_outbox
 from app.services import hiring_pipeline as pipeline
 from app.services import telemetry_events
@@ -122,6 +123,10 @@ async def _link_or_404(session: AsyncSession, user: CurrentUser, link_id: uuid.U
     # Explicit tenant check is defense in depth; RLS is the boundary.
     if row is None or str(row["tenant_id"]) != str(user.tenant_id):
         raise HTTPException(status_code=404, detail="Application not found")
+    # The department boundary (spec 2.11), as a tenant-safe 404.
+    await department_access.require_link_in_scope(
+        session, user, link_id, detail="Application not found"
+    )
     return row
 
 
@@ -149,6 +154,7 @@ async def select_candidates_for_assessment(
     and lock, one credit question for the whole batch, write). The invitation
     email is drafted by a dispatched task after the commit, never here.
     """
+    await department_access.require_job_in_scope(session, user, job_id)
     try:
         result = await assessment_invitations.invite_batch(
             session,
@@ -449,6 +455,7 @@ async def candidate_pipeline(
     ).first()
     if exists is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    await department_access.require_job_in_scope(session, user, job_id)
 
     rows = (
         await session.execute(

@@ -202,6 +202,22 @@ def test_the_seeding_migration_restates_the_code_matrix_row_for_row() -> None:
     seeded = {
         (role, capability): allowed for role, capability, allowed in module.SEED_ROWS
     }
+    # The leadership roles arrived later (0133_roles_departments), each with an
+    # explicit refusal of this capability, and that migration restates them.
+    later = Path(__file__).resolve().parents[1] / "alembic" / "versions" / (
+        "0133_roles_departments.py"
+    )
+    later_spec = importlib.util.spec_from_file_location("_roles_migration", later)
+    assert later_spec is not None and later_spec.loader is not None
+    later_module = importlib.util.module_from_spec(later_spec)
+    later_spec.loader.exec_module(later_module)
+    seeded.update(
+        {
+            (role, capability): allowed
+            for role, capability, allowed in later_module.SEED_ROWS
+            if capability == caps.AUTHOR_DRISHTI_PROFILE
+        }
+    )
     expected = {
         (role.value, caps.AUTHOR_DRISHTI_PROFILE): grants[
             caps.AUTHOR_DRISHTI_PROFILE
