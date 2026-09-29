@@ -205,12 +205,13 @@ async def _seed_staff(
     key: str,
     tenant: uuid.UUID,
     role: str = "client",
+    department: uuid.UUID | None = None,
 ) -> uuid.UUID:
     user = uuid.uuid4()
     await session.execute(
         sa.text(
-            "INSERT INTO users (id, tenant_id, email, full_name, role, status) "
-            "VALUES (:id, :tid, :email, :name, :role, 'active')"
+            "INSERT INTO users (id, tenant_id, email, full_name, role, status, department_id) "
+            "VALUES (:id, :tid, :email, :name, :role, 'active', :dept)"
         ),
         {
             "id": str(user),
@@ -218,6 +219,7 @@ async def _seed_staff(
             "email": f"{user.hex[:12]}@harness.test",
             "name": "Anita Rao",
             "role": role,
+            "dept": str(department) if department else None,
         },
     )
     world.ids[key] = user
@@ -950,6 +952,25 @@ async def _golden_journey_ready(
     earlier resume upload leave behind.
     """
     await _funded_tenant(session, world, overrides)
+    # LEADERSHIP INTELLIGENCE (2026-09-29): the department the job is created
+    # in, and the two leaders who write for it, as the Super Admin's staff
+    # invitations leave them. What they SAVE is written by the journey through
+    # the routes, never here.
+    department = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO company_departments (id, tenant_id, name, normalized_name) "
+            "VALUES (:id, :tid, :name, :key)"
+        ),
+        {"id": str(department), "tid": str(world.id("tenant")), "name": "Settlements",
+         "key": "settlements"},
+    )
+    world.ids["department"] = department
+    await _seed_staff(session, world, key="ceo", tenant=world.id("tenant"), role="ceo")
+    await _seed_staff(
+        session, world, key="functional_head", tenant=world.id("tenant"),
+        role="functional_head", department=department,
+    )
     await _seed_candidate(
         session,
         world,

@@ -108,11 +108,17 @@ class Application:
 
     # -- Principals ----------------------------------------------------------
 
-    def as_staff(self, *, user_key: str = "staff", tenant_key: str = "tenant") -> None:
+    def as_staff(
+        self,
+        *,
+        user_key: str = "staff",
+        tenant_key: str = "tenant",
+        role: Role = Role.client,
+    ) -> None:
         self._principal = CurrentUser(
             user_id=self._world.id(user_key),
             tenant_id=self._world.id(tenant_key),
-            role=Role.client,
+            role=role,
             audience=AUDIENCE_ORG,
         )
 
@@ -1583,6 +1589,9 @@ class _JourneyClient:
     def as_candidate(self, who: str = "candidate") -> None:
         self._app.as_candidate(user_key=f"{who}_user")
 
+    def as_leader(self, who: str) -> None:
+        self._app.as_staff(user_key=who, role=Role(who))
+
     def call(self, step: str, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
         observed = self._app.request(self._ctx, step, method, path, **kwargs)
         return observed.status, observed.body
@@ -1608,6 +1617,7 @@ def _drive_the_golden_journey(app_client: Application, ctx: ScenarioContext) -> 
         staff=world.id("staff"),
         candidate=world.id("candidate"),
         rival=world.id("rival"),
+        department=world.id("department"),
     )
     model = GoldenModel()
 
