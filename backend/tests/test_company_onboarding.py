@@ -330,9 +330,11 @@ async def test_a_forged_payment_signature_grants_nothing(world) -> None:
     assert (await world.http.get(f"{BASE}/state")).json()["stage"] == "choose_pack"
 
 
-async def _webhook(world, order_id: str, payment_id: str, event_id: str) -> httpx.Response:
+async def _webhook(
+    world, order_id: str, payment_id: str, event_id: str, event: str = "payment.captured"
+) -> httpx.Response:
     raw = json.dumps({
-        "event": "payment.captured",
+        "event": event,
         "created_at": 1,
         "payload": {"payment": {"entity": {"id": payment_id, "order_id": order_id}}},
     }).encode()
@@ -387,6 +389,22 @@ async def test_webhook_first_then_browser_verify_settles_once(world) -> None:
     # A second first purchase is refused once one is paid.
     again = await world.http.post(f"{BASE}/purchase", json={"pack_slug": "standard_50"})
     assert again.status_code == 409
+
+
+async def test_a_failed_payment_grants_nothing_and_keeps_the_password_locked(world) -> None:
+    await world.verified()
+    order = await world.order()
+    failed = await _webhook(
+        world, order["razorpay_order_id"], f"pay_{world.marker}", f"evt_{world.marker}",
+        event="payment.failed",
+    )
+    assert failed.json()["status"] == "ok"
+    _registration, tenant, _user = await world.rows()
+    assert await _grant_count(world, tenant.id) == 0
+    assert (await world.http.get(f"{BASE}/state")).json()["stage"] == "choose_pack"
+    assert (await world.http.post(f"{BASE}/activate", json={"password": PASSWORD})).status_code == 402
+    # A new attempt is a NEW purchase; the failed one stays failed.
+    assert (await world.order())["razorpay_order_id"] != order["razorpay_order_id"]
 
 
 # ── Activation, and the sign-in that must wait for it ───────────────────────
