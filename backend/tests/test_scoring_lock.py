@@ -171,7 +171,12 @@ def test_the_scoring_task_takes_the_lock_before_it_spends_anything() -> None:
         "duplicate is only caught by uq_functional_report_link, at COMMIT, "
         "after both runs have paid for the whole model chain."
     )
-    for later in ("has_positive_balance", "run_assessment", "persist_skill_evidence"):
+    for later in (
+        "restriction_reason",
+        "has_positive_balance",
+        "run_assessment",
+        "persist_skill_evidence",
+    ):
         line = called_at(later)
         assert line is None or lock_line < line, (
             f"the scoring lock is taken AFTER the call to {later}, so a "

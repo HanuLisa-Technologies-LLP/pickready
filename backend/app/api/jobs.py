@@ -322,31 +322,29 @@ async def _get_visible_job(
     return job
 
 
-#: The credit gate's refusal (spec §11). Shared by create and JD generation.
-CREDITS_EXHAUSTED_DETAIL = (
-    "Your credit pool is exhausted, so new jobs cannot be created. "
-    "Purchase a credit bundle to continue creating jobs and "
-    "assessing candidates."
-)
-
-
 async def _require_create_gates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
     """The two gates on starting a new job, in order, before any work.
 
     The credit gate (spec §11) is checked at the MOMENT of creation and nowhere
     else: a job created while the pool had credit stays created if the pool
     later empties. Loud and immediate, with the way out named: spec §11 is
-    explicit that there is no silent failure and no degraded mode here.
+    explicit that there is no silent failure and no degraded mode here. It is
+    `entitlements.restriction_reason`'s answer, the one place a credit gate
+    is worded.
 
     Gate 1 (workflow §18): the Company Profile must say something. It is what
     every job on the tenant is derived from and what this job's narrative
     sections are seeded from. Asked of the TABLE, and only at creation: a job
     created before the client wrote their profile stays created.
     """
-    if not await credits.has_positive_balance(session, tenant_id):
+    from app.services import entitlements  # noqa: PLC0415
+
+    refused = await entitlements.restriction_reason(
+        session, tenant_id, entitlements.ACTION_CREATE_JOB
+    )
+    if refused is not None:
         raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=CREDITS_EXHAUSTED_DETAIL,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=refused
         )
     from app.services.hiring import company_requirements  # noqa: PLC0415
 
