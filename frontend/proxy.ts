@@ -20,6 +20,7 @@ function hasSession(request: NextRequest): boolean {
 
 const PUBLIC_PREFIXES = [
   "/login",
+  "/company/login", // the company sign-in page (email, password, security check)
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
   // THE REST OF THE PUBLIC SITE, WHICH WAS BEING REDIRECTED TO SIGN-IN.
@@ -144,7 +145,10 @@ export function proxy(request: NextRequest) {
   // PUBLIC_PREFIXES needs a session, so /bd is covered without an entry.
   if (!hasSession(request)) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    // A company page sends a signed-out visitor to the COMPANY sign-in page,
+    // because a company account cannot sign in on the candidate one.
+    url.pathname =
+      pathname === "/org" || pathname.startsWith("/org/") ? "/company/login" : "/login";
     // Carry the QUERY too, not just the path. A destination like
     // /portal/assessments/<id>?from=email loses its meaning without it, and
     // the whole point of `next` is that the person lands where they were

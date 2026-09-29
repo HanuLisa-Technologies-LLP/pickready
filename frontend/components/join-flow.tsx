@@ -1,18 +1,29 @@
 "use client";
 
+// Joining a company team from an invitation (auth spec 2.5 and 11.4).
+//
+// THE SERVER SETS THE PASSWORD, FOR EXACTLY THE INVITED EMAIL. Creating the
+// account posts the password and a security check proof to
+// `/companies/invites/{token}/setup-password`; the address is the invitation's
+// and is never sent from here, so an invitation cannot be spent on another
+// mailbox. The server creates the sign-in, accepts the invitation and opens the
+// company session in one step.
+//
+// AN ADDRESS THAT ALREADY HAS A SIGN-IN signs in with its existing password
+// instead: Firebase proves the password, the exchange (purpose `invite_join`)
+// opens the company workspace, and the invitation is accepted.
+//
+// THERE IS NO GOOGLE HERE. Every company role signs in with an email and
+// password, and the server refuses Google for one whatever this page shows.
+
 import * as React from "react";
 import { Check, Eye, EyeOff, Loader2, MailCheck } from "lucide-react";
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  updateProfile,
-} from "firebase/auth";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { apiGet, apiPost } from "@/lib/api";
-import { createCandidateGoogleProvider, firebaseAuth } from "@/lib/firebase";
+import { ApiError, apiGet, apiPost } from "@/lib/api";
+import { firebaseAuth } from "@/lib/firebase";
 import {
   exchangeFirebaseSession,
   friendlyAuthError,
@@ -20,9 +31,10 @@ import {
   selectContext,
 } from "@/lib/firebase-session";
 import { useAuth } from "@/lib/auth-context";
+import { apiErrorMessage } from "@/lib/validation-errors";
 import type { AuthSession, StaffRole } from "@/lib/types";
-import { AuthDivider, AuthShell } from "@/components/auth-shell";
-import { GoogleMark } from "@/components/google-mark";
+import { AuthShell } from "@/components/auth-shell";
+import { Captcha, type CaptchaHandle } from "@/components/captcha";
 import { InlineError, LoadingRows } from "@/components/page-primitives";
 import {
   PasswordRules,
@@ -43,12 +55,20 @@ type InviteInfo = {
   status: "pending";
 };
 
-const ROLE_LABELS: Record<StaffRole, string> = {
+const ROLE_LABELS: Partial<Record<string, string>> = {
   recruitment_manager: "Recruitment Manager",
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",
+  interview_manager: "Interview Manager",
+  ceo: "CEO",
+  md: "MD",
+  functional_head: "Functional Head",
 };
+
+function roleLabel(role: string): string {
+  return ROLE_LABELS[role] ?? "team member";
+}
 
 export function JoinFlow({ token }: { token: string }) {
   const router = useRouter();
@@ -63,8 +83,10 @@ export function JoinFlow({ token }: { token: string }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [accepted, setAccepted] = React.useState(false);
+  const captcha = React.useRef<CaptchaHandle>(null);
   const rules = passwordRules(password);
   const passwordValid = isPasswordValid(rules);
+  const tokenPath = `/companies/invites/${encodeURIComponent(token)}`;
 
   React.useEffect(() => {
     if (!token) {
@@ -72,46 +94,63 @@ export function JoinFlow({ token }: { token: string }) {
       setLoading(false);
       return;
     }
-    apiGet<InviteInfo>(`/companies/invites/${encodeURIComponent(token)}`)
+    apiGet<InviteInfo>(tokenPath)
       .then((result) => {
         setInvite(result);
         setName(result.full_name ?? "");
       })
       .catch((requestError) =>
         setLoadError(
-          requestError instanceof Error
-            ? requestError.message
+          requestError instanceof ApiError
+            ? apiErrorMessage(requestError)
             : "This invitation is invalid or no longer available."
         )
       )
       .finally(() => setLoading(false));
-  }, [token]);
+  }, [token, tokenPath]);
 
-  const complete = React.useCallback(
-    async (session: AuthSession) => {
-      if (!invite) return;
-      await apiPost(`/companies/invites/${encodeURIComponent(token)}/accept`);
+  const joined = React.useCallback(
+    (session: AuthSession) => {
       setSession(session.user, session.capabilities ?? []);
       setAccepted(true);
     },
-    [invite, setSession, token]
+    [setSession]
   );
 
-  const exchangeAndAccept = React.useCallback(
-    async (firebaseUser: typeof firebaseAuth.currentUser) => {
-      if (!firebaseUser || !invite) return;
-      const signedInEmail = firebaseUser.email?.trim().toLowerCase();
-      if (signedInEmail !== invite.email.trim().toLowerCase()) {
-        await firebaseAuth.signOut();
-        throw new Error(
-          `Use ${invite.email}; the selected account does not match this invitation.`
-        );
+  const createAccount = async () => {
+    const proof = await captcha.current!.prove();
+    try {
+      joined(
+        await apiPost<AuthSession>(`/companies/invites/${encodeURIComponent(token)}/setup-password`, {
+          password,
+          captcha_proof: proof,
+          full_name: name.trim() || null,
+        })
+      );
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        // The address already has a sign-in: offer it, keep the sentence.
+        setMode("signin");
+        setPassword("");
       }
-      const result = await exchangeFirebaseSession(firebaseUser);
-      if (!isContextsResponse(result)) {
-        await complete(result);
-        return;
-      }
+      throw failure;
+    }
+  };
+
+  const signInExisting = async () => {
+    if (!invite) return;
+    const proof = await captcha.current!.prove();
+    const credential = await signInWithEmailAndPassword(
+      firebaseAuth,
+      invite.email,
+      password
+    );
+    const result = await exchangeFirebaseSession(credential.user, {
+      proof,
+      purpose: "invite_join",
+    });
+    let session: AuthSession;
+    if (isContextsResponse(result)) {
       const target = result.contexts.find(
         (context) =>
           context.tenant_name === invite.company_name &&
@@ -122,67 +161,40 @@ export function JoinFlow({ token }: { token: string }) {
           "Your account was verified, but this company workspace was not available. Ask the company admin to resend the invitation."
         );
       }
-      await complete(
-        await selectContext(result.context_token, target.user_id)
-      );
-    },
-    [complete, invite]
-  );
-
-  const run = (action: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    void action()
-      .catch((authError) => {
-        const direct =
-          authError instanceof Error &&
-          (authError.message.startsWith("Use ") ||
-            authError.message.startsWith("Your account"))
-            ? authError.message
-            : friendlyAuthError(authError);
-        if (direct) setError(direct);
-      })
-      .finally(() => setBusy(false));
+      session = await selectContext(result.context_token, target.user_id);
+    } else {
+      session = result;
+    }
+    await apiPost(`/companies/invites/${encodeURIComponent(token)}/accept`);
+    joined(session);
   };
 
-  const usePassword = (event: React.FormEvent) => {
+  const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!invite) return;
+    if (!invite || busy) return;
     if (mode === "create" && (!name.trim() || !passwordValid)) {
       setError(
         "Enter your name and use at least 8 characters with uppercase, lowercase, and a number."
       );
       return;
     }
-    run(async () => {
-      const credential =
-        mode === "create"
-          ? await createUserWithEmailAndPassword(
-              firebaseAuth,
-              invite.email,
-              password
-            )
-          : await signInWithEmailAndPassword(
-              firebaseAuth,
-              invite.email,
-              password
-            );
-      if (mode === "create" && name.trim()) {
-        await updateProfile(credential.user, { displayName: name.trim() });
-      }
-      await exchangeAndAccept(credential.user);
-    });
+    if (mode === "signin" && !password) {
+      setError("Enter your password.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    void (mode === "create" ? createAccount() : signInExisting())
+      .catch((failure) => {
+        const direct =
+          failure instanceof Error &&
+          failure.message.startsWith("Your account")
+            ? failure.message
+            : friendlyAuthError(failure);
+        if (direct) setError(direct);
+      })
+      .finally(() => setBusy(false));
   };
-
-  const useGoogle = () =>
-    run(async () => {
-      const credential = await signInWithPopup(
-        firebaseAuth,
-        createCandidateGoogleProvider()
-      );
-      await exchangeAndAccept(credential.user);
-    });
 
   if (loading) {
     return (
@@ -201,7 +213,7 @@ export function JoinFlow({ token }: { token: string }) {
         }
       >
         <Button asChild size="lg" className="w-full">
-          <a href="/login">Go to sign in</a>
+          <a href="/company/login">Go to company sign in</a>
         </Button>
       </AuthShell>
     );
@@ -211,7 +223,7 @@ export function JoinFlow({ token }: { token: string }) {
     return (
       <AuthShell
         title={`You joined ${invite.company_name}`}
-        description={`Your ${ROLE_LABELS[invite.role]} workspace is ready.`}
+        description={`Your ${roleLabel(invite.role)} workspace is ready.`}
       >
         <div className="flex justify-center">
           <span className="grid h-14 w-14 place-items-center rounded-2xl bg-rating-1-bg text-rating-1">
@@ -233,7 +245,7 @@ export function JoinFlow({ token }: { token: string }) {
           {invite.invited_by_name
             ? `${invite.invited_by_name} invited you`
             : "You were invited"}{" "}
-          as {ROLE_LABELS[invite.role]}.
+          as {roleLabel(invite.role)}.
         </>
       }
     >
@@ -245,24 +257,11 @@ export function JoinFlow({ token }: { token: string }) {
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{invite.email}</p>
           <p className="mt-0.5 text-xs">
-            Expires {new Date(invite.expires_at).toLocaleDateString()}
+            Only this address can join with this invitation. Expires{" "}
+            {new Date(invite.expires_at).toLocaleDateString()}.
           </p>
         </div>
       </div>
-
-      <Button
-        type="button"
-        variant="outline"
-        size="lg"
-        className="w-full"
-        disabled={busy}
-        onClick={useGoogle}
-      >
-        <GoogleMark />
-        Continue with Google
-      </Button>
-
-      <AuthDivider />
 
       <div
         role="tablist"
@@ -286,12 +285,12 @@ export function JoinFlow({ token }: { token: string }) {
                 : "font-medium hover:bg-brand-100/60"
             )}
           >
-            {value === "create" ? "Create account" : "Sign in"}
+            {value === "create" ? "Create password" : "I already have one"}
           </button>
         ))}
       </div>
 
-      <form className="space-y-4" onSubmit={usePassword}>
+      <form className="space-y-4" onSubmit={submit}>
         {mode === "create" ? (
           <div className="space-y-1.5">
             <Label htmlFor="join-name">Full name</Label>
@@ -306,7 +305,20 @@ export function JoinFlow({ token }: { token: string }) {
           </div>
         ) : null}
         <div className="space-y-1.5">
-          <Label htmlFor="join-password">Password</Label>
+          <Label htmlFor="join-email">Email address</Label>
+          <Input
+            id="join-email"
+            type="email"
+            autoComplete="username"
+            value={invite.email}
+            readOnly
+            aria-readonly="true"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="join-password">
+            {mode === "create" ? "Create a password" : "Your password"}
+          </Label>
           <div className="relative">
             <Input
               id="join-password"
@@ -335,6 +347,7 @@ export function JoinFlow({ token }: { token: string }) {
           </div>
           {mode === "create" ? <PasswordRules rules={rules} /> : null}
         </div>
+        <Captcha ref={captcha} purpose="invite_join" disabled={busy} idPrefix="join-captcha" />
         <Button
           size="lg"
           className="w-full"
@@ -346,7 +359,7 @@ export function JoinFlow({ token }: { token: string }) {
               Joining
             </>
           ) : mode === "create" ? (
-            "Create account and join"
+            "Create password and join"
           ) : (
             "Sign in and join"
           )}

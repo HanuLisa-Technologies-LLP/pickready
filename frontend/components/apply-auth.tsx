@@ -19,6 +19,12 @@ import {
 } from "@/lib/firebase-session";
 import { useAuth } from "@/lib/auth-context";
 import { ForgotPassword } from "@/components/forgot-password";
+import {
+  CAPTCHA_EMPTY_MESSAGE,
+  Captcha,
+  CaptchaError,
+  type CaptchaHandle,
+} from "@/components/captcha";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +49,11 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
   const [error, setError] = React.useState<string | null>(null);
   const rules = passwordRules(password);
   const passwordValid = Object.values(rules).every(Boolean);
+  const [resetOpen, setResetOpen] = React.useState(false);
+  const captcha = React.useRef<CaptchaHandle>(null);
+  // The security check names the surface: signing in is a candidate sign-in,
+  // creating an account a candidate registration.
+  const purpose = mode === "register" ? "candidate_register" : "candidate_login";
 
   const handleExchange = React.useCallback(
     async (result: FirebaseExchangeResult) => {
@@ -81,8 +92,8 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
       .catch((authError) => {
         const direct =
           authError instanceof Error &&
-          (authError.message.startsWith("That account") ||
-            authError.message.startsWith("That account does"))
+          !(authError instanceof CaptchaError) &&
+          authError.message.startsWith("That account")
             ? authError.message
             : friendlyAuthError(authError);
         if (direct) setError(direct);
@@ -90,14 +101,24 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
       .finally(() => setBusy(false));
   };
 
-  const google = () =>
+  const google = () => {
+    // The popup must open on the click itself, so the check is asked for
+    // before it and verified after it.
+    if (!captcha.current?.hasAnswer()) {
+      setError(CAPTCHA_EMPTY_MESSAGE);
+      return;
+    }
     run(async () => {
       const credential = await signInWithPopup(
         firebaseAuth,
         createCandidateGoogleProvider()
       );
-      await handleExchange(await exchangeFirebaseSession(credential.user));
+      const proof = await captcha.current!.prove();
+      await handleExchange(
+        await exchangeFirebaseSession(credential.user, { proof, purpose })
+      );
     });
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -112,6 +133,8 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
       return;
     }
     run(async () => {
+      // The security check first: a wrong answer costs no Firebase sign-in.
+      const proof = await captcha.current!.prove();
       const credential =
         mode === "register"
           ? await createUserWithEmailAndPassword(
@@ -127,7 +150,9 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
       if (mode === "register") {
         await updateProfile(credential.user, { displayName: name.trim() });
       }
-      await handleExchange(await exchangeFirebaseSession(credential.user));
+      await handleExchange(
+        await exchangeFirebaseSession(credential.user, { proof, purpose })
+      );
     });
   };
 
@@ -151,6 +176,8 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
           Create account
         </Button>
       </div>
+      {!resetOpen ? (
+      <>
       <Button
         type="button"
         variant="outline"
@@ -228,6 +255,13 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
             </ul>
           ) : null}
         </div>
+        <Captcha
+          key={purpose}
+          ref={captcha}
+          purpose={purpose}
+          disabled={busy}
+          idPrefix="apply-captcha"
+        />
         <Button
           className="w-full"
           disabled={busy || (mode === "register" && !passwordValid)}
@@ -239,8 +273,17 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
               : "Sign in and continue"}
         </Button>
       </form>
+      </>
+      ) : null}
       {mode === "signin" ? (
-        <ForgotPassword initialEmail={email} idPrefix="apply" />
+        <ForgotPassword
+          initialEmail={email}
+          idPrefix="apply"
+          onOpenChange={(open) => {
+            setResetOpen(open);
+            setError(null);
+          }}
+        />
       ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">

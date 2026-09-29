@@ -135,7 +135,10 @@ describe("API mount parity", () => {
     // api*() call, so neither grep above can see them. Any template literal
     // that puts `/skills` or `/setup` straight after an interpolated job id is
     // one of these paths, and it must be composed from the full mount.
-    const path = /`([^`]*\$\{[^}]+\}\/(?:skills|setup)\b[^`]*)`/g;
+    // A WHOLE segment: `/setup-password` on an invitation token (auth
+    // hardening, 2026-09-29) is a different route on the companies router,
+    // and `\b` would have read the hyphen as the end of `/setup`.
+    const path = /`([^`]*\$\{[^}]+\}\/(?:skills|setup)(?![\w-])[^`]*)`/g;
     const FULL = "/api/v2/assessments";
     const VIA_BASE = `const BASE = "${FULL}/jobs"`;
 

@@ -1,90 +1,145 @@
 // @vitest-environment jsdom
 //
-// "Forgot password?" is Firebase's own reset email. What is pinned:
+// "Forgot password?" runs on Vivekium's server now (auth spec 9.2). Pinned:
 //
-// * an address with no account reads EXACTLY like one with an account, so the
-//   sign-in screen cannot be used to test which addresses are registered;
-// * a failure the person can act on is said, and nothing fails silently;
-// * a malformed address never reaches Firebase;
-// * the control is inside the sign-in form without submitting it.
+// * the request carries the address and a security check proof, and the
+//   screen shows the server's one sentence, whatever the account state;
+// * the security code is exchanged for a reset ticket, and the ticket with a
+//   new password sets it; a password breaking the rule never leaves the page;
+// * a malformed address never reaches the server;
+// * the control sits inside a sign-in form without submitting it;
+// * Firebase's own reset email is not called at all.
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const firebaseAuthSdk = vi.hoisted(() => ({ sendPasswordResetEmail: vi.fn() }));
-vi.mock("firebase/auth", () => firebaseAuthSdk);
+const http = vi.hoisted(() => ({ apiPost: vi.fn() }));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return { ...actual, ...http };
+});
 vi.mock("@/lib/firebase", () => ({ firebaseAuth: { name: "test-auth" } }));
 
-import {
-  ForgotPassword,
-  RESET_SENT_MESSAGE,
-  requestPasswordReset,
-} from "./forgot-password";
+import { ForgotPassword, RESET_SENT_MESSAGE } from "./forgot-password";
+
+const CHALLENGE = {
+  challenge_id: "c1",
+  image: "data:image/svg+xml;base64,PHN2Zy8+",
+  expires_in: 300,
+};
+
+function serve(routes: Record<string, (body: unknown) => unknown>) {
+  http.apiPost.mockImplementation(async (path: string, body: unknown) => {
+    const handler = routes[path];
+    if (!handler) throw new Error(`unexpected POST ${path}`);
+    return handler(body);
+  });
+}
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
-const fail = (code: string) => Object.assign(new Error(code), { code });
+const posted = (path: string) =>
+  http.apiPost.mock.calls.filter(([called]) => called === path).map(([, body]) => body);
 
-describe("requestPasswordReset", () => {
-  it("answers the same whether or not the account exists", async () => {
-    firebaseAuthSdk.sendPasswordResetEmail.mockResolvedValueOnce(undefined);
-    const known = await requestPasswordReset("known@example.com");
-    firebaseAuthSdk.sendPasswordResetEmail.mockRejectedValueOnce(fail("auth/user-not-found"));
-    const unknown = await requestPasswordReset("nobody@example.com");
-    expect(known).toEqual({ sent: true });
-    expect(unknown).toEqual(known);
-  });
+async function open(initialEmail = "person@example.com") {
+  const outerSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
+  render(
+    <form onSubmit={outerSubmit}>
+      <ForgotPassword initialEmail={initialEmail} idPrefix="login" />
+    </form>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+  await screen.findByAltText(/security check characters/i);
+  return outerSubmit;
+}
 
-  it("sends the trimmed address to Firebase's own reset", async () => {
-    firebaseAuthSdk.sendPasswordResetEmail.mockResolvedValueOnce(undefined);
-    await requestPasswordReset("  person@example.com ");
-    expect(firebaseAuthSdk.sendPasswordResetEmail).toHaveBeenCalledWith(
-      { name: "test-auth" },
-      "person@example.com",
-    );
+describe("ForgotPassword", () => {
+  it("asks the server, with a security check, and shows its one sentence", async () => {
+    serve({
+      "/auth/captcha/challenge": () => CHALLENGE,
+      "/auth/captcha/verify": () => ({ captcha_proof: "proof-1" }),
+      "/auth/password-reset/request": () => ({ sent: true, message: RESET_SENT_MESSAGE }),
+    });
+    const outerSubmit = await open();
+    const field = screen.getByLabelText("Email address") as HTMLInputElement;
+    expect(field.value).toBe("person@example.com");
+    fireEvent.change(screen.getByLabelText("Security check"), { target: { value: "ab3d5f" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    expect(await screen.findByText(RESET_SENT_MESSAGE)).toBeTruthy();
+    expect(outerSubmit).not.toHaveBeenCalled();
+    expect(posted("/auth/captcha/verify")).toEqual([
+      { challenge_id: "c1", answer: "ab3d5f", purpose: "password_reset" },
+    ]);
+    expect(posted("/auth/password-reset/request")).toEqual([
+      { email: "person@example.com", captcha_proof: "proof-1" },
+    ]);
   });
 
   it("never sends a malformed address", async () => {
-    const outcome = await requestPasswordReset("not-an-address");
-    expect(outcome.sent).toBe(false);
-    expect(firebaseAuthSdk.sendPasswordResetEmail).not.toHaveBeenCalled();
+    serve({ "/auth/captcha/challenge": () => CHALLENGE });
+    await open("not-an-address");
+    fireEvent.click(screen.getByRole("button", { name: "Email me a security code" }));
+    expect(await screen.findByText(/enter the email address you sign in with/i)).toBeTruthy();
+    expect(posted("/auth/password-reset/request")).toEqual([]);
   });
 
-  it("says a failure the person can act on, and an unknown one too", async () => {
-    firebaseAuthSdk.sendPasswordResetEmail.mockRejectedValueOnce(fail("auth/too-many-requests"));
-    expect(await requestPasswordReset("a@example.com")).toEqual({
-      sent: false,
-      message: expect.stringMatching(/too many attempts/i),
+  it("walks the code and the new password through to the server", async () => {
+    serve({
+      "/auth/captcha/challenge": () => CHALLENGE,
+      "/auth/captcha/verify": () => ({ captcha_proof: "proof-2" }),
+      "/auth/password-reset/request": () => ({ sent: true, message: RESET_SENT_MESSAGE }),
+      "/auth/password-reset/verify": () => ({ reset_token: "ticket-1" }),
+      "/auth/password-reset/complete": () => ({
+        password_changed: true,
+        message: "Your password has been changed. Sign in with your new password.",
+      }),
     });
-    firebaseAuthSdk.sendPasswordResetEmail.mockRejectedValueOnce(fail("auth/internal-error"));
-    expect(await requestPasswordReset("a@example.com")).toEqual({
-      sent: false,
-      message: expect.stringMatching(/could not send/i),
-    });
+    await open();
+    fireEvent.change(screen.getByLabelText("Security check"), { target: { value: "ab3d5f" } });
+    fireEvent.click(screen.getByRole("button", { name: "Email me a security code" }));
+
+    const codeField = await screen.findByLabelText("Security code");
+    fireEvent.change(codeField, { target: { value: "04 29 17" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    const passwordField = await screen.findByLabelText("New password");
+    fireEvent.change(passwordField, { target: { value: "weak" } });
+    expect(
+      (screen.getByRole("button", { name: "Set new password" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.change(passwordField, { target: { value: "Fresh-Pass-2026" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set new password" }));
+
+    expect(await screen.findByText(/your password has been changed/i)).toBeTruthy();
+    expect(posted("/auth/password-reset/verify")).toEqual([
+      { email: "person@example.com", code: "042917" },
+    ]);
+    expect(posted("/auth/password-reset/complete")).toEqual([
+      { reset_token: "ticket-1", password: "Fresh-Pass-2026" },
+    ]);
   });
-});
 
-describe("ForgotPassword", () => {
-  it("prefills the address, sends inside a sign-in form without submitting it, and states the outcome", async () => {
-    firebaseAuthSdk.sendPasswordResetEmail.mockResolvedValue(undefined);
-    const outerSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
-    render(
-      <form onSubmit={outerSubmit}>
-        <ForgotPassword initialEmail="person@example.com" idPrefix="login" />
-      </form>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
-    const field = screen.getByLabelText(/email address for the reset link/i) as HTMLInputElement;
-    expect(field.value).toBe("person@example.com");
-
-    fireEvent.keyDown(field, { key: "Enter" });
-    expect(await screen.findByText(RESET_SENT_MESSAGE)).toBeTruthy();
-    expect(outerSubmit).not.toHaveBeenCalled();
+  it("says the server's refusal of a wrong code", async () => {
+    const { ApiError } = await import("@/lib/api");
+    serve({
+      "/auth/captcha/challenge": () => CHALLENGE,
+      "/auth/captcha/verify": () => ({ captcha_proof: "proof-3" }),
+      "/auth/password-reset/request": () => ({ sent: true, message: RESET_SENT_MESSAGE }),
+      "/auth/password-reset/verify": () => {
+        throw new ApiError(400, { detail: "That security code is not valid or has expired." });
+      },
+    });
+    await open();
+    fireEvent.change(screen.getByLabelText("Security check"), { target: { value: "ab3d5f" } });
+    fireEvent.click(screen.getByRole("button", { name: "Email me a security code" }));
+    fireEvent.change(await screen.findByLabelText("Security code"), { target: { value: "111111" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
     await waitFor(() =>
-      expect(firebaseAuthSdk.sendPasswordResetEmail).toHaveBeenCalledTimes(1),
+      expect(screen.getByText("That security code is not valid or has expired.")).toBeTruthy(),
     );
   });
 });
