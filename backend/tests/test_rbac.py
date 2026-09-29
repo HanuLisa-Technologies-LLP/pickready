@@ -111,16 +111,8 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         # sender list's write, and a role's VIEW grant equals its MANAGE
         # grant, so the new read diverges exactly where the write already did.
         "view_email_senders",
-        # Vivekium feature 1 (Drishti). The brief names its audience in one
-        # line and excludes one role BY NAME: "MD, CEO, Functional Heads (CTO,
-        # CFO, COO). NOT the Hiring Manager." That exclusion is a product rule,
-        # so the divergence here is the rule being expressible rather than a
-        # drift. The Recruiter is refused for the complementary reason given
-        # in capabilities.py: they run a pipeline against criteria somebody
-        # else set, and a function's strategic direction is not a pipeline act.
-        # A functional head sitting in a narrower seat is pinned by the
-        # per-user overlay, never by widening the role default.
-        "author_drishti_profile",
+        # (Drishti's authoring capability diverged here until 2026-09-29;
+        # the capability left with Drishti's code, migration 0135.)
     }
     assert differing == expected, (
         "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "

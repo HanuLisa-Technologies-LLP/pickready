@@ -79,6 +79,82 @@ RETIRED_CAPABILITY = "author_drishti_profile"
 #: The SQL twin of `services/departments.normalize` (0133 states the same).
 _NORMALIZED = "lower(btrim(regexp_replace({col}, '\\s+', ' ', 'g')))"
 
+#: The Drishti carry-over, as two statements a test can run against seeded
+#: rows (`tests/test_leadership_migration.py`). Both are idempotent: a
+#: department or profile that exists is left alone.
+_NORMALIZED_FN = _NORMALIZED.format(col="d.function_name")
+CARRY_DRISHTI_DEPARTMENTS_SQL = f"""
+        INSERT INTO company_departments (id, tenant_id, name, normalized_name)
+        SELECT gen_random_uuid(), picked.tenant_id, picked.name, picked.normalized
+        FROM (
+            SELECT DISTINCT ON (d.tenant_id, {_NORMALIZED_FN})
+                   d.tenant_id,
+                   btrim(regexp_replace(d.function_name, '\\s+', ' ', 'g')) AS name,
+                   {_NORMALIZED_FN} AS normalized
+            FROM drishti_profiles d
+            WHERE {_NORMALIZED_FN} <> ''
+            ORDER BY d.tenant_id, {_NORMALIZED_FN}, d.created_at, d.id
+        ) AS picked
+        WHERE NOT EXISTS (
+            SELECT 1 FROM company_departments c
+            WHERE c.tenant_id = picked.tenant_id
+              AND c.normalized_name = picked.normalized
+        )
+        """
+CARRY_DRISHTI_PROFILES_SQL = f"""
+        INSERT INTO leadership_profiles (
+            id, tenant_id, author_user_id, author_role, department_id, version,
+            department_requirements, ideal_employee_expectations,
+            compiled_json, draft_provenance_json, created_at
+        )
+        SELECT gen_random_uuid(), picked.tenant_id, picked.author, 'functional_head',
+               picked.department_id, 1,
+               NULLIF(concat_ws(E'\\n\\n',
+                   NULLIF(btrim(picked.strategic_purpose), ''),
+                   NULLIF(btrim(picked.non_negotiables), ''),
+                   NULLIF(btrim(picked.strategic_gap), '')), ''),
+               NULLIF(concat_ws(E'\\n\\n',
+                   NULLIF(btrim(picked.people_philosophy), ''),
+                   NULLIF(btrim(picked.culture_expectations), '')), ''),
+               jsonb_build_object(
+                   'schema_version', 1,
+                   'migrated_from', 'drishti_profiles',
+                   'role', 'functional_head',
+                   'department_id', picked.department_id::text,
+                   'department_priorities',
+                       COALESCE(picked.compiled -> 'context_lines', '[]'::jsonb),
+                   'company_priorities', '[]'::jsonb,
+                   'observable_competencies', '[]'::jsonb,
+                   'non_negotiables', '[]'::jsonb,
+                   'success_outcomes', '[]'::jsonb,
+                   'culture_expectations', '[]'::jsonb,
+                   'strategic_gaps', '[]'::jsonb,
+                   'excluded_or_unsafe_claims', '[]'::jsonb,
+                   'provenance', '[]'::jsonb
+               ),
+               jsonb_build_object('ai_draft_used', false, 'migrated_from', 'drishti_profiles'),
+               COALESCE(picked.updated_at, picked.created_at)
+        FROM (
+            SELECT DISTINCT ON (c.id)
+                   d.tenant_id, c.id AS department_id,
+                   (SELECT u.id FROM users u
+                     WHERE u.id = COALESCE(d.functional_head_user_id, d.updated_by)) AS author,
+                   d.strategic_purpose, d.people_philosophy, d.non_negotiables,
+                   d.culture_expectations, d.strategic_gap,
+                   d.compiled_json AS compiled, d.updated_at, d.created_at
+            FROM drishti_profiles d
+            JOIN company_departments c
+              ON c.tenant_id = d.tenant_id AND c.normalized_name = {_NORMALIZED_FN}
+            ORDER BY c.id, d.updated_at DESC NULLS LAST, d.created_at DESC
+        ) AS picked
+        WHERE NOT EXISTS (
+            SELECT 1 FROM leadership_profiles p
+            WHERE p.tenant_id = picked.tenant_id
+              AND p.department_id = picked.department_id
+        )
+        """
+CARRY_DRISHTI_SQL = (CARRY_DRISHTI_DEPARTMENTS_SQL, CARRY_DRISHTI_PROFILES_SQL)
+
 _INSERT_ONLY_TABLES = (
     "leadership_profiles",
     "leadership_department_expectations",
@@ -330,81 +406,8 @@ def upgrade() -> None:
     )
 
     # ── 6. Drishti, carried across ──────────────────────────────────────────
-    normalized_fn = _NORMALIZED.format(col="d.function_name")
-    op.execute(
-        f"""
-        INSERT INTO company_departments (id, tenant_id, name, normalized_name)
-        SELECT gen_random_uuid(), picked.tenant_id, picked.name, picked.normalized
-        FROM (
-            SELECT DISTINCT ON (d.tenant_id, {normalized_fn})
-                   d.tenant_id,
-                   btrim(regexp_replace(d.function_name, '\\s+', ' ', 'g')) AS name,
-                   {normalized_fn} AS normalized
-            FROM drishti_profiles d
-            WHERE {normalized_fn} <> ''
-            ORDER BY d.tenant_id, {normalized_fn}, d.created_at, d.id
-        ) AS picked
-        WHERE NOT EXISTS (
-            SELECT 1 FROM company_departments c
-            WHERE c.tenant_id = picked.tenant_id
-              AND c.normalized_name = picked.normalized
-        )
-        """
-    )
-    op.execute(
-        f"""
-        INSERT INTO leadership_profiles (
-            id, tenant_id, author_user_id, author_role, department_id, version,
-            department_requirements, ideal_employee_expectations,
-            compiled_json, draft_provenance_json, created_at
-        )
-        SELECT gen_random_uuid(), picked.tenant_id, picked.author, 'functional_head',
-               picked.department_id, 1,
-               NULLIF(concat_ws(E'\\n\\n',
-                   NULLIF(btrim(picked.strategic_purpose), ''),
-                   NULLIF(btrim(picked.non_negotiables), ''),
-                   NULLIF(btrim(picked.strategic_gap), '')), ''),
-               NULLIF(concat_ws(E'\\n\\n',
-                   NULLIF(btrim(picked.people_philosophy), ''),
-                   NULLIF(btrim(picked.culture_expectations), '')), ''),
-               jsonb_build_object(
-                   'schema_version', 1,
-                   'migrated_from', 'drishti_profiles',
-                   'role', 'functional_head',
-                   'department_id', picked.department_id::text,
-                   'department_priorities',
-                       COALESCE(picked.compiled -> 'context_lines', '[]'::jsonb),
-                   'company_priorities', '[]'::jsonb,
-                   'observable_competencies', '[]'::jsonb,
-                   'non_negotiables', '[]'::jsonb,
-                   'success_outcomes', '[]'::jsonb,
-                   'culture_expectations', '[]'::jsonb,
-                   'strategic_gaps', '[]'::jsonb,
-                   'excluded_or_unsafe_claims', '[]'::jsonb,
-                   'provenance', '[]'::jsonb
-               ),
-               jsonb_build_object('ai_draft_used', false, 'migrated_from', 'drishti_profiles'),
-               COALESCE(picked.updated_at, picked.created_at)
-        FROM (
-            SELECT DISTINCT ON (c.id)
-                   d.tenant_id, c.id AS department_id,
-                   (SELECT u.id FROM users u
-                     WHERE u.id = COALESCE(d.functional_head_user_id, d.updated_by)) AS author,
-                   d.strategic_purpose, d.people_philosophy, d.non_negotiables,
-                   d.culture_expectations, d.strategic_gap,
-                   d.compiled_json AS compiled, d.updated_at, d.created_at
-            FROM drishti_profiles d
-            JOIN company_departments c
-              ON c.tenant_id = d.tenant_id AND c.normalized_name = {normalized_fn}
-            ORDER BY c.id, d.updated_at DESC NULLS LAST, d.created_at DESC
-        ) AS picked
-        WHERE NOT EXISTS (
-            SELECT 1 FROM leadership_profiles p
-            WHERE p.tenant_id = picked.tenant_id
-              AND p.department_id = picked.department_id
-        )
-        """
-    )
+    for statement in CARRY_DRISHTI_SQL:
+        op.execute(statement)
 
     # ── 7. The retired capability ───────────────────────────────────────────
     op.execute(f"DELETE FROM role_permissions WHERE capability = '{RETIRED_CAPABILITY}'")

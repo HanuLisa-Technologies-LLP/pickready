@@ -847,7 +847,7 @@ DEFAULT_PERMISSION_MATRIX[Role.interview_manager].update(
 
 # ── Drishti's capability is DELETED (Leadership Intelligence, 2026-09-29) ────
 #
-# `author_drishti_profile` left with `/drishti`, its page and its routes, in
+# Drishti's authoring capability left with its page and its routes, in
 # one change with its seeding (migration 0135 deletes every role_permissions
 # row, global and per tenant, and every per-user overlay key). The leaders who
 # write what the company wants from hires hold `author_leadership_intelligence`

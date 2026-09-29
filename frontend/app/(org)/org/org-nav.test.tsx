@@ -1,21 +1,18 @@
 // @vitest-environment jsdom
 //
-// Drishti has to be REACHABLE, and only by somebody who may author one.
+// Leadership Intelligence has to be REACHABLE, and only by somebody who may
+// author it or read it (2026-09-29, spec 27 and 28; it replaced Drishti).
 //
-// This is the whole of gap 1 in the vivekium Drishti work, and the shape is
-// worth more than the fix. The page, its four endpoints, the compilation and
-// the enhancement-layer wiring all shipped working, and nothing linked to
-// them: `app/(org)/org/layout.tsx` enumerates every nav entry and Drishti was
-// not among them. So a functional head could not find the screen, so no
-// profile was ever authored, so the layer changed nothing in any assessment.
-// A capability-gated route with no way in is indistinguishable from a feature
-// that was never built, and no test in the product could tell the difference.
+// The shape is worth more than the fix, and it is Drishti's own history: its
+// page, its endpoints and its compilation all shipped working and nothing in
+// `app/(org)/org/layout.tsx` linked to them, so nobody authored a profile and
+// the layer changed nothing in any assessment. A capability-gated route with
+// no way in is indistinguishable from a feature that was never built.
 //
-// The gate is the OTHER half and it is not cosmetic. `author_drishti_profile`
-// is deliberately not `edit_company_profile`: every client-side staff role
-// holds that one including the Hiring Manager, whom the brief excludes by
-// name. Asking the wider capability here would show the entry to somebody all
-// four endpoints then refuse, which is the courtesy and the gate disagreeing.
+// The gate is the OTHER half. A leader AUTHORS (`author_leadership_intelligence`:
+// CEO, MD, Functional Head) and a company-wide reader VIEWS
+// (`view_leadership_intelligence`: the Super Admin, the CEO, the MD). Asking a
+// wider capability would show the entry to somebody every endpoint refuses.
 
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,40 +67,44 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("the customer portal navigation", () => {
-  it("offers Drishti to somebody who may author one", () => {
-    held.add(CAP.authorDrishtiProfile);
-    expect(navHrefs()).toContain("/org/drishti");
+  it("offers Leadership Intelligence to a leader who authors it", () => {
+    held.add(CAP.authorLeadershipIntelligence);
+    expect(navHrefs()).toContain("/org/leadership");
   });
 
-  it("labels it so a functional head recognises it", () => {
-    held.add(CAP.authorDrishtiProfile);
+  it("offers it to a company-wide reader who cannot author it", () => {
+    held.add(CAP.viewLeadershipIntelligence);
+    expect(navHrefs()).toContain("/org/leadership");
+  });
+
+  it("labels it so a leader recognises it", () => {
+    held.add(CAP.authorLeadershipIntelligence);
     render(
       <OrgLayout>
         <span>content</span>
       </OrgLayout>
     );
     const nav = navSpy.mock.calls.at(-1)?.[0] as { href: string; label: string }[];
-    expect(nav.find((item) => item.href === "/org/drishti")?.label).toBe("Drishti");
+    expect(nav.find((item) => item.href === "/org/leadership")?.label).toBe(
+      "Leadership Intelligence"
+    );
   });
 
-  it("hides it from somebody who may not", () => {
-    // The Hiring Manager's case, which is the brief's own exclusion: they
-    // hold `edit_company_profile` and every other staff capability, and they
-    // still must not be pointed at this screen.
+  it("hides it from somebody who may do neither", () => {
+    // A Hiring Manager or a Recruiter: every other staff capability, and no
+    // reason to be pointed at this screen.
     held.add(CAP.editCompanyProfile);
     held.add(CAP.viewCompanyJobs);
     held.add(CAP.createJob);
     const hrefs = navHrefs();
-    expect(hrefs).not.toContain("/org/drishti");
+    expect(hrefs).not.toContain("/org/leadership");
     // And the rest of the nav still rendered, so the assertion above is
     // about the gate rather than about a layout that failed to mount.
     expect(hrefs).toContain("/org/jobs");
   });
 
-  it("gates it on the capability the route itself requires", () => {
-    // The string, once, because the nav asking a DIFFERENT capability from
-    // the endpoints is the failure mode that produces a visible link to a
-    // page that 403s.
-    expect(CAP.authorDrishtiProfile).toBe("author_drishti_profile");
+  it("gates it on the capabilities the routes themselves require", () => {
+    expect(CAP.authorLeadershipIntelligence).toBe("author_leadership_intelligence");
+    expect(CAP.viewLeadershipIntelligence).toBe("view_leadership_intelligence");
   });
 });

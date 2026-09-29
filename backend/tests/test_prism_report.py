@@ -34,6 +34,9 @@ SPEC_ORDER = (
     "must_have",
     "nice_to_have",
     "behavioural",
+    # 0135. Leadership Alignment reads the grades above it against what the
+    # company's leaders asked for, so it follows them directly (spec 22.9).
+    "leadership_alignment",
     # 0107. The Evidence vs Claim Summary annotates the grades above it; the
     # Recommended Human Validation Points sit beside the Gap Analysis because
     # they are the other thing an interviewer acts on. Gap Analysis still
@@ -57,6 +60,7 @@ SECTION_HEADINGS = {
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",
     "behavioural": "Behavioural Competencies",
+    "leadership_alignment": "Leadership Alignment",
     "claim_evidence": "Evidence vs Claim Summary",
     "gap_analysis": "Gap Analysis",
     "validation_points": "Recommended Human Validation Points",
@@ -151,6 +155,29 @@ def _report() -> dict:
                 {"label": "Notice period", "value": "Thirty days"},
                 {"label": "Role interest", "value": "Platform reliability ownership"},
             ]
+        },
+        "leadership_alignment": {
+            "note": "What the company's leaders said they need from hires.",
+            "groups": [
+                {
+                    "title": "Company-wide expectations",
+                    "lines": [
+                        {
+                            "kind": "finding",
+                            "text": "CEO: We need people who have led an incident response.",
+                        }
+                    ],
+                },
+                {
+                    "title": "Evidence demonstrated",
+                    "lines": [
+                        {
+                            "kind": "grade",
+                            "text": "Judgement under pressure, from the CEO's expectations: Matching",
+                        }
+                    ],
+                },
+            ],
         },
         "claim_evidence": {
             "note": "What this person asserted, and what the record holds.",
