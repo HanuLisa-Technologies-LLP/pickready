@@ -1059,6 +1059,18 @@ export interface CreditPacksResponse {
   trial_used: boolean;
 }
 
+/**
+ * GET /company-onboarding/state: where this browser's company registration
+ * stands. DERIVED by the server on every read from the registration row and
+ * the paid purchase, so the register page never keeps its own copy.
+ */
+export interface OnboardingState {
+  stage: "details" | "verify_email" | "choose_pack" | "set_password" | "done";
+  email?: string | null;
+  first_name?: string | null;
+  company_name?: string | null;
+}
+
 /** POST /billing/purchase: a Razorpay Order created and waiting for payment. */
 export interface PurchaseCreateResponse {
   purchase_id: string;

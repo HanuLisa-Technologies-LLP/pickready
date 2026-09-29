@@ -232,3 +232,43 @@ describe("the landing page's links", () => {
     expect(dead).toEqual([]);
   });
 });
+
+/**
+ * The public /pricing page (owner spec 2026-09-29, sections 4.2 and 4.3). Its
+ * calls to action are named constants rather than inline literals, so they are
+ * read here by their declaration. Until company self-registration existed,
+ * "Register company" pointed at a page that was not there yet; it exists now,
+ * and so does the rule that it must.
+ */
+describe("the pricing page's links", () => {
+  const source = read(join(publicDir, "pricing", "pricing-catalogue.tsx"));
+  const targets = [
+    ...[...source.matchAll(/const [A-Z_]+_HREF\s*=\s*"([^"]+)"/g)].map((m) => m[1]),
+    ...[...source.matchAll(/href=\s*"([^"]+)"/g)].map((m) => m[1]),
+  ];
+
+  it("reads the calls to action", () => {
+    expect(targets).toContain("/company/register");
+    expect(targets).toContain("/company/login");
+  });
+
+  it("sends every internal link to a page a signed-out visitor may open", () => {
+    const routes = pageRoutes();
+    const prefixes = publicPrefixes();
+    const internal = targets.filter((target) => target.startsWith("/"));
+    expect(internal.filter((target) => !routeExists(pathOf(target), routes))).toEqual([]);
+    expect(
+      internal.filter((target) => !admittedSignedOut(pathOf(target), prefixes)),
+    ).toEqual([]);
+  });
+
+  it("writes to the enterprise line and nowhere else by mail", () => {
+    const mail = targets.filter((target) => target.startsWith("mailto:"));
+    expect(mail.length).toBeGreaterThan(0);
+    expect(
+      mail.filter(
+        (target) => target !== "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
+      ),
+    ).toEqual([]);
+  });
+});
