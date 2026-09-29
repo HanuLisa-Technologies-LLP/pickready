@@ -713,3 +713,86 @@ def test_the_backfill_normalises_exactly_as_the_service_does(raw: str) -> None:
     if not asyncio.run(_reachable()):
         pytest.skip("the migrated test database is not reachable")
     assert asyncio.run(_sql_key()) == departments.normalize(raw)
+
+
+# ── Security review 2026-09-29: a candidate shared by two departments ────────
+
+
+def _run(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+async def _seed_shared_candidate(w: World) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """One candidate applied to Engineering first, then to Finance with a
+    NEWER resume. Returns (candidate, engineering profile, finance profile)."""
+    candidate, eng_profile, fin_profile = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    engine = _engine()
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(sa.text("SET LOCAL app.bypass_rls = 'on'"))
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO candidates (id, tenant_id, full_name, email, "
+                    "consent_databank) VALUES (:id, :t, 'Test Shared Applicant', "
+                    ":email, false)"
+                ),
+                {"id": candidate, "t": w.tenant, "email": f"{candidate}@dept.test"},
+            )
+            for profile, created, job, text in (
+                (eng_profile, "now() - interval '2 days'", w.eng_job, "Engineering resume"),
+                (fin_profile, "now()", w.fin_job, "Finance resume"),
+            ):
+                await conn.execute(
+                    sa.text(
+                        "INSERT INTO profiles (id, candidate_id, source_tenant_id, "
+                        f"resume_text, created_at) VALUES (:p, :c, :t, :txt, {created})"
+                    ),
+                    {"p": profile, "c": candidate, "t": w.tenant, "txt": text},
+                )
+                await conn.execute(
+                    sa.text(
+                        "INSERT INTO job_candidate_links (id, tenant_id, job_id, "
+                        "candidate_id, profile_id, source, status) VALUES "
+                        "(:id, :t, :job, :c, :p, 'fresh', 'applied')"
+                    ),
+                    {"id": uuid.uuid4(), "t": w.tenant, "job": job, "c": candidate,
+                     "p": profile},
+                )
+    finally:
+        await engine.dispose()
+    return candidate, eng_profile, fin_profile
+
+
+def test_a_shared_candidate_shows_the_functional_head_only_their_departments_resume(
+    caller: Caller, world: World, monkeypatch
+) -> None:
+    """The default profile read picks the newest resume sent to a job in the
+    caller's department, never the newest overall (which is Finance's). The
+    outreach grant is doubled open so the SCOPE is what is under test."""
+    from app.api import candidates as candidates_api
+
+    async def _granted(session, user):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(candidates_api, "_require_full_profile_access", _granted)
+    candidate, eng_profile, fin_profile = _run(_seed_shared_candidate(world))
+
+    fh = _fh(caller).get(f"{V1}/candidates/{candidate}/profile")
+    assert fh.status_code == 200, fh.text
+    assert fh.json()["id"] == str(eng_profile)
+
+    ceo = caller.as_("ceo", Role.ceo).get(f"{V1}/candidates/{candidate}/profile")
+    assert ceo.status_code == 200, ceo.text
+    assert ceo.json()["id"] == str(fin_profile)
+
+    explicit = _fh(caller).get(
+        f"{V1}/candidates/{candidate}/profile?profile_id={fin_profile}"
+    )
+    assert explicit.status_code == 404
+
+
+def test_background_verification_is_company_wide_so_a_functional_head_is_refused(
+    caller: Caller, world: World
+) -> None:
+    response = _fh(caller).get(f"{V1}/candidates/{world.eng_candidate}/bgv")
+    assert response.status_code in (403, 404), response.text

@@ -24,7 +24,12 @@ import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_tenant_db, require_capability
+from app.api.deps import (
+    CurrentUser,
+    get_tenant_db,
+    require_capability,
+    require_organisation_wide,
+)
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -233,6 +238,24 @@ async def get_profile(
     if profile_id is not None:
         profile_query = profile_query.where(Profile.id == profile_id)
     else:
+        # A department-scoped caller gets the newest resume sent to a job in
+        # THEIR department, never the newest one overall: a candidate who
+        # applied to Finance after Engineering must not hand the Engineering
+        # Functional Head the Finance application's resume and validation
+        # answers (security review 2026-09-29).
+        scope = await department_access.department_scope(session, user)
+        if scope is not None:
+            profile_query = profile_query.where(
+                Profile.id.in_(
+                    select(JobCandidateLink.profile_id)
+                    .join(Job, Job.id == JobCandidateLink.job_id)
+                    .where(
+                        JobCandidateLink.candidate_id == candidate_id,
+                        JobCandidateLink.tenant_id == user.tenant_id,
+                        department_access.job_scope_clause(scope, Job.department_id),
+                    )
+                )
+            )
         profile_query = profile_query.order_by(Profile.created_at.desc())
     profile = (await session.execute(profile_query)).scalars().first()
     if profile is None:
@@ -768,7 +791,10 @@ async def schedule_interview(
 @router.get("/{candidate_id}/bgv")
 async def get_bgv_results(
     candidate_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    # Company-wide like every other BGV surface (`api/bgv.py`): the inquiries
+    # are the candidate's across every job in the tenant, with no department-
+    # shaped subset, so a department-scoped principal is refused outright.
+    user: CurrentUser = Depends(require_organisation_wide(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Background-verification results, gated by the candidate's own consent.
