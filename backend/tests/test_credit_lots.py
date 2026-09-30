@@ -39,7 +39,6 @@ from app.models.billing import (
     CREDIT_VALIDITY_MONTHS,
     EVENT_COMPLETED,
     EVENT_EXPIRY,
-    EVENT_INCOMPLETE,
     LEDGER_EVENT_TYPES,
     SUBUNITS_PER_CREDIT,
 )
@@ -321,13 +320,13 @@ async def test_a_pre_existing_lot_is_never_expired_by_the_sweep() -> None:
             assert await credits.consume(
                 session,
                 tenant_id=tenant_id,
-                event_type=EVENT_INCOMPLETE,
+                event_type=EVENT_COMPLETED,
                 idempotency_key=f"ancient:{tenant_id}",
             )
             await session.commit()
             remaining, expired = await _lot_state(session, ancient)
             assert expired is False
-            assert remaining == 5 * SUBUNITS_PER_CREDIT - SUBUNITS_PER_CREDIT // 3
+            assert remaining == 4 * SUBUNITS_PER_CREDIT
             summary = await credits.summarize(session, tenant_id)
             assert summary.expired_subunits == 0
             assert summary.non_expiring_subunits == remaining
