@@ -77,13 +77,13 @@ def test_the_shortfall_names_count_rate_balance_and_gap() -> None:
     sentence = entitlements.shortfall_detail(
         count=3,
         role_classification=ROLE_STEM,
-        required=Decimal("4.50"),
+        required=Decimal("3.00"),
         balance=Decimal("2.00"),
     )
     assert "3 candidates" in sentence
     assert "STEM role" in sentence
-    assert "4.50 credits (1.50 per assessment)" in sentence
-    assert "2.00 credits, 2.50 short" in sentence
+    assert "3.00 credits (1.00 per assessment)" in sentence
+    assert "2.00 credits, 1.00 short" in sentence
     assert "Nobody was invited" in sentence
 
 
@@ -113,8 +113,8 @@ async def test_each_action_against_a_funded_an_empty_and_a_short_pool() -> None:
             )
             assert refused is not None and "Nobody was invited" in refused
 
-            # One credit: a non-STEM start fits, a STEM start (1.5) does not,
-            # and a batch of two non-STEM does not either.
+            # One credit covers either kind of completed assessment, but a
+            # batch of two does not fit.
             await credits.grant(
                 session, tenant_id=tenant, subunits=SUBUNITS_PER_CREDIT,
                 idempotency_key=f"entitle-grant-{tenant}",
@@ -128,7 +128,7 @@ async def test_each_action_against_a_funded_an_empty_and_a_short_pool() -> None:
             assert await reason(
                 session, tenant, entitlements.ACTION_START_ASSESSMENT,
                 role_classification=ROLE_STEM,
-            ) == entitlements.START_ASSESSMENT_DETAIL
+            ) is None
             short = await reason(
                 session, tenant, entitlements.ACTION_SEND_ASSESSMENT,
                 role_classification=ROLE_NON_STEM, count=2,

@@ -321,9 +321,9 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
 
     # ── STEM / Non-STEM classification (Master Directive Part 3 §5.1) ───────
     # System-determined at JD generation, locked to the RAW AI-generated JD,
-    # never client-editable. `credit_cost_per_report` is stored explicitly —
-    # not derived at deduction time — so the ledger's audit trail matches what
-    # the job said when the report completed. Jobs that predate the feature
+    # never client-editable. `credit_cost_per_report` is kept for API and
+    # historical report compatibility; the monthly plan charges one credit
+    # per completed assessment for either role. Jobs that predate the feature
     # carry the deployment default: NON_STEM, confidence 0.00 (Part 3 §11).
     role_classification: Mapped[str] = mapped_column(
         String(10), nullable=False, default="NON_STEM", server_default="NON_STEM"

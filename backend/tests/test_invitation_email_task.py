@@ -51,7 +51,7 @@ from tests import comms_world, invite_world
 
 INVITE = "pickready.send_assessment_invitation"
 SEND = "pickready.send_lifecycle_email"
-STEM_REPORT = 90
+STEM_REPORT = 60
 
 
 @pytest.fixture

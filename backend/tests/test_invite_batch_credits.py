@@ -47,8 +47,8 @@ from tests import comms_world, invite_world
 
 INVITE = "pickready.send_assessment_invitation"
 QUESTIONS = "pickready.generate_candidate_questions"
-#: One STEM report, in sub-units (1.5 credits).
-STEM_REPORT = 90
+#: One completed assessment, in sub-units for either role.
+STEM_REPORT = 60
 
 
 async def _reachable_or_skip() -> None:
@@ -149,9 +149,9 @@ async def test_a_batch_the_balance_cannot_cover_is_refused_whole_and_writes_noth
     assert refused.status_code == 402, refused.text
     detail = refused.json()["detail"]
     assert "3 candidates" in detail
-    assert "STEM role requires 4.50 credits" in detail
-    assert "1.50 per assessment" in detail
-    assert "Current balance: 3.00 credits, 1.50 short" in detail
+    assert "STEM role requires 3.00 credits" in detail
+    assert "1.00 per assessment" in detail
+    assert "Current balance: 2.00 credits, 1.00 short" in detail
     assert "Nobody was invited" in detail
 
     assert await _conversations(world) == 0

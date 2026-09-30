@@ -204,16 +204,16 @@ async def test_fifo_draws_the_oldest_valid_lot_first() -> None:
 
 @pytest.mark.asyncio
 async def test_a_charge_larger_than_one_lot_spans_two() -> None:
-    """A STEM completed report is 90 sub-units. Against a 60 and a 60 it must
-    empty the first and take 30 from the second, not stop at 60."""
+    """A completed report is 60 sub-units. It spans a 30-unit lot and
+    takes the remaining 30 from the next lot."""
     engine, factory = await _factory_or_skip()
     try:
         async with factory() as session:
             await _bypass(session)
             tenant_id = await _tenant(session)
-            await _seed_balance(session, tenant_id, 2 * SUBUNITS_PER_CREDIT)
+            await _seed_balance(session, tenant_id, SUBUNITS_PER_CREDIT + 30)
             first = await _insert_lot(
-                session, tenant_id, subunits=SUBUNITS_PER_CREDIT,
+                session, tenant_id, subunits=30,
                 age_days=30, expires_in_days=60,
             )
             second = await _insert_lot(
@@ -244,8 +244,8 @@ async def test_a_charge_larger_than_one_lot_spans_two() -> None:
                     {"tid": str(tenant_id)},
                 )
             ).scalars().all()
-            assert [int(value) for value in draws] == [60, 30]
-            assert sum(int(value) for value in draws) == 90
+            assert [int(value) for value in draws] == [30, 30]
+            assert sum(int(value) for value in draws) == SUBUNITS_PER_CREDIT
     finally:
         await engine.dispose()
 

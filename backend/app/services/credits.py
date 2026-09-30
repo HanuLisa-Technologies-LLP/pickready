@@ -312,11 +312,10 @@ async def consume(
     blocked is the NEXT start (`has_positive_balance`, `can_start_assessment`),
     which is a thing a human can still choose not to do.
 
-    `role_classification` is the Job record's STEM flag (Master Directive
-    Part 5 Rule 9): STEM bills 90 sub-units for a completed report and 30 for
-    a partial; None/unknown bills at the non-STEM rate and is the caller's
-    data error to log, never a refusal here. The classification is copied into
-    the ledger row's metadata for the audit trail Part 3 §5.2 requires.
+    `role_classification` is the Job record's STEM flag. Every completed
+    assessment consumes 60 sub-units; incomplete and no-show outcomes consume
+    none. The classification is copied into the ledger row's metadata for the
+    audit trail Part 3 §5.2 requires.
     """
     cost = consumption_subunits(event_type, role_classification)
     if cost is None:
@@ -503,7 +502,7 @@ def estimated_assessments_remaining(balance_subunits: int, average: Decimal) -> 
 
 
 async def has_active_stem_jobs(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """Whether the §4.2 alert should note the 1.5-credit STEM rate."""
+    """Whether the tenant has an active STEM job, for summary compatibility."""
     flag = (
         await session.execute(
             text(

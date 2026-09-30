@@ -42,9 +42,18 @@ def upgrade() -> None:
         "ck_billing_transactions_type", "billing_transactions",
         "transaction_type IN ('credit_pack', 'refund', 'subscription_charge')",
     )
+    op.execute("UPDATE jobs SET credit_cost_per_report = 1.0 WHERE credit_cost_per_report <> 1.0")
+    op.drop_constraint("ck_jobs_credit_cost_per_report", "jobs")
+    op.create_check_constraint("ck_jobs_credit_cost_per_report", "jobs", "credit_cost_per_report = 1.0")
 
 
 def downgrade() -> None:
+    op.drop_constraint("ck_jobs_credit_cost_per_report", "jobs")
+    op.create_check_constraint(
+        "ck_jobs_credit_cost_per_report", "jobs",
+        "credit_cost_per_report IN (1.0, 1.5)",
+    )
+    op.execute("UPDATE jobs SET credit_cost_per_report = 1.5 WHERE role_classification = 'STEM'")
     op.execute("ALTER TABLE billing_transactions DROP CONSTRAINT ck_billing_transactions_type")
     op.create_check_constraint(
         "ck_billing_transactions_type", "billing_transactions",
