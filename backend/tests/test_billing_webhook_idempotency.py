@@ -11,9 +11,8 @@ This file POSTs to `/billing/webhook/razorpay`, because the PURCHASE is not
 chosen by the service: the ROUTE resolves it from the payload's order id. A
 refactor that read the wrong field would leave `settle_purchase` perfectly
 idempotent over a purchase that is the wrong one, and every service-level test
-would still pass. (This file was written against the monthly subscription
-events, which were retired on 2026-09-29; it now drives the one event family
-the product still handles, a credit purchase's payment.)
+would still pass. The recurring subscription charge is also delivered here;
+its payment id must grant exactly one monthly allowance.
 
 Razorpay delivers AT LEAST ONCE. A duplicate is the default behaviour unless
 something prevents it, so this is not a hypothetical.
@@ -320,6 +319,46 @@ def test_one_delivery_grants_exactly_one_pack(http: TestClient, world: World) ->
     # be unique per attempt and would dedupe nothing.
     assert key == f"credit-pack:{world.order_id}"
     assert _run(_balance(world.tenant)) == PACK_SUBUNITS
+
+
+def test_subscription_charge_webhook_grants_one_month_once(
+    http: TestClient, world: World,
+) -> None:
+    subscription_id = f"sub_{world.tenant.hex[:14]}"
+    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
+
+    async def set_subscription() -> None:
+        async with _sessions()() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(sa.text(
+                        "UPDATE tenants SET razorpay_subscription_id = :sub, "
+                        "current_plan_slug = 'starter', subscription_status = 'created' "
+                        "WHERE id = :tid"
+                    ), {"sub": subscription_id, "tid": str(world.tenant)})
+
+    _run(set_subscription())
+    payload = {
+        "event": "subscription.charged",
+        "created_at": 1_760_000_000,
+        "payload": {
+            "subscription": {"entity": {"id": subscription_id}},
+            "payment": {"entity": {
+                "id": payment_id, "status": "captured", "currency": "INR",
+                "amount": 28_320 * 100,
+            }},
+        },
+    }
+    event_id = f"evt_{world.tenant.hex[:8]}_subscription"
+    first = _deliver(http, payload, event_id=event_id)
+    replay = _deliver(http, payload, event_id=event_id)
+    second_event = _deliver(http, payload, event_id=event_id + "_again")
+    assert first.status_code == 200 and first.json() == {"status": "ok"}, first.text
+    assert replay.status_code == 200 and replay.json() == {"status": "duplicate"}
+    assert second_event.status_code == 200 and second_event.json() == {"status": "ok"}
+    rows = _run(_ledger(world.tenant))
+    assert len(rows) == 1 and rows[0][1] == 75 * SUBUNITS_PER_CREDIT
+    assert rows[0][2] == f"subscription:{payment_id}"
 
 
 # ── The redelivery, both ways it arrives ────────────────────────────────────
