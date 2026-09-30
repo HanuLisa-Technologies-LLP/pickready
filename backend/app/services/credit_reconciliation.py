@@ -77,6 +77,8 @@ def ledger_key(conversation_id, event_type: str) -> str:
 class ReconciliationResult:
     incomplete_charged: int = 0
     no_show_charged: int = 0
+    incomplete_recorded: int = 0
+    no_show_recorded: int = 0
     reminders_queued: int = 0
     skipped_already_charged: int = 0
     tenants_in_deficit: list[str] = field(default_factory=list)
@@ -90,6 +92,8 @@ class ReconciliationResult:
         return {
             "incomplete_charged": self.incomplete_charged,
             "no_show_charged": self.no_show_charged,
+            "incomplete_recorded": self.incomplete_recorded,
+            "no_show_recorded": self.no_show_recorded,
             "reminders_queued": self.reminders_queued,
             "invitations_redispatched": self.invitations_redispatched,
             "invitations_missing_unrepaired": self.invitations_missing_unrepaired,
@@ -367,18 +371,9 @@ async def reconcile(
 
     deficit_tenants: set[str] = set()
     for row in settled:
-        # started_at set but never finished -> incomplete (1/3 credit).
-        # never opened at all              -> no-show    (1/15 credit).
+        # Only completed assessments spend the monthly allowance.
+        # The outcomes are still recorded for the invitation lifecycle.
         event = EVENT_INCOMPLETE if row["started_at"] is not None else EVENT_NO_SHOW
-        charged = await credits.consume(
-            session,
-            tenant_id=row["tenant_id"],
-            event_type=event,
-            idempotency_key=ledger_key(row["id"], event),
-            job_candidate_link_id=row["job_candidate_link_id"],
-            metadata={"conversation_id": str(row["id"]), "settled_at": now.isoformat()},
-            role_classification=row["role_classification"],
-        )
         await session.execute(
             text(
                 "UPDATE assessment_conversations "
@@ -386,14 +381,10 @@ async def reconcile(
             ),
             {"at": now, "event": event, "cid": str(row["id"])},
         )
-        if not charged:
-            result.skipped_already_charged += 1
-        elif event == EVENT_INCOMPLETE:
-            result.incomplete_charged += 1
+        if event == EVENT_INCOMPLETE:
+            result.incomplete_recorded += 1
         else:
-            result.no_show_charged += 1
-        if await credits.balance_subunits(session, row["tenant_id"]) < 0:
-            deficit_tenants.add(str(row["tenant_id"]))
+            result.no_show_recorded += 1
 
     result.tenants_in_deficit = sorted(deficit_tenants)
     log.info("credits.reconciled %s", result.as_dict())

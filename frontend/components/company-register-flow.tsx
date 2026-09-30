@@ -3,7 +3,7 @@
 // Register your company (owner spec 2026-09-29, sections 2.2 and 5).
 //
 // Details and a security check -> a security code from the company mailbox ->
-// the first credit pack -> a password -> the company workspace. The SERVER
+// the paid Starter pilot -> a password -> the company workspace. The SERVER
 // decides every step: `GET /company-onboarding/state` says where this browser's
 // registration stands (from a short-lived, httpOnly onboarding cookie the
 // code step sets), so a reload lands on the right step and nothing here is a
@@ -24,16 +24,13 @@ import { ApiError, apiGet, apiPost } from "@/lib/api";
 import { firebaseAuth } from "@/lib/firebase";
 import { friendlyAuthError } from "@/lib/firebase-session";
 import { useAuth } from "@/lib/auth-context";
-import { openOrderCheckout } from "@/lib/razorpay";
+import { openSubscriptionCheckout } from "@/lib/razorpay";
 import type {
   AuthSession,
-  CreditPack,
-  CreditPacksResponse,
   OnboardingState,
-  PurchaseCreateResponse,
 } from "@/lib/types";
 import { AuthLink, AuthShell } from "@/components/auth-shell";
-import { CreditPackPicker } from "@/components/billing/credit-pack-picker";
+import { formatInr } from "@/components/billing/credit-pack-picker";
 import { Captcha, CaptchaError, type CaptchaHandle } from "@/components/captcha";
 import { INDUSTRIES } from "@/components/customer-edit-modal";
 import { InlineError, LoadingRows } from "@/components/page-primitives";
@@ -47,6 +44,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const BASE = "/company-onboarding";
+
+interface RegistrationPlan {
+  slug: string;
+  name: string;
+  assessments: number;
+  price_inr: number;
+  gst_inr: number;
+  total_inr: number;
+  rollover_months: number;
+}
 
 type Details = {
   first_name: string;
@@ -86,12 +93,12 @@ export function CompanyRegisterFlow() {
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [paymentPending, setPaymentPending] = React.useState(false);
   const [resuming, setResuming] = React.useState(false);
   const [details, setDetails] = React.useState<Details>(EMPTY_DETAILS);
   const [pendingEmail, setPendingEmail] = React.useState("");
   const [code, setCode] = React.useState("");
-  const [packs, setPacks] = React.useState<CreditPacksResponse | null>(null);
-  const [selectedSlug, setSelectedSlug] = React.useState<string | null>(null);
+  const [plans, setPlans] = React.useState<RegistrationPlan[] | null>(null);
   const [password, setPassword] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
   const [existingSignIn, setExistingSignIn] = React.useState(false);
@@ -111,19 +118,32 @@ export function CompanyRegisterFlow() {
     void loadState();
   }, [loadState]);
 
-  // The pack step reads its prices from the server, for THIS company.
   React.useEffect(() => {
-    if (state?.stage !== "choose_pack" || packs) return;
-    apiGet<CreditPacksResponse>(`${BASE}/pricing`)
-      .then(setPacks)
+    if (!paymentPending || state?.stage !== "choose_pack") return;
+    const timer = window.setInterval(() => {
+      void apiGet<OnboardingState>(`${BASE}/state`).then((next) => {
+        setState(next);
+        if (next.stage === "set_password") setPaymentPending(false);
+      }).catch(() => {
+        setNotice("Your first charge is still being confirmed. Keep this page open or return later to continue.");
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [paymentPending, state?.stage]);
+
+  // The plan step reads the same server-owned prices the public page displays.
+  React.useEffect(() => {
+    if (state?.stage !== "choose_pack" || plans) return;
+    apiGet<{ plans: RegistrationPlan[] }>(`${BASE}/monthly/plans`)
+      .then((result) => setPlans(result.plans))
       .catch((failure) => {
         if (failure instanceof ApiError && failure.status === 401) {
           setState({ stage: "details" });
           setResuming(true);
         }
-        setError(sentence(failure, "We could not load the credit packs."));
+        setError(sentence(failure, "We could not load the monthly plans."));
       });
-  }, [state?.stage, packs]);
+  }, [state?.stage, plans]);
 
   const run = (action: () => Promise<void>) => {
     if (busy) return;
@@ -204,23 +224,28 @@ export function CompanyRegisterFlow() {
       setNotice("A new security code is on its way. Use the newest email.");
     });
 
-  const buy = (pack: CreditPack) =>
+  const buy = (plan: RegistrationPlan) =>
     run(async () => {
-      const order = await apiPost<PurchaseCreateResponse>(`${BASE}/purchase`, {
-        pack_slug: pack.slug,
+      const checkout = await apiPost<{
+        subscription_id: string; razorpay_key_id: string;
+      }>(`${BASE}/monthly/subscribe`, {
+        plan_slug: plan.slug,
       });
       await new Promise<void>((resolve, reject) => {
-        void openOrderCheckout({
-          keyId: order.razorpay_key_id,
-          orderId: order.razorpay_order_id,
-          amountInr: order.total_inr,
+        void openSubscriptionCheckout({
+          keyId: checkout.razorpay_key_id,
+          subscriptionId: checkout.subscription_id,
           name: "ReadyPick",
-          description: `${order.credits} Intelligence Report credits, first purchase`,
+          description: `${plan.name} monthly plan`,
           prefill: { email, name: state?.first_name ?? undefined },
           onSuccess: (payload) => {
-            apiPost<OnboardingState>(`${BASE}/purchase/verify`, payload)
+            apiPost<OnboardingState>(`${BASE}/monthly/verify`, payload)
               .then((next) => {
                 setState(next);
+                if (next.stage === "choose_pack") {
+                  setPaymentPending(true);
+                  setNotice("Your payment mandate is authorized. The pilot starts when the first monthly charge is confirmed. This page will update automatically.");
+                }
                 resolve();
               })
               .catch(reject);
@@ -358,7 +383,7 @@ export function CompanyRegisterFlow() {
     return (
       <AuthShell
         title="Register your company"
-        description="Create your company workspace. You will be its Company Super Admin and can invite your team after the first credit purchase."
+        description="Create your company workspace. You will be its Company Super Admin and can invite your team after the first monthly payment."
         footer={footer}
       >
         <form className="space-y-4" onSubmit={submitDetails}>
@@ -478,22 +503,29 @@ export function CompanyRegisterFlow() {
     return (
       <AuthShell
         className="max-w-4xl"
-        title="Choose your first credit pack"
-        description={`Your first purchase activates ${state.company_name ?? "your company"}. Credits are one-time purchases; there is no subscription.`}
+        title="Start your 30-day Starter pilot"
+        description={`Your paid 30-day pilot activates ${state.company_name ?? "your company"}. There is no annual commitment or lock-in, and you can cancel anytime.`}
         footer={footer}
       >
-        {packs ? (
-          <CreditPackPicker
-            packs={packs}
-            selectedSlug={selectedSlug}
-            onSelect={setSelectedSlug}
-            onBuy={buy}
-            busy={busy}
-            showEnterprise={false}
-          />
+        {plans ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {plans.filter((plan) => plan.slug === "starter").map((plan) => (
+              <div key={plan.slug} className="rounded-xl border border-border bg-surface p-5">
+                <h2 className="text-lg font-semibold">{plan.name}</h2>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">{formatInr(plan.price_inr)} / month</p>
+                <p className="mt-2 text-sm">{plan.assessments.toLocaleString("en-IN")} completed assessments per month</p>
+                <p className="mt-3 rounded-lg bg-teal-50 p-3 text-sm dark:bg-teal-950/30">Unused monthly credits roll over for {plan.rollover_months} months, then expire.</p>
+                <p className="mt-3 text-sm">GST: {formatInr(plan.gst_inr)}. Due today: {formatInr(plan.total_inr)}.</p>
+                <Button className="mt-5 w-full" disabled={busy || paymentPending} onClick={() => buy(plan)}>
+                  {busy ? "Opening checkout..." : `Start on ${plan.name}`}
+                </Button>
+              </div>
+            ))}
+          </div>
         ) : error ? null : (
-          <LoadingRows rows={2} label="Loading credit packs" />
+          <LoadingRows rows={2} label="Loading monthly plans" />
         )}
+        {notice ? <p role="status" className="mt-4 text-sm">{notice}</p> : null}
         {error ? <InlineError>{error}</InlineError> : null}
       </AuthShell>
     );

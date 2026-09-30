@@ -34,8 +34,7 @@ The closing note of the directive asks for discrepancies to be flagged rather
 than silently resolved: this one is flagged here and in the PR description.
 
 The default fallback stands as written (§4.4): below 0.50 the role is
-Non-STEM, because under-charging 1.0 credit is commercially safer than
-over-charging 1.5 and disputing it.
+Non-STEM. Both role classes now consume one credit per completed assessment.
 
 TWO LAYERS, ADDED 2026-09-13: THE BODY, AND THE OCCUPATION
 -----------------------------------------------------------
@@ -68,9 +67,10 @@ log = logging.getLogger(__name__)
 STEM = "STEM"
 NON_STEM = "NON_STEM"
 
-#: Part 5 §2.1 — credits deducted per completed Vivekium Intelligence Report.
+#: Monthly plans guarantee completed assessments at the same credit cost for
+#: every role classification.
 CREDIT_COST: dict[str, Decimal] = {
-    STEM: Decimal("1.5"),
+    STEM: Decimal("1.0"),
     NON_STEM: Decimal("1.0"),
 }
 

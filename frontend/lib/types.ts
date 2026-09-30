@@ -1004,8 +1004,6 @@ export interface UsageBreakdown {
 export interface CreditSummary {
   balance_subunits: number;
   balance_credits: string;
-  /** The balance at the list price per credit, excl. GST. */
-  balance_inr: string | null;
   subunits_per_credit: number;
   granted_subunits: number;
   consumed_subunits: number;
@@ -1046,7 +1044,7 @@ export interface BillingTransaction {
   razorpay_payment_id: string | null;
   amount_inr: number;
   status: "success" | "failed" | "refunded";
-  transaction_type: "credit_pack" | "refund";
+  transaction_type: "credit_pack" | "subscription_charge" | "refund";
   created_at: string;
 }
 
@@ -1061,15 +1059,15 @@ export interface BillingOverview {
 
 /**
  * One purchasable credit pack, PRICED SERVER-SIDE. The server sends every line
- * of the breakdown (subtotal, setup fee, GST, total) already computed, so the
- * page renders arithmetic it never performs and can never disagree with the
- * invoice. `available: false` covers the trial pack after first use
- * (directive Part 5 section 3.1) and anything else the account cannot buy.
+ * of the breakdown (subtotal, GST, total) already computed, so the page
+ * renders the server's quote. Historical setup fee fields remain in the API.
  */
 export interface CreditPack {
-  slug: string;
-  credits: number;
-  bonus_credits: number;
+    slug: string;
+    label: string;
+    credits: number;
+    bonus_credits: number;
+    credits_total: number;
   subtotal_inr: number;
   setup_fee_inr: number;
   setup_fee_waived: boolean;
@@ -1081,11 +1079,7 @@ export interface CreditPack {
 
 export interface CreditPacksResponse {
   packs: CreditPack[];
-  price_per_credit_inr: number;
   gst_rate_percent: number;
-  /** Hard minimum for a bespoke Enterprise order, quoted in the Custom card. */
-  min_custom_credits: number;
-  trial_used: boolean;
 }
 
 /**
@@ -1134,57 +1128,7 @@ export interface ProviderBillingRow {
   customer_name: string;
   balance_subunits: number;
   balance_credits: string;
-  /** At the list price per credit, excl. GST. */
-  balance_inr: string;
   in_deficit: boolean;
-}
-
-// ── The published price list: GET /billing/public/credit-packs ─────────────
-
-/**
- * One pack at the STANDARD price, for a visitor with no account. Excludes the
- * one-time setup fee, which depends on the account and is stated once on the
- * catalogue. Every figure is the server's: the pricing page holds no price.
- */
-export interface PublishedPack {
-  slug: string;
-  label: string;
-  credits: number;
-  bonus_credits: number;
-  credits_total: number;
-  subtotal_inr: number;
-  gst_inr: number;
-  total_inr: number;
-  /** The trial pack: sold once per account, as its first purchase. */
-  new_accounts_only: boolean;
-  validity_months: number;
-}
-
-/** What one billable event draws from the pool, in integer sub-units. */
-export interface PublishedConsumption {
-  event_type: CreditEventType;
-  label: string;
-  non_stem_subunits: number;
-  stem_subunits: number;
-}
-
-export interface PublishedBonusLevel {
-  min_credits: number;
-  bonus_credits: number;
-}
-
-export interface PublishedCatalogue {
-  price_per_credit_inr: number;
-  gst_rate_percent: number;
-  subunits_per_credit: number;
-  credit_validity_months: number;
-  min_custom_credits: number;
-  setup_fee_inr: number;
-  setup_fee_gst_inr: number;
-  setup_fee_waiver_limit: number;
-  bonus_levels: PublishedBonusLevel[];
-  packs: PublishedPack[];
-  consumption: PublishedConsumption[];
 }
 
 /**

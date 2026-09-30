@@ -64,9 +64,9 @@ describe("credit expiry copy", () => {
       "utf-8",
     );
     expect(billing).toContain("credit_validity_months");
-    expect(billing).toContain(QUALIFIER);
-    expect(pricing).toContain(QUALIFIER);
+    expect(billing).toContain("rollover_months");
+    expect(pricing).toContain("then expire");
     // The public page states the term the SERVER publishes, never a literal.
-    expect(pricing).toContain("credit_validity_months");
+    expect(pricing).toContain("rollover_months");
   });
 });

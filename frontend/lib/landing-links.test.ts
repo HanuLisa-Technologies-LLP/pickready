@@ -19,7 +19,7 @@
  *     /login by a link on a public page (the one signed-in destination is
  *     declared below with its reason);
  *   * an anchor names a section id the landing page actually mounts;
- *   * a `mailto:` is the one request-access address or the enterprise line;
+ *   * a `mailto:` is the request-access address;
  *   * no token-addressed route is linked bare, and no dead parameter returns.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -42,9 +42,8 @@ const LANDING_FILES = [
 
 /**
  * Destinations a landing link may send somebody to that need a session, each
- * with the reason. Nothing else may. EMPTY since 2026-09-29: the inline
- * pricing cards that sent a signed-in customer to `/org/billing` left the
- * landing page for the public `/pricing` page.
+ * with the reason. Nothing else may. Pricing in Start sends visitors to
+ * public company registration, so no signed-in destination is needed.
  */
 const SIGNED_IN_TARGETS: Record<string, string> = {};
 
@@ -176,25 +175,24 @@ describe("the landing page's links", () => {
     expect(refused).toEqual([]);
   });
 
-  it("sends pricing to its own page, from the header and the page", () => {
-    // Owner spec 2026-09-29, section 4.1: no inline price list and no
-    // `/#pricing` anchor; "See pricing plans" opens `/pricing`.
+  it("sends the landing action to Start and keeps the public pricing page linked", () => {
     expect(links.filter(({ target }) => target.includes("#pricing"))).toEqual([]);
-    for (const name of ["site-header.tsx", "landing-page.tsx"]) {
-      const source = read(join(publicDir, name));
-      expect(source, name).toContain('"/pricing"');
-      expect(source, name).toContain("See pricing plans");
-    }
+    expect(read(join(publicDir, "landing-page.tsx"))).toContain('href="#start"');
+    expect(read(join(publicDir, "site-header.tsx"))).toContain('"/pricing"');
   });
 
-  it("carries no in-page anchor, because the page is one screen", () => {
-    expect(links.filter(({ target }) => target.includes("#"))).toEqual([]);
+  it("points every in-page anchor at a mounted landing section", () => {
+    const ids = mountedIds();
+    const missing = links
+      .filter(({ target }) => target.startsWith("#"))
+      .filter(({ target }) => !ids.has(target.slice(1)));
+    expect(missing).toEqual([]);
+    expect(ids.has("start")).toBe(true);
   });
 
   it("writes to the request-access mailbox and nowhere else by mail", () => {
     const allowed = new Set([
       requestAccessHref(),
-      "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
     ]);
     const mail = links.filter(({ target }) => target.startsWith("mailto:"));
     expect(mail.filter(({ target }) => !allowed.has(target))).toEqual([]);
@@ -253,13 +251,8 @@ describe("the pricing page's links", () => {
     ).toEqual([]);
   });
 
-  it("writes to the enterprise line and nowhere else by mail", () => {
+  it("does not link to an obsolete enterprise credit offer", () => {
     const mail = targets.filter((target) => target.startsWith("mailto:"));
-    expect(mail.length).toBeGreaterThan(0);
-    expect(
-      mail.filter(
-        (target) => target !== "mailto:manjuchro@gmail.com?subject=Enterprise%20credits",
-      ),
-    ).toEqual([]);
+    expect(mail).toEqual([]);
   });
 });

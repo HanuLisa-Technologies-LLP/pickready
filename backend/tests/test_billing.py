@@ -56,18 +56,16 @@ def test_one_credit_is_sixty_subunits() -> None:
 
 
 @pytest.mark.parametrize(
-    "event,per_credit,expected",
+    "event,expected",
     [
-        (EVENT_COMPLETED, 1, 60),
-        (EVENT_INCOMPLETE, 3, 20),
-        (EVENT_NO_SHOW, 15, 4),
-        (EVENT_OLD_PROFILE_REVIEW, 20, 3),
+        (EVENT_COMPLETED, 60),
+        (EVENT_INCOMPLETE, None),
+        (EVENT_NO_SHOW, None),
+        (EVENT_OLD_PROFILE_REVIEW, None),
     ],
 )
-def test_consumption_rates_match_the_spec(event, per_credit, expected) -> None:
-    assert CONSUMPTION_SUBUNITS[event] == expected
-    # The rate is only defensible if N of them add up to exactly one credit.
-    assert CONSUMPTION_SUBUNITS[event] * per_credit == SUBUNITS_PER_CREDIT
+def test_consumption_rates_match_the_spec(event, expected) -> None:
+    assert CONSUMPTION_SUBUNITS.get(event) == expected
 
 
 def test_a_grant_is_not_a_consumption_rate() -> None:
@@ -250,20 +248,20 @@ async def test_grants_and_charges_are_idempotent_and_sum_to_the_balance() -> Non
             )
             assert await credits.balance_subunits(session, tenant_id) == 2940
 
-            # Three incompletes cost exactly one credit; fifteen no-shows too.
+            # Incomplete attempts do not consume a completed assessment.
             for index in range(3):
                 await credits.consume(
                     session, tenant_id=tenant_id, event_type=EVENT_INCOMPLETE,
                     idempotency_key=f"inc-{tenant_id}-{index}",
                 )
-            assert await credits.balance_subunits(session, tenant_id) == 2880
+            assert await credits.balance_subunits(session, tenant_id) == 2940
 
             summary = await credits.summarize(session, tenant_id)
-            assert summary.balance_subunits == 2880
+            assert summary.balance_subunits == 2940
             assert summary.granted_subunits == 3000
-            assert summary.consumed_subunits == 120
+            assert summary.consumed_subunits == 60
             assert summary.month_by_event[EVENT_COMPLETED] == 60
-            assert summary.month_by_event[EVENT_INCOMPLETE] == 60
+            assert EVENT_INCOMPLETE not in summary.month_by_event
             assert not summary.in_deficit
 
             await session.rollback()
@@ -365,13 +363,8 @@ def test_renew_is_refused_while_a_posting_is_still_live() -> None:
     assert jp.STATUS_SCHEDULED not in allowed
 
 
-def test_old_profile_review_is_the_cheapest_rate() -> None:
-    """Reviewing a carried-over profile is a bulk read, not an assessment. It
-    must never cost more than any event that involves the candidate doing
-    something."""
-    assert CONSUMPTION_SUBUNITS[EVENT_OLD_PROFILE_REVIEW] < CONSUMPTION_SUBUNITS[EVENT_NO_SHOW]
-    assert CONSUMPTION_SUBUNITS[EVENT_NO_SHOW] < CONSUMPTION_SUBUNITS[EVENT_INCOMPLETE]
-    assert CONSUMPTION_SUBUNITS[EVENT_INCOMPLETE] < CONSUMPTION_SUBUNITS[EVENT_COMPLETED]
+def test_only_completed_assessments_have_a_rate() -> None:
+    assert set(CONSUMPTION_SUBUNITS) == {EVENT_COMPLETED}
 
 
 def test_profile_age_sql_and_python_agree_on_the_boundary() -> None:

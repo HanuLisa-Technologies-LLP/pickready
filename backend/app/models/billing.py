@@ -1,12 +1,6 @@
-"""The credit ledger, credit-pack purchases and the Razorpay money records.
+"""Monthly assessment allowances, Starter top-ups and the credit ledger.
 
-The product sells ONE thing: credits, bought as one-time Razorpay Orders
-(`CreditPurchase`) and consumed per billable event. The monthly subscription
-plans that shipped first were RETIRED on 2026-09-29 (owner spec, section 23):
-the plan table, the tenant subscription columns and the plan foreign keys
-were dropped by migration 0132 behind guards that refuse while any of them
-still holds customer history, and `tests/test_subscription_removed.py` keeps
-them gone.
+Historical one-time purchase rows remain readable at their original terms.
 
 Two deliberate departures from the original spec's literal DDL, both forced
 by rules this codebase already lives under:
@@ -75,27 +69,15 @@ LEDGER_EVENT_TYPES: tuple[str, ...] = (
 #: Sub-units consumed per billable event for a NON-STEM job. Positive numbers;
 #: the ledger stores the negated value as `subunits_delta`.
 CONSUMPTION_SUBUNITS: dict[str, int] = {
-    EVENT_COMPLETED: SUBUNITS_PER_CREDIT,            # 60/1  — 1 credit
-    EVENT_INCOMPLETE: SUBUNITS_PER_CREDIT // 3,      # 60/3  — 3 per credit
-    EVENT_NO_SHOW: SUBUNITS_PER_CREDIT // 15,        # 60/15 — 15 per credit
-    EVENT_OLD_PROFILE_REVIEW: SUBUNITS_PER_CREDIT // 20,  # 60/20 — 20 per credit
+    EVENT_COMPLETED: SUBUNITS_PER_CREDIT,
 }
 
 ROLE_STEM = "STEM"
 ROLE_NON_STEM = "NON_STEM"
 
-#: Master Directive Part 5 §2.1 — STEM rates. A STEM report is 1.5 credits
-#: (90 sub-units) and a STEM partial is 0.50 credits (30 sub-units): the same
-#: one-third-of-the-full-rate rule the non-STEM partial already follows, on
-#: the STEM base. No-shows and old-profile reviews are FLAT — the §2.1 table
-#: prices "Unfilled / No candidate response" identically for either type,
-#: because no AI assessment depth was ever spent on them.
-STEM_CONSUMPTION_SUBUNITS: dict[str, int] = {
-    EVENT_COMPLETED: SUBUNITS_PER_CREDIT * 3 // 2,   # 90 — 1.5 credits
-    EVENT_INCOMPLETE: SUBUNITS_PER_CREDIT // 2,      # 30 — 0.50 credits
-    EVENT_NO_SHOW: SUBUNITS_PER_CREDIT // 15,        # flat
-    EVENT_OLD_PROFILE_REVIEW: SUBUNITS_PER_CREDIT // 20,  # flat
-}
+#: Role classification remains in the audit trail, but it does not change the
+#: allowance: one completed assessment is one credit for every job.
+STEM_CONSUMPTION_SUBUNITS: dict[str, int] = CONSUMPTION_SUBUNITS
 
 
 def consumption_subunits(event_type: str, role_classification: str | None) -> int | None:
@@ -131,6 +113,12 @@ class BillingTransaction(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
     razorpay_payment_id: Mapped[str | None] = mapped_column(String(100))
+    razorpay_subscription_id: Mapped[str | None] = mapped_column(String(100))
+    plan_slug: Mapped[str | None] = mapped_column(String(20))
+    assessments_granted: Mapped[int | None] = mapped_column(Integer)
+    subtotal_inr: Mapped[int | None] = mapped_column(Integer)
+    gst_inr: Mapped[int | None] = mapped_column(Integer)
+    invoice_number: Mapped[str | None] = mapped_column(String(40))
     amount_inr: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     transaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -217,65 +205,35 @@ class WebhookEvent(Base, UUIDPKMixin, CreatedAtMixin):
 
 # ── Credit-pack purchases (Master Directive Part 5) ──────────────────────────
 
-#: Headline price. NEVER discounted: volume levels add FREE credits instead
-#: (Rule 3), so the invoice always shows purchased credits at this rate.
+#: Historical unit rate, retained only for rendering invoices issued before
+#: monthly pricing. New sales use the Starter bundle and monthly plan prices.
 PRICE_PER_CREDIT_INR = 600
 #: 18% GST, collected on every transaction and remitted (Rule 7). Stored per
 #: purchase in rupees, computed from the subtotal at purchase time.
 GST_RATE_PERCENT = 18
-#: One-time onboarding fee, waived for the first 15 client accounts (§5.1).
-SETUP_FEE_INR = 5000
-SETUP_FEE_WAIVER_LIMIT = 15
-#: The one purchase allowed below the standard minimum (Rule 1).
-TRIAL_CREDITS = 20
-#: Every purchase after the first (Rule 2). Custom/Enterprise is negotiated
-#: and does not go through the self-serve packs.
-MIN_PURCHASE_CREDITS = 50
-
-#: The one top-up whose headline is a NUMBER OF ASSESSMENTS rather than a
-#: number of credits: 75 assessments for Rs. 24,000 (change request 26).
-#:
-#: Rs. 24,000 / 75 is Rs. 320, and `PRICE_PER_CREDIT_INR` never moves (Rule 3:
-#: volume is rewarded with FREE credits, never with a discounted rate). So the
-#: pack is modelled the way every other volume level already is: 40 credits
-#: PURCHASED at the standard Rs. 600 (40 x 600 = Rs. 24,000 exactly) plus 35
-#: BONUS credits at Rs. 0, which is 75 credits delivered for the Rs. 24,000 the
-#: customer was quoted. The invoice therefore prints the purchased credits at
-#: full rate and the bonus as a zero-rupee line, exactly as `volume_100` and
-#: `volume_200` already do, and no discount arithmetic exists anywhere.
+#: The sole top-up sold under monthly pricing.
 STARTER_PACK_SLUG = "starter_pack_75"
-STARTER_PACK_CREDITS_PURCHASED = 40
-STARTER_PACK_BONUS_CREDITS = 35
+STARTER_PACK_CREDITS_PURCHASED = 75
+STARTER_PACK_BONUS_CREDITS = 0
 STARTER_PACK_TOTAL_CREDITS = (
     STARTER_PACK_CREDITS_PURCHASED + STARTER_PACK_BONUS_CREDITS
 )
-STARTER_PACK_PRICE_INR = STARTER_PACK_CREDITS_PURCHASED * PRICE_PER_CREDIT_INR
+STARTER_PACK_PRICE_INR = 24_000
 
-#: slug -> (credits purchased, bonus credits). §3.2's table verbatim, plus the
-#: Starter Pack above.
+#: slug -> (completed assessment credits, bonus credits).
 CREDIT_PACKS: dict[str, tuple[int, int]] = {
-    "trial_20": (TRIAL_CREDITS, 0),
-    "standard_50": (50, 0),
     STARTER_PACK_SLUG: (
         STARTER_PACK_CREDITS_PURCHASED,
         STARTER_PACK_BONUS_CREDITS,
     ),
-    "volume_100": (100, 5),
-    "volume_200": (200, 15),
 }
 
 #: The customer-facing name of each pack, resolved server-side so an invoice,
 #: an email and the billing page cannot call one pack three things.
 #:
-#: The Starter Pack's label is DELIBERATELY not the bare word "Starter": it was
-#: chosen while a monthly subscription plan of that name still existed, and it
-#: stays named for what it delivers, which is the more useful label anyway.
+#: Distinct from the monthly Starter subscription.
 CREDIT_PACK_LABELS: dict[str, str] = {
-    "trial_20": "Trial, 20 credits",
-    "standard_50": "Standard, 50 credits",
-    STARTER_PACK_SLUG: "Starter Assessment Pack, 75 assessments",
-    "volume_100": "Volume, 105 credits",
-    "volume_200": "Volume, 215 credits",
+    STARTER_PACK_SLUG: "Starter top-up, 75 assessments",
 }
 
 # ── Credit validity (change request 25) ──────────────────────────────────
@@ -324,7 +282,7 @@ class CreditPurchase(Base, UUIDPKMixin, CreatedAtMixin):
     bonus_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     #: credits_purchased x PRICE_PER_CREDIT_INR, excl. GST.
     subtotal_inr: Mapped[int] = mapped_column(Integer, nullable=False)
-    #: 0 when already paid or waived; SETUP_FEE_INR when charged here (§5.1).
+    #: Historical setup fee amount; all new sales store zero.
     setup_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     setup_fee_waived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

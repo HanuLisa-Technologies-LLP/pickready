@@ -214,16 +214,16 @@ def clear_cookie(response) -> None:
 # ── Derived state ───────────────────────────────────────────────────────────
 
 async def has_paid(session: AsyncSession, tenant_id: uuid.UUID | None) -> bool:
-    """Whether this tenant holds a PAID credit purchase. Read from the table
-    every time; the browser's verify call and the webhook both settle through
-    `credit_packs.settle_purchase`, so whichever won, this sees it."""
+    """Whether the first monthly charge was captured and granted."""
     if tenant_id is None:
         return False
     row = (
         await session.execute(
             text(
-                "SELECT 1 FROM credit_purchases WHERE tenant_id = :t "
-                "AND status = :paid LIMIT 1"
+                "SELECT 1 FROM billing_transactions WHERE tenant_id = :t "
+                "AND transaction_type = 'subscription_charge' AND status = 'success' "
+                "UNION ALL SELECT 1 FROM credit_purchases WHERE tenant_id = :t "
+                "AND status = 'paid' LIMIT 1"
             ),
             {"t": str(tenant_id), "paid": PURCHASE_PAID},
         )

@@ -3,9 +3,8 @@
 Three rules hold this module together, and every function here exists to keep
 one of them true:
 
-1. **No floats, ever.** Consumption is 1, 1/3, 1/15 and 1/20 of a credit.
-   LCM(1, 3, 15, 20) = 60, so a credit is 60 integer sub-units and all four
-   rates divide it exactly. Nothing in this file, the schema, or the API
+1. **No floats, ever.** A completed assessment consumes one credit. The
+   historical ledger stores credits in 60 integer sub-units. Nothing in the API
    arithmetic is a float; the only division is the one that formats a balance
    for DISPLAY, and it is done with Decimal.
 
@@ -29,8 +28,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-log = logging.getLogger(__name__)
-
 from app.models.billing import (
     CONSUMPTION_SUBUNITS,
     CREDIT_VALIDITY_MONTHS,
@@ -46,6 +43,8 @@ from app.models.billing import (
     consumption_subunits,
 )
 from app.services import credit_lots
+
+log = logging.getLogger(__name__)
 
 #: How far ahead the billing page and the usage summary call a lot "expiring
 #: soon". Thirty days because a customer who needs to use or replace credits
@@ -313,14 +312,19 @@ async def consume(
     blocked is the NEXT start (`has_positive_balance`, `can_start_assessment`),
     which is a thing a human can still choose not to do.
 
-    `role_classification` is the Job record's STEM flag (Master Directive
-    Part 5 Rule 9): STEM bills 90 sub-units for a completed report and 30 for
-    a partial; None/unknown bills at the non-STEM rate and is the caller's
-    data error to log, never a refusal here. The classification is copied into
-    the ledger row's metadata for the audit trail Part 3 §5.2 requires.
+    `role_classification` is the Job record's STEM flag. Every completed
+    assessment consumes 60 sub-units; incomplete and no-show outcomes consume
+    none. The classification is copied into the ledger row's metadata for the
+    audit trail Part 3 §5.2 requires.
     """
     cost = consumption_subunits(event_type, role_classification)
     if cost is None:
+        # The monthly allowance is spent only when a report completes.
+        # Reconciliation still records an abandoned invitation's outcome,
+        # and old-profile reviews still have their access marker, but neither
+        # event reduces the promised completed-assessment volume.
+        if event_type in {EVENT_INCOMPLETE, EVENT_NO_SHOW, EVENT_OLD_PROFILE_REVIEW}:
+            return False
         raise ValueError(f"{event_type} is not a billable consumption event")
     # Materialise any expiry BEFORE the charge, so the warning tiers this
     # deduction triggers are computed against a balance that
@@ -389,10 +393,8 @@ async def can_start_assessment(
 ) -> tuple[bool, Decimal, Decimal]:
     """May `count` assessments START against a job of this classification?
 
-    Master Directive Part 5 §2.3: the pool must hold the FULL cost of the
-    report the assessment will produce — 1.5 credits for a STEM job, 1.0 for
-    non-STEM — before Vaada begins. A balance of 1.2 credits therefore starts
-    a non-STEM assessment and refuses a STEM one. The block is at start, never
+    The pool must hold one completed-assessment credit for each candidate
+    before Vaada begins, regardless of role classification. The block is at start, never
     at completion: a conversation already running always finishes and is
     charged even into the negative (Rule 8).
 
@@ -477,37 +479,18 @@ WARNING_2_CREDITS = 10
 #: Platform default consumption for the alert's remaining-assessments
 #: estimate when the account has no 30-day history: the §4.2 mixed
 #: STEM/Non-STEM average.
-DEFAULT_CREDITS_PER_ASSESSMENT = Decimal("1.2")
+DEFAULT_CREDITS_PER_ASSESSMENT = Decimal("1")
 
 
 async def average_credits_per_assessment(
     session: AsyncSession, tenant_id: uuid.UUID
 ) -> Decimal:
-    """Average credits consumed per completed assessment, last 30 days.
+    """The current allowance rate is one credit per completed assessment.
 
-    §4.2's estimate input. Only FULL reports count — partials and no-shows are
-    residue of assessments that never produced a report, and folding them in
-    would understate what the next real assessment costs. No history → the
-    1.2-credit platform default.
+    Historical ledger entries may have used another rate. They must not make
+    today's remaining-assessment estimate inaccurate.
     """
-    row = (
-        await session.execute(
-            select(
-                func.count(CreditLedgerEntry.id),
-                func.coalesce(-func.sum(CreditLedgerEntry.subunits_delta), 0),
-            ).where(
-                CreditLedgerEntry.tenant_id == tenant_id,
-                CreditLedgerEntry.event_type == EVENT_COMPLETED,
-                CreditLedgerEntry.created_at >= func.now() - text("interval '30 days'"),
-            )
-        )
-    ).one()
-    count, subunits = int(row[0] or 0), int(row[1] or 0)
-    if count <= 0 or subunits <= 0:
-        return DEFAULT_CREDITS_PER_ASSESSMENT
-    return (Decimal(subunits) / Decimal(count) / Decimal(SUBUNITS_PER_CREDIT)).quantize(
-        Decimal("0.01")
-    )
+    return DEFAULT_CREDITS_PER_ASSESSMENT
 
 
 def estimated_assessments_remaining(balance_subunits: int, average: Decimal) -> int:
@@ -519,7 +502,7 @@ def estimated_assessments_remaining(balance_subunits: int, average: Decimal) -> 
 
 
 async def has_active_stem_jobs(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
-    """Whether the §4.2 alert should note the 1.5-credit STEM rate."""
+    """Whether the tenant has an active STEM job, for summary compatibility."""
     flag = (
         await session.execute(
             text(

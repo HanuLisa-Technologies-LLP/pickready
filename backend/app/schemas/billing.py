@@ -28,10 +28,6 @@ __all__ = [
     "CreditPurchaseVerifyIn",
     "CreditSummaryOut",
     "ProviderBillingRowOut",
-    "PublishedBonusLevelOut",
-    "PublishedCatalogueOut",
-    "PublishedConsumptionOut",
-    "PublishedPackOut",
     "TransactionOut",
     "UsageBreakdownOut",
 ]
@@ -67,10 +63,6 @@ class CreditLotOut(BaseModel):
 class CreditSummaryOut(BaseModel):
     balance_subunits: int
     balance_credits: Decimal
-    # The balance at the list price per credit (`PRICE_PER_CREDIT_INR`, excl.
-    # GST). Credits remain the ledger's unit; INR is shown beside them so the
-    # commercial value is never hidden.
-    balance_inr: Decimal | None = None
     subunits_per_credit: int
     granted_subunits: int
     consumed_subunits: int
@@ -137,10 +129,9 @@ class CreditSummaryOut(BaseModel):
     warning_level: int = 0
     warning_1_threshold_credits: int = 20
     warning_2_threshold_credits: int = 10
-    #: §4.2's estimate: balance ÷ 30-day average credits per assessment
-    #: (platform default 1.2), rounded down.
+    #: Estimate: remaining credits at one credit per completed assessment.
     estimated_assessments_remaining: int = 0
-    average_credits_per_assessment: float = 1.2
+    average_credits_per_assessment: float = 1.0
     #: Plain-language copy for whichever alert is showing. Resolved server-side
     #: so the API, the on-screen dialog and the 402 refusal cannot describe the
     #: same situation three different ways.
@@ -193,9 +184,8 @@ class BillingOverviewOut(BaseModel):
 class CreditPackQuoteOut(BaseModel):
     """One purchase option, priced for THIS tenant.
 
-    The setup fee (and its waiver) is folded into every quote rather than
-    listed once beside them, because §3.3 step 2 requires the full breakdown
-    the customer will actually pay, and the fee depends on tenant state.
+    Historical fee fields remain in the shape for existing invoices. New
+    Starter top-up quotes always set them to zero and false.
     """
 
     slug: str
@@ -204,19 +194,14 @@ class CreditPackQuoteOut(BaseModel):
     label: str
     credits: int
     bonus_credits: int
-    #: What the customer receives. For the Starter Assessment Pack this is 75
-    #: while `credits` is 40, and the difference is the free bonus: the price
-    #: per credit never moves, so a headline of "75 for Rs. 24,000" is
-    #: delivered by bonus credits rather than by a discount.
+    #: Completed assessments added to the shared employer pool.
     credits_total: int
     subtotal_inr: int
     setup_fee_inr: int
     setup_fee_waived: bool
     gst_inr: int
     total_inr: int
-    #: False for the trial pack once `trial_used` is set. The UI hides an
-    #: unavailable pack (§7.2); the API states the fact so it cannot be
-    #: resurrected by a stale client.
+    #: The published Starter top-up is always available to paid employers.
     available: bool
     trial: bool
     #: Months the granted credits stay spendable, stated BEFORE payment.
@@ -225,11 +210,7 @@ class CreditPackQuoteOut(BaseModel):
 
 class CreditPacksOut(BaseModel):
     packs: list[CreditPackQuoteOut]
-    price_per_credit_inr: int
     gst_rate_percent: int
-    #: The Rule 2 floor for the custom-amount field.
-    min_custom_credits: int
-    trial_used: bool
 
 
 class CreditPurchaseIn(BaseModel):
@@ -290,64 +271,4 @@ class ProviderBillingRowOut(BaseModel):
     customer_name: str
     balance_subunits: int
     balance_credits: Decimal
-    #: At the list price per credit, excl. GST.
-    balance_inr: Decimal
     in_deficit: bool
-
-
-# ── The published catalogue (GET /billing/public/credit-packs) ─────────────
-
-
-class PublishedPackOut(BaseModel):
-    """One pack at the STANDARD price, for a visitor with no account.
-
-    Excludes the one-time setup fee, which is account-dependent (charged or
-    waived on the first purchase only) and stated once on the catalogue.
-    """
-
-    slug: str
-    label: str
-    credits: int
-    bonus_credits: int
-    credits_total: int
-    subtotal_inr: int
-    gst_inr: int
-    total_inr: int
-    #: The trial pack: sold once per account, as its first purchase.
-    new_accounts_only: bool
-    validity_months: int
-
-
-class PublishedConsumptionOut(BaseModel):
-    """What one billable event draws from the pool, in integer sub-units, so
-    a fraction of a credit is exact (`subunits_per_credit` to a credit)."""
-
-    event_type: str
-    label: str
-    non_stem_subunits: int
-    stem_subunits: int
-
-
-class PublishedBonusLevelOut(BaseModel):
-    min_credits: int
-    bonus_credits: int
-
-
-class PublishedCatalogueOut(BaseModel):
-    """The platform's published price list. One source of truth: the public
-    pricing page renders this and holds no figure of its own."""
-
-    price_per_credit_inr: int
-    gst_rate_percent: int
-    subunits_per_credit: int
-    credit_validity_months: int
-    min_custom_credits: int
-    #: The one-time account setup fee, excl. GST, and its GST. Charged on the
-    #: first purchase only, and waived for the first `setup_fee_waiver_limit`
-    #: client accounts; whether a given account pays it is shown at checkout.
-    setup_fee_inr: int
-    setup_fee_gst_inr: int
-    setup_fee_waiver_limit: int
-    bonus_levels: list[PublishedBonusLevelOut]
-    packs: list[PublishedPackOut]
-    consumption: list[PublishedConsumptionOut]

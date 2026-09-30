@@ -2540,11 +2540,7 @@ def send_credit_warning_email(tenant_id: str, level: int):
             balance = await credits_service.balance_subunits(session, tid)
             average = await credits_service.average_credits_per_assessment(session, tid)
             estimate = credits_service.estimated_assessments_remaining(balance, average)
-            stem_note = (
-                " Note: STEM roles consume 1.5 credits per report."
-                if await credits_service.has_active_stem_jobs(session, tid)
-                else ""
-            )
+            stem_note = ""
             dispatch(
                 "pickready.send_email",
                 args=[

@@ -173,7 +173,7 @@ def test_technical_sales_engineer_band_is_logged_tentative():
 def test_credit_cost_mapping():
     from decimal import Decimal
 
-    assert credit_cost(STEM) == Decimal("1.5")
+    assert credit_cost(STEM) == Decimal("1.0")
     assert credit_cost(NON_STEM) == Decimal("1.0")
     assert credit_cost(None) == Decimal("1.0")       # NULL → Non-STEM, logged
     assert credit_cost("garbage") == Decimal("1.0")  # unknown → Non-STEM

@@ -136,7 +136,7 @@ export default function ClassificationAdminPage() {
       });
       toast({
         title: "Job reclassified",
-        description: `${target.title} is now ${next === "STEM" ? "STEM (1.5 credits/report)" : "Non-STEM (1.0 credit/report)"}.`,
+        description: `${target.title} is now ${next === "STEM" ? "STEM" : "Non-STEM"}.`,
       });
       setTarget(null);
       setReason("");
@@ -215,8 +215,8 @@ export default function ClassificationAdminPage() {
                         <TableCell>{row.customer_name ?? "-"}</TableCell>
                         <TableCell>
                           {row.role_classification === "STEM"
-                            ? "STEM, 1.5 credits/report"
-                            : "Non-STEM, 1.0 credit/report"}
+                            ? "STEM"
+                            : "Non-STEM"}
                           {row.classification_overridden ? " (overridden)" : ""}
                         </TableCell>
                         <TableCell>

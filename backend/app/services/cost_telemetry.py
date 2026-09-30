@@ -814,15 +814,10 @@ def _alert(average: dict[str, Any], threshold_inr: float) -> dict[str, Any]:
 async def pricing_tier_for(
     session: AsyncSession, job_id: uuid.UUID
 ) -> str | None:
-    """The per-credit rate this job's assessments bill at: `STEM` or `NON_STEM`.
+    """The job's STEM classification for historical cost analytics.
 
-    The product sells credits only (owner spec, 2026-09-29), so the tier an
-    assessment's cost is compared against is no longer a subscription plan: it
-    is the job's role classification, which is what decides whether a
-    completed report consumes 1.0 or 1.5 credits (`models.billing.
-    consumption_subunits`). A NULL classification bills at the non-STEM rate,
-    so it is reported as that rate here too. None only when the job itself
-    cannot be read.
+    All completed assessments now use one allowance credit regardless of this
+    classification. None is returned only when the job cannot be read.
 
     Read through the ORM rather than joined into the cost query so the value
     is SNAPSHOTTED onto the record: a classification overridden next month

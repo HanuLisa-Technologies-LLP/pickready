@@ -21,14 +21,14 @@ export function RoleTypeBadge({
   className?: string;
 }) {
   const stem = classification === "STEM";
-  const cost = creditCost ?? (stem ? 1.5 : 1.0);
+  const cost = creditCost ?? 1.0;
   const costLine = `${cost.toFixed(1)} credit${cost === 1 ? "" : "s"} per ReadyPick Intelligence Report`;
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <span
         title={
           stem
-            ? "This role requires technical AI assessment. Credit consumption is 1.5 per completed report."
+            ? "This role requires technical AI assessment. Credit consumption is 1.0 per completed report."
             : "Standard assessment. Credit consumption is 1.0 per completed report."
         }
         // Pinned hexes, not theme tokens: the ramps invert in dark mode and a

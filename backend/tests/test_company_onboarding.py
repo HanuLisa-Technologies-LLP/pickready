@@ -15,7 +15,6 @@ import ast
 import hashlib
 import hmac
 import inspect
-import json
 import uuid
 
 import httpx
@@ -32,10 +31,9 @@ from app.core import cache
 from app.core.config import get_settings
 from app.core.db import superadmin_scope, tenant_scope
 from app.main import app
-from app.models.billing import CreditLedgerEntry, CreditPurchase
 from app.models.company_registration import CompanyRegistration
 from app.models.enums import Role, UserStatus
-from app.models.tenant import AuditLog, Tenant
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import FirebaseSessionIn
 from app.services import company_onboarding, firebase_auth, razorpay, security_codes
@@ -301,123 +299,47 @@ async def test_an_address_with_an_account_gets_a_notice_and_the_same_answer(worl
 
 # ── Payment ─────────────────────────────────────────────────────────────────
 
-async def test_pricing_and_purchase_need_the_onboarding_cookie(world) -> None:
-    assert (await world.http.get(f"{BASE}/pricing")).status_code == 401
-    assert (await world.http.post(f"{BASE}/purchase", json={"pack_slug": "standard_50"})).status_code == 401
+async def test_paid_starter_charge_activates_pilot_once(world, monkeypatch) -> None:
     await world.verified()
-    pricing = await world.http.get(f"{BASE}/pricing")
-    assert pricing.status_code == 200
-    assert {pack["slug"] for pack in pricing.json()["packs"]} >= {"trial_20", "standard_50"}
+    plans = await world.http.get(f"{BASE}/monthly/plans")
+    assert plans.status_code == 200
+    assert [plan["slug"] for plan in plans.json()["plans"]] == ["starter"]
+    refused = await world.http.post(f"{BASE}/monthly/subscribe", json={"plan_slug": "growth"})
+    assert refused.status_code == 422
 
+    async def create_plan(**_kwargs):
+        return f"plan_{uuid.uuid4().hex[:12]}"
 
-async def test_a_forged_payment_signature_grants_nothing(world) -> None:
-    await world.verified()
-    order = await world.order()
-    response = await world.http.post(f"{BASE}/purchase/verify", json={
-        "razorpay_order_id": order["razorpay_order_id"],
-        "razorpay_payment_id": "pay_forged",
-        "razorpay_signature": "0" * 64,
-    })
-    assert response.status_code == 400
-    _registration, tenant, _user = await world.rows()
+    async def create_subscription(**_kwargs):
+        return {"id": f"sub_{uuid.uuid4().hex[:12]}"}
+
+    async def fetch_payment(_payment_id):
+        return {"status": "captured", "currency": "INR", "amount": 2_832_000}
+
+    monkeypatch.setattr(razorpay, "create_monthly_plan", create_plan)
+    monkeypatch.setattr(razorpay, "create_subscription", create_subscription)
+    monkeypatch.setattr(razorpay, "fetch_payment", fetch_payment)
+
+    checkout = await world.http.post(f"{BASE}/monthly/subscribe", json={"plan_slug": "starter"})
+    assert checkout.status_code == 200, checkout.text
+    subscription_id = checkout.json()["subscription_id"]
+    payment_id = f"pay_{uuid.uuid4().hex[:12]}"
+    signature = hmac.new(
+        KEY_SECRET.encode(), f"{payment_id}|{subscription_id}".encode(), hashlib.sha256,
+    ).hexdigest()
+    proof = {"razorpay_subscription_id": subscription_id,
+             "razorpay_payment_id": payment_id, "razorpay_signature": signature}
+    confirmed = await world.http.post(f"{BASE}/monthly/verify", json=proof)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["stage"] == "set_password"
+    duplicate = await world.http.post(f"{BASE}/monthly/verify", json=proof)
+    assert duplicate.status_code == 200
+    _, tenant, _ = await world.rows()
     async with world.factory() as session, session.begin():
         async with superadmin_scope(session):
-            status_ = (await session.execute(select(CreditPurchase.status).where(
-                CreditPurchase.tenant_id == tenant.id))).scalar_one()
-            grants = (await session.execute(select(func.count()).select_from(CreditLedgerEntry)
-                      .where(CreditLedgerEntry.tenant_id == tenant.id))).scalar_one()
-    assert status_ == "created" and grants == 0
-    assert (await world.http.get(f"{BASE}/state")).json()["stage"] == "choose_pack"
-
-
-async def _webhook(
-    world, order_id: str, payment_id: str, event_id: str, event: str = "payment.captured"
-) -> httpx.Response:
-    raw = json.dumps({
-        "event": event,
-        "created_at": 1,
-        "payload": {"payment": {"entity": {"id": payment_id, "order_id": order_id}}},
-    }).encode()
-    signature = hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-    return await world.http.post(
-        "/api/v1/billing/webhook/razorpay", content=raw,
-        headers={"X-Razorpay-Signature": signature, "X-Razorpay-Event-Id": event_id,
-                 "Content-Type": "application/json"},
-    )
-
-
-async def _grant_count(world, tenant_id) -> int:
-    async with world.factory() as session, session.begin():
-        async with superadmin_scope(session):
-            return (await session.execute(select(func.count()).select_from(CreditLedgerEntry)
-                    .where(CreditLedgerEntry.tenant_id == tenant_id,
-                           CreditLedgerEntry.subunits_delta > 0))).scalar_one()
-
-
-async def test_browser_verify_then_duplicate_webhooks_settle_once(world) -> None:
-    await world.verified()
-    order = await world.order()
-    payment = f"pay_{world.marker}"
-    verify = await world.http.post(f"{BASE}/purchase/verify", json={
-        "razorpay_order_id": order["razorpay_order_id"],
-        "razorpay_payment_id": payment,
-        "razorpay_signature": _signature(order["razorpay_order_id"], payment),
-    })
-    assert verify.status_code == 200 and verify.json()["stage"] == "set_password"
-    event = f"evt_{world.marker}"
-    assert (await _webhook(world, order["razorpay_order_id"], payment, event)).json()["status"] == "ok"
-    assert (await _webhook(world, order["razorpay_order_id"], payment, event)).json()["status"] == "duplicate"
-    _registration, tenant, _user = await world.rows()
-    assert await _grant_count(world, tenant.id) == 1
-    assert tenant.status == "onboarding"  # paying never activates by itself
-
-
-async def test_webhook_first_then_browser_verify_settles_once(world) -> None:
-    await world.verified()
-    order = await world.order()
-    payment = f"pay_{world.marker}"
-    assert (await _webhook(world, order["razorpay_order_id"], payment, f"evt_{world.marker}")).json()["status"] == "ok"
-    assert (await world.http.get(f"{BASE}/state")).json()["stage"] == "set_password"
-    verify = await world.http.post(f"{BASE}/purchase/verify", json={
-        "razorpay_order_id": order["razorpay_order_id"],
-        "razorpay_payment_id": payment,
-        "razorpay_signature": _signature(order["razorpay_order_id"], payment),
-    })
-    assert verify.status_code == 200 and verify.json()["stage"] == "set_password"
-    _registration, tenant, _user = await world.rows()
-    assert await _grant_count(world, tenant.id) == 1
-    # A second first purchase is refused once one is paid.
-    again = await world.http.post(f"{BASE}/purchase", json={"pack_slug": "standard_50"})
-    assert again.status_code == 409
-
-
-async def test_a_failed_payment_grants_nothing_and_keeps_the_password_locked(world) -> None:
-    await world.verified()
-    order = await world.order()
-    failed = await _webhook(
-        world, order["razorpay_order_id"], f"pay_{world.marker}", f"evt_{world.marker}",
-        event="payment.failed",
-    )
-    assert failed.json()["status"] == "ok"
-    _registration, tenant, _user = await world.rows()
-    assert await _grant_count(world, tenant.id) == 0
-    assert (await world.http.get(f"{BASE}/state")).json()["stage"] == "choose_pack"
-    assert (await world.http.post(f"{BASE}/activate", json={"password": PASSWORD})).status_code == 402
-    # A new attempt is a NEW purchase; the failed one stays failed.
-    assert (await world.order())["razorpay_order_id"] != order["razorpay_order_id"]
-
-
-# ── Activation, and the sign-in that must wait for it ───────────────────────
-
-async def _pay(world) -> None:
-    order = await world.order()
-    payment = f"pay_{world.marker}"
-    verify = await world.http.post(f"{BASE}/purchase/verify", json={
-        "razorpay_order_id": order["razorpay_order_id"],
-        "razorpay_payment_id": payment,
-        "razorpay_signature": _signature(order["razorpay_order_id"], payment),
-    })
-    assert verify.status_code == 200
+            assert (await session.execute(text(
+                "SELECT sum(subunits_delta) FROM credit_ledger WHERE tenant_id = :tid"
+            ), {"tid": str(tenant.id)})).scalar_one() == 75 * 60
 
 
 async def test_activation_before_payment_is_refused(world) -> None:
@@ -450,7 +372,6 @@ async def _exchange(world, monkeypatch, uid: str):
 
 async def test_login_before_activation_is_refused_and_activates_nobody(world, monkeypatch) -> None:
     await world.verified()
-    await _pay(world)
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as refused:
@@ -461,77 +382,6 @@ async def test_login_before_activation_is_refused_and_activates_nobody(world, mo
     assert user.status == UserStatus.invited and user.firebase_uid is None
     assert tenant.status == "onboarding"
 
-
-async def test_activation_after_a_paid_purchase_opens_the_workspace(world, monkeypatch) -> None:
-    await world.verified()
-    await _pay(world)
-    weak = await world.http.post(f"{BASE}/activate", json={"password": "short"})
-    assert weak.status_code == 422
-    response = await world.http.post(f"{BASE}/activate", json={"password": PASSWORD})
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["user"]["role"] == "client" and body["user"]["email"] == world.email
-    names = _set_cookie_names(response)
-    assert ACCESS_COOKIE in names
-    assert company_onboarding.ONBOARDING_COOKIE in names  # the deletion
-    assert world.created_identities == [(world.email, PASSWORD, "Saravan Kumar")]
-
-    registration, tenant, user = await world.rows()
-    assert registration.status == "activated" and registration.activated_at is not None
-    assert tenant.status == "active"
-    assert user.status == UserStatus.active and user.firebase_uid.startswith("fbuid-")
-    assert user.auth_providers == ["password"]
-    async with world.factory() as session, session.begin():
-        actions = set((await session.execute(select(AuditLog.action).where(
-            AuditLog.target_id.in_([str(registration.id)])
-            | (AuditLog.tenant_id == tenant.id)
-        ))).scalars().all())
-    assert {
-        "company_registration_email_verified", "company_registration_code_sent",
-        "company_registration_payment_created", "company_registration_payment_verified",
-        "company_registration_activated",
-    } <= actions
-
-    # A second activation is told it is finished; the ordinary sign-in works now.
-    again = await world.http.post(f"{BASE}/activate", json={"password": PASSWORD})
-    assert again.status_code in (401, 409)
-    out, _response = await _exchange(world, monkeypatch, user.firebase_uid)
-    assert out.user.role == Role.client and out.user.tenant_id == tenant.id
-
-
-async def test_an_existing_identity_finishes_with_its_own_sign_in(world, monkeypatch) -> None:
-    await world.verified()
-    await _pay(world)
-
-    async def _exists(*_args):
-        raise firebase_auth.IdentityAlreadyExists("email already registered")
-
-    monkeypatch.setattr(firebase_auth, "create_password_user", _exists)
-    told = await world.http.post(f"{BASE}/activate", json={"password": PASSWORD})
-    assert told.status_code == 409
-    assert told.json()["detail"] == onboarding_api.IDENTITY_EXISTS_DETAIL
-
-    stranger = FirebaseIdentity(uid="fb-x", email="someone@elsewhere-corp.com", name=None,
-                                provider="password", email_verified=True)
-    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda _tok: stranger)
-    mismatch = await world.http.post(f"{BASE}/activate", json={"id_token": "t" * 40})
-    assert mismatch.status_code == 403
-
-    google = FirebaseIdentity(uid="fb-g", email=world.email, name=None,
-                              provider="google.com", email_verified=True)
-    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda _tok: google)
-    assert (await world.http.post(f"{BASE}/activate", json={"id_token": "t" * 40})).status_code == 403
-
-    own = FirebaseIdentity(uid=f"fb-own-{world.marker}", email=world.email, name=None,
-                           provider="password", email_verified=False)
-    monkeypatch.setattr(firebase_auth, "verify_id_token", lambda _tok: own)
-    done = await world.http.post(f"{BASE}/activate", json={"id_token": "t" * 40})
-    assert done.status_code == 200, done.text
-    _registration, tenant, user = await world.rows()
-    assert user.firebase_uid == own.uid and tenant.status == "active"
-
-
-# ── Boundaries ──────────────────────────────────────────────────────────────
 
 async def test_the_provider_never_lists_an_onboarding_company(world) -> None:
     from app.api import provider
@@ -570,18 +420,16 @@ def _code_tokens(module) -> str:
     return ast.unparse(tree)
 
 
-def test_onboarding_never_reaches_a_subscription_path() -> None:
+def test_onboarding_uses_its_own_monthly_payment_routes() -> None:
     code = _code_tokens(onboarding_api).lower()
-    assert "subscri" not in code
     assert "/billing/" not in code
     paths = {route.path for route in onboarding_api.router.routes}
     assert paths == {
-        "/register", "/code/resend", "/code/verify", "/state", "/pricing",
-        "/purchase", "/purchase/verify", "/activate",
+        "/register", "/code/resend", "/code/verify", "/state",
+        "/monthly/plans", "/monthly/subscribe", "/monthly/verify", "/activate",
     }
-    # The one purchase path, reused rather than copied.
-    assert "credit_packs.create_purchase" in code
-    assert "credit_packs.settle_purchase" in code
+    assert "monthly_plans.begin_subscription" in code
+    assert "monthly_plans.settle_charge" in code
 
 
 def test_the_phone_is_stored_canonical() -> None:

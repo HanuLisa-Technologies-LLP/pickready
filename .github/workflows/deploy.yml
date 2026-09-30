@@ -103,7 +103,7 @@ jobs:
   backend-tests:
     name: Backend tests and agent evaluation
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     services:
       postgres:

@@ -43,11 +43,9 @@ ENV NEXT_PUBLIC_FIREBASE_API_KEY=$NEXT_PUBLIC_FIREBASE_API_KEY \
 # Fail here rather than shipping an image whose login is dead. Without this the
 # build succeeds, the container starts, every page renders, and the only symptom
 # is that nobody can sign in, which is expensive to diagnose in production.
-# The \$ is escaped so the SHELL expands it at run time. An unescaped $ is
-# substituted by the builder into the instruction text, which prints the value
-# into the build log; harmless for a public Firebase key, but the wrong habit to
-# copy the next time this pattern is reached for.
-RUN if [ -z "\$NEXT_PUBLIC_FIREBASE_API_KEY" ] || [ -z "\$NEXT_PUBLIC_FIREBASE_PROJECT_ID" ]; then \
+# Shell-form RUN expands these variables inside the build container. The
+# values do not appear in the build log, and a missing build arg fails here.
+RUN if [ -z "$NEXT_PUBLIC_FIREBASE_API_KEY" ] || [ -z "$NEXT_PUBLIC_FIREBASE_PROJECT_ID" ]; then \
       echo "ERROR: Firebase web config missing. Pass --build-arg NEXT_PUBLIC_FIREBASE_API_KEY=... (see docs/DEPLOY_GCP.md)." >&2; \
       exit 1; \
     fi

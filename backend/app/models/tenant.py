@@ -89,6 +89,12 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     is_demo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    current_plan_slug: Mapped[str | None] = mapped_column(String(20))
+    pending_plan_slug: Mapped[str | None] = mapped_column(String(20))
+    razorpay_subscription_id: Mapped[str | None] = mapped_column(String(100))
+    subscription_status: Mapped[str | None] = mapped_column(String(20))
+    subscription_current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    subscription_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: How much an assessed candidate's rank rests on their Tatva Assessment
     #: (the rest is Yukti's resume reading), 0..100 by CHECK, 70 by default
     #: (migration 0122, CONTRACT v2). INTERNAL: read by the ranking SQL and by
@@ -109,12 +115,12 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
         Boolean, nullable=False, default=False, server_default="false"
     )
     # ── Credit-pack purchase state (Master Directive Part 5) ─────────────────
-    #: Rule 1: TRUE after the first purchase; every later purchase is 50+.
+    #: Historical first-purchase flag retained for existing accounts.
     trial_used: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    #: Rule 6: once TRUE the setup fee is never charged again — including when
-    #: it was waived, which also sets this.
+    #: Historical setup fee flags retained for invoice compatibility. New
+    #: subscriptions and Starter top-ups never charge a setup fee.
     setup_fee_paid: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

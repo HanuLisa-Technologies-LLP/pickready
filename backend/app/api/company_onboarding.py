@@ -4,9 +4,9 @@
     POST /code/verify          the code -> onboarding tenant, invited client, cookie
     POST /code/resend          a new code for a registration already started
     GET  /state                where this browser's registration stands (derived)
-    GET  /pricing              every credit pack priced for the new company
-    POST /purchase             the first Razorpay Order (`credit_packs.create_purchase`)
-    POST /purchase/verify      Checkout's handler payload -> `settle_purchase`
+    GET  /monthly/plans        the paid Starter pilot
+    POST /monthly/subscribe    create its Razorpay subscription
+    POST /monthly/verify       verify captured charge before activation
     POST /activate             password (or an existing sign-in) -> org session
 
 WHO IS ASKING, AND HOW THAT IS PROVEN
@@ -17,7 +17,7 @@ tenant at all. So the proofs are, in order: a single-use CAPTCHA proof
 from the mailbox before any tenant is created; then the ONBOARDING COOKIE
 (`services/company_onboarding`, its own audience, sixty minutes) for every
 later step, each of which reads the ONE registration the cookie names. The
-activation additionally requires a PAID purchase, read from `credit_purchases`
+activation additionally requires a PAID charge, read from `billing_transactions`
 (rule 8), so a password can never be set for a company that has not paid.
 
 WHY THE BYPASS SESSION, AND WHY IT IS SAFE
@@ -31,13 +31,10 @@ never by anything else in the body. Writes commit EXPLICITLY before the
 response is built, so a cookie or a session is never handed out for a row
 that rolled back afterwards.
 
-ONE PURCHASE PATH
------------------
-`credit_packs.create_purchase(session, tenant, user_id=None, ...)` and
-`settle_purchase` are the only purchase and settlement code, exactly as
-`/billing/purchase` and `/billing/purchase/verify` use them, and the Razorpay
-webhook settles an onboarding order by its order id like any other. No
-subscription route is reachable from here.
+ONE MONTHLY SETTLEMENT PATH
+---------------------------
+The onboarding verification and Razorpay webhook both call
+`monthly_plans.settle_charge`; its payment id guard grants one month once.
 
 ENUMERATION
 -----------
@@ -53,6 +50,7 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,7 +59,6 @@ from starlette.concurrency import run_in_threadpool
 from app.api.admin import _seed_permissions, next_free_domain
 from app.core.db import get_session_factory, superadmin_scope
 from app.core.security import AUDIENCE_ORG
-from app.models.billing import PURCHASE_PAID, CreditPurchase
 from app.models.company_registration import (
     OPEN_STATUSES,
     REGISTRATION_ACTIVATED,
@@ -75,26 +72,18 @@ from app.models.tenant import CUSTOMER_ACTIVE, TENANT_ONBOARDING, Tenant
 from app.models.user import User
 from app.schemas.admin import derive_tenant_domain
 from app.schemas.auth import SessionOut
-from app.schemas.billing import (
-    CreditPackQuoteOut,
-    CreditPacksOut,
-    CreditPurchaseCreatedOut,
-    CreditPurchaseVerifyIn,
-)
 from app.schemas.company_onboarding import (
     ActivateIn,
     CodeResendIn,
     CodeVerifyIn,
-    OnboardingPurchaseIn,
     OnboardingStateOut,
     RegistrationAcceptedOut,
     RegistrationIn,
 )
-from app.models.billing import GST_RATE_PERCENT, MIN_PURCHASE_CREDITS, PRICE_PER_CREDIT_INR
 from app.services import (
     captcha,
     company_onboarding as onboarding,
-    credit_packs,
+    monthly_plans,
     employer_pages,
     firebase_auth,
     password_policy,
@@ -109,6 +98,16 @@ from app.services.rate_limit import rate_limit
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class MonthlyChoiceIn(BaseModel):
+    plan_slug: str
+
+
+class MonthlyProofIn(BaseModel):
+    razorpay_subscription_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
 
 CODE_PURPOSE = "company_register"
 
@@ -491,117 +490,81 @@ async def registration_state(
     return await _state(session, await _registration(session, registration_id))
 
 
-@router.get(
-    "/pricing",
-    response_model=CreditPacksOut,
-    dependencies=[Depends(rate_limit("company_register_pricing", limit=30, window=60))],
-)
-async def pricing(
+@router.get("/monthly/plans")
+async def onboarding_monthly_plans(
     registration_id: uuid.UUID = Depends(require_onboarding_cookie),
     session: AsyncSession = Depends(get_onboarding_db),
-) -> CreditPacksOut:
-    """Every pack priced for THIS new company (`credit_packs.quote`), the
-    same figures `/billing/credit-packs` gives a signed-in customer."""
-    _row, tenant = await _verified_registration(session, registration_id)
-    quotes = await credit_packs.quote(session, tenant)
-    return CreditPacksOut(
-        packs=[CreditPackQuoteOut(**q.__dict__) for q in quotes],
-        price_per_credit_inr=PRICE_PER_CREDIT_INR,
-        gst_rate_percent=GST_RATE_PERCENT,
-        min_custom_credits=MIN_PURCHASE_CREDITS,
-        trial_used=tenant.trial_used,
-    )
+) -> dict:
+    await _verified_registration(session, registration_id)
+    return {"plans": [
+        {**plan.__dict__, "gst_inr": plan.gst_inr, "total_inr": plan.total_inr,
+         "rollover_months": plan.rollover_months}
+        for plan in monthly_plans.PLANS if plan.slug == "starter"
+    ]}
 
 
-@router.post(
-    "/purchase",
-    response_model=CreditPurchaseCreatedOut,
-    dependencies=[Depends(rate_limit("company_register_purchase", limit=10, window=600))],
-)
-async def create_first_purchase(
-    body: OnboardingPurchaseIn,
+@router.post("/monthly/subscribe")
+async def onboarding_monthly_subscribe(
+    body: MonthlyChoiceIn,
     registration_id: uuid.UUID = Depends(require_onboarding_cookie),
     session: AsyncSession = Depends(get_onboarding_db),
-) -> CreditPurchaseCreatedOut:
-    """The first Razorpay Order, through the ONE purchase path. Nothing is
-    granted here; credits arrive only when the payment settles."""
+) -> dict:
     registration, tenant = await _verified_registration(session, registration_id, lock=True)
+    if body.plan_slug != "starter":
+        raise HTTPException(status_code=422, detail="The 30-day pilot starts on Starter")
     if await onboarding.has_paid(session, tenant.id):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ALREADY_PAID_DETAIL)
+        raise HTTPException(status_code=409, detail=ALREADY_PAID_DETAIL)
     try:
-        purchase = await credit_packs.create_purchase(
-            session, tenant, None, pack_slug=body.pack_slug
-        )
+        checkout = await monthly_plans.begin_subscription(session, tenant, body.plan_slug)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
         raise _razorpay_or_503(exc) from exc
     await audit(
         session, tenant_id=tenant.id, actor_user_id=registration.user_id,
-        action=onboarding.AUDIT_PAYMENT_CREATED, target_type="credit_purchase",
-        target_id=purchase.id,
-        metadata={
-            "pack_slug": purchase.pack_slug,
-            "credits": purchase.credits_purchased,
-            "total_inr": purchase.total_inr,
-            "razorpay_order_id": purchase.razorpay_order_id,
-        },
-    )
-    out = CreditPurchaseCreatedOut(
-        purchase_id=purchase.id,
-        razorpay_order_id=purchase.razorpay_order_id,
-        razorpay_key_id=razorpay.config().key_id,
-        total_inr=purchase.total_inr,
-        credits=purchase.credits_purchased,
-        bonus_credits=purchase.bonus_credits,
-        subtotal_inr=purchase.subtotal_inr,
-        setup_fee_inr=purchase.setup_fee_inr,
-        gst_inr=purchase.gst_inr,
+        action=onboarding.AUDIT_PAYMENT_CREATED, target_type="tenant",
+        target_id=tenant.id, metadata={"plan_slug": body.plan_slug},
     )
     await session.commit()
-    return out
+    return checkout
 
 
-@router.post(
-    "/purchase/verify",
-    response_model=OnboardingStateOut,
-    dependencies=[Depends(rate_limit("company_register_purchase_verify", limit=20, window=600))],
-)
-async def verify_first_purchase(
-    body: CreditPurchaseVerifyIn,
+@router.post("/monthly/verify", response_model=OnboardingStateOut)
+async def onboarding_monthly_verify(
+    body: MonthlyProofIn,
     registration_id: uuid.UUID = Depends(require_onboarding_cookie),
     session: AsyncSession = Depends(get_onboarding_db),
 ) -> OnboardingStateOut:
-    """Verify Checkout's signature and settle, exactly as
-    `/billing/purchase/verify` does. The browser's success callback proves
-    nothing by itself (spec 5.6); settlement is idempotent, so the webhook
-    and this call can race and the credits land once."""
     registration, tenant = await _verified_registration(session, registration_id)
-    if not razorpay.verify_order_signature(
-        order_id=body.razorpay_order_id,
+    if not razorpay.verify_subscription_signature(
+        subscription_id=body.razorpay_subscription_id,
         payment_id=body.razorpay_payment_id,
         signature=body.razorpay_signature,
     ):
         raise HTTPException(status_code=400, detail=PAYMENT_UNVERIFIED_DETAIL)
-    purchase = (
-        await session.execute(
-            select(CreditPurchase).where(
-                CreditPurchase.razorpay_order_id == body.razorpay_order_id
-            )
+    if tenant.razorpay_subscription_id != body.razorpay_subscription_id:
+        raise HTTPException(status_code=403, detail="Payment belongs to another company")
+    payment = await razorpay.fetch_payment(body.razorpay_payment_id)
+    if payment.get("status") != "captured" or payment.get("currency") != "INR":
+        raise HTTPException(status_code=409, detail="Payment has not been captured")
+    plan = monthly_plans.BY_SLUG[tenant.current_plan_slug]
+    amount_paise = int(payment["amount"])
+    settled = False
+    if amount_paise == plan.total_inr * razorpay.PAISE_PER_RUPEE:
+        settled = await monthly_plans.settle_charge(
+            session, tenant=tenant, subscription_id=body.razorpay_subscription_id,
+            payment_id=body.razorpay_payment_id, amount_inr=plan.total_inr,
         )
-    ).scalars().first()
-    # The signature proves Razorpay issued the payment, not that the order is
-    # this registration's.
-    if purchase is None or purchase.tenant_id != tenant.id:
-        raise HTTPException(status_code=404, detail="No such purchase")
-    settled = await credit_packs.settle_purchase(session, purchase, body.razorpay_payment_id)
-    if settled or purchase.status == PURCHASE_PAID:
-        await audit(
-            session, tenant_id=tenant.id, actor_user_id=registration.user_id,
-            action=onboarding.AUDIT_PAYMENT_VERIFIED, target_type="credit_purchase",
-            target_id=purchase.id,
-            metadata={"settled_here": settled, "payment_id": body.razorpay_payment_id},
-        )
+    else:
+        # Checkout may return a nominal mandate authorization before the
+        # first subscription charge. It is never a paid Starter month.
+        if tenant.subscription_status != "active":
+            tenant.subscription_status = "pending"
+    await audit(
+        session, tenant_id=tenant.id, actor_user_id=registration.user_id,
+        action=onboarding.AUDIT_PAYMENT_VERIFIED, target_type="tenant",
+        target_id=tenant.id, metadata={"granted": settled},
+    )
     out = await _state(session, registration)
     await session.commit()
     return out

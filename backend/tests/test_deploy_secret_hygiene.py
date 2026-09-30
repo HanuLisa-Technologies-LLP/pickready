@@ -600,24 +600,21 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "onboarding cookie; with no cookie it answers the first step and "
         "discloses nothing."
     ),
-    "/api/v1/company-onboarding/pricing": (
-        "authorized by the signed onboarding cookie (its own audience, sixty "
-        "minutes, minted only by a right security code); prices the packs "
-        "for the one registration the cookie names."
+    "/api/v1/company-onboarding/monthly/plans": (
+        "authorized by the signed onboarding cookie; lists the paid Starter "
+        "pilot for the one registration the cookie names."
     ),
-    "/api/v1/company-onboarding/purchase": (
-        "authorized by the signed onboarding cookie; creates the first "
-        "Razorpay Order for the one registration it names, through the same "
-        "purchase path as the billing page."
+    "/api/v1/company-onboarding/monthly/subscribe": (
+        "authorized by the signed onboarding cookie; creates a Starter "
+        "subscription for the verified registration."
     ),
-    "/api/v1/company-onboarding/purchase/verify": (
-        "authorized by the signed onboarding cookie AND the Razorpay order "
-        "signature, recomputed on the server with the Key Secret; the order "
-        "must belong to the cookie's registration."
+    "/api/v1/company-onboarding/monthly/verify": (
+        "authorized by the signed onboarding cookie and the Razorpay "
+        "subscription signature; access follows only a captured full charge."
     ),
     "/api/v1/company-onboarding/activate": (
-        "authorized by the signed onboarding cookie AND a paid credit "
-        "purchase for its company, read from credit_purchases; it creates the "
+        "authorized by the signed onboarding cookie AND a paid monthly "
+        "charge for its company; it creates the "
         "password sign-in for exactly the registered address and opens the "
         "company session."
     ),
@@ -685,8 +682,8 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     # exists. It reads no tenant and no table: the catalogue is code, the
     # figures every checkout quote and GST invoice use, and it carries no
     # account's setup-fee waiver or trial state. Rate limited.
-    "/api/v1/billing/public/credit-packs": (
-        "the platform's published credit price list for the public pricing "
+    "/api/v1/billing/public/plans": (
+        "the platform's published monthly plan list for the public pricing "
         "page, built from code constants; it reads no tenant and no row."
     ),
     "/api/v1/employers/{slug}": "one public employer page with its careers list.",
