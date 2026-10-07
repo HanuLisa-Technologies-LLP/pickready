@@ -1555,9 +1555,12 @@ module "ecs" {
     }
 
     frontend = {
-      image            = "${module.ecr.repository_urls["frontend"]}:${local.frontend_image_tag}"
-      cpu              = 512
-      memory           = 1024
+      image = "${module.ecr.repository_urls["frontend"]}:${local.frontend_image_tag}"
+      # Temporary solo-test size. The 14-day pilot peak was 35.46% CPU and
+      # 9.18% memory at 512/1024; 256/512 is a valid Linux Fargate pair and
+      # still leaves ample headroom for one developer's manual E2E testing.
+      cpu              = 256
+      memory           = 512
       desired_count    = local.service_count
       max_count        = 4
       port             = 3000
