@@ -1,7 +1,7 @@
 # Contributing to Vivekium
 
 All documentation is indexed at [docs/README.md](docs/README.md). Before
-changing code, read [claude.md](claude.md): it carries the rules a change must
+changing code, read [CLAUDE.md](CLAUDE.md): it carries the rules a change must
 not break, and its "Where to make a change" table is the fastest route to the
 right file.
 

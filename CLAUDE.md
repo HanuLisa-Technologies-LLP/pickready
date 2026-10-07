@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Development storage and workspace hygiene (2026-10-07) | Permanent: worktrees are temporary, one Compose project, reproducible artifacts are not data, end-of-task cleanup checklist |
 | Monthly completed-assessment plans (2026-09-30) | Four monthly plans, paid Starter pilot, three-month rollover, Starter-only top-up, no setup fee |
 | Company onboarding, auth hardening, credits only, Leadership Intelligence (2026-09-29) | CAPTCHA on every auth surface; security codes (not login OTP); company roles password-only; server-side password reset/change; self-registration activated by the first credit purchase; subscriptions deleted; CEO/MD/Functional Head and departments; Leadership Intelligence replaces Drishti across Sutra, SWOT, Yukti, Vaada and PRISM |
 | The Vivekium simplification release (2026-09-25) | CONTRACT v10 (2026-09-28): JD, Skills, the Final Job Posting, publish, and the freeze at the first application; the Skills step and the locked contract; Yukti and one blended rank; no number with no exception; the server-timed assessment; Path P pauses; recording retention; the Judge0 sandbox; Miti the sole grader; the insert-only report; Evidence RAG through tools; candidate identity; dispatch after commit; task RLS; the legacy scrap |
@@ -121,6 +122,47 @@ how the product works today.
 - **Stop when the requested implementation is complete, tested and verified.**
   Finishing is a state, not a feeling: the tests named in the task have run and
   passed, and anything left undone has been said out loud.
+
+## Development storage and workspace hygiene (2026-10-07, PERMANENT)
+
+Standing policy, not a phase ruling; it outranks convenience in every session.
+Full reasons and commands: [docs/development-storage-policy.md](docs/development-storage-policy.md).
+It exists because the machine reached 75.6 GB in this repo (54.9 GB of stale
+agent worktrees, 16 GB of duplicated Terraform providers) and 129 GB in Docker
+(63 GB images, 66 GB build cache), none of it data.
+
+- **Worktrees**: `C:\pickready` is canonical. Work in the current checkout. Make
+  a worktree only when parallel isolated work genuinely needs one, with an
+  owner and purpose, and never trade tens of GB of storage for agent parallelism
+  without the user's approval. Before deleting one, check uncommitted files and
+  unique commits. When its work is preserved, `git worktree remove` then
+  `git worktree prune`; never leave a finished one behind. No `node_modules`,
+  `.next`, caches, build output or Terraform providers inside a worktree.
+- **Terraform**: never delete `*.tfstate`, `terraform.tfvars`, secrets, retained
+  plans, backend config or the lock file. `.terraform/providers` and downloaded
+  modules are reproducible and may be cleaned when work finishes. A shared
+  `TF_PLUGIN_CACHE_DIR` is set at user level on this machine; keep it.
+- **Docker**: ONE Compose project, `pickready` (`infra/docker-compose.yml`), many
+  services inside it. No permanent parallel projects (pickready-test,
+  readypick-test, verify, rehearse). A throwaway is explicitly temporary and
+  named `pickready-tmp-<task>`, labelled `readypick.temporary=true` and removed
+  before the task ends (`scripts/hygiene-check.sh --clean-temp`);
+  `docker-compose.test.yml` is brought `down -v` after a run. Every resource originates from `C:\pickready`, never
+  `C:\dev\pickready`. No new persistent volume unless the architecture needs
+  one. Never delete a PostgreSQL, MinIO or user-data volume without verifying
+  and backing it up. Remove superseded ReadyPick images; do not accumulate
+  uniquely tagged builds; prune build cache periodically.
+- **Reproducible artifacts** (node_modules, .next, coverage, Python/ruff/pytest/
+  mypy caches, temp build dirs, Terraform downloads, Docker build cache) are not
+  project data. If temporary usage nears ~10 GB beyond normal dependencies,
+  investigate before creating more copies.
+- **End of every substantial task**: (1) confirm commits and uncommitted work are
+  preserved; (2) remove finished worktrees and prune (`scripts/hygiene-check.sh` reports); (3) clear safe generated
+  artifacts; (4) remove the task's temporary containers, networks and images;
+  (5) keep important volumes; (6) confirm the canonical stack still works
+  (`docker compose -f infra/docker-compose.yml config -q`, postgres and redis
+  healthy); (7) report in two lines what was cleaned and the space reclaimed.
+- Correctness and preservation come first. Never clean blindly.
 
 ## Current hard rules, monthly completed-assessment plans (2026-09-30)
 
@@ -3463,7 +3505,7 @@ behavioural capture of one attaches to the answer fields of the other.
 
 - **ALL documentation lives under `docs/`, indexed by
   [docs/README.md](docs/README.md).** Five markdown files stay at the
-  repository root and only these five: `README.md`, `claude.md`,
+  repository root and only these five: `README.md`, `CLAUDE.md`,
   `CONTRIBUTING.md`, and `PRODUCT.md` + `DESIGN.md` (the Impeccable tooling
   resolves those two at the project root, so moving them breaks the design
   agents). `.impeccable-exceptions.md` also stays, because

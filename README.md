@@ -14,7 +14,7 @@ Fargate.
 | **All documentation** | [docs/README.md](docs/README.md), the index |
 | What the product does | [docs/product/PRD.md](docs/product/PRD.md) |
 | How it is built | [docs/architecture/ESD.md](docs/architecture/ESD.md) |
-| Build conventions (read before changing code) | [claude.md](claude.md) |
+| Build conventions (read before changing code) | [CLAUDE.md](CLAUDE.md) |
 | Run it locally | [docs/operations/SETUP.md](docs/operations/SETUP.md) |
 | Deploy it | [docs/operations/DEPLOY_AWS.md](docs/operations/DEPLOY_AWS.md) |
 | Design system | [DESIGN.md](DESIGN.md), [PRODUCT.md](PRODUCT.md) |

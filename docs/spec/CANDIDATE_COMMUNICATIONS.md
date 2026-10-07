@@ -11,7 +11,7 @@ them.
 section 3 items 3, 5, 6, 7, 21, 24 and 25; Part 2 "candidate email replies
 not threaded"; Part 3 "Gmail wording").
 
-**Read beside it:** the Phase 6 section of [../../claude.md](../../claude.md)
+**Read beside it:** the Phase 6 section of [../CLAUDE.md](../../CLAUDE.md)
 and its drafts under `docs/release/2026-09-vivekium/` (`claude-p6.md`,
 `claude-p6-a.md`), which carry the reasons and the tests that pin each rule.
 

@@ -2,7 +2,7 @@
 
 Everything written about this product lives under `docs/`. Five files stay at
 the repository root because a tool or a convention resolves them there:
-[`README.md`](../README.md) (entry point), [`claude.md`](../claude.md) (build
+[`README.md`](../README.md) (entry point), [`CLAUDE.md`](../CLAUDE.md) (build
 conventions for AI agents), [`CONTRIBUTING.md`](../CONTRIBUTING.md), and
 [`PRODUCT.md`](../PRODUCT.md) + [`DESIGN.md`](../DESIGN.md) (the Impeccable
 design tooling reads them from the project root).
@@ -14,6 +14,7 @@ design tooling reads them from the project root).
 | Understand what the product does | [product/PRD.md](product/PRD.md) |
 | Understand how it is built | [architecture/ESD.md](architecture/ESD.md) |
 | Run it locally | [operations/SETUP.md](operations/SETUP.md) |
+| Keep disk, worktrees and Docker clean | [development-storage-policy.md](development-storage-policy.md) |
 | Deploy it | [operations/DEPLOY_AWS.md](operations/DEPLOY_AWS.md) |
 | Get the data back | [operations/DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) |
 | Know who may do what | [spec/RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) |
@@ -25,7 +26,7 @@ design tooling reads them from the project root).
 | Know what runs where on AWS | [operations/INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) |
 | Add, route or debug a background task | [spec/BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) |
 | Prove a change works end to end, or reproduce a failure | [spec/HARNESS.md](spec/HARNESS.md) |
-| Change code without breaking a rule | [../claude.md](../claude.md) |
+| Change code without breaking a rule | [../CLAUDE.md](../CLAUDE.md) |
 
 Current job setup (the Vivekium simplification release, 2026-09-25): Sutra
 drafts Skills from the JD, the saved SWOT and the Company Profile; the team
@@ -43,7 +44,7 @@ Settled 2026-08-29 and unchanged. Higher wins:
    tenant isolation, role ownership, job lifecycle, audit.
 2. [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md)
    — the Runbook (RPN-PHIL-001 v1.1). Authoritative for evaluation mechanics.
-3. The phase specification in force (spec-doc6, recorded in [../claude.md](../claude.md)).
+3. The phase specification in force (spec-doc6, recorded in [../CLAUDE.md](../CLAUDE.md)).
 4. [spec/CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md)
    — the candidate list surface only, and
    [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) — the end-to-end journeys
