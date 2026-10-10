@@ -29,6 +29,8 @@ REDIS_GROUP = "readypick-pilot"
 ALB_NAME = "readypick-pilot"
 PUBLIC_URL = "https://readypick.ai"
 DISCOVERY_NAMESPACE = "readypick.local"
+SCHEDULE_PREFIX = "readypick-"
+SLEEP_GUARD_SCHEDULE = "readypick-pilot-rds-sleep-guard"
 SERVICES = {
     "api": "readypick-pilot-api",
     "frontend": "readypick-pilot-frontend",
@@ -223,14 +225,85 @@ class PilotPower:
         groups = data.get("ReplicationGroups", [])
         return len(groups) == 1 and groups[0].get("Status") == "available"
 
+    def _schedule_states(self) -> tuple[dict[str, str], str]:
+        data = self.aws.run("scheduler", "list-schedules", "--name-prefix", SCHEDULE_PREFIX)
+        rows = data.get("Schedules", [])
+        applications = {
+            str(row.get("Name")): str(row.get("State", "UNKNOWN"))
+            for row in rows
+            if row.get("Name") != SLEEP_GUARD_SCHEDULE
+        }
+        guard = next(
+            (
+                str(row.get("State", "UNKNOWN"))
+                for row in rows
+                if row.get("Name") == SLEEP_GUARD_SCHEDULE
+            ),
+            "MISSING",
+        )
+        return applications, guard
+
+    def _update_schedule_state(self, name: str, state: str) -> None:
+        schedule = self.aws.run("scheduler", "get-schedule", "--name", name)
+        args = [
+            "--name",
+            name,
+            "--group-name",
+            str(schedule.get("GroupName", "default")),
+            "--schedule-expression",
+            str(schedule["ScheduleExpression"]),
+            "--flexible-time-window",
+            json.dumps(schedule["FlexibleTimeWindow"], separators=(",", ":")),
+            "--target",
+            json.dumps(schedule["Target"], separators=(",", ":")),
+            "--state",
+            state,
+        ]
+        optional = {
+            "Description": "--description",
+            "ScheduleExpressionTimezone": "--schedule-expression-timezone",
+            "StartDate": "--start-date",
+            "EndDate": "--end-date",
+            "KmsKeyArn": "--kms-key-arn",
+        }
+        for key, flag in optional.items():
+            if schedule.get(key) is not None:
+                args.extend([flag, str(schedule[key])])
+        self.aws.run("scheduler", "update-schedule", *args)
+
+    def _set_application_schedules(self, enabled: bool) -> None:
+        wanted = "ENABLED" if enabled else "DISABLED"
+        states, _ = self._schedule_states()
+        if not states:
+            raise PilotError("No ReadyPick application schedules were found.")
+        for name, current in states.items():
+            if current != wanted:
+                self._update_schedule_state(name, wanted)
+
+    def _set_sleep_guard(self, enabled: bool) -> None:
+        wanted = "ENABLED" if enabled else "DISABLED"
+        _, current = self._schedule_states()
+        if current == "MISSING":
+            raise PilotError(f"Sleep guard schedule {SLEEP_GUARD_SCHEDULE} was not found.")
+        if current != wanted:
+            self._update_schedule_state(SLEEP_GUARD_SCHEDULE, wanted)
+
     def status(self, *, print_report: bool = True) -> str:
         rds = self._rds()
         services = self.services()
         alb = self._alb_active()
         redis = self._redis_available()
+        schedules, guard = self._schedule_states()
         rds_status = str(rds.get("DBInstanceStatus", "unknown"))
 
         all_zero = all(s.desired == 0 and s.running == 0 for s in services.values())
+        application_schedules_off = bool(schedules) and all(
+            state == "DISABLED" for state in schedules.values()
+        )
+        application_schedules_on = bool(schedules) and all(
+            state == "ENABLED" for state in schedules.values()
+        )
+        sleep_guard_on = guard == "ENABLED"
         public_ready = all(
             services[name].desired >= 1 and services[name].running >= 1 and services[name].healthy
             for name in ("api", "frontend")
@@ -242,11 +315,17 @@ class PilotPower:
             s.desired > 0 and not s.healthy for s in services.values()
         )) or not alb or not redis
 
-        if all_zero and rds_status == "stopped":
+        if all_zero and rds_status == "stopped" and application_schedules_off and sleep_guard_on:
             conclusion = "PILOT IS ASLEEP"
         elif transitional:
             conclusion = "PILOT IS STARTING"
-        elif rds_status == "available" and public_ready and not broken:
+        elif (
+            rds_status == "available"
+            and public_ready
+            and application_schedules_on
+            and guard == "DISABLED"
+            and not broken
+        ):
             conclusion = "PILOT IS READY FOR TESTING"
         elif broken:
             conclusion = "PILOT HAS A PROBLEM"
@@ -262,6 +341,15 @@ class PilotPower:
                 print(f"{label.title():9} desired {item.desired}  running {item.running}  {health}")
             print(f"ALB:      {'healthy' if alb else 'unhealthy'}")
             print(f"Redis:    {'available' if redis else 'unavailable'}")
+            schedule_word = (
+                "disabled"
+                if application_schedules_off
+                else "enabled"
+                if application_schedules_on
+                else "mixed"
+            )
+            print(f"Schedules: {schedule_word} ({len(schedules)} application schedules)")
+            print(f"RDS guard: {guard.lower()}")
             if rds_status == "available" and all_zero:
                 print("\nNote: RDS is available while compute is off; AWS may have auto-restarted it.")
             print(f"\n{conclusion}")
@@ -385,7 +473,7 @@ class PilotPower:
 
     def wake(self) -> None:
         print("[1/6] Checking AWS identity and current state...")
-        self.status(print_report=False)
+        self._set_sleep_guard(False)
         print("[2/6] Starting PostgreSQL...")
         self._start_rds()
         print("[3/6] Starting API...")
@@ -400,12 +488,22 @@ class PilotPower:
         self._restore_launch_limits("frontend", resume=True)
         print("[5/6] Keeping analysis off...")
         analysis = self.services()["analysis"]
-        if analysis.desired or analysis.running:
+        analysis_was_running = bool(analysis.desired or analysis.running)
+        if analysis_was_running:
             print("    Analysis was already running; it was left untouched for safety.")
         else:
             self._set_scaling_suspended("analysis", True)
         print("[6/6] Running public health checks...")
         self._wait_public_health()
+        self._set_application_schedules(True)
+        # RegisterScalableTarget can asynchronously reconcile an existing
+        # min-capacity of one after the earlier zero check.  Reassert zero only
+        # when analysis was off at entry; never interrupt a task the operator
+        # had deliberately left running.
+        if not analysis_was_running:
+            self._set_scaling_suspended("analysis", True)
+            self._set_desired("analysis", 0)
+            self._wait_service("analysis", 0, require_health=False)
         print(f"\nREADY PICK PILOT IS AWAKE\n\nApplication:\n{PUBLIC_URL}")
         if analysis.desired or analysis.running:
             print("\nAnalysis service: ON (it was already running)")
@@ -509,6 +607,7 @@ class PilotPower:
         self._assert_no_deployment()
         self._assert_no_one_shot_tasks()
         self._assert_safe_rds_state()
+        self._set_application_schedules(False)
         print("[2/6] Stopping analysis...")
         self._stop_analysis(check_activity=True)
         print("[3/6] Stopping frontend...")
@@ -526,6 +625,7 @@ class PilotPower:
         elif rds_status != "stopped":
             raise PilotError(f"RDS cannot be stopped safely from state {rds_status}.")
         self._wait_rds("stopped")
+        self._set_sleep_guard(True)
         print("[6/6] Verifying final state...")
         conclusion = self.status(print_report=False)
         if conclusion != "PILOT IS ASLEEP":
@@ -569,6 +669,7 @@ class PilotPower:
 
     def launch_mode(self) -> None:
         print("[1/6] Starting PostgreSQL...")
+        self._set_sleep_guard(False)
         self._start_rds()
         for step, short in enumerate(("api", "frontend", "analysis"), start=2):
             print(f"[{step}/6] Restoring {short}...")
@@ -580,6 +681,7 @@ class PilotPower:
         self._wait("analysis Cloud Map registration", self._analysis_discovered)
         print("[6/6] Running public health checks...")
         self._wait_public_health()
+        self._set_application_schedules(True)
         print(
             "\nREADY PICK PILOT IS IN LAUNCH MODE\n\n"
             "API autoscaling:      min 1 / max 4\n"

@@ -80,6 +80,15 @@ class PilotPowerTests(unittest.TestCase):
         }
         aws = FakeAws(responses)
         power = pilot_power.PilotPower(aws, sleep=lambda _: None)
+        application_schedules = {"readypick-sweep": "ENABLED"}
+        sleep_guard = {"value": "DISABLED"}
+        power._schedule_states = lambda: (application_schedules.copy(), sleep_guard["value"])
+        power._set_application_schedules = lambda enabled: application_schedules.update(
+            {name: "ENABLED" if enabled else "DISABLED" for name in application_schedules}
+        )
+        power._set_sleep_guard = lambda enabled: sleep_guard.update(
+            value="ENABLED" if enabled else "DISABLED"
+        )
 
         original_set = power._set_desired
 
@@ -100,6 +109,32 @@ class PilotPowerTests(unittest.TestCase):
         aws.run = run
         power.sleep_mode()
         self.assertEqual(states, {"api": 0, "frontend": 0, "analysis": 0})
+        self.assertEqual(application_schedules["readypick-sweep"], "DISABLED")
+        self.assertEqual(sleep_guard["value"], "ENABLED")
+
+    def test_schedule_update_preserves_definition(self):
+        schedule = {
+            "GroupName": "default",
+            "ScheduleExpression": "rate(15 minutes)",
+            "ScheduleExpressionTimezone": "Asia/Kolkata",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "Target": {
+                "Arn": "arn:aws:lambda:region:account:function:worker",
+                "RoleArn": "arn:aws:iam::account:role/scheduler",
+                "Input": "{}",
+                "RetryPolicy": {"MaximumRetryAttempts": 0},
+            },
+        }
+        aws = FakeAws(
+            {
+                ("scheduler", "get-schedule"): schedule,
+                ("scheduler", "update-schedule"): {},
+            }
+        )
+        pilot_power.PilotPower(aws)._update_schedule_state("readypick-sweep", "DISABLED")
+        args = aws.calls[-1][2]
+        self.assertEqual(args[args.index("--state") + 1], "DISABLED")
+        self.assertIn("--target", args)
 
     def test_analysis_stop_refuses_recent_request(self):
         aws = FakeAws({})
@@ -120,6 +155,35 @@ class PilotPowerTests(unittest.TestCase):
         self.assertEqual(args[args.index("--min-capacity") + 1], "1")
         self.assertEqual(args[args.index("--max-capacity") + 1], "4")
         self.assertIn("DynamicScalingOutSuspended=false", args[-1])
+
+    def test_wake_reasserts_analysis_zero_after_schedule_restore(self):
+        aws = FakeAws({})
+        power = pilot_power.PilotPower(aws)
+        calls = []
+        power._set_sleep_guard = lambda enabled: calls.append(("guard", enabled))
+        power._start_rds = lambda: calls.append(("rds", "available"))
+        power._set_scaling_suspended = lambda short, enabled: calls.append(
+            ("suspended", short, enabled)
+        )
+        power._set_desired = lambda short, count: calls.append(("desired", short, count))
+        power._wait_service = lambda short, count, require_health: calls.append(
+            ("wait", short, count)
+        )
+        power._restore_launch_limits = lambda short, resume: calls.append(
+            ("limits", short, resume)
+        )
+        power._wait_public_health = lambda: calls.append(("public", "healthy"))
+        power._set_application_schedules = lambda enabled: calls.append(("schedules", enabled))
+        power.services = lambda: {
+            name: pilot_power.ServiceState(name, 0, 0, 0, True, [])
+            for name in pilot_power.SERVICES
+        }
+
+        power.wake()
+
+        schedule_index = calls.index(("schedules", True))
+        desired_index = len(calls) - 1 - calls[::-1].index(("desired", "analysis", 0))
+        self.assertGreater(desired_index, schedule_index)
 
 
 if __name__ == "__main__":
