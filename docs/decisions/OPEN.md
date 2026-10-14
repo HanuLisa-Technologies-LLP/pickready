@@ -27,7 +27,7 @@
 |---|---|---|
 | Q-20 | A designed logo mark (today a drawn V). | The drawn V. |
 | Q-21 | `LLM_KEY_ENCRYPTION_SECRET` is held and granted to no service. | Held. |
-| Q-22 | Branch protection on `main` is written ([../operations/BRANCH_PROTECTION.md](../operations/BRANCH_PROTECTION.md)), not applied. | Not applied. |
+| Q-33 | **Frontend dependency vulnerabilities (15 findings, 4 packages block the Security scan).** Plan awaits owner approval: [../operations/DEPENDENCY_REMEDIATION_PLAN.md](../operations/DEPENDENCY_REMEDIATION_PLAN.md). Until fixed, every pull request into `main` fails the required Security scan, and none is merged around it. High priority; includes a Next.js remote code execution advisory. | Unfixed; PR #16 held. |
 | Q-23 | The `impeccable` design tool is unpinned by hash and gates CI. | Unpinned. |
 | Q-24 | Inbound reply email is inert on pilot (`INBOUND_EMAIL_DOMAIN` empty); `transcribe_enabled` off until the deploy stage. | Inert, off. |
 | Q-25 | Five one-tenant tasks still bypass RLS pending a real-Postgres proof (`generate_job_swot`, `draft_job_skills`, `execute_coding_submission`, `transcribe_voice_answer`, `process_assessment_video`). | Bypass, with a written reason each. |

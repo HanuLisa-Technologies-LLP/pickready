@@ -92,7 +92,8 @@ Details in [engineering/documentation-policy.md](engineering/documentation-polic
 | [DEPLOY_AWS.md](operations/DEPLOY_AWS.md) | The AWS deployment runbook |
 | [INFRA_TOPOLOGY.md](operations/INFRA_TOPOLOGY.md) | What runs where on pilot: compute, data, object store, network, schedules, alarms, switches |
 | [DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) | Restoring the database; written, never rehearsed |
-| [BRANCH_PROTECTION.md](operations/BRANCH_PROTECTION.md) | The protection `main` needs; written, not applied |
+| [BRANCH_PROTECTION.md](operations/BRANCH_PROTECTION.md) | The protection on `main` (applied) and its ten required checks |
+| [DEPENDENCY_REMEDIATION_PLAN.md](operations/DEPENDENCY_REMEDIATION_PLAN.md) | Proposed plan for the frontend dependency vulnerabilities blocking the Security scan |
 | [LEGACY_TABLES.md](operations/LEGACY_TABLES.md) | Every table and column dropped or kept as history, with the reason |
 | [SKIPS.md](operations/SKIPS.md) | The declared skip inventory, enforced by a test |
 | [development-storage-policy.md](development-storage-policy.md) | Permanent workspace hygiene policy |

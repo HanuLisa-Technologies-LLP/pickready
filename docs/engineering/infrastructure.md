@@ -6,7 +6,7 @@ What runs where: [../operations/INFRA_TOPOLOGY.md](../operations/INFRA_TOPOLOGY.
 ## Environments and branches
 
 - `readypick-pilot` (`ap-south-2`, Hyderabad) is the only environment ever applied and it is the live site, so there is nowhere to rehearse. `infra/environments/staging` and `production` are defined, never applied; `production` is derived from `staging` by `infra/environments/derive-production.py` (every edit must match exactly once; review `git diff infra/environments/production`).
-- `main` is the only deployable branch. Pilot is built and deployed from a commit on `main`, verified by image digest. Pushing to `main` starts `.github/workflows/deploy.yml`; a pull request into `main` runs checks and deploys nothing. Branch protection is written, not applied (OPEN Q-22).
+- `main` is the only deployable branch. Pilot is built and deployed from a commit on `main`, verified by image digest. Pushing to `main` starts `.github/workflows/deploy.yml`; a pull request into `main` runs checks and deploys nothing. Branch protection is applied with ten required checks ([../operations/BRANCH_PROTECTION.md](../operations/BRANCH_PROTECTION.md)).
 - The deploy workflow's ref restriction is pinned (`tests/test_deploy_workflow_guard.py`). An environment with no required reviewer runs silently; `verify-approval-gate.sh` fails without one. `administration` is not a valid GitHub Actions permission.
 
 ## Terraform
