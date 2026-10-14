@@ -37,4 +37,4 @@ How the AI runtime is built: [../architecture/AI_RUNTIME.md](../architecture/AI_
 
 - Retrieval-time injection screen wired on every path (A-20).
 - Coding answers: static checker plus AI review, no sandbox (S-20).
-- Yukti five-part model (S-21, proposed only).
+- Yukti five-part model 45/15/20/15/5 (S-21): approved, decided and not built.

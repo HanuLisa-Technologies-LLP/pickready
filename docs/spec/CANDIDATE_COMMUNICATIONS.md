@@ -2,7 +2,7 @@
 
 **Status:** current. **Reviewed:** 2026-10-14. Normative for the surfaces it names; ranks with [HIRING_WORKFLOW.md](HIRING_WORKFLOW.md), below the RBAC Specification and the Runbook, above the PRD and the ESD. Where the two touch (the sourced stage, the Updates feed), the workflow governs the sequence and this document governs who the candidate is and how words reach them. Written 2026-09-24 for the Vivekium release.
 
-**Decided 2026-10-14, not built (register I-20):** platform transactional email is sent through Amazon SES only, from `contact@readypick.ai`, with no SMTP fallback; a company's own approved sender still sends candidate lifecycle mail, also through SES. Wherever this document says the deployment transport is SMTP or SES, read that as today's behaviour. The two `pickready.app` addresses in the code are obsolete and await replacement (Pending change 3).
+**Decided 2026-10-14, not built (register I-20):** Amazon SES only, no SMTP fallback. Security codes are sent from `noreply@readypick.ai`; every other platform email and fallback recruitment email is sent from `contact@readypick.ai`. A company's own approved sender is preserved for candidate lifecycle mail, also through SES. Wherever this document says the deployment transport is SMTP or SES, read that as today's behaviour. The two `pickready.app` addresses in the code are obsolete and await replacement (Pending change 3). SES identity verification and development and test mail are unresolved (T-03).
 
 ---
 

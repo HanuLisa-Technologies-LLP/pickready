@@ -1,6 +1,6 @@
 # Coding assessment
 
-**Status:** decided 2026-10-14 (register S-20), **not built**. **Reviewed:** 2026-10-14 against `services/assessment_questions/budget.py`, `services/code_execution/`, `services/coding_assessment/`.
+**Status:** decided 2026-10-14, confirmed in the second ruling (register S-20), **not built**. **Reviewed:** 2026-10-14 against `services/assessment_questions/budget.py`, `services/code_execution/`, `services/coding_assessment/`.
 Replaces the sandbox design recorded in [../history/SUPERSEDED.md](../history/SUPERSEDED.md). Where the code and this page disagree, this page states the intent and the code is owed a change ([../decisions/REGISTER.md](../decisions/REGISTER.md), Pending change 2).
 
 ## 1. The decision
@@ -11,7 +11,7 @@ Replaces the sandbox design recorded in [../history/SUPERSEDED.md](../history/SU
 
 ## 2. What is not decided
 
-Tracked as Q-08 in [../decisions/OPEN.md](../decisions/OPEN.md). Until the owner rules, do not build:
+Tracked as T-02 in [../decisions/OPEN.md](../decisions/OPEN.md). The hidden-test scoring policy is not retained. Until the owner rules, do not build:
 
 - which languages are offered and which checker serves each;
 - whether the candidate may trigger the checker while writing (the old Run button) or only at submit;

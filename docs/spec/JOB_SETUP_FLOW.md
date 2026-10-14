@@ -115,28 +115,28 @@ Harness worlds: `job_with_drafted_skills`, `job_with_team_written_skills`, `job_
 
 The RBAC cells read by job preparation: Recruiter creates and edits an assigned draft JD but cannot edit a skill; Hiring Manager edits skills and the SWOT on an assigned job; HR and Recruitment Managers edit everything and finalize; publishing is a scoped capability (`PUBLISH_JOB`) held by the Recruiter in scope and the Super Admin as an audited exception; there is no assignment screen, so only a Hiring Manager who created a job holds skill-edit scope on it. The HR Manager can no longer publish (the flag in Create Job that gave it that right is gone).
 
-## 7. Decided 2026-10-14, not built (J-10 to J-16)
+## 7. Decided 2026-10-14, not built (J-10 to J-21)
 
 **Status: decided, pending.** The owner replaced the publish rule above with an approval flow. Nothing in this section is implemented; do not describe it as working.
 
 ### 7.1 The flow
 
 ```
-Recruiter      creates the job, prepares the JD, assigns a Hiring Manager
-Hiring Manager reviews the JD, prepares Skills and the SWOT, submits
-HR / Recruitment Manager   approves, or returns it with a reason
-Recruiter      publishes ONLY an approved job
+Recruiter      creates the job, prepares the JD, assigns a Hiring Manager      (Draft)
+Hiring Manager reviews the JD, prepares Skills and the SWOT, submits    (Technical Review)
+HR / Recruitment Manager   approves, or returns it with a reason        (HR Review, then Approved)
+Recruiter      publishes ONLY an approved job                           (Published)
 ```
 
-Publish requires a completed JD, saved Skills and HR approval of the exact revision published. The SWOT is not a publication blocker. "Skills Matrix" in the owner's wording is the Skills step; there is no matrix.
+Publish requires a completed JD, saved Skills and HR approval of the exact revision published. The SWOT is not a publication blocker. "Skills Matrix" in the owner's wording is the Skills step; there is no matrix. The five states are Draft, Technical Review, HR Review, Approved and Published (J-17); a returned job is corrected and resubmitted. The database states, transitions and migration are unresolved (OPEN T-01).
 
 ### 7.2 Who may do what
 
 | Role | May | May not |
 |---|---|---|
-| Company Super Admin | Everything below; overrides are audited | Skip the steps (approval still required); may approve when no independent approver exists (7.4) |
-| HR or Recruitment Manager | Create jobs; edit JD, Skills and SWOT; assign Hiring Managers; approve or return | Publish |
-| Recruiter | Create jobs; edit assigned draft JDs; publish assigned approved jobs | Edit Skills or SWOT; approve |
+| Company Super Admin | Everything below, including assigning and reassigning Hiring Managers; overrides are audited | Skip the steps (approval still required); may approve when no independent approver exists (7.4) |
+| HR or Recruitment Manager | Create jobs; edit JD, Skills and SWOT; reassign Hiring Managers; approve or return (the HR Manager and the Recruitment Manager both approve) | Publish |
+| Recruiter | Create jobs; edit assigned draft JDs; assign the Hiring Manager during job creation; cannot reassign afterwards; publish assigned approved jobs | Edit Skills or SWOT; approve |
 | Hiring Manager | Edit assigned JD, Skills and SWOT; submit | Publish; approve |
 | Interview Manager | Nothing in job preparation or publishing | Anything above |
 
@@ -144,7 +144,7 @@ Server-side enforcement includes tenant isolation and job assignments. This amen
 
 ### 7.3 Return and re-approval
 
-HR returns a job to the Recruiter (JD problems) or the Hiring Manager (Skills problems), choosing the recipient and writing a reason. A **material change** to the JD, job details, Skills or hiring-relevant SWOT after approval cancels the approval and needs fresh HR review before publishing; cosmetic formatting and internal notes do not. Approval history is preserved, every change is recorded, and publication uses the exact approved revision. The definition of "material" and "hiring-relevant" is unresolved (Q-03).
+HR returns a job to the Recruiter (JD problems) or the Hiring Manager (Skills problems), choosing the recipient and writing a reason. A **material change** to the JD, hiring requirements, Skills, compensation or hiring-relevant SWOT after approval invalidates the pre-publication approval and needs fresh HR review before publishing; cosmetic formatting and internal notes do not. Approval history is preserved, every change is recorded, and publication uses the exact approved revision. Compensation counts as material; cosmetic edits do not. The exact field list is unresolved (OPEN T-08).
 
 ### 7.4 Independence
 
@@ -152,8 +152,8 @@ By default an independent HR or Recruitment Manager approves: anyone who materia
 
 ### 7.5 SWOT timing
 
-The SWOT may be written and edited before or after publishing, is never shown to a candidate, must be saved before assessment, and freezes when the first assessment starts. The JD and Skills still freeze at the first genuine application (2.7). Open points: Q-04 to Q-06.
+The SWOT may be written and edited before or after publishing and is never shown to a candidate. It must be complete before assessment invitations are sent (J-20) and freezes when the first assessment begins, with no change afterwards (J-19). The JD and Skills freeze at the first genuine application (2.7). A SWOT change after publication does not unpublish the job and earlier assessment snapshots are preserved (J-18); a material SWOT change after publication needs HR review before it affects future assessments (J-18). How that review gates future assessments, and concurrent edits and snapshot consistency, are unresolved (T-06).
 
 ### 7.6 What stays
 
-Existing candidate records, immutable assessment snapshots and the skills-locking rules are preserved. No second workflow is added: the approval states extend the existing lifecycle (names open, Q-01).
+Existing candidate records, immutable assessment snapshots and the skills-locking rules are preserved. No second workflow is added: the approval states extend the existing lifecycle (J-17; mapping open, T-01).

@@ -96,7 +96,7 @@ Detail and the state tables: [../spec/JOB_SETUP_FLOW.md](../spec/JOB_SETUP_FLOW.
 
 Yukti reads each resume against the job's saved Skills on fixed parts and produces one grade word and evidence tags. Compensation never reaches a model. Quotes are verified by code against the resume; an ungrounded claim is dropped; behavioural skills are never judged from a resume; a model failure is "not assessed". A fresh resume is read without anyone re-running matching. Ranking is one key derived in SQL: the blend of resume reading and, once assessed, the assessment, with a failed Must-have capping the result; unscored candidates are listed last, never hidden. The recruiter's table is paginated at 25 and shows words only: Name, AI Match, CTC Match, Notice Period, Education, BGV Status, Type of Procurement, Status, Resume, PRISM Report, Q&A, Validation, Team review, Decision. A Functional Head sees only their department's resume for a shared candidate.
 
-Part weights are internal and provisional; a five-part model is proposed (S-21) and not approved. Detail: [../spec/RETRIEVAL.md](../spec/RETRIEVAL.md).
+Part weights are internal. The code computes a six-part model today; the owner approved a five-part score (Must-have 45, Nice-to-have 15, Role Fit 20, Experience 15, Company Need 5), with compensation, notice period and document readiness shown separately. Decided, pending (S-21); versioning of the weights is unresolved (T-05). Detail: [../spec/RETRIEVAL.md](../spec/RETRIEVAL.md).
 
 ## 9. Assessment
 
@@ -123,16 +123,9 @@ The **Tatva Assessment** is the process; the **PRISM Report** is the document it
 
 ## 12. Billing and credits
 
-Four monthly plans, all features included, differing only by completed-assessment allowance. Prices exclude GST. Detail: register C-01 to C-07.
+**Decided 2026-10-14 (C-10), not built:** per-credit pricing replaces monthly subscriptions. Existing subscribers keep their paid period and move to credits at their next renewal. Conversion rates, unused benefits, customer notification terms, credit price, GST, expiry, refunds and billing transitions are unresolved (OPEN T-04).
 
-| Plan | Completed assessments per month | Monthly price |
-|---|---:|---:|
-| Starter | 75 | INR 24,000 |
-| Growth | 200 | INR 55,000 |
-| Scale | 500 | INR 1,20,000 |
-| Pro | 1,200 | INR 2,40,000 |
-
-Every plan renews monthly with no annual commitment; the customer may cancel at any time, effective at the end of the paid cycle; there is no setup fee. The 30-day pilot starts on Starter and is paid at signup. One completed assessment spends one credit, including STEM; incomplete assessments, no-shows and old-profile reviews spend none. Unused credits roll over three months from grant, then expire. Credits pool across all open jobs. Only a Starter pack (75 assessments, INR 24,000 plus GST) can be bought as a top-up. Derived per-assessment prices are never shown. Historical purchases and invoices stay readable at the terms they were sold on.
+**Current implementation, to be replaced:** four monthly Razorpay plans, a paid 30-day Starter pilot, a Starter-only top-up and a three-month rollover. The prices and terms are archived in [../history/RULINGS.md](../history/RULINGS.md) (2026-09-30). One completed assessment spends one credit, including STEM; incomplete assessments, no-shows and old-profile reviews spend none; credits pool across all open jobs. Derived per-assessment prices are never shown.
 
 The balance is the sum of an append-only ledger in integer sub-units (60 per credit); every write is idempotent. A completed assessment is charged even into the negative; a negative balance blocks the next invitation batch. A warning fires at or below 30 percent; at zero, new job creation and new assessment starts are blocked while an active conversation may finish and report finalization waits. Zero credits never block login or reads. Demonstration companies are exempt from refusals, never from records. Payment runs through Razorpay; webhooks are deduplicated. A new company becomes active only after its first plan payment.
 
