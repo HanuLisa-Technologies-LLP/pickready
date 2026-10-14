@@ -1,6 +1,6 @@
 # Project Evidence Intelligence
 
-Status: implemented 2026-09-01, per the Project Evidence master brief.
+**Status:** current. **Reviewed:** 2026-10-14. Implemented 2026-09-01 from the Project Evidence master brief.
 
 > **Current product phase: original project artifacts are not retained.
 > Only derived, structured, versioned Project Evidence Intelligence is

@@ -1,6 +1,8 @@
 # Ready Pick Now Candidate Dashboard
 ## Column Framework & Specification
 
+**Status:** current. Owner-filed specification (precedence rank 4, candidate list surface only), kept verbatim. **Reviewed:** 2026-10-14. **Amended by later owner decisions** ([../decisions/REGISTER.md](../decisions/REGISTER.md)): no number reaches a client, so any numeric score column or percentage below is superseded (P-02); there is one four-grade scale, so any other grade vocabulary or band cut-point below is superseded (P-03); the list is ordered by the one rank key in [RETRIEVAL.md](RETRIEVAL.md).
+
 **Version:** 1.0 Final
 **Date:** 28 August 2026
 **Platform:** Ready Pick Now (Hanulisa Technologies LLP)

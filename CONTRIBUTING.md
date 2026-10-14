@@ -1,8 +1,8 @@
 # Contributing to Vivekium
 
 All documentation is indexed at [docs/README.md](docs/README.md). Before
-changing code, read [claude.md](claude.md): it carries the rules a change must
-not break, and its "Where to make a change" table is the fastest route to the
+changing code, read [CLAUDE.md](CLAUDE.md): it carries the rules a change must
+not break, and [docs/engineering/where-to-change.md](docs/engineering/where-to-change.md) is the fastest route to the
 right file.
 
 ## One command, from a clean clone, to a green suite
@@ -61,7 +61,7 @@ it and lost, so every host-side connection reached PostgreSQL 13 with a password
 nobody had, and 71 integration tests answered `no database reachable` and
 reported SKIPPED. The suite was green while `POST /jobs/{id}/apply` was refused
 by a CHECK constraint for every candidate on every tenant. See
-`docs/operations/TEST_BASELINE.md`.
+`docs/history/AUDITS.md`.
 
 6380 is the local dev stack's Redis (`infra/docker-compose.yml`), so the test
 stack takes 6381. The two stacks can run side by side.
@@ -296,8 +296,7 @@ a reason. `backend/tests/test_skip_inventory.py` compares it against what the
 session actually skipped and fails the build on any difference, naming the
 specific test that appeared or disappeared.
 
-There is exactly one declared skip, and it needs a vendor key that spec-doc6 D6
-states is unavailable this phase.
+The declared skips are the table in `docs/operations/SKIPS.md`; each needs a vendor key or an environment this suite does not have.
 
 If you add a skip, the build will tell you. Your options, in order of
 preference: make the test run, delete it, or add a row with a category and a
@@ -328,11 +327,11 @@ the chain is broken.
 
 ## No API keys are needed, and none should be set
 
-`ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` are deliberately unset by
+`OPENAI_GPT_TERRA`, `OPENAI_GPT_LUNA` and `VOYAGE_CONTEXT_4` are deliberately unset by
 `scripts/test.sh` and by CI. The suite must pass with no model credential at
 all: every generative path has a deterministic fallback, and a key here would
 let a vendor outage fail the build. Nothing in this repository may state or
-imply that a live vendor call has succeeded.
+imply that a live vendor call has succeeded without evidence in `docs/verification/VERIFICATION_RESULTS.md`.
 
 ## Standing rules
 
@@ -343,7 +342,7 @@ These are enforced, not aspirational. `backend/tests/test_platform_audit.py` and
   data. Build any matching character class from `chr(8212)` so a repo-wide sweep
   cannot rewrite the code that strips it.
 * No placeholder markers and no apologetic hedging in shipped code. The exact
-  banned token list lives in `CLAUDE.md` and in the CI grep that enforces it,
+  banned token list lives in the tests that enforce it (for example `backend/tests/test_legacy_reset.py`),
   deliberately not restated here: a document that spells them out is a document
   the grep flags, and an exception carved for it is an exception somebody else
   will use. The shape is the usual one, the three all-caps annotations plus any
@@ -356,5 +355,5 @@ These are enforced, not aspirational. `backend/tests/test_platform_audit.py` and
 * Conventional Commits (`feat:`, `fix:`, `chore:`, `refactor:`), one logical
   change per commit, each green on the full suite.
 
-`CLAUDE.md` is the standing context for the whole project and takes precedence
+`CLAUDE.md` and `docs/decisions/REGISTER.md` are the standing context for the whole project and take precedence
 over this file wherever they overlap.

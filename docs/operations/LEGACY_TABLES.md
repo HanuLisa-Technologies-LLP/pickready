@@ -1,4 +1,5 @@
 # Legacy tables and columns
+**Status:** current. **Reviewed:** 2026-10-14 (the table and column list was not re-counted).
 
 Owner ruling S4 (Vivekium simplification release, 2026-09-25): nothing that
 may hold a customer row is dropped irreversibly. The pilot probe of
@@ -8,7 +9,7 @@ whole upgrade, when anything is there. Everything else the release stopped
 reading or writing is kept here as history, with the reason.
 
 Row counts are from that probe unless stated. "Nothing writes it" is enforced
-by the removal sweeps named in `claude.md`.
+by the removal sweeps (`backend/tests/removal_sweep.py` and the tests that use it).
 
 ## Dropped, each behind an emptiness guard
 

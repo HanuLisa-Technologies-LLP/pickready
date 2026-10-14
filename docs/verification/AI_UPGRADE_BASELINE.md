@@ -1,4 +1,5 @@
 # AI upgrade baseline, RPN-AI-UP-001 W0
+**Status:** measurement, taken 2026-09-09. Never edited to match new behaviour. **Reviewed:** 2026-10-14 (not re-measured).
 
 **Taken 2026-09-09 against commit `6f696a8ee93ac3ee6ad44380c63bfb0c4e423715`
 (`6f696a8`), and against the `readypick-pilot` database in `ap-south-2`.**

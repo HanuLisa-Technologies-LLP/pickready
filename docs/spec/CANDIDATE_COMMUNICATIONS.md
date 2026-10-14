@@ -1,19 +1,8 @@
 # Candidate identity and communications
 
-**Status:** normative for the surfaces it names. Precedence rank 4, beside
-[HIRING_WORKFLOW.md](HIRING_WORKFLOW.md): below the RBAC Specification and the
-Runbook, above the PRD and the ESD. Where this document and the hiring
-workflow touch (the sourced stage, the Updates feed), the workflow governs the
-SEQUENCE and this document governs who the candidate is and how words reach
-them.
+**Status:** current. **Reviewed:** 2026-10-14. Normative for the surfaces it names; ranks with [HIRING_WORKFLOW.md](HIRING_WORKFLOW.md), below the RBAC Specification and the Runbook, above the PRD and the ESD. Where the two touch (the sourced stage, the Updates feed), the workflow governs the sequence and this document governs who the candidate is and how words reach them. Written 2026-09-24 for the Vivekium release.
 
-**Written:** 2026-09-24, for the Vivekium release, Phase 6 (audit Part 1
-section 3 items 3, 5, 6, 7, 21, 24 and 25; Part 2 "candidate email replies
-not threaded"; Part 3 "Gmail wording").
-
-**Read beside it:** the Phase 6 section of [../../claude.md](../../claude.md)
-and its drafts under `docs/release/2026-09-vivekium/` (`claude-p6.md`,
-`claude-p6-a.md`), which carry the reasons and the tests that pin each rule.
+**Decided 2026-10-14, not built (register I-20):** platform transactional email is sent through Amazon SES only, from `contact@readypick.ai`, with no SMTP fallback; a company's own approved sender still sends candidate lifecycle mail, also through SES. Wherever this document says the deployment transport is SMTP or SES, read that as today's behaviour. The two `pickready.app` addresses in the code are obsolete and await replacement (Pending change 3).
 
 ---
 
@@ -237,9 +226,5 @@ working in production until that is done and observed.**
 ## 9. What is NOT true yet
 
 - Candidate reply threading does not work on pilot (section 5).
-- `orchestration/versioning.resolve_for_application` still has no production
-  caller (claude.md, 2026-09-23); nothing in this document depends on it.
-- The `/outreach` bulk email routes (`api/outreach.py`) and
-  `/companies/me/email-templates` lost their last screen with the review
-  page and the templates builder; they are recorded for the Phase 7 route
-  sweep rather than silently kept.
+- Platform email through SES only is decided and not built (status note at the top).
+- The `/outreach` bulk email routes (`api/outreach.py`) and `/companies/me/email-templates` lost their last screen with the review page and the templates builder. A route nothing calls is deleted or declared in `tests/test_route_callers.py` with a reason; whether these two are still declared is not re-checked here.

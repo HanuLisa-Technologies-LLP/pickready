@@ -11,6 +11,11 @@
 > supplied by the product owner in the implementing session and filed here verbatim.
 > Nothing in it has been edited. Where spec-doc6 restates it, spec-doc6's restatement
 > is a summary and this file is the authority.
+>
+> **Amended by the owner on 2026-10-14 (not edited here):** the job approval flow, the
+> HR Manager's Publish cell (section 24 matrix, now NO), the section 9.6 publishing rule
+> and the section 17 lifecycle gain an HR approval step. The amendments are recorded in
+> `docs/decisions/REGISTER.md` (J-10 to J-16); read them with sections 9.6, 17 and 24.
 
 ## 1. Purpose
 

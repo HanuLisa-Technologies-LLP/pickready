@@ -1,4 +1,5 @@
 # Verification results
+**Status:** measurement: a dated record of live vendor runs, read by `test_no_live_vendor_claims.py`; never edited to match new behaviour. **Reviewed:** 2026-10-14 (not re-run).
 
 Produced by `backend/scripts/verify_live.py` against the live vendor
 endpoints. Everything below is an OBSERVED result; nothing here is inferred

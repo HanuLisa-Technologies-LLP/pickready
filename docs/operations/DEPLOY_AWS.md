@@ -1,22 +1,11 @@
-# ReadyPick on AWS
+# Vivekium on AWS
 
-The deployment runbook. It replaces `DEPLOY_GCP.md` and `DEPLOY_GCP_RUNBOOK.md`,
-which were removed with the Cloud Run infrastructure.
+**Status:** current. **Reviewed:** 2026-10-14. The deployment runbook. Pilot (`readypick-pilot`, `ap-south-2`) has been applied from this configuration and is the live site; staging and production are defined and have **never been applied**, so every statement about them below is what the commands are documented to produce, not something anyone observed. What runs where: [INFRA_TOPOLOGY.md](INFRA_TOPOLOGY.md). Restoring data: [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md). Rules: [../engineering/infrastructure.md](../engineering/infrastructure.md).
 
-> ## NOTHING IN THIS DOCUMENT HAS BEEN EXECUTED.
->
-> spec-doc6 §D5: *"No `terraform apply`. No live resource creation. No DNS
-> cutover. Running `apply` against any real account in this phase is a failure of
-> scope."* §17 repeats it in the acceptance list: *"No live AWS deployment has
-> been executed. Running `terraform apply` against a real account in this phase
-> is a failure of scope, not an accomplishment."*
->
-> So this runbook is written to be followed and it has not been followed. Where a
-> step names an expected output, that is what the command is documented to
-> produce, not a result anybody observed here. Nothing below should be read as a
-> report of something that happened.
+Do not run `terraform apply`, a migration or a deploy from an agent task unless the owner asks.
 
 ---
+
 
 ## 1. What is actually verified, and what is not
 
@@ -33,11 +22,7 @@ This table is the one to read before repeating any claim from this document.
 | No wildcard IAM grant outside the documented resource-less actions | `python infra/check-no-wildcard-iam.py` | **Verified** |
 | No insecure configuration outside the reasoned exception list | `checkov --config-file infra/.checkov.yml` | **Verified** |
 | The health endpoint refuses a task whose database or broker is unreachable | `pytest backend/tests/test_health.py` | **Verified** |
-| An AWS account can create these resources | — | **NOT VERIFIED.** No account exists for this phase |
-| Service quotas suffice | — | **NOT VERIFIED** |
-| The IAM roles behave once something assumes them | — | **NOT VERIFIED** |
-| The instance and node types are offered in the chosen region | — | **NOT VERIFIED.** The region has not been chosen |
-| Anything applies, runs, or serves traffic | — | **NOT VERIFIED, and must not be in this phase** |
+| An AWS account can create these resources, quotas suffice, the IAM roles behave | Read-only describe calls and deploy records for pilot | **Observed for pilot only** (2026-09-17 and later); NOT VERIFIED for staging or production |
 
 ### What the offline plan proves
 
@@ -464,7 +449,7 @@ Each of those fails the FIRST build loudly (the buildspec refuses a non-aarch64
 host and a missing buildx by name), and the fallback below still works.
 
 **Fallback: the local QEMU build.** When the builder is unavailable, build on
-the laptop exactly as `DEPLOYMENT_LOG.md` section 5 records: `docker buildx
+the laptop: `docker buildx
 build --platform linux/arm64 --push` for each image, the `-fn` sibling with
 `--provenance=false --sbom=false --output type=image,oci-mediatypes=false,push=true`,
 and the frontend with the six `--build-arg NEXT_PUBLIC_FIREBASE_*` values from
@@ -680,9 +665,8 @@ Rough monthly figures before data transfer. They move with the region.
 | WAF (only if enabled) | ~$0 | ~$15 |
 | **Total** | **~$170** | **~$740** |
 
-**Fargate does not scale to zero**, which is the one place it is not equivalent to
-Cloud Run. There is a floor cost the previous platform did not have, and it is
-stated here rather than discovered on a bill.
+**Fargate does not scale to zero.** There is a floor cost, stated here rather
+than discovered on a bill.
 
 Two of these are new in this phase and are real: the **ALB** is the price of
 serving traffic at all, and **VPC flow logs** are the price of being able to
@@ -692,26 +676,7 @@ production for that reason.
 
 ---
 
-## 9. What was removed, and what was carried forward
+## 9. The verification discipline this runbook relies on
 
-Removed with the Cloud Run infrastructure: `infra/gcp/deploy.sh`,
-`scripts/deploy.sh`, `scripts/promote.sh`, `scripts/setup-wif-once.sh`,
-`scripts/complete-cicd-setup.sh`, `docs/DEPLOY_GCP.md`,
-`docs/DEPLOY_GCP_RUNBOOK.md`.
-
-**Two things were carried forward rather than deleted**, because the verification
-discipline is worth more than the scripts were:
-
-- digest verification → `scripts/verify-deployment.sh`
-- the deploy-script secret-hygiene assertions →
-  `backend/tests/test_deploy_secret_hygiene.py`, rewritten against the Terraform
-  and the workflow. When the GCP script went, six of those assertions started
-  reporting SKIPPED — which in a summary line reads almost like PASSED, and meant
-  nothing was enforcing secret hygiene any more. They are now stronger than they
-  were: the check is no longer "the deploy script does not print the DSN" but
-  "the worker's IAM policy does not include the Firebase key at all".
-
-They were extended again in this phase to cover the traffic layer: the access-log
-bucket's privacy, the enumerated unauthenticated surface at both the listener and
-the application, the absence of an imported private key in ACM, the absence of a
-created or name-resolved hosted zone, and the WAF's log redaction.
+- Digest verification: `scripts/verify-deployment.sh` asks ECS which image digest is actually running and compares it to the digest the build pushed.
+- Secret hygiene: `backend/tests/test_deploy_secret_hygiene.py` reads the Terraform and the workflow ("the worker's IAM policy does not include the Firebase key at all"), and covers the traffic layer: the access-log bucket's privacy, the enumerated unauthenticated surface at the listener and the application, the absence of an imported private key in ACM, the absence of a created or name-resolved hosted zone, and the WAF's log redaction. A skipped assertion reads almost like a passed one in a summary line; the skip inventory is [SKIPS.md](SKIPS.md).

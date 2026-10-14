@@ -1,942 +1,159 @@
-# Vivekium Product Requirements Document
+# Vivekium Product Requirements
 
-**Status:** Implementation-aligned product specification
-**Authority:** The running source code, database migrations, tests, and user interfaces in this repository
+**Status:** current. **Reviewed:** 2026-10-14 against the decision register, the specifications in [../spec/](../spec/) and the code names they cite. Sections marked **decided, pending** state an owner ruling that is not built yet.
+**Authority:** the latest dated owner statement ([../decisions/REGISTER.md](../decisions/REGISTER.md)), then the RBAC specification and the Runbook, then [../spec/](../spec/). Where the running product differs from a specification the code shows what exists and the register's Pending changes say what is owed. Removed behaviour is recorded in [../history/](../history/).
 
-## 1. Purpose and source-of-truth policy
+## 1. What the product is
 
-This document defines the product that is implemented today. It replaces earlier product briefs, questionnaires, hand-offs, prompts, and feature specifications.
+Vivekium (Varpitech LLP; formerly ReadyPick) is a multi-tenant hiring operations platform. One chain runs from a job draft to a joined candidate: job setup, candidate intake, resume reading, one proctored assessment, an immutable PRISM Report, pipeline communication, employer verification, billing and business development.
 
-When this document and the implementation differ, the implementation is authoritative until both are deliberately changed together. A feature is part of the product only when it is reachable through the current application or an active API/background workflow. Dormant compatibility code is not presented as an active user capability.
-
-## 2. Product overview
-
-Vivekium is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
-
-The product serves four workspaces:
-
-| Workspace | Primary users | Purpose |
+| Workspace | Users | Purpose |
 |---|---|---|
-| Provider | Vivekium owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
-| Company | Company administrators, HR managers, recruiters, and hiring managers | Run jobs, candidate review, assessments, compliance, staff, billing, and hiring decisions |
-| Candidate | Job applicants and sourced candidates | Maintain a reusable profile and resume, apply for jobs, complete invited assessments, and track applications |
-| Business development | Vivekium BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
+| Provider | Vivekium owner and operators | Provision customers and BD accounts, inspect customer health, view portfolio billing; read-only over customer data |
+| Company (Customer Portal) | Company staff, leadership, department heads | Jobs, candidate review, assessments, compliance, staff, billing, hiring decisions |
+| Candidate | Applicants and sourced candidates | Reusable profile and resume, apply, take an invited assessment, track applications, message the company |
+| Business development | Vivekium BD users | Leads, AI-assisted reach, conversion of signed prospects into customers |
 
-The public website explains the platform and pricing and provides entry points for registration, login, public job applications, outreach responses, and employer verification.
+The public site explains the product and shows pricing beside "Open a role". It also hosts registration, login, public job applications, outreach responses and employer pages.
 
-## 3. Product principles
+## 2. Principles
 
-1. **The job remains the hiring anchor.** Candidate ranking, assessment content, reports, and workflow actions are scoped to a job.
-2. **AI assists; deterministic rules protect continuity.** AI generates and evaluates content, while validation, fixed rubrics, fallbacks, and auditable workflow states keep operations usable when a provider is unavailable.
-3. **Candidate-facing scores remain qualitative.** Numeric model scores are stored for computation but are not exposed in candidate tables, emails, or reports.
-4. **Access is capability-based.** Tenant roles provide defaults, and individual grants or revocations refine what a staff member can do.
-5. **Records are retained through lifecycle changes.** Jobs, customers, and related profiles are archived rather than destructively removed.
-6. **Billing is event-ledger based.** Every credit mutation is append-only and idempotent.
-7. **Tenant isolation is a product invariant.** Company data is isolated at both application and PostgreSQL row-policy levels.
+1. **The job is the anchor.** Ranking, assessment content, reports and workflow actions are scoped to a job.
+2. **No number reaches a client, ever.** Scores are internal; clients see words (section 10).
+3. **AI assists; rules protect.** Models draft and evaluate; validation, fixed rubrics and auditable states keep work correct. A model failure is a recorded state, never a substitute score or a template presented as generation.
+4. **Humans decide.** No integrity flag auto-rejects. Sensitive actions need a person at any confidence.
+5. **Access is capability-based** (data, not role branches) and every tenant is isolated at the database.
+6. **Candidates are assessed against a locked snapshot** of what the job required, so reports stay comparable.
+7. **Billing is an append-only, idempotent ledger.**
+8. **The product stores intelligence, not originals,** where it can (projects), and withholds then purges assessment data when a job closes.
 
-## 4. Users, roles, and permissions
+## 3. Users and roles
 
-### 4.1 Provider owner
+Permissions are data in `role_permissions` plus a sparse per-user overlay; the matrix is in [../reference/RBAC.md](../reference/RBAC.md) and the authority is [../spec/RBAC_SPECIFICATION.md](../spec/RBAC_SPECIFICATION.md).
 
-The provider owner can:
+- **Provider owner.** Searches and inspects customers, edits only industry, website and notes, archives or restores a customer, views compliance documents, provisions and disables BD accounts, views portfolio billing, and may set a customer's primary contact (the one carve-out). No other write to customer data.
+- **Company Super Admin** (`client`). Company-wide responsibility for jobs, profile, staff, compliance and billing. Creates leaf roles.
+- **Staff, in chain of authority:** Recruitment Manager (and the older HR Manager, which ranks beside it), Recruiter, Hiring Manager. A manager controls only roles beneath their own and grants only capabilities they hold. Staff invitations use a seven-day token. At most five active Hiring Managers per company.
+- **Interview Manager.** Reads a candidate's report and adds Team Review remarks; no pipeline controls, no job preparation.
+- **Leadership roles** (Super Admin creates them): **CEO** and **MD** read the organisation and write only their own leadership input; a **Functional Head** is bound to one department and sees only that department's jobs, candidates and reports.
+- **Candidate.** Owns one reusable profile and a main resume; applies through a public link; assessed only after an invitation.
+- **Business-development user.** `manage_bd_leads`, `view_bd_customers`, `use_ai_reach`; no access to customer hiring data.
 
-- view and search customers;
-- inspect customer analytics, status, subscription, and credit balance;
-- edit a limited provider-owned customer record: industry, website, and provider notes;
-- archive or restore a customer;
-- view customer compliance documents without changing them;
-- provision, edit, enable, or disable BD accounts;
-- view portfolio billing; and
-- access owner settings.
+Who may do what in job preparation and publishing is **decided, pending** (J-10 to J-16): see section 6.
 
-The provider cannot use the provider interface to change customer contacts, staff, or compliance records.
-
-### 4.2 Company administrator
-
-The `client` account is the company administrator. It has company-wide responsibility for jobs, company information, staff, compliance, and billing, subject to its capabilities.
-
-### 4.3 Company staff
-
-Operational staff roles are:
-
-- HR Manager
-- Recruiter
-- Hiring Manager
-- Interview Manager
-
-These roles use the same core operating areas: Jobs, Company Profile, Dashboard, and Settings. Access to Staff, Compliance, Billing, and other protected actions is capability-controlled rather than inferred only from the role name.
-
-The **Interview Manager** is a read-plus-review seat: they read a candidate's
-report and rating and add Team Review remarks, and they hold none of the
-pipeline controls. Together with the company administrator that makes five
-client-side roles, which is what the RBAC specification enumerates.
-
-Company administrators can invite staff with a seven-day invitation token, resend invitations, disable or reactivate users, and add user-specific capability grants or revocations. A company can have at most five active Hiring Managers; HR Manager and Recruiter seats are not capped by this rule.
-
-### 4.4 Candidate
-
-A candidate owns a reusable profile and a main resume. A candidate can discover open jobs, apply through a public job link, view applications, edit an application during the configured grace period, and complete an assessment only after receiving an invitation.
-
-### 4.5 Business-development user
-
-BD access is governed by:
-
-- `manage_bd_leads`
-- `view_bd_customers`
-- `use_ai_reach`
-
-BD users do not operate inside a customer tenant and cannot access company hiring data through their BD role.
-
-## 5. End-to-end hiring journey
+## 4. End-to-end journey
 
 ```mermaid
 flowchart LR
-    A["Company profile"] --> B["AI-assisted job draft"]
-    B --> C["Recruiter edits and publishes"]
-    C --> C2["Technical bank generated and usable; PPI framework reviewed and saved"]
-    C2 --> D["Public applications, sourced profiles, and databank uploads"]
-    D --> E["Resume parsing and hybrid matching"]
-    E --> F["Recruiter selects candidates"]
-    F --> G["Invitation-gated unified conversation"]
-    G --> H["PPI Assessment Report"]
-    H --> I["Interview, offer, and join pipeline"]
-    I --> J["Outcome history and reusable candidate records"]
+    A["Company Profile"] --> B["Job: JD"]
+    B --> C["Skills (Hiring Manager)"]
+    C --> D["Approval and publish (decided, pending)"]
+    D --> E["Applications, sourced, databank"]
+    E --> F["Yukti reads resumes, one rank"]
+    F --> G["Recruiter invites"]
+    G --> H["Proctored assessment, graded by Miti"]
+    H --> I["PRISM Report"]
+    I --> J["Pipeline: interview, offer, join"]
 ```
 
-## 6. Company setup and administration
+## 5. Company setup
 
-### 6.1 Company profile
+- **Company Profile.** Three sections the client authors once: About the company, Work life, Benefits. A research agent can draft them from the web; an explicit Edit saves. **Job creation is refused until About says something** (the refusal names the page). Each job snapshots the profile at creation, so later edits reach future jobs only; a recruiter may override per job.
+- **Compliance.** Seven records can be uploaded, replaced, downloaded and removed: GSTIN certificate, PAN, TAN, bank details, signed agreement, purchase order, MSME document. Providers see them read-only. Files are private, content-addressed objects served only through authenticated, tenant-scoped, capability-checked routes.
+- **Dashboard.** Operational summaries from job, candidate, assessment and pipeline data; the materialized views refresh about every five minutes. A Functional Head sees only their department.
+- **Leadership Intelligence.** CEO, MD or a Functional Head may record observable leadership input. Versions are insert-only and compiled deterministically; an AI draft is never saved. Save Skills freezes the version the job's contract carries.
 
-The company maintains structured content for:
+## 6. Jobs
 
-- About the company
-- Work life
-- Benefits
+Detail and the state tables: [../spec/JOB_SETUP_FLOW.md](../spec/JOB_SETUP_FLOW.md).
 
-These sections are snapshotted into a job so that a published job retains the company context used when it was created. A recruiter can override the snapshot for an individual job.
+**Job inputs.** Title, one grade (Non-managerial, Managerial, Leadership, CXO), experience band (at most five years wide), reporting-to option, compensation, department, the company-profile snapshots, and a canonical Markdown JD with seven stable sections (Description, Role, Responsibilities, Accountabilities, Education, Skills, Experience). `POST /jobs` always saves a draft; a template JD is labelled a template until edited.
 
-### 6.2 Compliance
+**Skills.** Sutra drafts Skills from the JD (and the saved SWOT and Company Profile when present). The team edits and saves them: Must-have, Nice-to-have and Behavioural, at most five per bucket. Nobody sees a matrix, a weight, a priority or a per-skill grade. Saving writes a hidden role summary and freezes nothing yet.
 
-The company can upload, replace, download, and remove these seven records:
+**SWOT.** Internal hiring intelligence AI-drafted and human-owned. Never shown to a candidate. **Decided, pending (J-16):** it may be written and edited before or after publishing, a saved SWOT is mandatory before assessment, and it freezes when the first assessment starts.
 
-1. GSTIN certificate
-2. PAN
-3. TAN
-4. Bank account details
-5. Signed agreement or schedule
-6. Purchase order
-7. MSME document
+**Final Job Posting.** The JD plus skill names by bucket, alphabetical, is previewed before publish and is what candidates see. No priorities, evidence lines or role summary.
 
-Provider users have read-only visibility. Compliance files are stored in a private, content-addressed S3 bucket and served only through authenticated, tenant-scoped, capability-checked routes.
+**Publish (decided, pending, J-10 to J-15).** Recruiter creates the job, prepares the JD and assigns a Hiring Manager; the Hiring Manager reviews the JD, prepares Skills and the SWOT, and submits; an HR or Recruitment Manager approves or returns it (to the Recruiter for JD problems, to the Hiring Manager for Skills problems, with a reason); the Recruiter publishes only an approved job. A material change after approval cancels it. Approval must come from someone who did not materially prepare that revision; the Super Admin may approve when no independent approver exists (audited). Publication uses the exact approved revision. Today's behaviour, until built: publish needs the JD and saved Skills only.
 
-### 6.3 Dashboard
+**Freeze.** The first genuine application freezes the JD, title, experience band, grade and Skills (409 with one dated sentence afterwards). The company narrative, proctoring policy, department, requirement period and the SWOT stay editable until their own freeze.
 
-The company dashboard provides operational summaries derived from job, candidate, assessment, and pipeline data. Dashboard materialized data is refreshed by a recurring background task approximately every five minutes.
+**Posting lifecycle.** Live for 30 days; five days grace in which an existing applicant may edit their application; then expired. Renewal after the window starts a new 30 days; earlier candidates remain "Old Profiles". Archive and restore never delete records. **Closing a job** stops new applications, withholds its assessment records at once and purges them 30 days later; there is no reopen; a retrieval path exists only for an open dispute and a holder of the capability.
 
-## 7. Job creation and publishing
+## 7. Candidates
 
-### 7.0 The Company Profile, and why job creation waits for it
+- **Sources.** Applied (public link), Sourced (external link or databank discovery), Databank (bulk upload, up to 25 resumes per batch with partial success). A sourced or databank candidate is not applied: they cannot be invited until they convert by applying.
+- **Profile.** Personal information, education, experience, compensation and availability, document readiness, resume confirmation and declaration. Minimum completion: current city, total experience, accepted declaration and declaration name.
+- **Application form.** One form (`apply-form`): a resume and six mandatory validation fields (current CTC, expected CTC, notice period, earliest joining date, document readiness, why this role interests you). Nothing here is scored or interpreted; it is shown as typed. It is captured before any assessment spend. Applying writes no assessment and no consent.
+- **Resume handling.** PDF and DOCX; a content hash avoids duplicates; authenticated preview and download. Each application snapshots the profile and resume.
+- **Project Evidence Intelligence.** Optional projects (name, up to 100 words, files and/or a public repository link) are turned into decomposed derived evidence; originals are deleted after the evidence is persisted. Absence is never penalised; strength is a word. See [../spec/PROJECT_EVIDENCE_INTELLIGENCE.md](../spec/PROJECT_EVIDENCE_INTELLIGENCE.md).
+- **One identity.** One person has one candidate record, linked at sign-in on a verified address. Delete My Profile erases the record and the Firebase identity.
+- **Consent.** Per-item consent catalogue with versioned text; assessment retention consents gate downloads of the report and the recording.
+- **Messages and updates.** A candidate is told in the Updates feed (a fixed catalogue, no model, no number) and can chat with the company; recruiters write through one outbound email path.
 
-Before any job is drafted well, the client says what the organisation is. The
-**Company Profile** carries three sections a client authors once on Customer
-Portal -> Company Profile: what the company does, what working there is like,
-and what it offers. A company research agent can draft them from the web, and
-an explicit Edit action is what saves them, so no words reach a candidate
-without a person having read them.
+## 8. Resume reading and ranking (Yukti)
 
-**Job creation is refused until the About section says something.** That is the
-useful place to refuse: the profile is what seeds each new job's own narrative
-sections and what the job description generator reads, so a job drafted without
-it has been drafted against nothing. The refusal names the page and what to
-write there. A job created before the client wrote their profile stays created:
-the gate is on the act of creation, never a sweep over jobs candidates may
-already be applying to.
+Yukti reads each resume against the job's saved Skills on fixed parts and produces one grade word and evidence tags. Compensation never reaches a model. Quotes are verified by code against the resume; an ungrounded claim is dropped; behavioural skills are never judged from a resume; a model failure is "not assessed". A fresh resume is read without anyone re-running matching. Ranking is one key derived in SQL: the blend of resume reading and, once assessed, the assessment, with a failed Must-have capping the result; unscored candidates are listed last, never hidden. The recruiter's table is paginated at 25 and shows words only: Name, AI Match, CTC Match, Notice Period, Education, BGV Status, Type of Procurement, Status, Resume, PRISM Report, Q&A, Validation, Team review, Decision. A Functional Head sees only their department's resume for a shared candidate.
 
-Every new job SNAPSHOTS the profile at creation, so editing it later reaches
-future jobs only and never rewrites a role people are already applying to.
+Part weights are internal and provisional; a five-part model is proposed (S-21) and not approved. Detail: [../spec/RETRIEVAL.md](../spec/RETRIEVAL.md).
 
-### 7.1 Required job information
+## 9. Assessment
 
-A job includes:
+Detail: [../spec/ASSESSMENT_FLOW.md](../spec/ASSESSMENT_FLOW.md), [../spec/PROCTORING.md](../spec/PROCTORING.md), [../spec/ASSESSMENT_QUESTION_FORMATS.md](../spec/ASSESSMENT_QUESTION_FORMATS.md).
 
-- title and structured role inputs;
-- one grade: Non-managerial, Managerial, Leadership, or CXO;
-- minimum and maximum experience;
-- a stable reporting-to option, with an Other path;
-- compensation information;
-- company-profile snapshots; and
-- a canonical Markdown job description.
+- **Invitation.** Applying never starts one. A recruiter selects up to 200 applicants per batch; the batch is checked for credit once, refuses a closed job or unsaved Skills, and reports skipped candidates with reasons. The invitation is the assessment row and has one writer.
+- **One conversation, server-timed.** Consent, proctoring rules, a system check, then the conversation. Questions are one per skill, never below the grade floor (8 to 15 questions in total), written per candidate from the bound snapshot with their rubric. The mix is counted in questions: prose 70 percent, coding 20, objective 10, by largest remainder. Every item is asked; no skipping, editing, early close or extension. Time allocations (prose 180 s, objective 60 s, follow-up 100 s) are snapshotted at each turn; the countdown is the server's.
+- **Coding.** Only for coding roles. **Decided, pending (S-20):** candidate code is not executed; a static checker analyses it and AI reviews it ([../spec/CODING_ASSESSMENT.md](../spec/CODING_ASSESSMENT.md)).
+- **Spoken answers** are offered on prose turns where transcription is enabled; the transcript is final.
+- **Proctoring is mandatory** and recorded. A lost camera or microphone pauses the clock within limits; a second voice is flagged only when strong; every blocked paste is on its own line of the Proctoring Report. A recording is purged 90 days after the session or at the job-closure purge, whichever is first. Proctoring touches no score.
+- **Grading.** Miti is the sole grader. Each skill is graded, unanswered (an unanswered Must-have fails) or not assessed. The overall comes from skill grades; a failed Must-have caps it. A statement without a supporting citation is withheld and the report goes to a person.
+- **Credit.** One credit is spent per completed assessment, including STEM.
 
-### 7.2 Drafting workflow
+## 10. The PRISM Report
 
-The current company interface follows this sequence:
+The **Tatva Assessment** is the process; the **PRISM Report** is the document it produces ("Evidence-Based Role Intelligence & Suitability Mapping"). The two names are never interchanged. The report is immutable, has no retake, and its grades are words only: **Highly Matching, Matching, Moderately Matching, Not Matching** (cut points 90, 75, 60, inclusive upward). Sections in fixed order: AI Match (Yukti's frozen snapshot), Overall Assessment, Must-have, Nice-to-have, Behavioural, Gap Analysis and Action Plan, Validation, Proctoring. Three number-free radar charts (Overall, Must-have, Nice-to-have). Remarks: 45 to 50 words for rated items and 25 to 30 for gap probes, always complete, never truncated, and each says how it was written (model, template or catalogue). A skill not assessed draws no spoke. The report carries its reference code, the contract version and digest, and the model and prompt that wrote it. The PDF leaves only through gate G4 and the candidate's retention consent. Opening a report on screen is not gated.
 
-1. The recruiter enters the structured job inputs.
-2. AI produces a unified Markdown job description.
-3. The recruiter edits the generated Markdown.
-4. The recruiter explicitly publishes the job.
-5. The application returns a public link that can be shared on external channels.
+## 11. Pipeline, communications and verification
 
-The canonical job description is Markdown. A derived JSON representation is maintained for compatibility and downstream processing. The description remains editable.
+- **Stages** (server-validated): Sourced, Applied, Assessment Invited, Assessment In Progress, Assessment Completed, Shortlisted, Interview Scheduled, Interview Completed, Offer Extended, Joined, Rejected, Hold. Rejected and Joined are terminal; the system alone moves a candidate to In Progress and Completed. Every move writes append-only history and a candidate Update.
+- **Email.** One outbound writer, a resolved sender (a named active company sender, else the tenant default, else the platform), idempotent per stage, claimed before sending. AI-drafted with a deterministic fallback, human-editable where composition is offered. Platform email goes through Amazon SES; SES-only is **decided, pending** (I-20).
+- **Background verification.** The candidate submits employers once, immutably; each hiring company runs its own verifications against that list. A request carries a reply address; a person reads the reply and marks Verified or Not verified; nothing infers a verdict. A candidate with declared employers cannot be moved to offer until each is verified; rejection is never blocked.
+- **Employer pages** list a company's in-window published jobs with a closed allowlist of fields.
 
-The generated document uses seven stable sections:
+## 12. Billing and credits
 
-- Description
-- Role
-- Responsibilities
-- Accountabilities
-- Education
-- Skills
-- Experience
+Four monthly plans, all features included, differing only by completed-assessment allowance. Prices exclude GST. Detail: register C-01 to C-07.
 
-### 7.3 Question generation
-
-Creating a draft queues generation of **two** things, from the JD, independently
-of each other:
-
-- a grade- and job-specific **technical question bank**, each question carrying
-  its own scoring rubric; and
-- the job's **PPI evaluation framework** (section 11.2.1).
-
-The service validates generated questions and tops up missing content
-deterministically, so an LLM outage produces a usable draft rather than an empty
-screen.
-
-**The technical question bank has no approval step.** Generated questions are
-usable the moment they exist. A recruiter may still edit or remove an individual
-question, and the change takes effect immediately, but nothing waits on them.
-The "Finalise questions" control is gone from the job setup screen.
-
-**The PPI framework review remains, and it is the one manual step in an
-otherwise fully automated pipeline.** The job enters `questions_pending_review`
-and stays there until the framework is saved; only then does it become
-`ready_for_candidates`. Until it does:
-
-- no candidate can open the unified conversation; and
-- no candidate can be invited - the invitation endpoint refuses and names the
-  framework as what is outstanding.
-
-Applications still arrive in the meantime and are ranked as normal.
-
-The two halves are deliberately not treated alike, and the asymmetry is the
-reason one survived. The framework is the fixed evaluation criteria **every**
-candidate on the job is graded against, it is frozen once anyone has been
-assessed, and a report states a grade against those exact criteria - so a human
-confirming it is the product's only comparability guarantee. A technical
-question is scored against its own rubric, so a weak one costs a single item on
-a single report rather than making two reports incomparable.
-
-An operational safeguard stops the surviving step going silent: a job whose
-framework is left unapproved past a configured threshold (24-48 hours) mails
-everyone who could approve it, once.
-
-This supersedes the 2026-07-30 reinstatement **for the technical half only**.
-The framework half of that decision stands.
-
-### 7.4 Posting lifecycle
-
-Each publication has:
-
-- a 30-day active application window;
-- a five-day grace period for existing applicants to edit an application; and
-- an expired state after the grace period.
-
-After the active window:
-
-- the public job link no longer accepts or displays the job;
-- a candidate who did not previously apply cannot create a new application;
-- an existing applicant can edit only during the five-day grace period.
-
-A job can be renewed only after its active window has closed. Renewal starts a new 30-day window. Candidates from the earlier posting remain visible as **Old Profiles**, while profiles from the renewed window are **New Profiles**.
-
-Jobs can be archived and restored without deleting their candidate or history records.
-
-## 8. Candidate acquisition and application
-
-Candidate-job links identify how the candidate entered the workflow:
-
-- **Applied:** submitted through the public job link;
-- **Sourced:** entered through an external outreach link; or
-- **Databank:** uploaded from the company’s existing candidate data.
-
-The company can upload up to 25 resume files in one batch. Each file is validated independently, partial success is returned, and parsing/matching work is queued once for the accepted batch.
-
-## 9. Candidate profile and resume
-
-### 9.1 Reusable profile
-
-The candidate profile is a structured form with these sections:
-
-- personal information;
-- education history;
-- work experience;
-- compensation and availability;
-- document availability and onboarding readiness;
-- resume confirmation; and
-- candidate declaration.
-
-The current minimum completion gate requires:
-
-- current city;
-- total experience;
-- accepted declaration; and
-- declaration full name.
-
-The profile replaces the legacy proposal to ask a separate mandatory 40-question
-validation interview in every assessment.
-
-### 9.1.1 Mandatory application fields (validation)
-
-Validation is no longer handled by an agent, and is no longer read from the
-profile snapshot. It is six **mandatory fields on the application form itself**,
-submitted together with the candidate's resume before they proceed any further:
-
-| Field | Type |
-|---|---|
-| Current CTC | text |
-| Expected CTC | text |
-| Notice period | select |
-| Earliest joining date | date |
-| Document readiness | select |
-| Why does this role interest you? | open text |
-
-Three properties hold, and all three are deliberate:
-
-1. **Nothing here is scored, interpreted or judged.** No agent reads it, no
-   grade is attached, and the report shows it exactly as the candidate typed it.
-   The recruiter, not any agent, decides whether a candidate's stated interest is
-   genuine.
-2. **It is captured before any assessment spend.** CTC and notice period at
-   application time let a recruiter filter out candidates plainly outside the
-   budget or notice window before a single credit is consumed assessing them.
-3. **It lives on the application, not the candidate profile.** Current CTC and
-   notice period change over time and are answered per opportunity, so each
-   application stays an accurate record of what was true when it was submitted.
-
-The field list is served by the backend, so the form a candidate fills in and
-the Validation section of the report cannot drift apart. An application
-submitted before 2026-07-30 predates these fields and renders as an explicit
-"not collected" rather than a blank panel.
-
-### 9.2 Resume handling
-
-Candidates can upload or reuse their main resume. PDF and DOCX resumes are supported. A content hash avoids storing duplicate content. Files are accessed through authenticated preview or download endpoints. DOCX preview is converted to safe, monochrome HTML, with download as a fallback.
-
-### 9.3 Application snapshot
-
-Every application snapshots the candidate’s profile form and resume. Later edits to the reusable profile do not silently rewrite the historical application.
-
-### 9.4 Project Evidence Intelligence
-
-Candidates may optionally add projects to their profile: a name, a description of at most 100 words, project files and/or a public repository link. Multiple projects are supported. Submissions are processed into structured, decomposed Project Evidence (technology, architecture, implementation, testing, infrastructure, documentation, gaps, uncertainties, provenance), with candidate claims and system-observed evidence kept separate and evidence strength expressed only as a word.
-
-Project presence is never treated as automatic quality, absence carries no fixed penalty, and no-project candidates remain fully evaluable through resume, validation profile and assessment. Recruiters see the derived evidence on the review screen; the per-candidate assessment questions may probe it.
-
-**Current product phase: original project artifacts are not retained. Only derived, structured, versioned Project Evidence Intelligence is persisted. Original project retention is a future capability and is out of scope for the current implementation.** Full design: `docs/spec/PROJECT_EVIDENCE_INTELLIGENCE.md`.
-
-## 10. Matching and candidate review
-
-### 10.1 Candidate retrieval
-
-Matching combines:
-
-- pgvector semantic similarity;
-- PostgreSQL full-text keyword search; and
-- candidates already linked to the job.
-
-The retrieved set is reranked by an LLM. When an AI provider is unavailable, deterministic retrieval remains available and does not fabricate a top recommendation.
-
-### 10.2 Matching dimensions
-
-The internal composite uses:
-
-| Dimension | Weight |
-|---|---:|
-| Skills | 35% |
-| Experience | 30% |
-| Role and responsibility alignment | 20% |
-| Education | 15% |
-
-Compensation data is removed before matching prompts are sent to an AI provider.
-
-Prior positive outcomes for the same company can weakly influence reranking. These patterns are PII-minimized, and the current job description remains authoritative.
-
-### 10.3 Ranking order
-
-Candidate review order changes by grade:
-
-- Non-managerial: skills, experience, then behavioral fit.
-- Managerial, Leadership, and CXO: skills, behavioral fit, then experience.
-
-The company candidate table is paginated at 25 rows. It provides source and old/new profile labels, qualitative match labels, five concise comments, resume viewing, reports, team reviews, and permitted status actions.
-
-### 10.4 Rating policy
-
-Numeric scores are internal and never cross the API boundary. Every rated item
-in the product - the four matching parameters, Primary Skills, Secondary Skills,
-Behavioural Competencies and the Overall grade - is shown to the client as one
-of exactly four words:
-
-| Grade |
-|---|
-| Highly Matching |
-| Matching |
-| Moderately Matching |
-| Not Matching |
-
-These four replaced the product's earlier pair of five-label scales (Very High /
-High / Medium / Low / Developing for assessment dimensions, and Highly Matching /
-Matching / Moderate / Low / No Matching for ranking comments). The two had to be
-kept in step by hand, and a reader had no way to know that a "High" and a
-"Matching" meant the same thing. One scale now, defined once in
-`services/rating.py`.
-
-Band boundaries are inclusive upward: a score landing exactly on a boundary
-takes the higher grade.
-
-The four matching parameters carry **no mathematical weightage**. Each is judged,
-graded and commented on its own terms; the internal overall used for ordering a
-candidate list is their plain mean and is never displayed.
-
-## 11. Assessments
-
-### 11.1 Invitation gate
-
-Applying does not automatically start an assessment. A recruiter selects candidate links and sends assessment invitations. The batch endpoint supports up to 200 selections and reports skipped candidates with reasons.
-
-An uninvited candidate receives no assessment access. The first accepted start changes the workflow to In Progress.
-
-### 11.2 Assessment composition
-
-One conversation, not two. A single unified conversational agent blends the
-job's technical bank with the candidate's PPI questions into one natural
-exchange; the candidate never sees or interacts with two separate bots and is
-never told which engine scores which answer.
-
-**The agent is adaptive, not a script.** It carries the conversation so far into
-every turn, so it can refer back to what the candidate has already said and does
-not re-tread ground. When an answer leaves something specific and material
-unsaid - a claim with no outcome, a decision with no reasoning, an answer that
-talks around the question - it asks a follow-up in the candidate's own terms
-before moving on. A complete short answer is accepted as complete, and a
-negative answer ("I have not used that") is accepted without pressing.
-
-**The interview is bounded, and finishes.** At most one follow-up per question
-and a fixed ceiling per conversation, so the number of turns can never exceed
-the number of questions plus that ceiling however the model behaves. A follow-up
-is extra evidence for a question already asked, never an extra question: it is
-recorded against the same question it came from, so it reaches the same scorer,
-and it does not change when the assessment is considered complete or when the
-customer is charged.
-
-If the model is unavailable the agent asks the next prepared question. An outage
-costs the follow-ups and nothing else; it never costs a candidate their
-assessment.
-
-Validation is not asked here at all. It is six mandatory fields on the
-application form (section 9.x), captured before the conversation begins.
-
-| Job grade | Technical questions | PPI questions | Total |
-|---|---:|---:|---:|
-| Non-managerial | 20 | 25 | 45 |
-| Managerial | 17 | 20 | 37 |
-| Leadership | 15 | 15 | 30 |
-| CXO | 12 | 10 | 22 |
-
-Note the direction of the PPI column: more questions for a junior candidate,
-fewer for a CXO. A CXO's evidence is broader per answer and their time is the
-scarce resource.
-
-### 11.2.1 Vivekium Profile Intelligence (PPI)
-
-PPI replaced the Vivekium Functional Index (PFI) on 2026-07-30. PFI was one
-fixed dimension set per grade, reused across every job in the product. PPI
-generates a **fresh evaluation framework for every job, from that job's own JD**:
-
-- at least 5 Primary Skills - capabilities the role cannot be performed without;
-- at least 5 Secondary Skills - supporting capabilities that strengthen
-  performance without being disqualifying;
-- at least 5 Behavioural Competencies - observable workplace behaviours.
-
-The agent may recommend more than five in any category when the job's complexity
-warrants it. The trade, accepted explicitly: more precise to the specific role,
-at the cost of no longer having one fixed list to point to across the product.
-
-The agent never proposes **Culture** as a Behavioural Competency. Cultural fit
-cannot be assessed accurately from a single assessment and PPI does not claim
-otherwise. The refusal is enforced at generation, at save, and by a database
-CHECK constraint.
-
-PPI is a first-party framework and is not presented as DISC, MBTI, Hogan,
-CliftonStrengths, or another licensed psychometric instrument.
-
-**The framework is per job; the questions are per candidate.** Sutra compiles
-the initial Tatva proposal from the job and its available context. The
-authorized Hiring Manager owns the final criteria: they may add, edit, rename,
-reorder, reclassify, or remove a proposed item. Save Matrix derives any missing
-internal assessment metadata and freezes exactly the reviewed matrix as a
-version. That version is the fixed evaluation contract for candidates assessed
-under it and makes their reports comparable. A later revision must not rewrite
-the contract used for an earlier assessment. Questions are generated
-individually from the JD, the frozen matrix, and each candidate's resume, so
-each conversation remains relevant to the person in it.
-
-### 11.2.2 The hiring intelligence framework
-
-Job setup and scoring run through five named stages, each with one job and a
-boundary it may not cross:
-
-| Stage | Responsibility |
-|---|---|
-| **Bodha** | The per-job SWOT session. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
-| **Sutra** | Proposes the initial Tatva matrix and derives assessment metadata through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Human edits are enriched without replacing the Hiring Manager's decisions |
-| **Yukti** | Grades the resume before any conversation: the pre-screen grade and the AI Score snapshot |
-| **Miti** | Five dimension evaluators that score the completed conversation, structurally isolated from each other, plus triangulation of contradictions |
-| **Siddhi** | Composes the PRISM Report through a citation chokepoint |
-
-Four properties matter to the product rather than only to the code:
-
-1. **The five evaluators cannot see each other.** They run concurrently against
-   a frozen input that carries no candidate name, no other dimension's score and
-   no composite, so no ordering exists in which one could influence another.
-2. **The aggregator calls no model.** The step that turns five bands into the
-   grade a client reads is deterministic arithmetic, so two runs over identical
-   inputs cannot disagree.
-3. **Insufficient evidence is not negative evidence.** A dimension flagged
-   insufficient is EXCLUDED from the composite and paid for in confidence, never
-   scored low. A career changer gets a low-confidence report that goes to a
-   human, rather than a confidently poor grade that does not.
-4. **No integrity flag ever auto-rejects.** A contradiction is raised for a
-   person to look at; escalation above Minor requires two benign explanations to
-   have been considered first. The enforcement is the absence of the capability:
-   there is no reject field anywhere in the result.
-
-Weights are per-job, derived from declared layers, and never cross an API
-boundary. No candidate-facing or client-facing surface shows one.
-
-### 11.3 Assessment processing
-
-Two independent scoring agents consume the relevant parts of the transcript in
-parallel and do not wait on each other:
-
-- **Technical scoring** - each answer against the rubric written for that
-  specific question, never open-ended judgement, so a rating stays defensible
-  when a client asks why a candidate was scored a certain way;
-- **PPI scoring** - the candidate's responses against the job's saved Primary
-  Skills, Secondary Skills and Behavioural Competencies.
-
-Validation needs no scoring agent: it flows from the application form straight
-into the report. Report synthesis waits for both scoring agents to complete.
-Provider fallbacks and the scoring mode are recorded for audit.
-
-**An answer with nothing in it to grade never reaches a scoring prompt.** Empty,
-single-token and keyboard-mash answers are detected before scoring and routed to
-the same "no usable evidence" outcome as an unanswered question: the lowest
-grade, and a remark that says plainly that nothing was provided. The check is
-deterministic and runs in-process, because the failure it guards against appears
-precisely when the model is unavailable.
-
-The check is deliberately conservative. It decides only whether there is text
-worth scoring, never whether an answer is correct or relevant. "I have not
-worked with Kafka" is a real answer and is passed through to be graded on its
-merits, because wrongly discarding a real answer grades a real candidate down by
-a route nobody can see.
-
-**Scoring is reproducible.** Every agent that judges - technical scoring, PPI
-scoring, report synthesis - runs deterministically, so the same answer produces
-the same grade whenever it is scored. Only the conversational agent's phrasing
-is allowed to vary, and what it asks is fixed by the framework regardless.
-
-"Simultaneous" applies to backend scoring only, never to the candidate's
-experience.
-
-### 11.4 Retake behaviour
-
-Every application runs its own assessment. Report reuse was retired with PPI:
-the framework and the technical bank are generated from each job's own JD, so a
-prior report grades criteria the new job never used, and carrying it across
-would assert a result that was never assessed. The six-month classification
-still runs so the candidate is told why they are answering questions again.
-
-## 12. The PRISM Report
-
-**Two names, never used for each other.** The **Tatva Assessment** is the
-PROCESS: the evaluation framework whose three dimensions are Must-have,
-Nice-to-have and Behavioural. The **PRISM Report** is the DOCUMENT that process
-produces. Completing a Tatva Assessment produces a PRISM Report. The two names
-are never used as synonyms, in copy, in a heading, or in an email.
-
-The report header is exactly, and only, `PRISM Report` over *Evidence-Based Role
-Intelligence & Suitability Mapping*. The expansion travels with the abbreviation
-everywhere the header is drawn, on screen and in the PDF, because the
-abbreviation alone does not tell a reader they are holding the document rather
-than the framework.
-
-The identifiers in the CODE still say `ppi` (the module, `job_competencies`,
-the `/framework` routes, the persisted trace fields). That is deliberate and
-must not be "fixed": a route is quoted in report links already in inboxes, and
-every report written before the rename was filed under those names. The rename
-is USER-VISIBLE COPY ONLY.
-
-The report is generated after assessment completion and is immutable through the
-public application API. A retake produces a new report alongside the old one.
-
-Every report shows **two distinct scores, deliberately kept separate rather than
-merged** - one from before the candidate is assessed, one from after:
-
-- **AI Score** - a resume-based snapshot generated before the assessment,
-  comparing the resume against the four matching parameters.
-- **PPI Assessment** - a conversation-based assessment grading the candidate's
-  actual demonstrated skills and behavioural competencies against the job's
-  saved framework.
-
-They are not duplicating each other. A close match between the two confirms the
-resume was accurate; a gap between them is itself useful signal, not a
-contradiction to hide.
-
-Section order is fixed:
-
-1. **AI Score** - four matching parameters, each with a grade and a 25-30 word
-   remark.
-2. **Overall Assessment** - an Overall Grade, a 45-50 word Overall Remark, and
-   the Overall radar chart. This opens the PPI Assessment section.
-3. **Primary Skills** - a grade and a 45-50 word remark for each, plus a radar.
-4. **Secondary Skills** - the same.
-5. **Behavioural Competencies** - the same.
-6. **Validation** - the mandatory application fields, shown as submitted, with
-   no rating attached.
-7. **Suggested interview questions** - 8 to 10, anchored on whichever Primary
-   Skill, Secondary Skill, Behavioural Competency or technical item graded
-   Moderately Matching or Not Matching. Clearly advisory input, never a
-   recommendation to reject or accept.
-
-Technical items are scored and anchor the suggested questions, but are not a
-rendered section of the report.
-
-### 12.1 Radar charts
-
-Four per candidate - Overall, Primary Skills, Secondary Skills, Behavioural
-Competencies - all part of the PPI Assessment, none part of the AI Score.
-
-Each chart plots **two shapes on the same axes**: the job's required level and
-the candidate's assessed level, so a client sees at a glance where a candidate
-exceeds, meets, or falls short of what the job needs. A small legend below each
-chart identifies the two shapes by word: Job Requirement, Candidate Assessment.
-
-No numbers appear anywhere on any chart: not on axes, not as data labels, not in
-tooltips. The radar uses an internal band index (1 to 4) purely as a rendering
-radius; it is never displayed.
-
-### 12.2 Word-count rules
-
-- Primary Skills, Secondary Skills, Behavioural Competencies and the Overall
-  Remark: **45-50 words**, doubled from the original 25-30 rule.
-- The AI Score's matching parameters keep the original **25-30 words** - it is a
-  snapshot, not the detailed assessment.
-- Remarks must be genuinely reflective of that candidate's specific responses,
-  not templated language with values swapped in.
-- Validation output is exempt: factual data and the candidate's own words, not a
-  rated remark.
-- A remark is always generated complete inside its range and never truncated to
-  fit.
-
-## 13. Hiring pipeline and communications
-
-### 13.1 Pipeline stages
-
-The implemented domain includes:
-
-- Applied
-- Assessment Invited
-- Assessment In Progress
-- Assessment Completed
-- Shortlisted
-- Rejected
-- Interview Scheduled
-- Interview Completed
-- Offer Extended
-- Joined
-- Hold
-
-Rejected and Joined are terminal. Hold and Rejected can be selected from non-terminal states. Forward transitions are validated by the server. Multiple interview rounds are stored with incrementing stage numbers.
-
-Every status change writes append-only history and updates the current-state mirror.
-
-### 13.2 Email workflow
-
-The system supports:
-
-- application confirmation;
-- assessment invitation and reminders;
-- assessment completion;
-- shortlist;
-- rejection;
-- hold;
-- interview scheduling and completion;
-- offer extension; and
-- joined confirmation.
-
-Messages can be AI-drafted with a deterministic fallback, edited by an authorized user where composition is offered, queued through Celery, and sent through configured Gmail SMTP. The log records subject, body, delivery status, whether AI generated the draft, and whether a person edited it.
-
-### 13.3 Employer verification
-
-Employment verification supports:
-
-- creating a verification request;
-- sending a tokenized public form;
-- accepting a verified public response;
-- parsing an inbound verification email through an API;
-- recording an authorized manual override with a reason; and
-- showing verification state with the candidate profile.
-
-Databank handling follows separate verification rules so that historical profiles are not treated as fresh public applicants.
-
-## 14. Billing and credits
-
-### 14.1 Subscription plans
-
-All plans include every feature, all seven agents and BGV reconfirm. They differ only by completed-assessment allowance.
-
-| Plan | Completed assessments per month | Monthly price, before GST |
+| Plan | Completed assessments per month | Monthly price |
 |---|---:|---:|
-| Starter | 75 | ₹24,000 |
-| Growth | 200 | ₹55,000 |
-| Scale | 500 | ₹1,20,000 |
-| Pro | 1,200 | ₹2,40,000 |
+| Starter | 75 | INR 24,000 |
+| Growth | 200 | INR 55,000 |
+| Scale | 500 | INR 1,20,000 |
+| Pro | 1,200 | INR 2,40,000 |
 
-Razorpay subscriptions provide checkout, plan changes at the next billing cycle, cancellation, signature verification, and deduplicated webhook handling. The paid pilot starts on Starter for 30 days. There is no setup fee, annual commitment, or lock-in; the customer can cancel anytime. Prices on the public site appear in Start beside the Open a role action.
+Every plan renews monthly with no annual commitment; the customer may cancel at any time, effective at the end of the paid cycle; there is no setup fee. The 30-day pilot starts on Starter and is paid at signup. One completed assessment spends one credit, including STEM; incomplete assessments, no-shows and old-profile reviews spend none. Unused credits roll over three months from grant, then expire. Credits pool across all open jobs. Only a Starter pack (75 assessments, INR 24,000 plus GST) can be bought as a top-up. Derived per-assessment prices are never shown. Historical purchases and invoices stay readable at the terms they were sold on.
 
-### 14.2 Credit model
+The balance is the sum of an append-only ledger in integer sub-units (60 per credit); every write is idempotent. A completed assessment is charged even into the negative; a negative balance blocks the next invitation batch. A warning fires at or below 30 percent; at zero, new job creation and new assessment starts are blocked while an active conversation may finish and report finalization waits. Zero credits never block login or reads. Demonstration companies are exempt from refusals, never from records. Payment runs through Razorpay; webhooks are deduplicated. A new company becomes active only after its first plan payment.
 
-One credit equals 60 integer sub-units.
+## 13. Business development
 
-| Event | Sub-units | Credit equivalent |
-|---|---:|---:|
-| Completed assessment | 60 | 1 |
-| Started but incomplete after reconciliation | 0 | 0 |
-| Never opened after reminders and settlement window | 0 | 0 |
-| Old-profile review | 0 | 0 |
+Personal and social leads share one lead model with six milestones (three interactions, three meetings or demos; the first completion time is kept). Marking an agreement signed promotes the lead to a prospect tenant; un-signing archives it; re-signing reuses the same tenant. AI Reach has two independent modes: "similar to customers" (internal data, no network) and "from the internet" (Tavily-backed plan, search, evaluate, shape), with word confidence labels only. BD users view converted customers and export them as CSV.
 
-Unused monthly credits roll over for three months from grant and then expire. Credits pool across all of an employer's open jobs. Consumption can make a balance negative because a completed candidate action is not reversed. A negative balance blocks new assessment invitations until credits are restored.
+## 14. Authentication and the public site
 
-Reminder attempts occur around 24 and 72 hours. Unfinished invitations are settled after seven days. Ledger entries are append-only and carry idempotency keys so retries do not double-charge.
+Google or email and password through Firebase; the backend exchanges the verified identity for secure session cookies that die with the browser, with a 30-minute idle deadline moved only by real activity. Every auth surface takes a server-checked CAPTCHA. Company registration and password reset or change use a security code, not a login OTP. Google never signs in a company role; staff are invite-only. Sign-in asks for no workspace; the backend routes by the account's own record.
 
-**Demonstration companies are exempt from billing refusals, never from billing
-records.** A small, explicitly flagged set of permanent demonstration tenants
-behaves as fully paid customers: invitations are never blocked, no deficit is
-ever raised against them, no payment is ever requested, and their balance is
-presented as unlimited. Their usage is still recorded in the ledger exactly as
-any other customer's, because the billing screens are part of what a
-demonstration needs to show and a billing page with no usage on it demonstrates
-nothing.
+## 15. Quality requirements
 
-The exemption is a property of the specific tenant records, not of anything a
-customer can acquire, and every other tenant continues to be metered, gated and
-billed unchanged.
+- **Security and privacy.** Row-level tenant isolation on every tenant query; provider bypass explicitly scoped and audited; sensitive files only through authenticated routes; no secrets in the repository or browser bundles; public token endpoints rate-limited and expiring; data sent to a model is minimised; compensation never reaches one.
+- **Reliability.** Tasks are retry-safe and idempotent; webhooks and the ledger deduplicate; every AI workflow records its mode; an outage degrades to a recorded state, never corrupts workflow state.
+- **Accessibility and responsiveness.** Keyboard-accessible navigation, visible focus, usable labels, mobile alternatives or containment for data tables, reduced-motion respected, colour never the only carrier of a status or rating.
 
-### 14.3 Credit packs
+## 16. Limits and open items
 
-Only a Starter top-up is sold, granting 75 additional completed assessments for ₹24,000 plus GST.
-A pack purchase is a Razorpay **Order** (not a Subscription), verified by
-signature, granted exactly once through the same idempotency key the webhook
-derives, and invoiced with GST. The purchase grants sub-units into the same
-append-only ledger as every other credit event, so one balance and one
-statement answer for both routes.
-
-Customers are warned before they run out, not after: a two-tier warning fires
-as the balance falls, and at zero the platform blocks new job creation and new
-assessment starts while allowing an active conversation to finish.
-
-### 14.4 Report Library
-
-The Report Library is the client-facing catalogue of what the platform can
-produce, with the live reports reachable from one place rather than scattered
-across the surfaces that happen to generate them.
-
-## 15. Business-development workspace
-
-### 15.1 Lead management
-
-Personal and social leads share one lead model. Social sources include LinkedIn, Google, Facebook, Instagram, and X.
-
-Each lead tracks six operational milestones:
-
-1. Interaction 1
-2. Interaction 2
-3. Interaction 3
-4. Meeting or demo 1
-5. Meeting or demo 2
-6. Meeting or demo 3
-
-The first completion time for each milestone is retained.
-
-### 15.2 Agreement conversion
-
-When an agreement is marked signed, the lead is promoted to a prospect customer tenant. Removing the signed state archives and unlinks the prospect. Signing again reuses the same tenant rather than creating duplicates.
-
-### 15.3 AI Reach
-
-AI Reach has two independent modes:
-
-- **Similar to customers:** searches internal customer patterns without network access.
-- **From the internet:** uses Tavily-backed research orchestrated through a plan, search, evaluate, and shape workflow.
-
-Results identify operational states such as OK, unconfigured, timeout, or unavailable and use word confidence labels. AI Reach does not present an opaque numeric confidence score.
-
-BD users can view converted customers and export their customer list as CSV.
-
-## 16. Public experience
-
-The public application includes:
-
-- landing page;
-- product storytelling and workflow demonstration;
-- product and technical documentation;
-- about;
-- insights;
-- pricing;
-- privacy;
-- terms;
-- login and registration;
-- staff invitation acceptance;
-- public job application;
-- outreach response; and
-- employer verification.
-
-Authentication supports Google, email/password, and phone through Firebase. The backend exchanges verified Firebase identity for secure HTTP-only application sessions.
-
-**Nobody chooses their own workspace at sign-in.** The page asks for an email
-address and a password, or offers Continue with Google, and nothing else. Which
-portal a person lands in is decided entirely by the backend from the account's
-own record - the invitation it was created from, or its account type - and the
-frontend routes them there from what the sign-in returns. A context selector is
-still shown in the one case it is genuinely needed: an identity that belongs to
-more than one workspace, chosen **after** the backend has established which
-workspaces those are.
-
-The previous workspace picker was worse than redundant. Choosing an option never
-granted the access it named - it was only ever a hint - so anyone who guessed
-wrong received a refusal that read as a broken account rather than as a wrong
-choice.
-
-## 17. Product differentiation
-
-The implemented differentiation is:
-
-- one operating chain from job draft to joined outcome;
-- hybrid semantic and keyword matching rather than an LLM-only candidate guess;
-- assessment content that changes with both job and grade;
-- PPI: a behavioural and skills framework generated fresh from every job, combined with technical rubric scoring;
-- qualitative, interview-ready reports instead of exposed black-box numbers;
-- invitation-gated assessment spend with a transparent fractional credit ledger;
-- reusable candidate profiles with per-application snapshots;
-- archived records and renewed-job old/new profile continuity;
-- tenant-level capabilities plus individual permission overlays; and
-- business-development conversion in the same platform that provisions customers.
-
-These are implementation characteristics, not claims that competing products lack similar functionality.
-
-## 18. Measurable value and evidence policy
-
-The codebase provides measurable operating limits and unit economics:
-
-- 22–45 assessment questions depending on grade;
-- four matching parameters, unweighted;
-- at least 15 PPI framework entries per job (5 Primary, 5 Secondary, 5 Behavioural);
-- four radar charts per candidate report;
-- 25 candidate rows per review page;
-- 25 resumes per batch upload;
-- 200 candidates per invitation batch;
-- 30 active posting days plus five grace days;
-- five-minute dashboard refresh;
-- ₹140–₹200 nominal self-service cost per monthly application allowance; and
-- fractional charging for incomplete, no-show, and old-profile-review events.
-
-The current repository does **not** contain production telemetry proving hours saved, cost saved, conversion uplift, accuracy, retention, or time-to-hire improvement. Marketing must not present such figures as proven.
-
-To establish defensible value, production analytics should measure:
-
-- median time from job form start to publication;
-- recruiter review minutes per candidate;
-- percentage of matched candidates invited;
-- invitation-open and assessment-completion rates;
-- report-to-interview conversion;
-- time from application to first decision;
-- cost per completed assessment and per joined candidate;
-- old-profile reuse rate;
-- provider fallback rate; and
-- hiring outcomes by match and report band.
-
-Customer-facing claims should be released only after cohort definition, consent, sample size, and calculation methods are documented.
-
-## 19. Explicit exclusions and superseded behavior
-
-The following older concepts are not active product requirements:
-
-- a separate 40-question validation conversation in every assessment (validation is now six mandatory application fields, section 9.1.1);
-- a total 72–80 question assessment derived from that older design;
-- a multi-level job approval workflow in the current company interface;
-- automatic assessment access immediately after applying;
-- numeric match or assessment scores exposed to users;
-- provider editing of customer staff or compliance;
-- feature gating by paid plan tier;
-- an unlimited Hiring Manager count;
-- a Mailtrap-based production email service; and
-- a claim that any model vendor other than the current one is in use. The platform runs on ONE vendor and three endpoints: `gpt-5.6-terra` for judging and writing, `gpt-5.6-luna` for extraction and classification, and `voyage-4` for embeddings. Groq, Gemini and OpenRouter were removed in the single-vendor consolidation, not disabled.
-
-Compatibility tables, endpoints, or helpers may remain in the repository for migrated records. Their presence alone does not make these items current user workflows.
-
-## 20. Quality requirements
-
-### 20.1 Security and privacy
-
-- Every tenant-bound query must preserve row-level tenant isolation.
-- Provider bypass operations must be explicitly scoped and audited.
-- Sensitive files must require authenticated access.
-- Secrets must not be committed or embedded in browser bundles.
-- Public token endpoints must be rate-limited and expire or settle according to their workflow.
-- Candidate data sent to AI providers must be minimized.
-
-### 20.2 Reliability
-
-- Background tasks must be retry-safe and idempotent.
-- Billing webhooks and ledger events must deduplicate repeated delivery.
-- AI workflows must record provider/fallback mode.
-- A provider outage must degrade to deterministic output where implemented rather than corrupt workflow state.
-
-### 20.3 Accessibility and responsive behavior
-
-- Public and portal navigation must remain keyboard accessible.
-- Controls must have visible focus and usable labels.
-- Data tables must have mobile alternatives or horizontal containment.
-- Motion must respect reduced-motion preferences.
-- Color cannot be the only carrier of a status or rating.
-
-## 21. Current product limitations
-
-- Quantified customer ROI is not instrumented.
-- Provider customer editing is intentionally narrow.
-- Employer-verification inbound email parsing has an API, but production inbound-mail delivery still needs an operational provider integration.
-- Interview rounds are stored, but feedback and round-completion tooling are less complete than scheduling.
-- AI fallbacks preserve workflow continuity but do not replace human review of high-stakes hiring decisions.
-- Some dormant legacy models and endpoints remain and can confuse maintainers.
-- File retention, malware scanning, data-subject workflows, and regional processing policies require production hardening.
-
-## 22. Concise roadmap
-
-### Near term
-
-- add product analytics for the evidence metrics in Section 18;
-- complete interview feedback and round-management UX;
-- integrate production inbound email for verification;
-- harden file security, retention, and malware scanning;
-- remove dormant multi-level job-approval and OTP paths after migration review; and
-- add end-to-end regression coverage for the four workspaces.
-
-### Scale stage
-
-- introduce enterprise identity and audit exports;
-- support configurable hiring workflows without breaking the default pipeline;
-- add customer-controlled retention and regional data policies;
-- build outcome-calibrated matching evaluation with bias and quality monitoring; and
-- expose operational service health and SLA reporting for enterprise customers.
+- Customer ROI is not instrumented; marketing must not present hours saved, cost saved, conversion, accuracy or time-to-hire figures as proven. Candidate cohorts, consent and calculation methods must be documented before any such claim.
+- Interview rounds are stored; feedback and round-completion tooling are thinner than scheduling.
+- Inbound reply email is inert on pilot; speech transcription is off until enabled.
+- AI fallbacks keep work moving; they do not replace human review of a hiring decision.
+- Decided but not built: the approval flow, SWOT timing, coding without a sandbox, SES-only email, the retrieval injection screen. Proposed: the Yukti five-part model. Unresolved: [../decisions/OPEN.md](../decisions/OPEN.md).

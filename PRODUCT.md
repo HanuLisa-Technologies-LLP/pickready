@@ -62,14 +62,13 @@ pull in opposite directions:
 
 ## Operating Context
 
-The end-to-end journey (`docs/product/PRD.md` §5): company profile → AI-drafted
-job → recruiter edits and publishes → the technical question bank and PPI
-framework are generated and human-reviewed before any candidate can be invited
-→ candidates arrive by public application, third-party sourcing, or recruiter
-databank upload → resume parsing and hybrid (lexical + vector) matching →
-recruiter selects who gets assessed → one invitation-gated conversational
-assessment → the PRISM Report → interview, offer, and pipeline through to
-outcome.
+The end-to-end journey (`docs/product/PRD.md` section 4): company profile → AI-drafted
+job (JD) → Skills drafted by Sutra, edited and saved by the team → the job is
+published (an HR approval step before publish is decided and not yet built) →
+candidates arrive by public application, third-party sourcing, or recruiter
+databank upload → resume reading and ranking → recruiter selects who gets
+assessed → one invitation-gated, proctored conversational assessment → the
+PRISM Report → interview, offer, and pipeline through to outcome.
 
 Structural facts that shape the surfaces:
 
@@ -77,7 +76,7 @@ Structural facts that shape the surfaces:
   grace period — never configurable, never extendable by a recruiter.
 - A company's compliance record is seven fixed slots (GSTIN, PAN, TAN, bank
   details, signed agreement, PO, MSME), always all seven, present or not.
-- Billing is a credit-subscription model (Razorpay) read from an append-only
+- Billing is four monthly completed-assessment plans (Razorpay) read from an append-only credit
   ledger; three named tenants are demo-exempt from billing refusals, never
   from billing records.
 - The Provider workspace is read-only over customer data by design — it
@@ -112,8 +111,8 @@ These are not style preferences and none of them is negotiable:
    a rendering coordinate and is never displayed as a number.
 2. **Any Must-have graded Not Matching caps Overall at Moderately Matching**,
    with no override, and the report says it was capped.
-3. **Reports are immutable.** No edit or delete affordance; a retake produces a
-   new report beside the old one.
+3. **Reports are immutable.** No edit or delete affordance, and no retake: the
+   report is insert-only.
 4. **Text is never grey.** Enforced at the CSS token, not per component.
 5. **No em dashes in any string**, including seeded and generated content.
 6. **No flag ever auto-rejects.** Every flag routes to a human with the evidence
@@ -139,8 +138,7 @@ Condensed from the seven confirmed principles in `docs/product/PRD.md` §3:
    by cited evidence, so nobody can point to a raw number as the reason a
    person was rejected.
 4. **Records persist through lifecycle change.** Jobs, customers and profiles
-   are archived, never destructively removed; a written report is immutable
-   and a retake produces a new one alongside it.
+   are archived, never destructively removed; a written report is immutable.
 5. **Isolation and access are structural, not conventions.** Tenant data is
    isolated at the PostgreSQL row-policy level as well as in application code;
    permissions are data (capability grants resolved user → tenant → template),

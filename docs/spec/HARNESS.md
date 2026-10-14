@@ -11,8 +11,7 @@ cannot:
 5. Can we measure whether a change made it better or worse?
 6. Can we prove recovery, rather than assume it?
 
-**This document is the contract.** Anything built under `backend/harness/`
-conforms to it, or changes it here first.
+**Status:** current. **Reviewed:** 2026-10-14. **This document is the contract.** Anything built under `backend/harness/` conforms to it, or changes it here first. How to run it and add scenarios: [../../CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## 0. What already exists, and is therefore NOT rebuilt
 
