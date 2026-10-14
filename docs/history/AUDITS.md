@@ -38,3 +38,6 @@ Findings that are still open were copied into [../decisions/OPEN.md](../decision
 | `docs/verification/PROCTORING_AND_FORMATS_VERIFICATION.md` | What was executed for the 2026-09-02 proctoring and question-format work, and what was not (live camera and microphone behaviour in real browsers, the analysis service models). |
 
 Two documents in `docs/verification/` stay current because a test reads them: `VERIFICATION_RESULTS.md` and `VERIFICATION_PENDING.md`. `AI_UPGRADE_BASELINE.md` stays as a dated measurement that later work is compared against.
+
+## Frontend dependency advisories, 2026-10-14
+Newly published advisories failed the required Security scan on every pull request into `main`: `next` 16.3.5 (RCE in `next/og`, SSRF in image optimisation), `sharp`, `source-map-js`, `@grpc/grpc-js` (authentication bypass, via `@firebase/firestore`). Fixed in one dependency-only pull request (`next` 16.3.8, `sharp` 0.35.5, `source-map-js` 1.2.2, `@grpc/grpc-js` 1.14.5 by override, `dompurify` override 3.4.16) with no scan exception and no protection bypass. Two lower findings stay open (OPEN Q-33). Plan and findings table: `git show 6c6a308:docs/operations/DEPENDENCY_REMEDIATION_PLAN.md`.

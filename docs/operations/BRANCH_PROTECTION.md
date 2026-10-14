@@ -32,7 +32,7 @@ Each is a job in `.github/workflows/deploy.yml`. Renaming a job makes the old re
 | `The production approval gate exists` | github-actions (15368); skipped on a pull request, which satisfies it |
 | `Trivy` | github-advanced-security (57789); the SARIF upload inside the security scan |
 
-`Security scan` fails on any fixable CRITICAL or HIGH finding, so a newly published advisory against an existing dependency blocks every pull request until it is fixed ([DEPENDENCY_REMEDIATION_PLAN.md](DEPENDENCY_REMEDIATION_PLAN.md)). It is not skipped to unblock a merge.
+`Security scan` fails on any fixable CRITICAL or HIGH finding, so a newly published advisory against an existing dependency blocks every pull request until it is fixed. It is not skipped to unblock a merge.
 
 ## Reading it back
 
