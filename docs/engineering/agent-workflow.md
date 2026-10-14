@@ -56,7 +56,7 @@ Observed in a live session on 2026-10-14. Recommendations only; changing configu
 
 | Item | What it does | Cost and overlap | Recommendation |
 |---|---|---|---|
-| Graphify `PreToolUse` hooks in `.claude/settings.json` (and the untracked `.codex/hooks.json`) | Adds a "MANDATORY graphify query" paragraph to the result of every Bash, Grep, Read and Glob call | Repeats the same text every call; contradicts W-20 | Remove (pending change 5). Keep the graphify skill, the graph and the git rebuild hooks. |
+| Graphify `PreToolUse` hooks in `.claude/settings.json` (and the untracked `.codex/hooks.json`) | Adds a "MANDATORY graphify query" paragraph to the result of every Bash, Grep, Read and Glob call | Repeats the same text every call; contradicts W-20 | Removed from `.claude/settings.json` on 2026-10-14; `.codex/hooks.json` pending (change 5). Keep the graphify skill, the graph and the git rebuild hooks. |
 | Git `post-commit` and `post-checkout` hooks | Rebuild the graph (AST only) | Launches CPU work after commits; contend with test runs | Keep; do not run the authoritative suite beside it. |
 | Impeccable design hooks (`.claude/settings.local.json`, untracked) | Checks UI files after edits and on stop | Runs on every edit and stop | Keep for frontend work. Consider scoping to UI paths. |
 | User-level plugins that inject at session start (a terse-style mode, a "lazy developer" mode, a skills-discipline skill, an editor-side session summary) | Each adds instructions every session and some repeat on every prompt | They overlap in purpose and can contradict this repository's rules | Keep the set small; prefer one style mode. Project rules win over any plugin. |

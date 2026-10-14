@@ -37,7 +37,7 @@ During and after every task, synchronously update all affected authoritative doc
 
 ## Do not touch without the owner
 
-Applied migrations; insert-only tables' triggers; `infra/` applies; production secrets; `.claude/settings.json` hooks (removal is a pending owner-approved change); anything marked "decided, pending" (build it only when asked). Never write a credential into a file. Never claim a live vendor call, deploy or test succeeded without evidence in `docs/verification/`.
+Applied migrations; insert-only tables' triggers; `infra/` applies; production secrets; `.claude/settings.json` hooks (the Graphify hooks were removed on owner approval, W-20; add none back); anything marked "decided, pending" (build it only when asked). Never write a credential into a file. Never claim a live vendor call, deploy or test succeeded without evidence in `docs/verification/`.
 
 ## Where to find things
 

@@ -54,4 +54,4 @@
 | X-07 | Deployment runbooks said "nothing has been executed" while pilot has been live since 2026-09. | Resolved: status banners corrected. |
 | X-08 | Instruction files claimed migrations 0001 to 0130; the head is 0136. | Resolved. |
 | X-09 | The 2026-09-06 rule allowed SMTP or SES; I-20 allows SES only. | Resolved by I-20; code pending. |
-| X-10 | The "MANDATORY graphify query" instruction against W-20. | Resolved by W-20; hook removal pending. |
+| X-10 | The "MANDATORY graphify query" instruction against W-20. | Resolved by W-20; Claude hook removed, Codex hook file pending. |
