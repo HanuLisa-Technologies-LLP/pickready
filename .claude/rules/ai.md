@@ -12,5 +12,5 @@ paths:
 - The model returns words; code decides what they are worth. No number reaches a client. A model failure is "not assessed", never a substitute score.
 - Evidence RAG only through `services/evidence_retrieval` and the tool layer; every tool is a bounded read. Miti and Siddhi import neither retrieval nor the index.
 - Judges live in `app/evaluation/` only. `unavailable` is never a pass.
-- Coding questions: the sandbox design is superseded; static checker plus AI review is decided and NOT built (S-20). The Yukti five-part model is proposed only (S-21).
+- Coding questions: static checker plus AI review, no execution or sandbox (S-20): decided and NOT built. Yukti five-part score 45/15/20/15/5 (S-21): decided and NOT built; code is still six-part. A suspicious retrieved chunk is quarantined and recorded (A-20), not yet wired.
 - Bump a prompt's version line; register its builder in `tests/test_ctc_never_in_prompt.py`.

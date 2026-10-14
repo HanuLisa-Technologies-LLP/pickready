@@ -59,7 +59,7 @@ Four authenticated workspaces (Provider, Company, Candidate, Business Developmen
 | Models | OpenAI `gpt-5.6-terra` (judge and write), `gpt-5.6-luna` (extract and classify), Voyage `voyage-4` (every embedding) plus a Voyage rerank model; closed mapping, no fallback chain |
 | Identity | Firebase Authentication (Google, email and password) plus application-issued JWT sessions |
 | Files | Private S3, content-addressed, KMS-encrypted |
-| Payments | Razorpay subscriptions (monthly plans) and Orders (Starter top-up), webhooks deduplicated |
+| Payments | Razorpay subscriptions (monthly plans) and Orders (Starter top-up), webhooks deduplicated; per-credit pricing replaces the plans (C-10, decided, not built) |
 | Email | Amazon SES (platform and company senders); see section 14 |
 | Speech and analysis | Amazon Transcribe for spoken answers; a separate analysis service (pyannote diarization, flagged AI-text detector) |
 | Web research | Tavily |
@@ -126,7 +126,7 @@ An application creates or links the candidate record and snapshots the reusable 
 
 ## 11. Resume reading and ranking
 
-Yukti reads each resume against the job's saved Skills on fixed parts, one model call per batch of five, returning words and verbatim quotes that code verifies against the resume; compensation never reaches the model; a failure is `not_assessed`. A databank discovery run joins consenting candidates and enters them at `sourced`. Ranking is one key derived in SQL (`yukti.ranking.rank_score_sql`): a blend of the assessment and Yukti's reading, outermost-capped by a failed Must-have, a total order. Retrieval (pgvector and PostgreSQL full text, fused by rank) selects candidates; it never decides who is read. Normative: [../spec/RETRIEVAL.md](../spec/RETRIEVAL.md). The five-part model is proposed only (S-21).
+Yukti reads each resume against the job's saved Skills on fixed parts, one model call per batch of five, returning words and verbatim quotes that code verifies against the resume; compensation never reaches the model; a failure is `not_assessed`. A databank discovery run joins consenting candidates and enters them at `sourced`. Ranking is one key derived in SQL (`yukti.ranking.rank_score_sql`): a blend of the assessment and Yukti's reading, outermost-capped by a failed Must-have, a total order. Retrieval (pgvector and PostgreSQL full text, fused by rank) selects candidates; it never decides who is read. Normative: [../spec/RETRIEVAL.md](../spec/RETRIEVAL.md). The owner approved a five-part score (S-21); the code still computes six parts and the change is pending.
 
 ## 12. Assessment architecture
 
@@ -168,7 +168,7 @@ Background verification: the candidate's employment history is submitted once an
 
 ## 15. Billing
 
-Four monthly plans through Razorpay subscriptions, a Starter-only top-up through Orders, an append-only credit ledger in integer sub-units (60 per credit) with idempotency keys, lots that roll over three months, GST invoices. Gates ask `services/entitlements.py`. Demonstration tenants are exempt from refusals, never from records. Register C-01 to C-07; code `services/monthly_plans.py`, `credit_packs.py`, `credits.py`.
+Current implementation, to be replaced by per-credit pricing (C-10, decided, not built): four monthly plans through Razorpay subscriptions, a Starter-only top-up through Orders, an append-only credit ledger in integer sub-units (60 per credit) with idempotency keys, lots that roll over three months, GST invoices. Gates ask `services/entitlements.py`. Demonstration tenants are exempt from refusals, never from records. Register C-01 to C-07; code `services/monthly_plans.py`, `credit_packs.py`, `credits.py`.
 
 ## 16. Business development
 

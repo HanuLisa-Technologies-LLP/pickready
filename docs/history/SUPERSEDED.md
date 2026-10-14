@@ -42,6 +42,7 @@ Each entry: what it was, why it is obsolete, what replaced it, and the retrieval
 ## F. Retired pricing models
 
 - **Subscriptions with plan tiers and pre-2026-09-29 plan columns** (to 2026-09-29), then **credits only with subscriptions deleted** (2026-09-29): replaced on 2026-09-30 by four monthly completed-assessment plans (register C-01 to C-07). Historical purchases and invoices stay readable at the terms they were sold on.
+- **Four monthly completed-assessment plans (2026-09-30)**: Starter 75 for INR 24,000, Growth 200 for INR 55,000, Scale 500 for INR 1,20,000, Pro 1,200 for INR 2,40,000 per month, before GST; monthly renewal, no annual commitment, cancel at the end of the paid cycle, no setup fee; a paid 30-day Starter pilot; one credit per completed assessment (including STEM), none for incomplete assessments, no-shows or old-profile reviews; credits pool across open jobs and roll over three months; only a Starter pack (75 for INR 24,000) is sold as a top-up; public pricing sits in Start beside "Open a role" and never shows derived per-assessment prices. **Superseded in intent on 2026-10-14 by per-credit pricing only (register C-10); the code still implements it; existing subscribers keep their paid period and move to credits at their next renewal, other terms open (OPEN T-04).** Recover the originals with `git show 73103c3:docs/product/PRD.md`.
 - Credits granted before expiry existed never expire; new grants roll over three months.
 
 ## G. Operational notes that no longer apply

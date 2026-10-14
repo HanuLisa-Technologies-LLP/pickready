@@ -51,7 +51,7 @@ Retrieval is a ranking prior. A candidate linked to a job is always scored, and 
 
 ## Embeddings
 
-`voyage-4`, 1024 dimensions. Pseudo-random vectors are refused in production: with no key the module once returned deterministic random unit vectors of the right width with no error, which hid a non-existent model id for a whole phase. Off production the dev fallback survives and warns on every call. (`Settings.is_production` is false on pilot, which runs `ENVIRONMENT=pilot`; see [../decisions/OPEN.md](../decisions/OPEN.md) Q-28.)
+`voyage-4`, 1024 dimensions. Pseudo-random vectors are refused in production: with no key the module once returned deterministic random unit vectors of the right width with no error, which hid a non-existent model id for a whole phase. Off production the dev fallback survives and warns on every call. (`Settings.is_production` is false on pilot, which runs `ENVIRONMENT=pilot`. The owner ruled that production-grade controls apply whenever real users are served (A-22); this is a pending change, REGISTER Pending change 7.)
 
 ## Concurrency
 
@@ -78,7 +78,7 @@ A judge result reports MCC, Cohen's kappa, the confusion matrix and the protocol
 - **Retrieval-time injection screen on every path** (A-20): decided, pending.
 - **Coding answers by static checker and AI review** (S-20): decided, pending ([../spec/CODING_ASSESSMENT.md](../spec/CODING_ASSESSMENT.md)).
 - **Durable execution for long workflows** (brief item W5.2): not built; no ruling (Q-31).
-- **Shadow evaluation, tenant canary and drift detection** (W10), and the candidate-facing explanation of automated logic (W11a): designed, not built (Q-30, Q-32).
+- **Shadow evaluation, tenant canary and drift detection** (W10), designed, not built (Q-32). AI evaluation explanations are recruiter-facing only; a candidate receives application status (A-21, decided; legal scope Q-30).
 - **EEO reporting and impact ratios: refused** (owner, 2026-09-10): no jurisdiction was named, customers are Indian entities, and impact ratios would require the protected-attribute data the layer invariants refuse to infer. A published position, not a gap.
 - **Retrieval quality is unmeasured.** The harness self check gates; quality does not (60 of 300 cases, none human verified, the only run a reference fixture).
 - **`agent_actions` and `agent_execution_traces` have no live writer**, and every registered tool is a bounded read, so the first tool with a side effect must bring its own idempotency key and read-back resolution.

@@ -76,7 +76,7 @@ Structural facts that shape the surfaces:
   grace period — never configurable, never extendable by a recruiter.
 - A company's compliance record is seven fixed slots (GSTIN, PAN, TAN, bank
   details, signed agreement, PO, MSME), always all seven, present or not.
-- Billing is four monthly completed-assessment plans (Razorpay) read from an append-only credit
+- Billing today is four monthly completed-assessment plans (Razorpay; per-credit pricing is decided, not built) read from an append-only credit
   ledger; three named tenants are demo-exempt from billing refusals, never
   from billing records.
 - The Provider workspace is read-only over customer data by design — it

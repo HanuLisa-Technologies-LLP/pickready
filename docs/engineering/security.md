@@ -17,7 +17,7 @@ Decisions A-01 to A-13 in [../decisions/REGISTER.md](../decisions/REGISTER.md).
 
 - Candidate answers, resumes, project files and retrieved text are data, never instructions. Every answer passes `conversation_guardrails.inspect_answer`; every interviewer line passes `inspect_agent_output`. `violation is not None` does not mean refused; only `allowed` does.
 - A hidden-text hit in a resume is provenance, never a rejection: record it, show the model the normalised text, let a person decide.
-- **Retrieval-time prompt-injection screen is mandatory (A-20, pending).** `services/safety/content.screen_chunks` exists and no live path calls it. Until it is wired, do not claim retrieved text is screened. Intended behaviour: a flagged chunk is quarantined and recorded; it does not fail the retrieval.
+- **Retrieval-time prompt-injection screen is mandatory (A-20, pending).** `services/safety/content.screen_chunks` exists and no live path calls it. Until it is wired, do not claim retrieved text is screened. Decided behaviour: suspicious content is quarantined, excluded from the AI context and the incident recorded; processing continues safely when possible.
 - Candidate project submissions are never executed: no installs, builds or shells. Archives are inspected before extraction; a traversal entry, symlink or implausible ratio poisons the whole archive. Public repositories only; no candidate credentials.
 - Candidate code is never executed by the product (S-20). Any analysis of it is static and runs outside the request.
 
@@ -36,3 +36,5 @@ Decisions A-01 to A-13 in [../decisions/REGISTER.md](../decisions/REGISTER.md).
 - Tenant checks by RLS (see [database.md](database.md)). A judge or evaluation module lives in `app/evaluation/` only; nothing under `app/services/` imports it (`test_judge_isolation.py`).
 - `backend/harness/` is never imported by `backend/app/`.
 - A fabricated citation is worse than a missing one: provenance fields are cleared on rename, never carried across.
+- **Production-grade controls whenever real users are served (A-22, pending).** The pilot serves real users, so the controls written for production apply to it. Today `ENVIRONMENT=pilot` makes `Settings.is_production` false and five guards are inert (JSON log rendering, refusal of the `record` dispatch backend, refusal of pseudo-random embeddings without a key, the demo-seed opt-in, the diagnostics middleware). Configuration is what keeps two of them safe. Do not describe the pilot as production-hardened until Pending change 7 ships.
+- **Explanations are recruiter-facing only (A-21).** A candidate receives application status, never the internal scoring explanation, subject to legal obligations nobody has yet mapped (OPEN Q-30).

@@ -122,7 +122,7 @@ does.
 
 ### Gate 3 — the Hiring Manager prepares the role definition
 
-The Hiring Manager (or HR and Recruitment Managers) owns the Skills and the SWOT. Sutra drafts the Skills from the JD; the team edits and saves them; Save Skills writes the hidden context in one Sutra call before any row changes. A job cannot publish without a publishable JD and saved Skills. The contract a candidate is assessed against is the immutable snapshot taken at the first genuine application, and a later revision cannot rewrite it. Company Profile supplies company-level context through the job's snapshotted narrative. Detail: [JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
+The Hiring Manager (or HR and Recruitment Managers) owns the Skills and the SWOT. Sutra drafts the Skills from the JD; the team edits and saves them; Save Skills writes the hidden context in one Sutra call before any row changes. A job cannot publish without a publishable JD and saved Skills. The contract a candidate is assessed against is the immutable snapshot taken at the first genuine application, and a later revision cannot rewrite it. Company Profile supplies company-level context through the job's snapshotted narrative. **Decided, not built (J-17 to J-21):** the job passes Draft, Technical Review, HR Review and Approved before publishing; the SWOT must be complete before assessment invitations are sent and freezes at the first assessment start. Detail: [JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
 
 ### Gate 4 — the recruiter posts, and only with everything in place
 

@@ -61,7 +61,7 @@ binds the conversation's `skill_snapshot_id` and `contract_digest`),
 conversation whose questions are missing answers `preparing` and dispatches
 after the commit; it never dispatches and then raises.
 
-**Decided (J-16), not built:** a saved SWOT must exist before the first assessment starts, and the SWOT freezes at that first start. The start therefore also refuses with one server sentence when no SWOT is saved. Whether invitations are also blocked is open (Q-06).
+**Decided (J-16, J-19, J-20), not built:** the SWOT must be complete before assessment invitations are sent, and it freezes when the first assessment begins. Invitations are therefore refused with one server sentence when no SWOT is saved.
 
 ## 4. Turns and the clock
 
@@ -162,7 +162,7 @@ MitiResult`
 - **Items**: `miti/items.py` grades every contract skill. Objective formats
   read `assessment_answers.auto_score`; coding reads the sandbox evidence (70
   hidden tests, 30 review; pending, unavailable or not executed is not
-  assessed; empty is unanswered) **as built; decided (S-20): the sandbox evidence is replaced by a static checker result plus AI review, split unresolved (Q-08)**; other prose is `answer_evaluation` (Terra,
+  assessed; empty is unanswered) **as built; decided (S-20): the sandbox evidence is replaced by a static checker result plus AI review, scoring split unresolved (T-02)**; other prose is `answer_evaluation` (Terra,
   temperature 0) against the stored rubric (`method=general_standard` when a
   row has none); Behavioural is one judgement over every answer about the
   skill. Passages ride in their own payload field and never raise a score by

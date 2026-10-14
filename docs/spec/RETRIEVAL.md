@@ -1,6 +1,6 @@
 # Retrieval: Candidate Retrieval and Evidence RAG
 
-**Status:** current. **Reviewed:** 2026-10-14. Normative for ownership and boundaries (Vivekium release, 2026-09-24). It records what is true in the code and names the owner of every shared primitive. It does not describe Yukti's internals ([../engineering/ai-runtime.md](../engineering/ai-runtime.md)). **Decided, pending:** the retrieval-time prompt-injection screen is mandatory on every retrieval path (register A-20) and is not yet called by any live path; the Yukti five-part model is proposed only (S-21).
+**Status:** current. **Reviewed:** 2026-10-14. Normative for ownership and boundaries (Vivekium release, 2026-09-24). It records what is true in the code and names the owner of every shared primitive. It does not describe Yukti's internals ([../engineering/ai-runtime.md](../engineering/ai-runtime.md)). **Decided, pending:** the retrieval-time prompt-injection screen is mandatory on every retrieval path (register A-20) and is not yet called by any live path; the owner-approved Yukti five-part score (S-21) is decided and not built.
 
 ## Two use cases, kept separate on purpose
 
