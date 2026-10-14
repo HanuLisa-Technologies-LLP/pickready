@@ -1,26 +1,16 @@
 # End-to-end hiring workflow
 
-**Status:** normative for the surfaces it names. Precedence rank 4, beside the
-Candidate Dashboard Specification: below the RBAC Specification and the Runbook,
-above the PRD and the ESD.
+**Status:** current. **Reviewed:** 2026-10-14. Normative for the surfaces it names; ranks with the Candidate Dashboard Specification, below the RBAC Specification and the Runbook, above the PRD and the ESD. Gates 3 and 4 (job preparation and publishing) are specified in [JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md), including the approval flow decided on 2026-10-14 and not yet built.
 
-**Written:** 2026-09-04.
+This document specifies the journey a candidate and a client each take through Vivekium, and the eight gates that hold that journey together, so the sequence can be read in one place.
 
-This document specifies the journey a candidate and a client each take through
-ReadyPick, and the eight gates that hold that journey together. Most of it was
-already built; what is written here is the whole of it, including the parts that
-were not, so the sequence can be read in one place rather than reconstructed
-from nine phase sections.
-
-Where this document describes something that already had a name in the
-codebase, it uses the existing name. Three of those substitutions matter enough
-to state up front:
+Where this document describes something that already had a name in the codebase, it uses the existing name. Three substitutions matter enough to state up front:
 
 | The workflow calls it | The product calls it | Why they are the same thing |
 |---|---|---|
-| Company Hiring Requirements | **Company Profile** (`companies.about_company`, `work_life`, `benefits_text`) | A company-level statement of what this organisation is, gathered behind guiding questions rather than an empty textbox, editable afterwards, and read by every job this client posts. Every new job snapshots it at creation. |
-| Executive Profile | **PRISM Report** (`services/siddhi/`) | The consolidated, decision-oriented view of one candidate, produced once their assessment completes. It already exists, is immutable, and has a fixed section order. |
-| Pre-Assessment Report | **Pre-Screen Grade / AI Score** (`services/hiring/prescreen.py`) | Yukti's resume-stage evaluation against the job, before any assessment. spec-doc6 C9 already settled that these two names are one artifact. |
+| Company Hiring Requirements | **Company Profile** (`companies.about_company`, `work_life`, `benefits_text`) | A company-level statement of what this organisation is, editable afterwards and read by every job this client posts. Every new job snapshots it at creation. |
+| Executive Profile | **PRISM Report** (`services/siddhi/`) | The consolidated, decision-oriented view of one candidate, produced once their assessment completes. It is immutable and has a fixed section order. |
+| Pre-Assessment Report | **AI Match** (Yukti, `services/yukti/`) | The resume-stage reading against the job's saved Skills, before any assessment; its frozen snapshot is the first section of the PRISM Report. |
 
 **No fourth artifact was created for any of them.** One implementation per
 concept: a second free-text "hiring requirements" box beside the Company
@@ -130,31 +120,13 @@ does.
 - **Tests:** `tests/test_workflow_gates.py`. Mirrored in the Create Job form so
   the recruiter is told before they submit; the server is the gate.
 
-### Gate 3 — the Hiring Manager's SWOT before publication
+### Gate 3 — the Hiring Manager prepares the role definition
 
-**SUPERSEDED by the Vivekium release (PLAN-p1): read
-[JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).** The Tatva matrix, its freeze and the
-`swot_completed_at` stamp no longer gate anything. `api/jobs._publication_blocked`
-now asks three questions of the tables and names every missing step in one
-sentence: a publishable JD, a SWOT the team SAVED (`swot_analysis.is_saved`),
-and saved skills (`assessment_contract.skills_saved`: the saved stamp AND the
-hidden context). Sutra drafts the skills from the JD and the saved SWOT; the
-team adds, renames, moves and removes them, at most five per bucket; Save
-Skills writes the hidden context in one Sutra call before any row changes.
-The contract a candidate is assessed against is the immutable snapshot taken
-at their start, and a later revision cannot rewrite it. Company Profile still
-supplies company-level context through the job's snapshotted narrative, and
-the retired Company DNA feature has no gate or input in this path.
+The Hiring Manager (or HR and Recruitment Managers) owns the Skills and the SWOT. Sutra drafts the Skills from the JD; the team edits and saves them; Save Skills writes the hidden context in one Sutra call before any row changes. A job cannot publish without a publishable JD and saved Skills. The contract a candidate is assessed against is the immutable snapshot taken at the first genuine application, and a later revision cannot rewrite it. Company Profile supplies company-level context through the job's snapshotted narrative. Detail: [JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
 
 ### Gate 4 — the recruiter posts, and only with everything in place
 
-**SUPERSEDED by the Vivekium release (PLAN-p1, migration
-`0119_job_approval_chain_removed`).** The hand-off to the Hiring Manager and
-the review state are deleted, code and database together. The lifecycle is
-`DRAFT -> FINALIZED (Save Skills) -> PUBLISHED -> CANDIDATE_APPLICATIONS ->
-HIRING_PROCESS -> CLOSED_ARCHIVED`, and `POST /jobs/{id}/publish` is the only
-way live, behind Gate 3's three steps. Create Job always saves a DRAFT. See
-[JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
+`POST /jobs/{id}/publish` is the only way a job goes live; Create Job always saves a DRAFT. **Decided 2026-10-14, not built:** HR or Recruitment Manager approval of the exact revision is required first, and only the Recruiter publishes ([JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md) section 7, register J-10 to J-15). Today's lifecycle: `DRAFT -> FINALIZED (Save Skills) -> PUBLISHED -> CANDIDATE_APPLICATIONS -> HIRING_PROCESS -> CLOSED_ARCHIVED`.
 
 ### Gate 5 — a databank candidate must onboard before counting as an applicant
 
@@ -189,25 +161,11 @@ cannot reach the questions by guessing a URL.
 
 ### Gate 7 — the final ranking incorporates the assessment
 
-- **Enforced by** `job_candidates.order_by_clause`. Two stages: the assessed
-  candidates ranked by their assessment, then everyone else ranked by their
-  resume.
-- **What was wrong before:** the top sort key was a resume-derived skills
-  score, so a candidate who ranked first on their resume ranked first for ever
-  and the assessment moved nobody. This document requires that "a candidate who
-  ranked highly before assessment can move down", and a ranking whose top key
-  is a resume score cannot do that at all.
-- **Stage first, rather than one blended number.** An assessment score and a
-  resume similarity score are not on the same scale, so any fixed weighting
-  between them is a number nobody can justify — the same argument
-  `services/rag/fusion` makes for reading order rather than mixing a cosine
-  distance with a `ts_rank`.
-- **The resume keys survive underneath.** They are the whole order for the
-  unassessed pool, and among the assessed they break a tie between two
-  identical assessment scores, which is common on a four-band scale.
-- **The stage is read from the REPORT** (`rep.synthesized_at`), never from
-  `l.status`. A status is a denormalised mirror; the report is the artifact.
-- **Tests:** `tests/test_final_ranking.py`.
+- **Enforced by** `services/yukti/ranking.rank_score_sql`, the one ordering key, derived in SQL at read time and never stored: for an assessed candidate a weighted blend of the assessment and Yukti's resume reading (the weight is `tenants.yukti_assessment_weight_pct`, default 70); for an unassessed one the resume reading; a candidate Yukti could not read sorts last but is listed, never hidden. A failed Must-have caps the result outermost. A total order (`created_at`, `id`) keeps pagination stable.
+- **The point:** a candidate who ranked first on their resume can move down after a poor assessment.
+- **The stage is read from the REPORT** (`rep.synthesized_at`), never from `l.status`; a status is a denormalised mirror.
+- The Candidate Dashboard reads the same key, so two surfaces cannot order a job two ways. Detail: [RETRIEVAL.md](RETRIEVAL.md).
+- **Tests:** `tests/test_yukti_rank_expression.py`, `tests/test_ranked_candidates_api.py`.
 
 ### Gate 8 — the client closes the job when the requirement is met
 
@@ -318,4 +276,3 @@ page nobody opens again.
   already records who was written to and when. A stage meaning "we emailed
   them" is a stage nothing can leave except by the same edge, and it would let
   a recruiter mistake having sent an email for having had a reply.
-- **No blending of assessment and resume scores into one number.** See Gate 7.

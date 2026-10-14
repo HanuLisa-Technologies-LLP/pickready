@@ -1,8 +1,17 @@
 # RBAC as implemented
 
-**Status:** the implemented model, mapped cell by cell to
+**Status:** current. The implemented model, mapped cell by cell to
 `docs/spec/RBAC_SPECIFICATION.md` (precedence rank 1 for authorization, tenant
-isolation, role ownership, job lifecycle and audit).
+isolation, role ownership, job lifecycle and audit). **Reviewed:** 2026-10-14
+(the Publish and Send JD rows were re-checked against `services/capabilities.py`;
+the other rows were carried over from the 2026-08-29 mapping and its conformance
+test; the approval chain's capabilities and states were deleted on 2026-09-25 and
+are not listed).
+**Decided 2026-10-14, not built:** an HR approval step before publish, Recruiter-only
+publishing, SWOT timing, and independent approval (register J-10 to J-16); they add
+capabilities and lifecycle states that this table does not have yet, and amend the
+specification's Publish cell and section 17 lifecycle. See
+[../decisions/REGISTER.md](../decisions/REGISTER.md).
 **Written:** 2026-08-29, spec-doc6 Phase 9.
 **Enforced by:** `backend/tests/test_rbac_conformance.py`,
 `test_agent_authorization.py`, `test_audit_invariants.py`,
@@ -108,7 +117,7 @@ RBAC 24 carries three footnotes and each means something different at runtime.
 | Scoped | `SCOPED` | Only for a job this user is assigned to (9.2, 10.2, 13.1, 23). |
 | YES\* | `ALLOW_AUDITED_EXCEPTION` | Allowed, recorded as a deviation (7.5, spec-doc6 C13). |
 | YES\*\* | `ALLOW_NON_CANONICAL` | Allowed, off the canonical Recruiter-generates flow. |
-| YES\*\*\* | `ALLOW_DRAFT_SCOPE` | Allowed in `DRAFT`/`SENT_TO_HIRING_MANAGER`/`IN_REVIEW`, refused from `FINALIZED` (26). |
+| YES\*\*\* | `ALLOW_DRAFT_SCOPE` | Allowed in `DRAFT`, refused from `FINALIZED` (26). The intermediate hand-off and review states were deleted on 2026-09-25. |
 | NO | `DENY` | Refused. |
 | NO\* | `DENY_CONSERVATIVE` | Refused, and the asterisk is preserved so a future product decision can find every cell that was conservative by choice. |
 | (not in 24) | `NEVER` | Refused, and unreachable by any grant, tenant row or user overlay. |
@@ -131,7 +140,6 @@ Column order matches RBAC 24. `SA` = Client Super Admin (`Role.client`).
 | Create initial JD | `create_job` | ALLOW | ALLOW | ALLOW | ALLOW\*\* | DENY |
 | Generate initial JD | `create_job` | ALLOW | ALLOW | ALLOW | ALLOW\*\* | DENY |
 | Edit JD | `edit_job_description` | ALLOW | ALLOW | ALLOW\*\*\* | SCOPED | DENY |
-| Send JD to Hiring Manager | `send_jd_to_hiring_manager` | ALLOW | ALLOW | SCOPED | DENY | DENY |
 | Edit Must-Have skills | `edit_must_have_skills` | ALLOW | ALLOW | **NEVER** | SCOPED | DENY |
 | Edit Nice-to-Have skills | `edit_nice_to_have_skills` | ALLOW | ALLOW | **NEVER** | SCOPED | DENY |
 | Edit behavioural competencies | `edit_behavioural_competencies` | ALLOW | ALLOW | **NEVER** | SCOPED | DENY |
@@ -350,9 +358,11 @@ State rules the lifecycle drives:
 
 - Publishing requires `FINALIZED` or later (21).
 - The Recruiter's JD edit is refused from `FINALIZED` (24\*\*\*, 26).
-- Hiring-Manager-controlled criteria are frozen at `FINALIZED` for everyone
-  including the Hiring Manager, because 12 and 22 require an explicit revision
-  workflow and none exists yet.
+- Hiring-Manager-controlled criteria (the Skills) are frozen at the first
+  genuine application for everyone including the Hiring Manager: the skills
+  lock replaced the finalization freeze on 2026-09-25 (`Resource.skills_locked`
+  is read from the snapshot table, and only the skill capabilities are refused
+  with it). The SWOT and the job philosophy are not lifecycle-gated today.
 
 ---
 
@@ -495,7 +505,7 @@ would have been invisible in a diff.
 **The `job_assignments` RLS policy omitted `app.bypass_rls`.** Every other
 tenant-scoped table in this schema carries `OR current_setting('app.bypass_rls',
 true) = 'on'` in both USING and WITH CHECK. The first draft of 0061 did not, so
-the Celery workers and the audited Super Admin path could reach every
+the background workers and the audited Super Admin path could reach every
 tenant-scoped table except this one. The symptom would have been a 500 in a
 background task, which is the kind that surfaces days later as work that
 silently did not happen. Caught by `test_rbac_cardinality.py` failing with

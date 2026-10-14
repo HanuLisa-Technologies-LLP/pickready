@@ -4,7 +4,7 @@ Speaker counting and an AI-text estimate for the proctoring pipeline. A
 FastAPI service on `python:3.12-slim`, called only by the backend over the
 private network, never by a browser.
 
-Read `claude.md` at the repository root before changing anything here. The
+Read `CLAUDE.md` at the repository root before changing anything here. The
 rules that bind this directory most: audio is never written anywhere, the
 AI-text number is informational only, no em dash, no placeholder prose, every
 threshold from the environment with a documented default.

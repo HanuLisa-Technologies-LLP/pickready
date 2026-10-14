@@ -1,4 +1,5 @@
 # Branch protection on `main`
+**Status:** current (written, not applied). **Reviewed:** 2026-10-14 (not re-checked against the live repository settings).
 
 `main` is the only deployable branch (owner ruling, CONTRACT v7, 2026-09-25;
 audit Part 2 P0). Nothing in the repository enforces that today:
@@ -114,6 +115,6 @@ request into `main` and confirm the merge button waits on the nine checks.
 ## Interaction with the approval gate check
 
 `verify-approval-gate` reads the repository's environments through
-`APPROVAL_GATE_TOKEN` (CLAUDE.md, 2026-09-23: `administration` is not a
+`APPROVAL_GATE_TOKEN` (recorded 2026-09-23: `administration` is not a
 GitHub Actions permission). Branch protection does not change that job and
 does not need that token.

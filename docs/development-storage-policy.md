@@ -1,6 +1,7 @@
 # Development storage and workspace hygiene policy
+**Status:** current (permanent policy). **Reviewed:** 2026-10-14.
 
-Permanent policy, adopted 2026-10-07. `claude.md` carries the short form that
+Permanent policy, adopted 2026-10-07. `CLAUDE.md` and `docs/engineering/infrastructure.md` carry the short form that
 every session reads; this file holds the reasons and the commands.
 
 ## Why this exists

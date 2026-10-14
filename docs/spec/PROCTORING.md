@@ -1,18 +1,8 @@
 # Proctoring
 
-Status: implemented 2026-09-02, per `proctoring-spec-doc.md` v1.0 (owner: Manju,
-Hanulisa Technologies LLP). This file records how the specification landed in
-this codebase and where each rule is enforced. The specification's seven
-product principles are locked; this document does not soften any of them.
+**Status:** current. **Reviewed:** 2026-10-14. Implemented 2026-09-02 from the owner's proctoring specification v1.0 (owner: Manju, Hanulisa Technologies LLP) and brought to the current state by the 2026-09-25 release. This file records where each rule is enforced. The seven product principles are locked; this document does not soften any of them.
 
-**Amended 2026-09-25 (Vivekium simplification release, `claude.md` top
-section).** A lost camera or microphone PAUSES the assessment (Path P) rather
-than ending it; every paused second is a row the server wrote in
-`assessment_pauses`; the rules the candidate reads are served from the same
-settings the pipeline enforces; the audio rules measure a second voice and
-log speech during non-audio questions; every blocked paste is itemised; the
-session recording arrives in segments and is purged at ninety days or the
-job-closure purge (D4). The sections below are the current state.
+Current behaviour in one paragraph: a lost camera or microphone pauses the assessment (Path P) rather than ending it; every paused second is a row the server wrote in `assessment_pauses`; the rules the candidate reads are served from the same settings the pipeline enforces; the audio rules measure a second voice and log speech during non-audio questions; every blocked paste is itemised; the session recording arrives in segments and is purged at ninety days or the job-closure purge (register P-08).
 
 ## The seven principles, and where each one is enforced
 
@@ -20,7 +10,7 @@ job-closure purge (D4). The sections below are the current state.
 |---|---|---|
 | P1 | **REVERSED 2026-09-22.** Assessment media IS stored; the PROCTORING module still stores none | Owner ruling, verbatim: "Media storage is required. The assessment video must be compressed and stored securely in S3, linked to the candidate assessment." The browser still infers over frames in a Web Worker and posts detections only, and the analysis service still decodes audio from bytes in memory and deletes the buffer. Assessment media is written by ONE pipeline, `services/video/`, onto ONE table, `video_recordings`, encrypted at rest, retrievable only by an authorized hiring-team member inside the tenant, and reachable by both candidate erasure and the thirty day job-closure purge. `backend/tests/test_proctoring_no_media.py` was rewritten rather than deleted and now fails the build on a media write outside that pipeline, on a bucket name or object key crossing an API boundary, and on a scorer reaching the media package. P3 and P4 are UNCHANGED. |
 | P2 | No human review during a live session | There is no live proctor route, no review queue and no mid-session write path for staff. Decisions are made by `services/proctoring/ingestion.py` in the request that carries the event. |
-| P3 | Proctoring never affects any score or ranking | Nothing under `services/proctoring/` is imported by any scorer, by the Tatva matrix, by Miti, by Siddhi, by the dashboard or by any ranking query. `backend/tests/test_proctoring_scoring_isolation.py` asserts the import graph. The report is appended to the PRISM Report as its final, informational section and read nowhere else. |
+| P3 | Proctoring never affects any score or ranking | Nothing under `services/proctoring/` is imported by any scorer, by Miti, by Siddhi, by the dashboard or by any ranking query. `backend/tests/test_proctoring_scoring_isolation.py` asserts the import graph. The report is appended to the PRISM Report as its final, informational section and read nowhere else. |
 | P4 | Proctoring is mandatory | `services/proctoring/gate.require_active` runs first in both `start_conversation` and `respond`. There is no enable flag and no role bypass. The earlier optional screen-capture consent component was removed because it contradicted this principle and P1. |
 | P5 | The candidate is always informed | The rules screen renders the server's `candidate_rules` (`GET /proctoring/config`, composed by `phrasing.candidate_rules` from the same numbers the pipeline applies; no fallback text when they cannot load), and the consent screen requires an explicit "I understand and agree" and the timestamp lands on `proctoring_sessions.consented_at`, which is NOT NULL. |
 | P6 | Recruiter-facing language has zero internal terminology | `services/proctoring/phrasing.py` is a lookup table; `tests/test_proctoring_report.py` sweeps every generated sentence for the forbidden words. |
@@ -193,7 +183,7 @@ owner decision D4: `video_recordings.media_purge_due_at` is stamped once at
 finalize, and `pickready.reconcile_assessment_recordings` purges at
 `LEAST(media_purge_due_at, jobs.assessment_purge_due_at)`, ninety days
 (`assessment_media_retention_days`) or the job-closure purge, whichever is
-first. The S3 lifecycle rule is the backstop, not the clock. See `claude.md`
+first. The S3 lifecycle rule is the backstop, not the clock. See the decision register (P-08)
 and `docs/operations/INFRA_TOPOLOGY.md`.
 
 ## What is honest about the limits

@@ -1,13 +1,15 @@
 # Infrastructure topology
 
+**Status:** current. **Reviewed:** 2026-10-14 against `infra/environments/pilot` composition names; counts and sizes are as last recorded.
+
 What runs where on AWS, as composed by `infra/environments/pilot/main.tf`
 after the Vivekium simplification release (2026-09-25). Pilot IS the live site
 (region `ap-south-2`); `infra/environments/staging` and `production` have never
 been applied, and `production` is DERIVED from `staging` by
 `infra/environments/derive-production.py` (run it, then review
 `git diff infra/environments/production`). Deploying is `DEPLOY_AWS.md`;
-disaster recovery is `DISASTER_RECOVERY.md`; the code sandbox is
-`JUDGE0_RUNBOOK.md`.
+disaster recovery is `DISASTER_RECOVERY.md`. The code sandbox described
+below is decided removal (register S-20), not a live component.
 
 ## 1. Compute
 
@@ -22,7 +24,7 @@ disaster recovery is `DISASTER_RECOVERY.md`; the code sandbox is
 | `readypick-jd-gen`, `readypick-company-profile` | Lambda, backend image | the two synchronous drafting agents | invoked by the API only |
 | `readypick-assessment-trigger` | Lambda, zip | `ecs:RunTask` for the `agent` family | the ONLY holder of `iam:PassRole`; thirty lines and boto3 |
 | `inbound_email` | Lambda, zip | parses SES inbound mail from S3 via SNS | exists only when `INBOUND_EMAIL_DOMAIN` is set: pilot has none (inert) |
-| Judge0 host | EC2 t3.medium, AL2023, optional | the code sandbox | `judge0_enabled` / `judge0_instance_enabled` / `judge0_clients_enabled`, all default false; see `JUDGE0_RUNBOOK.md` |
+| Judge0 host | EC2 t3.medium, AL2023, optional | the code sandbox. **Decided removal (S-20)**; stage A resources were destroyed on 2026-09-28 and nothing is provisioned | `judge0_enabled` / `judge0_instance_enabled` / `judge0_clients_enabled`, all default false |
 | Image builder | CodeBuild, native arm64 | image builds from a commit on main | `infra/modules/image_builder`, `scripts/build-images-remote.sh`; the role can push to ECR and never deploy |
 
 **Retries live in one place**: `runtime.run_task` owns them and every Lambda
@@ -85,7 +87,7 @@ as EventBridge Scheduler rules in `module "scheduler"`, and
 this release: `reconcile_job_setup` (rewritten), `remind_unsaved_skills`,
 `reconcile_queued_emails`, `reconcile_assessment_recordings`,
 `reconcile_coding_submissions`, `probe_code_execution`,
-`repair_semantic_index` (`purge_closed_job_assessments` is the 2026-09-22 closure sweep).
+`repair_semantic_index` (`purge_closed_job_assessments` is the 2026-09-22 closure sweep). `reconcile_coding_submissions` and `probe_code_execution` belong to the sandbox and go with it.
 `verify_code_execution_sandbox` is registered and deliberately NOT scheduled.
 
 ## 6. Alarms added by this release
@@ -98,13 +100,13 @@ logs, each pinned to its constant by a test:
 | `*-prism-statement-withheld` | `prism.statement_withheld_for_review` | agent | a report withheld an uncited statement (a prompt regression or wiring defect) |
 | `*-miti-not-assessed-final` | `miti.not_assessed_final_report` | agent | a report was written with skills "Not assessed" on its final attempt |
 | `*-rag-repair-degraded` | `rag.repair.degraded` | task worker | the semantic repair sweep could not embed for three consecutive hours |
-| `*-judge0-*` | host metrics and log lines | Judge0 host | see `JUDGE0_RUNBOOK.md` section 4 |
+| `*-judge0-*` | host metrics and log lines | Judge0 host | defined with the sandbox module; moot while nothing is provisioned |
 
 ## 7. Switches that are OFF on pilot, and why
 
 | Switch | State | Why |
 |---|---|---|
-| `CODE_EXECUTION_BACKEND` | `disabled` | on until the sandbox verification task passes on pilot |
-| `judge0_enabled`, `judge0_instance_enabled`, `judge0_clients_enabled` | false | staged rollout A1, A2, B |
+| `CODE_EXECUTION_BACKEND` | `disabled` | the sandbox is decided removal (S-20); the setting is removed with the code |
+| `judge0_enabled`, `judge0_instance_enabled`, `judge0_clients_enabled` | false | nothing is provisioned; removed with the sandbox module |
 | `transcribe_enabled` | false until the deploy stage's apply | spoken answers are not offered while false |
 | `INBOUND_EMAIL_DOMAIN` | empty | the region does not receive SES mail; reply threading is inert |

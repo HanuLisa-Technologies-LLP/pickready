@@ -6,28 +6,26 @@ writing a new one that supersedes it in place, never by editing the old one to
 match new behaviour.
 
 Precedence: below the RBAC Specification and the Runbook, beside
-[HIRING_WORKFLOW.md](HIRING_WORKFLOW.md). Where an older document (including
-[ARCHITECTURE_DIRECTION_2026-08-28.md](ARCHITECTURE_DIRECTION_2026-08-28.md),
-which is advisory) describes agent artifacts as a store, a bus or a source of
-record, this document wins.
+[HIRING_WORKFLOW.md](HIRING_WORKFLOW.md). Where any other document describes
+agent artifacts as a store, a bus or a source of record, this document wins.
 
 ---
 
 ## AD-1. The database is authoritative. A2A artifacts are provenance and hand-off records only.
 
-Recorded 2026-09-24, Vivekium simplification release (CONTRACT v4 item 4).
+Recorded 2026-09-24, Vivekium simplification release (CONTRACT v4 item 4). **Status:** current. **Reviewed:** 2026-10-14.
 
 ### The decision
 
 Every fact the product acts on, shows or bills is read from a Postgres table
 through the RLS-aware session: the skills contract and its frozen version
-(`job_competencies`, `job_scorecard_bindings`, the skill snapshot), the
+(`job_competencies`, the `job_skill_snapshots` contract snapshot), the
 application (`job_candidate_links`), the conversation and its answers, the
 evidence ledger (`evidence_items` and its claims), the evaluation working
 (`evaluations`), the delivered PRISM Report (`functional_skills_reports` and
 its dimension rows), the proctoring record and the credit ledger.
 
-An A2A artifact (`services/agents/artifacts.Artifact`: `tatva_matrix`,
+An A2A artifact (`services/agents/artifacts.Artifact`; the typed shapes defined there include `tatva_matrix`,
 `ai_score`, `swot_evidence`, `answer_event`, `scoring_state`, `evidence_gap`,
 `prism_report`) is a TYPED, VERSIONED, TENANT-SCOPED DESCRIPTION of rows that
 already exist. It exists for two jobs and no third:
@@ -41,12 +39,12 @@ already exist. It exists for two jobs and no third:
 
 ### What that means in code
 
-- **An artifact is built FROM committed rows, never the other way round.**
-  `ppi.publish_tatva_matrix` is called after the matrix rows and the freeze
-  binding are flushed; `matching.publish_ai_scores` runs after the ranking
-  commit, and its own comment states the rule: "an artifact describes rows that
-  exist". `ppi.published_matrix` rebuilds the matrix artifact from
-  `load_framework` and the binding's version on demand.
+- **An artifact is built FROM committed rows, never the other way round**: "an
+  artifact describes rows that exist". Its publishers run after the rows are
+  durable and rebuild from the tables on demand. (The matrix and AI-score
+  publishers named in the original record were deleted with the matrix and the
+  legacy matching in 2026-09-25; the shapes remain in
+  `services/agents/artifacts.py` for any hand-off a future stage needs.)
 - **No table stores an artifact payload.** There is no `artifacts` table and
   there must not be one. `agent_execution_traces` carries identifiers, counts
   and timings, never content (2026-08-18 rule). The artifact module, the
@@ -63,8 +61,8 @@ already exist. It exists for two jobs and no third:
   publish call changes no stored value, grade, tier or order, which is the
   practical test of "provenance only".
 - **A timestamp is not evidence, and neither is an artifact.** A stage that
-  claims to have run is checked against the TABLE (`hiring.gates.scorecard_gate`
-  asks for matrix rows before the approval stamp; `provenance.Ledger.problems`
+  claims to have run is checked against the TABLE (`hiring.gates.contract_gate`
+  asks the locked contract snapshot, not a stamp; `provenance.Ledger.problems`
   reports an artifact-bearing stage with no artifact as "a timestamp"). An
   artifact's existence is not proof either: it proves a publish happened, and
   the rows it cites are what a reader checks.
@@ -74,9 +72,9 @@ already exist. It exists for two jobs and no third:
 - **One source of truth per fact (rule 5).** An artifact store beside the
   tables would be a second answer to "what are this job's criteria", and the
   two would disagree exactly when it matters: after a human edit, a revive, a
-  rename or a re-freeze. The 2026-09-23 Tatva authority rules (rename clears
-  `swot_origin`, revive keeps it, Save Matrix freezes the reviewed version) are
-  written against rows; a stored payload would carry the pre-edit version.
+  rename or a re-freeze. The Skills rules (rename clears `swot_origin`, revive
+  keeps it, the first application freezes the saved skills) are written against
+  rows; a stored payload would carry the pre-edit version.
 - **Tenant isolation lives in RLS (rule 3).** A table read goes through the
   policy. An artifact payload read from anywhere other than a freshly built
   object would be a read path RLS does not see.
@@ -97,9 +95,8 @@ already exist. It exists for two jobs and no third:
 - It does not mean every stage publishes one. Only the publishers above exist.
   A stage without an artifact is recorded by its rows, and by a
   `StageRecord` carrying a gate verdict where a gate fired.
-- It does not make `ppi.published_matrix` load bearing. It has no production
-  caller today (see `models/job_scorecard_binding.py`); consumers read the
-  current rows. Wiring it in later changes nothing about this decision,
+- It does not make any artifact rebuild load bearing. Consumers read the
+  current rows; wiring a rebuild in later changes nothing about this decision,
   because it too rebuilds from the tables.
 
 ### What enforces it
@@ -119,7 +116,5 @@ already exist. It exists for two jobs and no third:
 
 - Code: `backend/app/services/agents/artifacts.py`,
   `backend/app/services/agents/provenance.py`,
-  `backend/app/services/agents/envelope.py`; publishers in
-  `backend/app/services/ppi.py` and `backend/app/services/matching.py`.
-- CLAUDE.md: the Vivekium simplification release section (2026-09-2x) carries
-  the one-line rule and points here.
+  `backend/app/services/agents/envelope.py`.
+- Register: [../decisions/REGISTER.md](../decisions/REGISTER.md) and the rule in [../engineering/ai-runtime.md](../engineering/ai-runtime.md).

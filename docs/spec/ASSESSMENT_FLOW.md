@@ -1,11 +1,6 @@
 # Assessment flow: invitation to PRISM Report
 
-Normative for the Tatva Assessment as built in the Vivekium simplification
-release (2026-09-25). `claude.md`'s top section carries the rules and their
-reasons; this document is the sequence, the settings and the interfaces the
-stages call. Proctoring is `PROCTORING.md`, code execution is
-`CODE_EXECUTION.md`, question formats are `ASSESSMENT_QUESTION_FORMATS.md`,
-job setup (the skills a candidate is assessed against) is `JOB_SETUP_FLOW.md`.
+**Status:** current for the Tatva Assessment as built (the Vivekium simplification release, 2026-09-25). **Reviewed:** 2026-10-14. Two owner decisions of 2026-10-14 change it and are **decided, pending**, marked "Decided" below: coding without a sandbox (S-20) and the SWOT requirement and freeze (J-16). The rules and their reasons are in [../engineering/ai-runtime.md](../engineering/ai-runtime.md) and [../decisions/REGISTER.md](../decisions/REGISTER.md); this document is the sequence, the settings and the interfaces the stages call. Proctoring is [PROCTORING.md](PROCTORING.md), coding is [CODING_ASSESSMENT.md](CODING_ASSESSMENT.md), question formats are [ASSESSMENT_QUESTION_FORMATS.md](ASSESSMENT_QUESTION_FORMATS.md), job setup (the skills a candidate is assessed against) is [JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
 
 ## 1. The sequence
 
@@ -43,10 +38,11 @@ not a reservation. A closed job or unsaved skills invite nobody.
   the job's STEM verdict (`not_stem`), a computing occupation read from the
   title (`not_computing_occupation`), a sandbox that can run code
   (`code_execution_disabled`). An ineligible role's coding share joins prose.
+  **Decided (S-20), not built:** the sandbox condition goes away; coding stays for computing roles only
+  ([CODING_ASSESSMENT.md](CODING_ASSESSMENT.md)). Until then the sandbox is switched off, so no role is currently coding-eligible.
 - **A slot the writers cannot fill becomes prose** with a recorded reason
   (`degrade_to_prose`), so the served mix differs from the plan only by a
-  named degradation. Coding questions are written and sandbox-proven by
-  `coding_generation.write_coding_question` (`CODE_EXECUTION.md`).
+  named degradation.
 - **Nothing is pre-filled.** The resume pre-fill, the portable layer and the
   ceiling are deleted; every item is asked.
 - **Questions are written against the contract.** A question row carries the
@@ -64,6 +60,8 @@ binds the conversation's `skill_snapshot_id` and `contract_digest`),
 (`gate.require_active`) runs first on the start and on every answer. A
 conversation whose questions are missing answers `preparing` and dispatches
 after the commit; it never dispatches and then raises.
+
+**Decided (J-16), not built:** a saved SWOT must exist before the first assessment starts, and the SWOT freezes at that first start. The start therefore also refuses with one server sentence when no SWOT is saved. Whether invitations are also blocked is open (Q-06).
 
 ## 4. Turns and the clock
 
@@ -164,7 +162,7 @@ MitiResult`
 - **Items**: `miti/items.py` grades every contract skill. Objective formats
   read `assessment_answers.auto_score`; coding reads the sandbox evidence (70
   hidden tests, 30 review; pending, unavailable or not executed is not
-  assessed; empty is unanswered); other prose is `answer_evaluation` (Terra,
+  assessed; empty is unanswered) **as built; decided (S-20): the sandbox evidence is replaced by a static checker result plus AI review, split unresolved (Q-08)**; other prose is `answer_evaluation` (Terra,
   temperature 0) against the stored rubric (`method=general_standard` when a
   row has none); Behavioural is one judgement over every answer about the
   skill. Passages ride in their own payload field and never raise a score by
