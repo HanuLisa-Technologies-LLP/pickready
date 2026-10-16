@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Mona_Sans } from "next/font/google";
+import { Fraunces, Geist_Mono, Outfit } from "next/font/google";
 
 import "./globals.css";
 import { ChunkRecovery } from "@/components/chunk-recovery";
@@ -14,17 +14,18 @@ import {
 } from "@/lib/site";
 
 /**
- * The faces every route needs (DESIGN.md section 3). The third face, Hubot
- * Sans, is the marketing display face and is bound in `app/display-font.ts`
- * by the two public frames only, so no product route downloads it.
+ * The three faces every route needs (DESIGN.md section 3).
  *
- *  - Mona Sans is the working face: body, navigation, forms, tables, dialogs,
- *    reports, product page titles and most marketing copy. `body` carries it,
+ *  - Outfit is the working face: body, navigation, forms, tables, dialogs,
+ *    reports and marketing copy. `body` carries it,
  *    so a component gets it without asking. It replaced Inter Tight on
  *    2026-09-28; it is a touch wider, so a label that fit before is not
  *    assumed to fit now.
  *  - Geist Mono carries reference codes, system identifiers, URLs and code.
- *    Nothing else: ordinary metadata stays in Mona Sans with tabular numerals.
+ *    Nothing else: ordinary metadata stays in Outfit with tabular numerals.
+ *  - Fraunces is the sole heading and Vivekium wordmark face. It replaces the
+ *    previous split editorial setup, so headings never fall back to a second
+ *    serif family on authenticated routes.
  *
  * Both are variable fonts (one file per subset carries every weight) and are
  * SIL Open Font License 1.1, which permits commercial use and self-hosting.
@@ -33,10 +34,16 @@ import {
  * holds. It also emits a metric-matched fallback face, which is what keeps the
  * swap from shifting layout.
  */
-const sans = Mona_Sans({
+const sans = Outfit({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-sans",
+});
+
+const heading = Fraunces({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-display",
 });
 
 const mono = Geist_Mono({
@@ -56,7 +63,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
     default: LANDING_TITLE,
-    template: "%s | ReadyPick",
+    template: "%s | Vivekium",
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
@@ -94,7 +101,7 @@ export const viewport: Viewport = {
     // The browser chrome colour must match the canvas token, or the phone's
     // status bar paints a different product above the page. These two were the
     // pre-navy palette and had been stale since the recolour.
-    { media: "(prefers-color-scheme: light)", color: "#FBFCFE" },
+    { media: "(prefers-color-scheme: light)", color: "#F6F2EB" },
     { media: "(prefers-color-scheme: dark)", color: "#030C16" },
   ],
   width: "device-width",
@@ -109,7 +116,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${sans.variable} ${mono.variable}`}
+      className={`${sans.variable} ${heading.variable} ${mono.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-screen font-sans antialiased">

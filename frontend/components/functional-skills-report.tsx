@@ -315,7 +315,7 @@ const BAND_FILL: Record<RatingGrade, string> = {
 };
 
 const REQUIREMENT_COLOR = "#64748b";
-const CANDIDATE_COLOR = "#5028E0";
+const CANDIDATE_COLOR = "#0F6B5C";
 
 function DimensionSection({
   sectionKey,

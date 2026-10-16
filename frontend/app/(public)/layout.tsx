@@ -1,4 +1,3 @@
-import { displayFont } from "@/app/display-font";
 import { SiteJsonLd } from "@/components/site-json-ld";
 
 import { SiteFooter } from "./site-footer";
@@ -18,9 +17,7 @@ export default function PublicLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <div
-      className={`${displayFont.variable} flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink`}
-    >
+    <div className="flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink">
       <SiteJsonLd />
       <a
         href="#main"

@@ -162,7 +162,7 @@ function jobPostingSchema(
     description,
     identifier: {
       "@type": "PropertyValue",
-      name: companyName ?? "ReadyPick",
+      name: companyName ?? "Vivekium",
       value: job.id,
     },
     datePosted: job.created_at ?? undefined,
@@ -360,7 +360,7 @@ export default function PublicApplyPage() {
               className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-brand-600 text-base font-bold text-white shadow-brand"
               aria-hidden="true"
             >
-              {(companyName ?? "ReadyPick")
+              {(companyName ?? "Vivekium")
                 .split(/\s+/)
                 .slice(0, 2)
                 .map((part) => part[0])

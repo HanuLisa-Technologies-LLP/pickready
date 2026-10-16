@@ -17,7 +17,7 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/pricing",
   title: "Pricing",
   description:
-    "ReadyPick monthly plans with completed assessment allowances, three-month credit rollover, and every feature included.",
+    "Vivekium monthly plans with completed assessment allowances, three-month credit rollover, and every feature included.",
 });
 
 export default function PricingPage() {

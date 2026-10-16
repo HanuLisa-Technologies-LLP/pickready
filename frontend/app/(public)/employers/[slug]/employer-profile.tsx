@@ -160,7 +160,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
         <EmptyState
           icon={Building2}
           title="Employer page not found"
-          description="This page does not exist or is not public. Browse the directory for companies hiring through ReadyPick."
+          description="This page does not exist or is not public. Browse the directory for companies hiring through Vivekium."
           action={
             <Button asChild variant="outline">
               <Link href="/employers">Browse employers</Link>
@@ -270,7 +270,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
           </div>
           <p className="mt-2 leading-7">
             Every application goes straight to the hiring team through
-            ReadyPick.
+            Vivekium.
           </p>
         </FadeIn>
 

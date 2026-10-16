@@ -65,7 +65,7 @@ async def gateway_plan_id(session: AsyncSession, plan: MonthlyPlan) -> str:
             raise RuntimeError("Gateway plan amount differs from the published plan")
         return existing.razorpay_plan_id
     gateway_id = await razorpay.create_monthly_plan(
-        name=f"ReadyPick {plan.name}", total_inr=plan.total_inr, slug=plan.slug,
+        name=f"Vivekium {plan.name}", total_inr=plan.total_inr, slug=plan.slug,
     )
     await session.execute(
         text("INSERT INTO monthly_gateway_plans (slug, razorpay_plan_id, total_inr) "

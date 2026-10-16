@@ -11,7 +11,7 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/employers",
   title: "Employers",
   description:
-    "Search companies hiring through ReadyPick and browse their open roles.",
+    "Search companies hiring through Vivekium and browse their open roles.",
 });
 
 export default function EmployersPage() {

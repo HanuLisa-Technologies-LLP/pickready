@@ -37,11 +37,9 @@
        48,891 px), which lands inside the +/-2 per channel spec-doc5 §C.1
        states. A single-pixel read would have been compression noise.
 
-       THIS REPLACED AN INDIGO-VIOLET RAMP (#5028E0), and the replacement is
-       the point of the recolour rather than a refresh. Purple-to-blue is the
-       single most recognisable tell of a generated interface -- Impeccable
-       ships a detector for it, and that detector flagged four call sites in
-       this repo before this change.
+       This replaces the retired violet system rather than merely refreshing
+       it. The interface now stays inside the supplied navy, teal and warm
+       paper direction at every product touchpoint.
 
        NAVY IS STRUCTURE, TEAL IS EVIDENCE. Navy carries primary actions,
        navigation and the frame. Teal carries what is corroborated and what is
@@ -53,14 +51,14 @@
     /* Anchors per Master Implementation Directive Part 1 §3: navy #0A2540,
        teal #0D9488. The ramp keeps its role structure; only the anchor hue
        and saturation moved (213→210 / 98%→73% navy, 181→175 / 100%→84% teal). */
-    --navy-50: 210 58% 96%; /* #F0F4F9  selected row, subtle fill */
-    --navy-100: 210 58% 90%; /* #D6E1EF  hover on a navy surface */
-    --navy-200: 210 58% 78%; /* #A6C0DF  border on a navy fill */
-    --navy-400: 210 80% 38%; /* #1362AE  link on white */
-    --navy-500: 210 75% 26%; /* #114274  hover on primary */
-    --navy-600: 210 73% 15%; /* #0A2540  THE BRAND NAVY (directive §3) */
-    --navy-700: 210 73% 11%; /* #081B30  pressed */
-    --navy-900: 210 73% 5%; /* #030C16  dark canvas */
+    --navy-50: 38.18 37.93% 94.31%; /* #F6F2EB  warm paper */
+    --navy-100: 37.5 100% 98.43%; /* #FFFCF7  warm card */
+    --navy-200: 36.67 20.93% 83.14%; /* #DDD6CB  border tint */
+    --navy-400: 217.67 37.39% 22.55%; /* #24344F  focus and hover */
+    --navy-500: 217.67 37.39% 22.55%; /* #24344F  hover on primary */
+    --navy-600: 220 47.06% 20%; /* #1B2B4B  primary ink */
+    --navy-700: 220 47.06% 16%; /* pressed */
+    --navy-900: 220 55% 8%; /* dark canvas */
 
     /* THE BRAND TEAL FAILS AA FOR BODY TEXT ON WHITE. #00888A measures
        4.30:1, below the 4.5:1 WCAG AA requires for normal text. That is a
@@ -70,22 +68,24 @@
        So: teal-600 is a FILL, a RULE and an ICON colour. TEAL TEXT ON WHITE
        IS teal-700 (5.99:1). `scripts/check-contrast.mjs` computes both from
        these triples and fails the build rather than trusting memory. */
-    --teal-50: 175 60% 95%; /* #EAFAF8  evidence-supported fill */
-    --teal-100: 175 60% 88%; /* #CEF2EE  accent fill */
-    --teal-400: 175 84% 38%; /* #0FB2A4  dark-theme accent, chart series 2 */
-    --teal-500: 175 84% 34%; /* #0E9F93  large text only, >= 24px */
-    --teal-600: 175 84% 32%; /* #0D9688  THE BRAND TEAL (directive §3) */
-    --teal-700: 175 84% 23%; /* #096C62  teal TEXT on white */
-    --teal-900: 175 84% 11%; /* #04332E  dark-theme teal text */
+    --teal-50: 151.58 37.25% 90%; /* #DCEFE6  high matching fill */
+    --teal-100: 113.33 21.95% 91.96%; /* #E7EFE6  matching fill */
+    --teal-400: 170.22 55% 45%; /* dark-theme accent */
+    --teal-500: 170.22 65% 33%; /* large text only */
+    --teal-600: 170.22 75.41% 23.92%; /* #0F6B5C  accent */
+    --teal-700: 170.22 76% 19%; /* accessible teal text */
+    --teal-900: 170.22 76% 11%; /* dark-theme teal text */
 
     /* --- surfaces and ink ------------------------------------------------ */
     /* Ink carries a trace of the navy hue rather than being pure neutral, so
        black text on a navy-tinted canvas does not read as two unrelated
        greys. It is still functionally black: 19.6:1 on the canvas. */
-    --ink: 212 55% 7%; /* #080F1C  all text */
-    --surface: 0 0% 100%; /* #FFFFFF  cards */
-    --canvas: 210 43% 98%; /* #FBFCFE  page background */
-    --border-token: 212 33% 92%; /* #E2E8F2  borders, dividers */
+    --ink: 220 47.06% 20%; /* #1B2B4B  primary text */
+    --ink-soft: 217.67 37.39% 22.55%; /* #24344F */
+    --muted-ink: 219.31 13.74% 41.37%; /* #5B6578 */
+    --surface: 37.5 100% 98.43%; /* #FFFCF7  cards */
+    --canvas: 38.18 37.93% 94.31%; /* #F6F2EB  page background */
+    --border-token: 36.67 20.93% 83.14%; /* #DDD6CB */
 
     /* --- interactive field affordance (2026-08-11) ------------------------
        A dropdown, a text input and a toggle used to carry `--border-token`,
@@ -101,8 +101,8 @@
 
        Both are verified by `scripts/check-contrast.mjs`, which computes the
        ratio from these exact triples. Do not adjust either by eye. */
-    --field-border: 210 45% 55%; /* idle */
-    --field-border-hover: 210 80% 32%; /* hover and open, saturation steps up */
+    --field-border: 219.31 13.74% 41.37%; /* accessible idle boundary */
+    --field-border-hover: 220 47.06% 20%; /* hover and open */
 
     /* --- shadcn semantic aliases ----------------------------------------- */
     --background: var(--canvas);
@@ -113,11 +113,11 @@
     --popover-foreground: var(--ink);
     --primary: var(--navy-600);
     --primary-foreground: 0 0% 100%;
-    --secondary: 212 40% 96%;
+    --secondary: 32.31 26.53% 90.39%;
     --secondary-foreground: var(--ink);
     /* --muted stays a light SURFACE; --muted-foreground is text, so it is ink. */
-    --muted: 212 40% 96%;
-    --muted-foreground: var(--ink);
+    --muted: 32.31 26.53% 90.39%;
+    --muted-foreground: var(--muted-ink);
     /* Teal, because accent means EVIDENCE in this system. */
     --accent: var(--teal-50);
     --accent-foreground: var(--teal-900);
@@ -132,16 +132,16 @@
     --ring: var(--navy-400);
     /* ZERO. Master directive Part 1 §7: sharp rectangular geometry, no
        rounded cards, no pills. The Tailwind radius scale reads this token. */
-    --radius: 0rem;
+    --radius: 0.5rem;
     /* Held for review. Not destructive: a flag is not a rejection. */
     --warning: 40 100% 27%;
     --warning-foreground: 0 0% 100%;
 
     /* --- rating ramp (five word labels, one shared ramp) ------------------ */
     --rating-1-fg: 142 72% 20%; /* #166534  Very High / Highly Matching */
-    --rating-1-bg: 141 84% 93%; /* #DCFCE7 */
-    --rating-2-fg: 142 69% 29%; /* #15803D  High / Matching */
-    --rating-2-bg: 140 55% 95%; /* #E9F9EE */
+    --rating-1-bg: 151.58 37.25% 90%; /* #DCEFE6 */
+    --rating-2-fg: 142 69% 27%; /* High / Matching; 4.5:1+ on the warm green surface */
+    --rating-2-bg: 113.33 21.95% 91.96%; /* #E7EFE6 */
     /* Darkened from 33% on 2026-08-29. At 33% this paints 3.71:1 on its
        own --rating-3-bg, which is below WCAG 1.4.3's 4.5 for text, and
        it is a TEXT token: it is the ink of the Moderately Matching
@@ -152,7 +152,7 @@
        the composed pair rather than the token against white, and now
        keeps it from drifting back. */
     --rating-3-fg: 42 95% 28%; /* #8F6A05  Medium / Moderate */
-    --rating-3-bg: 48 96% 89%; /* #FEF3C7 */
+    --rating-3-bg: 43.13 57.14% 89.02%; /* #F3EAD3 */
     --rating-4-fg: 21 90% 40%; /* #C2410C  Low / Low */
     --rating-4-bg: 33 100% 92%; /* #FFEDD5 */
     --rating-5-fg: 0 74% 42%; /* #B91C1C  Developing / No Matching */
@@ -271,6 +271,7 @@
   h4,
   h5,
   h6 {
+    @apply font-display;
     letter-spacing: -0.011em;
     text-wrap: balance;
   }
@@ -355,14 +356,14 @@
 
   /* A reference code or system identifier: Geist Mono, 12px, 500, tabular.
      For COMPANY-JOB-CANDIDATE codes, ids, filenames and URLs. Never for a
-     date, a count or a label: those are metadata and stay in Mona Sans. */
+     date, a count or a label: those are metadata and stay in Outfit. */
   .type-ref {
     @apply font-mono text-ref tabular-nums;
   }
 
   /* --- marketing roles: the public site only ---------------------------- */
 
-  /* The hero headline of a marketing page, in Hubot Sans. One per page at
+  /* The hero headline of a marketing page, in Fraunces. One per page at
      most, and never inside the product. 40px on a phone, 52 from `sm`, 64
      from `lg`. The measure keeps a long promise to three or four lines
      instead of letting it run the width of its column. */
@@ -371,10 +372,10 @@
     text-wrap: balance;
   }
 
-  /* A landing section's h2, or the h1 of a plain public page. Mona Sans.
+  /* A landing section's h2, or the h1 of a plain public page. Fraunces.
      32 / 40 / 48px. */
   .type-section-title {
-    @apply text-section-sm sm:text-section-md lg:text-section;
+    @apply font-editorial text-section-sm sm:text-section-md lg:text-section;
     text-wrap: balance;
   }
 
@@ -398,10 +399,10 @@
      the brief allows it (landing page and top nav), never on forms or tables
      where translucency hurts legibility. */
   .glass {
-    background-color: hsl(var(--surface) / 0.7);
-    backdrop-filter: blur(16px) saturate(160%);
-    -webkit-backdrop-filter: blur(16px) saturate(160%);
-    border-color: hsl(var(--border) / 0.7);
+    background-color: hsl(var(--canvas) / 0.9);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-color: hsl(var(--border));
   }
 
   .text-balance {

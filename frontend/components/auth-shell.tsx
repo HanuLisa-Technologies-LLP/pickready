@@ -3,7 +3,6 @@ import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/brand";
-import { DotPattern } from "@/components/magicui";
 import { Card, CardContent } from "@/components/ui/card";
 
 /**
@@ -32,15 +31,6 @@ export function AuthShell({
 }) {
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-canvas px-4 py-10">
-      <DotPattern
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 h-full w-full text-brand-600/25 [mask-image:radial-gradient(420px_circle_at_center,white,transparent)]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-28 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-brand-500/20 blur-3xl"
-      />
-
       {/* A LANDMARK, BECAUSE THIS PAGE IS ALL CONTENT AND HAD NONE. Sign in,
           register and join rendered the `h1` and the whole form inside plain
           divs, so a screen reader's landmark list was empty and "jump to main"

@@ -105,7 +105,7 @@ export default function CompliancePage() {
       <PageHeader
         eyebrow="Customer Portal"
         title="Compliance and legal documents"
-        description="Your company's tax and commercial records. ReadyPick can view these; only your company can upload or replace them."
+        description="Your company's tax and commercial records. Vivekium can view these; only your company can upload or replace them."
       />
 
       {forbidden ? (

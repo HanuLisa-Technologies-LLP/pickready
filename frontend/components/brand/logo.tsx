@@ -2,8 +2,8 @@ import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 
-/** ReadyPick's standalone product mark and wordmark, rendered from native UI. */
-const ALT = "ReadyPick";
+/** Vivekium's standalone product mark and wordmark, rendered as vector UI. */
+const ALT = "Vivekium";
 
 export interface LogoProps {
   variant?: "full" | "mark";
@@ -26,48 +26,28 @@ export function Logo({
   className,
 }: LogoProps) {
   const mark = (
-    // A sharp square tile (directive Part 1 section 7: zero corner radius,
-    // brand mark included).
-    //
-    // THE MARK IS A V, AND IT USED TO BE AN R+P. The previous asset was the
-    // old logo cropped tight, so it rendered the PREVIOUS PRODUCT'S INITIALS
-    // beside the word ReadyPick on every page: a leftover of the old name
-    // rather than a design choice. Rename change 01 covers all screens, and
-    // glyphs that spell ReadyPick are an instance of it.
-    //
-    // It is drawn here rather than shipped as an asset, which is what the
-    // docstring above already claims the brand is ("rendered from native
-    // UI"): it stays sharp at every height, needs no network fetch, and
-    // carries the SAME navy-to-teal transition the wordmark makes across
-    // "Vivek" and "ium". Navy is structure and teal is evidence (DESIGN.md),
-    // and `teal-600` is correct here because this is a FILL and not text.
-    //
-    // GEOMETRY, NOT IDENTITY. This is a plain monogram standing in until the
-    // owner commissions a real mark; replacing it is this one element.
+    // Four directional chevrons surround an evidence point. The supplied
+    // mark used purple for the centre; Vivekium's product palette assigns the
+    // point to teal so the mark contains no purple in either theme.
     <span
       aria-hidden="true"
-      className="relative block aspect-square shrink-0 overflow-hidden rounded-none bg-white ring-1 ring-black/5"
+      className="relative block aspect-square shrink-0 text-ink"
       style={{ height, width: height }}
     >
       <svg
-        viewBox="0 0 32 32"
+        viewBox="0 0 48 48"
         className="absolute inset-0 h-full w-full"
         role="presentation"
       >
         <path
-          d="M9 25 V7 H18 A5.5 5.5 0 0 1 18 18 H9"
-          stroke="#012654"
-          strokeWidth="4.5"
-          strokeLinecap="square"
+          d="M18 14 L24 4 L30 14 M34 18 L44 24 L34 30 M30 34 L24 44 L18 34 M14 30 L4 24 L14 18"
+          stroke="currentColor"
+          strokeWidth="4"
+          strokeLinecap="butt"
+          strokeLinejoin="miter"
           fill="none"
         />
-        <path
-          d="M17 18 L24 25"
-          stroke="#00888A"
-          strokeWidth="4.5"
-          strokeLinecap="square"
-          fill="none"
-        />
+        <circle cx="24" cy="24" r="6" className="fill-teal-600" />
       </svg>
     </span>
   );
@@ -79,21 +59,10 @@ export function Logo({
       {mark}
       {variant === "full" ? (
         <span
-          className="font-black tracking-[-0.045em] text-foreground"
-          style={{ fontSize: Math.max(18, Math.round(height * 0.72)) }}
+          className="font-display font-normal tracking-[-0.03em] text-ink"
+          style={{ fontSize: Math.max(20, Math.round(height * 0.76)) }}
         >
-          {/* The wordmark keeps the two-tone treatment: the tail carries the
-              TEAL the way "Pick" did before the ReadyPick rename. `teal-700`
-              rather than `teal-600` because this is TEXT and the brand teal
-              measures 4.30:1 -- below AA. See DESIGN.md §2.
-
-              NO DARK OVERRIDE. The token itself inverts in `.dark`, so
-              `teal-700` is already the dark-theme teal text value, and
-              `scripts/check-contrast.mjs` asserts teal-700 at the 4.5:1 TEXT
-              bar in BOTH themes while asserting teal-600 only at the 3:1
-              non-text bar. The dark-mode override this replaces was the one
-              place in the product that printed words in the fill token. */}
-          Ready<span className="text-teal-700">Pick</span>
+          Vivekium
         </span>
       ) : null}
     </span>

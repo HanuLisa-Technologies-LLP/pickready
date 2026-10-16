@@ -202,11 +202,11 @@ export function ProfileButton({
       className={cn("h-8", !available && "cursor-not-allowed")}
       aria-label={
         available
-          ? `Open the ReadyPick Profile for ${row.full_name}`
-          : `ReadyPick Profile not available for ${row.full_name}`
+          ? `Open the Vivekium Profile for ${row.full_name}`
+          : `Vivekium Profile not available for ${row.full_name}`
       }
     >
-      {available ? "ReadyPick Profile" : "Awaiting Profile"}
+      {available ? "Vivekium Profile" : "Awaiting Profile"}
     </Button>
   );
   if (available) return button;

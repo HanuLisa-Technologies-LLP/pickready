@@ -61,12 +61,12 @@ export function PricingCatalogue() {
     <div>
       <div className="grid gap-4 sm:grid-cols-2">
         {catalogue.plans.map((plan) => (
-          <article key={plan.slug} className="flex flex-col rounded-2xl border border-border bg-surface p-6">
-            <h3 className="text-lg font-semibold">{plan.name}</h3>
+          <article key={plan.slug} className="flex flex-col rounded-xl border border-border bg-surface p-6 shadow-card">
+            <h3 className="font-editorial text-xl font-medium">{plan.name}</h3>
             <p className="mt-4 text-3xl font-semibold tabular-nums">{inr(plan.price_inr)}<span className="ml-1 text-sm font-medium">/ month</span></p>
             <p className="mt-1 text-sm text-muted-foreground">Plus {catalogue.gst_rate_percent}% GST</p>
             <p className="mt-5 text-base font-semibold tabular-nums">{new Intl.NumberFormat("en-IN").format(plan.assessments)} completed assessments per month</p>
-            <p className="mt-4 rounded-lg border border-teal-600/30 bg-teal-50 p-3 text-sm font-medium text-teal-950 dark:bg-teal-950/30 dark:text-teal-100">
+            <p className="mt-4 rounded-md border border-teal-600/30 bg-teal-50 p-3 text-sm font-medium text-teal-900 dark:bg-teal-900/30 dark:text-teal-100">
               Unused monthly credits roll over for {plan.rollover_months} months, then expire.
             </p>
             <Button asChild variant="outline" className="mt-6 w-full">
@@ -76,8 +76,8 @@ export function PricingCatalogue() {
         ))}
       </div>
       <div className="mt-6 grid gap-5 lg:grid-cols-2">
-        <div className="rounded-2xl border border-border bg-surface p-6">
-          <h3 className="text-base font-semibold">Included in every plan</h3>
+        <div className="rounded-xl border border-border bg-surface p-6">
+          <h3 className="font-editorial text-xl font-medium">Included in every plan</h3>
           <ul className="mt-4 space-y-2 text-sm">
             {[
               "Every platform feature and all 7 agents",
@@ -89,8 +89,8 @@ export function PricingCatalogue() {
             ))}
           </ul>
         </div>
-        <div className="rounded-2xl border border-border bg-surface p-6 text-sm">
-          <h3 className="text-base font-semibold">Start on Starter</h3>
+        <div className="rounded-xl border border-border bg-surface p-6 text-sm">
+          <h3 className="font-editorial text-xl font-medium">Start on Starter</h3>
           <p className="mt-4">The paid pilot runs for {catalogue.pilot_days} days on {starter?.name ?? "Starter"}. At the end, keep the monthly plan or cancel.</p>
           <p className="mt-3">No annual commitment or lock-in. Cancel anytime. Unused paid credits keep their {starter?.rollover_months ?? "three"}-month validity after cancellation.</p>
           {topup ? <p className="mt-3">Need more capacity? The only top-up is the {topup.name} pack: {topup.assessments} additional assessments for {inr(topup.price_inr)} plus GST.</p> : null}

@@ -17,6 +17,41 @@ its implementation and `scripts/check-contrast.mjs` is its enforcement. If the
 three disagree, this file is wrong or the CSS is — resolve it, do not leave
 them disagreeing.
 
+## Current visual contract (2026-10-17)
+
+This section supersedes the older palette and typography history below where
+they differ. Vivekium uses a warm editorial B2B system with these exact light
+theme anchors:
+
+| Role | Token | Hex |
+|---|---|---|
+| Paper | `--canvas` | `#F6F2EB` |
+| Card | `--surface` | `#FFFCF7` |
+| Primary ink | `--ink` / `--navy-600` | `#1B2B4B` |
+| Secondary ink | `--ink-soft` | `#24344F` |
+| Muted text | `--muted-ink` | `#5B6578` |
+| Border | `--border-token` | `#DDD6CB` |
+| Accent | `--teal-600` | `#0F6B5C` |
+| High matching | `--rating-1-bg` | `#DCEFE6` |
+| Matching | `--rating-2-bg` | `#E7EFE6` |
+| Moderate matching | `--rating-3-bg` | `#F3EAD3` |
+| Neutral | `--muted` | `#EDE7E0` |
+
+Purple, violet and indigo remain prohibited. The supplied Vivekium mark is
+implemented as four navy directional chevrons around one teal evidence point.
+The centre is teal, not the purple shown in the source artwork. The same vector
+geometry is used by the shared lockup, generated browser icons and social card.
+
+Fraunces is the only heading and wordmark face. Outfit is the body and interface
+face. Geist Mono remains reserved for references and code. Fonts are loaded at
+build time through `next/font`, so no production page depends on a font CDN.
+
+Cards use warm surfaces, subtle borders and restrained radii. Primary actions
+use navy; teal remains the evidence accent. Public layouts use editorial
+hierarchy and generous whitespace. Product layouts retain their denser
+information architecture while inheriting the same palette, controls and
+typographic voice.
+
 ---
 
 ## 1. Visual Theme & Atmosphere
@@ -164,25 +199,25 @@ at two sizes and two weights.
 | Role | Token | Family | Size / leading | Tracking | Weight |
 |---|---|---|---|---|---|
 | **Marketing** | | | | | |
-| Display (the hero h1 of a public page, one per page) | `type-display` | Hubot Sans | 40 / 52 / 64px, 1.05 to 1.02 | −0.025em to −0.03em | 600 |
-| Section title (landing h2, plain public page h1) | `type-section-title` | Mona Sans | 32 / 40 / 48px, 1.15 to 1.08 | −0.018em to −0.025em | 600 |
-| Lead (under a hero or section title) | `type-lead` | Mona Sans | 18/29, 20/32 from `sm`; 54ch | 0 | 400 |
-| Marketing prose | `type-prose-lg` | Mona Sans | 17/28; 65ch | 0 | 400 |
+| Display (the hero h1 of a public page, one per page) | `type-display` | Fraunces | 40 / 52 / 64px, 1.05 to 1.02 | −0.025em to −0.03em | 600 |
+| Section title (landing h2, plain public page h1) | `type-section-title` | Fraunces | 32 / 40 / 48px, 1.15 to 1.08 | −0.018em to −0.025em | 600 |
+| Lead (under a hero or section title) | `type-lead` | Outfit | 18/29, 20/32 from `sm`; 54ch | 0 | 400 |
+| Marketing prose | `type-prose-lg` | Outfit | 17/28; 65ch | 0 | 400 |
 | **Product** | | | | | |
-| Page title (the one h1 of a screen) | `type-page-title` | Mona Sans | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
-| Section heading (page h2, dialog and sheet title, report section) | `text-heading` | Mona Sans | 20/28 | −0.012em | 600 |
-| Subsection heading, card title (h3) | `text-subheading` | Mona Sans | 16/24 | −0.006em | 600 |
-| Eyebrow / overline | `type-eyebrow` | Mona Sans | 12/16, uppercase | +0.1em | 600 |
-| Form label | `text-label` | Mona Sans | 14/20 | 0 | 500 |
-| Body, descriptions | `text-body` (= `text-sm`) | Mona Sans | 15/26 | 0 | 400 |
-| Body small, helper text | `text-body-sm` (= `text-xs`) | Mona Sans | 13/20 | 0 | 400 |
-| Metadata (timestamps, secondary lines) | `text-meta` | Mona Sans | 12/18 | +0.01em | 400 |
-| Table cell | `text-table` | Mona Sans | 14/20 | 0 | 400 |
-| Table header | `text-table-head` + `uppercase` | Mona Sans | 12/16 | +0.06em | 600 |
-| Chip (status, rating, evidence, count pill) | `text-chip` | Mona Sans | 11/16 | 0 | the chip's own |
+| Page title (the one h1 of a screen) | `type-page-title` | Fraunces | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
+| Section heading (page h2, dialog and sheet title, report section) | `text-heading` | Fraunces | 20/28 | −0.012em | 600 |
+| Subsection heading, card title (h3) | `text-subheading` | Fraunces | 16/24 | −0.006em | 600 |
+| Eyebrow / overline | `type-eyebrow` | Outfit | 12/16, uppercase | +0.1em | 600 |
+| Form label | `text-label` | Outfit | 14/20 | 0 | 500 |
+| Body, descriptions | `text-body` (= `text-sm`) | Outfit | 15/26 | 0 | 400 |
+| Body small, helper text | `text-body-sm` (= `text-xs`) | Outfit | 13/20 | 0 | 400 |
+| Metadata (timestamps, secondary lines) | `text-meta` | Outfit | 12/18 | +0.01em | 400 |
+| Table cell | `text-table` | Outfit | 14/20 | 0 | 400 |
+| Table header | `text-table-head` + `uppercase` | Outfit | 12/16 | +0.06em | 600 |
+| Chip (status, rating, evidence, count pill) | `text-chip` | Outfit | 11/16 | 0 | the chip's own |
 | Reference code, system id, filename, URL | `type-ref` | Geist Mono | 12/16, tabular | 0 | 500 |
 | Code (editor, JD markdown source, run output) | `font-mono` + a step | Geist Mono | the step it sits on | 0 | 400 |
-| Figures (stats, money, counts) | `tabular-nums` | Mona Sans | the step it sits on | the step's | 600 |
+| Figures (stats, money, counts) | `tabular-nums` | Outfit | the step it sits on | the step's | 600 |
 
 - **Hierarchy is carried by size AND weight, never by colour.** Text is never
   grey (below), so a helper line differs from body by being a step smaller, a
@@ -248,24 +283,17 @@ wrapped 18px heading at 30px read as two separate lines; the page-header
 description sits at `mt-2.5` under the smaller, lighter title; and heading
 tracking now follows size instead of one blanket `tracking-tight`.)
 
-**Three faces, one job each (2026-09-28).** Chosen for restraint and metrics
-rather than personality, and replacing Inter Tight, Fraunces and JetBrains Mono.
+**Three faces, one job each (AMENDED 2026-10-17).** The current system removes
+the former DM Serif Display / Mona Sans split and gives every face one role.
 
-- **Mona Sans** is the working face and the brand's voice: body, navigation,
-  buttons, forms, tables, cards, dialogs, reports, product page titles and
-  most marketing copy. A grotesque with open apertures and even colour, it
-  holds a dense 14px table and a 48px section title with the same drawing.
-  It is a touch wider than Inter Tight was, so a label that fit before is not
-  assumed to fit now.
-- **Hubot Sans** is the display face, and it stays rare: the hero h1 of the
-  home, About, Insights and Docs pages, through `type-display`, and nothing
-  else. Never a dashboard heading, a table, a form, a card, a dialog or a
-  report. It is bound only by the two public frames (`app/display-font.ts`,
-  imported by `landing-page.tsx` and `(public)/layout.tsx`), so no product
-  route downloads it; outside them `font-display` falls back to Mona Sans.
+- **Outfit** is the working face: body, navigation, buttons, forms, tables,
+  cards, dialogs, reports and marketing copy.
+- **Fraunces** is the sole heading and brand-wordmark face. The root layout
+  binds it once and semantic `h1`–`h6` elements inherit it everywhere, so
+  public and authenticated headings cannot drift into a second serif family.
 - **Geist Mono** is the reference face: COMPANY-JOB-CANDIDATE codes, system
   ids, filenames, URLs, model ids and code. A date, a count or a label is
-  metadata and stays in Mona Sans with `tabular-nums`; monospace is never used
+  metadata and stays in Outfit with `tabular-nums`; monospace is never used
   to make ordinary text look technical.
 
 All three are variable fonts under the SIL Open Font License 1.1, which permits
