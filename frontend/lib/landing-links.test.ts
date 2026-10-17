@@ -177,7 +177,7 @@ describe("the landing page's links", () => {
 
   it("sends the landing action to Start and keeps the public pricing page linked", () => {
     expect(links.filter(({ target }) => target.includes("#pricing"))).toEqual([]);
-    expect(read(join(publicDir, "landing-page.tsx"))).toContain('href="#start"');
+    expect(read(join(publicDir, "landing-page.tsx"))).toContain('href="#brief"');
     expect(read(join(publicDir, "site-header.tsx"))).toContain('"/pricing"');
   });
 
@@ -187,6 +187,9 @@ describe("the landing page's links", () => {
       .filter(({ target }) => target.startsWith("#"))
       .filter(({ target }) => !ids.has(target.slice(1)));
     expect(missing).toEqual([]);
+    expect(ids.has("brief")).toBe(true);
+    expect(ids.has("audience")).toBe(true);
+    expect(ids.has("process")).toBe(true);
     expect(ids.has("start")).toBe(true);
   });
 

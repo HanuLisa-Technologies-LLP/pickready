@@ -72,7 +72,7 @@ export default function OpengraphImage() {
             color: "#FFFFFF",
           }}
         >
-          Hiring, made simple
+          Know them before you contact them
         </div>
         <div
           style={{
