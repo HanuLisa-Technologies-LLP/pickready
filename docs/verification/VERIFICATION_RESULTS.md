@@ -1,5 +1,5 @@
 # Verification results
-**Status:** measurement: a dated record of live vendor runs, read by `test_no_live_vendor_claims.py`; never edited to match new behaviour. **Reviewed:** 2026-10-14 (not re-run).
+**Status:** measurement: a dated record of live vendor runs, read by `test_no_live_vendor_claims.py`; never edited to match new behaviour. **Reviewed:** 2026-10-17.
 
 Produced by `backend/scripts/verify_live.py` against the live vendor
 endpoints. Everything below is an OBSERVED result; nothing here is inferred
@@ -507,3 +507,46 @@ second connection with it, and only then writes the DSN secret.
   role.** A run was attempted and stalled during pytest collection; the stall
   reproduced and was not diagnosed. Until it is green, "the product works
   least-privileged" is a design intention and not a measurement.
+
+---
+
+# Vivekium reference-palette deployment (2026-10-17)
+
+PR [#19](https://github.com/HanuLisa-Technologies-LLP/pickready/pull/19)
+merged to `main` as `7dcd4e2b2e00811881df9ddae7ecf2afaf051427` after every
+required CI check passed. The live site is the pilot environment in
+`ap-south-2`.
+
+| Evidence | Observed result |
+|---|---|
+| Backend image | `sha-7dcd4e2b2e00`, digest `sha256:f2d854850581e86d4bc00e2c4f620eaa8c4be7f7f684688449a9f8c371958075` |
+| Frontend image | `sha-7dcd4e2b2e00`, digest `sha256:cfedf504b827b2f0b5c6f0b6cb8f177e0816d5f73d9dad496ea3ccb070f18846` |
+| Analysis image | unchanged tag `93ebfcb`, digest `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+| Migration | ECS task `c9c8b6126e2b49689005490cfdbb02c8` stopped with exit 0 |
+| ECS revisions | API `53`, frontend `43`, analysis `16`; all services reached stable state |
+| Lambda images | `readypick-task-worker`, `readypick-jd-gen`, and `readypick-company-profile` read back `sha-7dcd4e2b2e00-fn` after update |
+| Digest verification | every running API, frontend, and analysis task matched the expected digest |
+| Live smoke test | `/health/live`, `/api/v1/dashboard/summary`, `/api/v1/jobs`, `/api/v1/auth/me`, and `/` returned 200; route-contract checks passed |
+| Desktop browser | Vivekium title and SVG mark rendered; body background was `rgb(246, 242, 235)` (`#F6F2EB`), text and heading were `rgb(27, 43, 75)` (`#1B2B4B`), and the heading used Fraunces |
+| Mobile browser | 390 by 844 viewport rendered the Vivekium header and hero with `scrollWidth=390`; no horizontal overflow |
+| Browser network | document, assets, public plans, and landing telemetry succeeded; the only non-2xx responses were the expected unauthenticated session probes (`/auth/me` and `/auth/refresh`, both 401); no 5xx response was observed |
+
+The local checkout did not contain the owner-only pilot `terraform.tfvars`, so
+Terraform correctly refused to plan rather than accepting guessed environment
+inputs. Because this release changed application images only, the deployed
+task-definition shape was copied from the current registered revisions and
+only the immutable backend or frontend image URI was replaced. No infrastructure
+resource, secret, network setting, or desired count was inferred from missing
+configuration.
+
+## Rollback reference
+
+The pre-release backend and frontend tag is `sha-e25fdf15494d`. Its backend
+digest is `sha256:137e8190421ec7c13c7d079edd9e37ed900595997581a27e89fbf8d8f7bcbbd7`
+and its frontend digest is
+`sha256:ab7ffc715e122f47c6d8ea85cd2387c5decbb8a598d318f568a07db1a14f7aa2`.
+Analysis was not changed and remains on tag `93ebfcb`. Rollback means
+registering the prior immutable image URIs as new task-definition revisions,
+rolling the API and frontend services, updating the three image-backed Lambda
+functions to `sha-e25fdf15494d-fn`, then repeating migration, smoke, and digest
+verification.
