@@ -119,7 +119,7 @@ describe("ReadyPick Grade", () => {
 describe("ReadyPick Note", () => {
   it("renders the pending sentence rather than an empty cell", () => {
     wrap(<NoteCell row={row()} />);
-    expect(screen.getAllByText("ReadyPick Profile not written yet.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Vivekium Profile not written yet.").length).toBeGreaterThan(0);
   });
 
   it("is never bold and never coloured", () => {
@@ -158,7 +158,7 @@ describe("ReadyPick Profile button", () => {
         onOpen={() => undefined}
       />
     );
-    const button = screen.getByRole("button", { name: /Open the ReadyPick Profile/i });
+    const button = screen.getByRole("button", { name: /Open the Vivekium Profile/i });
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 });

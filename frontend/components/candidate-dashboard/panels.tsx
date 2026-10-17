@@ -97,7 +97,7 @@ export function ReadyPickProfilePanel({
           setError(
             cause instanceof Error
               ? cause.message
-              : "The ReadyPick Profile could not be loaded."
+              : "The Vivekium Profile could not be loaded."
           );
       })
       .finally(() => {
@@ -112,7 +112,7 @@ export function ReadyPickProfilePanel({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
         <SheetHeader>
-          <SheetTitle>ReadyPick Profile</SheetTitle>
+          <SheetTitle>Vivekium Profile</SheetTitle>
           <SheetDescription>
             {row?.full_name}
             <span className="ml-2 select-all type-ref">

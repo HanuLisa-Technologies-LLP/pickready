@@ -235,7 +235,7 @@ export function CompanyRegisterFlow() {
         void openSubscriptionCheckout({
           keyId: checkout.razorpay_key_id,
           subscriptionId: checkout.subscription_id,
-          name: "ReadyPick",
+          name: "Vivekium",
           description: `${plan.name} monthly plan`,
           prefill: { email, name: state?.first_name ?? undefined },
           onSuccess: (payload) => {

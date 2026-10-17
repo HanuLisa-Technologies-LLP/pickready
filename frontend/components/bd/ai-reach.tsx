@@ -250,7 +250,7 @@ export function AIReachPage() {
           {/* Computed from ReadyPick's own customers. Rendered first, always. */}
           <Segment
             title="Similar to our customers"
-            hint="Matched against ReadyPick's customer database."
+            hint="Matched against Vivekium's customer database."
             icon={Users}
             segment={result.similar_to_customers}
           />

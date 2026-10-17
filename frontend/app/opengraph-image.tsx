@@ -18,12 +18,12 @@ import { ImageResponse } from "next/og";
  * the Tailwind token layer.
  */
 
-export const alt = "ReadyPick";
+export const alt = "Vivekium";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-const NAVY = "#0A2540";
-const TEAL = "#0D9688";
+const NAVY = "#1B2B4B";
+const TEAL = "#0F6B5C";
 
 export default function OpengraphImage() {
   return new ImageResponse(
@@ -60,8 +60,7 @@ export default function OpengraphImage() {
           {/* The product name, split where the site wordmark splits it
               (`components/brand/logo.tsx`). The card spelled the previous
               name, so every share of readypick.ai carried it. */}
-          <span>Ready</span>
-          <span style={{ color: TEAL }}>Pick</span>
+          <span>Vivekium</span>
         </div>
         <div
           style={{

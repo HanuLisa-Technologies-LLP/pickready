@@ -1,8 +1,8 @@
 /**
  * The type system's faces, and where each is allowed (DESIGN.md section 3).
  *
- * Mona Sans is the working face, Hubot Sans the rare marketing display face,
- * Geist Mono the reference face. The rules below are the ones that erode one
+ * Outfit is the working face, Fraunces the heading and brand face, and Geist
+ * Mono the reference face. The rules below are the ones that erode one
  * call site at a time: a display face creeping onto a dashboard heading, a
  * retired face left imported, a reference role that stops being monospace,
  * or a component inventing its own pixel size instead of using a role.
@@ -36,15 +36,16 @@ const read = (file: string) => readFileSync(file, "utf8");
 describe("the faces", () => {
   it("the retired faces are imported nowhere", () => {
     for (const file of FILES) {
-      expect(read(file), rel(file)).not.toMatch(/\b(Inter_Tight|Fraunces|JetBrains_Mono)\b/);
+      expect(read(file), rel(file)).not.toMatch(/\b(Inter_Tight|Mona_Sans|Hubot_Sans|JetBrains_Mono)\b/);
     }
   });
 
-  it("the root layout binds Mona Sans and Geist Mono, and not the display face", () => {
+  it("the root layout binds Outfit, Fraunces and Geist Mono", () => {
     const layout = read(join(ROOT, "app/layout.tsx"));
-    expect(layout).toMatch(/Mona_Sans\(/);
+    expect(layout).toMatch(/Outfit\(/);
+    expect(layout).toMatch(/Fraunces\(/);
     expect(layout).toMatch(/Geist_Mono\(/);
-    expect(layout).not.toMatch(/Hubot_Sans\(|from "@\/app\/display-font"/);
+    expect(layout).not.toMatch(/DM_Serif_Display|Mona_Sans|Hubot_Sans/);
   });
 
   it("no face is fetched from a CDN at runtime", () => {
@@ -54,20 +55,18 @@ describe("the faces", () => {
   });
 });
 
-describe("Hubot Sans stays rare", () => {
-  it("is bound only by the two public frames", () => {
-    const importers = FILES.filter((file) => /from "@\/app\/display-font"/.test(read(file))).map(rel);
-    expect(importers.sort()).toEqual(["app/(public)/landing-page.tsx", "app/(public)/layout.tsx"]);
+describe("Fraunces is the single heading and brand face", () => {
+  it("has no route-local font loader", () => {
+    for (const file of FILES) {
+      expect(read(file), rel(file)).not.toMatch(/from "@\/app\/display-font"/);
+    }
   });
 
-  it("is reached only through `.type-display`, and only on the public site", () => {
-    for (const file of FILES.filter((f) => extname(f) === ".tsx")) {
-      const source = read(file);
-      expect(source, rel(file)).not.toMatch(/\bfont-display\b/);
-      if (/\btype-display\b/.test(source)) {
-        expect(rel(file), "a display headline outside the public site").toMatch(/^app\/\(public\)\//);
-      }
-    }
+  it("applies to semantic headings and the wordmark", () => {
+    const css = read(join(ROOT, "app/globals.css"));
+    const logo = read(join(ROOT, "components/brand/logo.tsx"));
+    expect(css).toMatch(/h1,[\s\S]*h6\s*\{[\s\S]*font-display/);
+    expect(logo).toMatch(/font-display/);
   });
 });
 
@@ -80,11 +79,16 @@ describe("the component roles", () => {
     expect(rule("type-ref")).toMatch(/tabular-nums/);
   });
 
-  it("the display role is the only one that uses the display face", () => {
+  it("title roles use the display face and prose roles do not", () => {
     expect(rule("type-display")).toMatch(/font-display/);
-    for (const name of ["type-page-title", "type-section-title", "type-lead", "type-prose-lg", "type-eyebrow"]) {
+    expect(rule("type-section-title")).toMatch(/font-editorial/);
+    for (const name of ["type-lead", "type-prose-lg", "type-eyebrow"]) {
       expect(rule(name), name).not.toMatch(/font-display/);
     }
+  });
+
+  it("the section-title role uses the editorial face", () => {
+    expect(rule("type-section-title")).toMatch(/font-editorial/);
   });
 
   it("running text on the public site keeps a readable measure", () => {

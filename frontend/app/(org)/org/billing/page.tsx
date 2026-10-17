@@ -209,7 +209,7 @@ export default function BillingPage() {
       const opened = await openSubscriptionCheckout({
         keyId: checkout.razorpay_key_id,
         subscriptionId: checkout.subscription_id,
-        name: "ReadyPick", description: `${plan.name} monthly plan`,
+        name: "Vivekium", description: `${plan.name} monthly plan`,
         prefill: { email: user?.email ?? undefined, name: user?.full_name ?? undefined },
         onSuccess: async (proof) => {
           try {
@@ -259,7 +259,7 @@ export default function BillingPage() {
           keyId: order.razorpay_key_id,
           orderId: order.razorpay_order_id,
           amountInr: order.total_inr,
-          name: "ReadyPick",
+          name: "Vivekium",
           description: `${order.credits} Intelligence Report credits, one-time purchase`,
           prefill: {
             email: user?.email ?? undefined,

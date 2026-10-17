@@ -14,7 +14,7 @@ import type { Metadata } from "next";
 export const SITE_URL = "https://readypick.ai";
 
 /** The product name, as it appears in a title, a share card and a schema. */
-export const SITE_NAME = "ReadyPick";
+export const SITE_NAME = "Vivekium";
 
 /**
  * The one-sentence description of the product, used as the site-wide meta
@@ -29,7 +29,7 @@ export const SITE_NAME = "ReadyPick";
  * The `ppi` identifiers in CODE stay exactly as they are; this is copy.
  */
 export const SITE_DESCRIPTION =
-  "ReadyPick helps companies hire with confidence.";
+  "Vivekium helps companies hire with confidence.";
 
 /**
  * How a company gets a ReadyPick workspace: it asks for one.
@@ -44,7 +44,7 @@ export const SITE_DESCRIPTION =
  * subject line that says what the message is.
  */
 export const REQUEST_ACCESS_HREF =
-  "mailto:manjuchro@gmail.com?subject=ReadyPick%20access%20request";
+  "mailto:manjuchro@gmail.com?subject=Vivekium%20access%20request";
 
 /**
  * The home page's title, which is also the site-wide default title and the
@@ -53,7 +53,7 @@ export const REQUEST_ACCESS_HREF =
  * name the product three ways. It is the product tagline the hero sets as
  * its h1.
  */
-export const LANDING_TITLE = "ReadyPick";
+export const LANDING_TITLE = "Vivekium";
 
 /**
  * The generated share card, `app/opengraph-image.tsx`, named explicitly.
@@ -67,7 +67,7 @@ export const SHARE_CARD = {
   url: "/opengraph-image",
   width: 1200,
   height: 630,
-  alt: "ReadyPick",
+  alt: "Vivekium",
 };
 
 /**

@@ -4,9 +4,9 @@
  */
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-4 text-center text-sm lg:px-10">
-        &copy; {new Date().getFullYear()} ReadyPick
+    <footer className="border-t border-border bg-surface/35">
+      <div className="mx-auto max-w-6xl px-6 py-8 text-center text-sm text-muted-foreground lg:px-10">
+        &copy; {new Date().getFullYear()} Vivekium
       </div>
     </footer>
   );

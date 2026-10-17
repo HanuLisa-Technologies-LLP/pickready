@@ -220,7 +220,7 @@ export function BDSettingsPage() {
                   htmlFor="bd-email"
                   required
                   error={errors.email}
-                  hint="This updates your ReadyPick record. Your sign-in identity is managed separately."
+                  hint="This updates your Vivekium record. Your sign-in identity is managed separately."
                 >
                   <Input
                     id="bd-email"

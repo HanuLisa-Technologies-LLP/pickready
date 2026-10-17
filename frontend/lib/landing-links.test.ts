@@ -204,9 +204,10 @@ describe("the landing page's links", () => {
     expect(header).toContain('"/company/register"');
   });
 
-  it("names no company and no previous product name (owner, 2026-09-29)", () => {
+  it("uses Vivekium and names no retired product", () => {
+    expect(LANDING_FILES.some((file) => /Vivekium/i.test(read(file)))).toBe(true);
     for (const file of LANDING_FILES) {
-      expect(read(file), file).not.toMatch(/Vivekium|Varpitech|HanuLisa/i);
+      expect(read(file), file).not.toMatch(/ReadyPick|Varpitech|HanuLisa/i);
     }
   });
 

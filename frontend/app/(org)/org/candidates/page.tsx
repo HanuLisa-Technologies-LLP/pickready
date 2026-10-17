@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   // repeating it would render it twice.
   title: "Candidates",
   description:
-    "Every candidate you can act on, with their pre-screen signal, ReadyPick Score, evidence and stage.",
+    "Every candidate you can act on, with their pre-screen signal, Vivekium Grade, evidence and stage.",
 };
 
 export default function CandidatesPage() {
@@ -25,7 +25,7 @@ export default function CandidatesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Candidates"
-        description="Sort by ReadyPick Score, open the evidence, record your own read, and move people forward."
+        description="Sort by Vivekium Grade, open the evidence, record your own read, and move people forward."
       />
       <CandidateDashboard />
     </div>

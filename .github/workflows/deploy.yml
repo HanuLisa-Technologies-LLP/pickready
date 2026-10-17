@@ -350,25 +350,32 @@ jobs:
       # budget and runs it manually and nightly; the step below runs it only on
       # a workflow_dispatch.
 
+      # Each tier is a separate process, but the baseline gate runs only after
+      # all tiers. Retain one complete corpus so a valid run cannot be pruned
+      # before the gate looks up the scenario named by its baseline.
+      - name: Size retention for one complete harness corpus
+        working-directory: backend
+        run: echo "HARNESS_KEEP_LAST=$(find harness/scenarios -maxdepth 1 -type f -name '*.yaml' | wc -l)" >> "$GITHUB_ENV"
+
       - name: Smoke
         working-directory: backend
-        run: python -m harness run --tier smoke
+        run: python -m harness run --tier smoke --keep-last "$HARNESS_KEEP_LAST"
 
       - name: Regression
         working-directory: backend
-        run: python -m harness run --tier regression
+        run: python -m harness run --tier regression --keep-last "$HARNESS_KEEP_LAST"
 
       - name: Integration
         working-directory: backend
-        run: python -m harness run --tier integration
+        run: python -m harness run --tier integration --keep-last "$HARNESS_KEEP_LAST"
 
       - name: Adversarial
         working-directory: backend
-        run: python -m harness run --tier adversarial
+        run: python -m harness run --tier adversarial --keep-last "$HARNESS_KEEP_LAST"
 
       - name: Safety
         working-directory: backend
-        run: python -m harness run --tier safety
+        run: python -m harness run --tier safety --keep-last "$HARNESS_KEEP_LAST"
 
       - name: Performance (manual runs only)
         if: github.event_name == 'workflow_dispatch'
@@ -376,7 +383,7 @@ jobs:
         # Section 9: manual and nightly, unbounded budget. Never on a commit,
         # because a tier with no agreed ceiling cannot fail on time and would
         # only ever cost every push several minutes.
-        run: python -m harness run --tier performance
+        run: python -m harness run --tier performance --keep-last "$HARNESS_KEEP_LAST"
 
       # ── The regression gate ────────────────────────────────────────────────
       #

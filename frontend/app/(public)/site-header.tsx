@@ -29,14 +29,14 @@ export function SiteHeader() {
   return (
     <header
       className={cn(
-        "fixed inset-x-0 top-0 z-50 w-full transition-[background-color,border-color,box-shadow] duration-200",
+        "fixed inset-x-0 top-0 z-50 w-full transition-[background-color,border-color] duration-200",
         scrolled
-          ? "glass border-b shadow-card"
-          : "border-b border-transparent bg-transparent"
+          ? "glass border-b"
+          : "border-b border-transparent bg-canvas/90"
       )}
     >
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-6 lg:px-10">
-        <Logo variant="full" height={40} href="/" priority />
+      <div className="mx-auto flex h-[4.5rem] max-w-6xl items-center justify-between gap-4 px-6 lg:px-10">
+        <Logo variant="full" height={38} href="/" priority />
 
         <nav
           className="hidden items-center gap-1 md:flex"
@@ -46,7 +46,7 @@ export function SiteHeader() {
             <a
               key={item.href}
               href={item.href}
-              className="px-3 py-2 text-sm font-medium transition-colors hover:bg-brand-100/70 hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+              className="border-b border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-ink hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
             >
               {item.label}
             </a>

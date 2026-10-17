@@ -180,6 +180,10 @@ first.
 Retention is bounded, `--keep-last N` defaulting to 20, because an artifact
 store that grows without limit is one somebody eventually deletes wholesale. A
 promoted baseline is never pruned and does not consume one of the N slots.
+CI overrides that local default with the current scenario-file count. Its tier
+commands are separate processes and its gate runs after every tier, so one full
+corpus must remain available for a like-for-like baseline lookup. The uploaded
+artifact is still bounded to one run per scenario.
 
 ## 6. Replay
 

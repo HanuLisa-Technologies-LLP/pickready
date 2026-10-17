@@ -165,27 +165,26 @@ const config: Config = {
       // its default and is reserved for genuinely circular marks (avatars,
       // typing dots) — never for pill containers.
       borderRadius: {
-        sm: "0px",
-        DEFAULT: "0px",
-        md: "0px",
-        lg: "0px",
-        xl: "0px",
-        "2xl": "0px",
-        "3xl": "0px",
+        sm: "0.25rem",
+        DEFAULT: "0.375rem",
+        md: "0.375rem",
+        lg: "0.5rem",
+        xl: "0.75rem",
+        "2xl": "0.75rem",
+        "3xl": "1rem",
       },
       // THREE FACES, ONE JOB EACH (DESIGN.md section 3). Each reads the CSS
       // variable a next/font call binds, so every face is self-hosted and
       // subset at build time and nothing is fetched at runtime.
       //
-      // `font-sans` is Mona Sans, the default for all UI because `body` carries
-      // it. `font-display` is Hubot Sans and is reached only through
-      // `.type-display`, the one hero headline of a marketing page; its
-      // variable is bound by the public frames alone (`app/display-font.ts`),
-      // so anywhere else it falls back to Mona Sans. `font-mono` is Geist Mono,
+      // `font-sans` is Outfit, the default for all UI because `body` carries
+      // it. `font-display` and `font-editorial` are Fraunces, bound once at
+      // the root and used by semantic headings and the wordmark. `font-mono` is Geist Mono,
       // for reference codes, identifiers, URLs and code, never for metadata.
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         display: ["var(--font-display)", "var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        editorial: ["var(--font-display)", "Georgia", "serif"],
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       // THE TYPE SYSTEM (DESIGN.md section 3). Two layers, one scale.
@@ -193,7 +192,7 @@ const config: Config = {
       // 1. The STEPS: 12 / 13 / 15 / 16 / 18 / 24 / 32 / 40 / 48 / 64. Their
       //    line heights are unchanged from 2026-09-19 except `lg`, which is
       //    overwhelmingly a heading size and read gappy at 30px when it wrapped.
-      //    TRACKING FOLLOWS SIZE: Mona Sans is spaced for text, so the text
+      //    TRACKING FOLLOWS SIZE: Outfit is spaced for text, so the text
       //    sizes keep their natural spacing and every step from `lg` up closes
       //    a little more as it grows. Large type set at body spacing is what
       //    makes a heading look typed rather than set.
@@ -261,12 +260,12 @@ const config: Config = {
         // triple is switched by one class in `globals.css` (`.type-display`,
         // `.type-section-title`, `.type-lead`), never at a call site.
         //
-        // Display: the hero headline, in Hubot Sans. 40 / 52 / 64px.
+        // Display: the hero headline, in Fraunces. 40 / 52 / 64px.
         display: ["4rem", { lineHeight: "1.02", letterSpacing: "-0.03em", fontWeight: "600" }],
         "display-md": ["3.25rem", { lineHeight: "1.03", letterSpacing: "-0.028em", fontWeight: "600" }],
         "display-sm": ["2.5rem", { lineHeight: "1.05", letterSpacing: "-0.025em", fontWeight: "600" }],
         // Section title: a landing section's h2, or the h1 of a plain public
-        // page (legal, employer). Mona Sans. 32 / 40 / 48px.
+        // page (legal, employer). Fraunces. 32 / 40 / 48px.
         section: ["3rem", { lineHeight: "1.08", letterSpacing: "-0.025em", fontWeight: "600" }],
         "section-md": ["2.5rem", { lineHeight: "1.1", letterSpacing: "-0.022em", fontWeight: "600" }],
         "section-sm": ["2rem", { lineHeight: "1.15", letterSpacing: "-0.018em", fontWeight: "600" }],

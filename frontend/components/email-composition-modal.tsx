@@ -309,7 +309,7 @@ export function EmailCompositionModal({
           {senderError ? (
             <InlineError>
               Your senders could not be loaded ({senderError}). This email will
-              go out from your default sender, or the ReadyPick mailbox when
+              go out from your default sender, or the Vivekium mailbox when
               none is set.
             </InlineError>
           ) : senderChoice && senderChoice.senders.length > 0 ? (
@@ -326,7 +326,7 @@ export function EmailCompositionModal({
                 <SelectContent>
                   {senderChoice.senders.some((s) => s.is_default) ? null : (
                     <SelectItem value={PLATFORM_MAILBOX}>
-                      ReadyPick mailbox
+                      Vivekium mailbox
                     </SelectItem>
                   )}
                   {senderChoice.senders.map((sender) => (
@@ -345,7 +345,7 @@ export function EmailCompositionModal({
             </FormField>
           ) : !canChooseSender || senderChoice ? (
             <p className="text-xs">
-              Sent from your company&apos;s default sender, or the ReadyPick
+              Sent from your company&apos;s default sender, or the Vivekium
               mailbox when none is set.
             </p>
           ) : null}

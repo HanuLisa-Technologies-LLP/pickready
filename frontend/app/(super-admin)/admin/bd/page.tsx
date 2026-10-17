@@ -252,7 +252,7 @@ export default function BusinessDevelopmentPage() {
     <div>
       <PageHeader
         title="Business Development"
-        description="ReadyPick's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
+        description="Vivekium's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
         actions={
           <Button className="gap-2" onClick={openCreate}>
             <Plus className="h-4 w-4" /> Add BD member

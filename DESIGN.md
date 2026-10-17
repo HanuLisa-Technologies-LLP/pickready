@@ -1,477 +1,153 @@
-# Vivekium — DESIGN.md
+# Vivekium design system
 
-The design system for Vivekium's product surfaces. Authored from the brand
-foundation in spec-doc5 §C.1, in the nine-section structure the
-`awesome-design-md` collection uses.
+**Status:** current. **Reviewed:** 2026-10-17 against the owner-supplied Vivekium HTML palette, `frontend/app/globals.css`, `frontend/tailwind.config.ts` and the shared brand assets.
 
-**On the borrowed structure.** `github.com/voltagent/awesome-design-md` is a
-library of *other companies'* extracted design systems — Stripe, Linear, Vercel.
-There is no Vivekium entry and none was copied. What is borrowed is the
-nine-section format. Linear and Vercel were read for **restraint**, not for
-palette: they are the closest comparable feel to what an evidence-driven
-enterprise HR platform should project, and neither of their colour systems
-appears anywhere below.
+This is the visual contract for the public site and every product portal. It is
+current-state documentation only. Superseded palettes, logos and typography
+experiments are recorded in [docs/history/SUPERSEDED.md](docs/history/SUPERSEDED.md).
 
-**This file is the source of truth for tokens.** `frontend/app/globals.css` is
-its implementation and `scripts/check-contrast.mjs` is its enforcement. If the
-three disagree, this file is wrong or the CSS is — resolve it, do not leave
-them disagreeing.
+## 1. Direction
 
----
+Vivekium is calm, evidence-led enterprise software. The interface uses warm
+paper, dark navy structure and restrained teal evidence accents. Information
+hierarchy comes from spacing, type and borders, not decorative effects.
 
-## 1. Visual Theme & Atmosphere
+The system rejects:
 
-Vivekium is a B2B enterprise hiring-intelligence platform sold to CHROs and
-hiring managers, positioned against traditional executive search. Every screen
-is read by somebody making a decision about a person's career, often with the
-candidate's own words on the same page.
+- purple, violet and indigo;
+- multicolour gradients and glowing colour fields;
+- decoration that competes with candidate evidence;
+- excessive rounding, floating card stacks and heavy shadows;
+- colour as the only carrier of status.
 
-**The interface should read as confident and precise, not playful.** Three
-consequences follow, and they are constraints rather than preferences:
+## 2. Reference palette
 
-- **Evidence is the subject, chrome is not.** A grade, a remark and the answer
-  it rests on are the content. Anything competing with them — a gradient across
-  a card, an icon tile above every heading, a decorative illustration — is
-  taking attention from the thing the page exists to show.
-- **Confidence is shown by restraint.** The product's most defensible claim is
-  that it can say *why*. A UI that shouts undercuts that; a UI that lays the
-  evidence out calmly supports it.
-- **Nothing decorative moves.** Motion is used to explain a transition, never to
-  entertain. A report is not a place for delight.
+The owner-supplied 2026-10-17 HTML reference defines these exact light-theme
+anchors. The HSL values in `frontend/app/globals.css` must resolve to these
+hex values.
 
-The one distinctive geometric idea is the **interlocking shared stroke** of the
-R+P monogram — a navy R and a teal P that share an edge. It informs interface
-details (a paired element where two things meet at a shared boundary; a rule
-that changes colour where a section changes ownership) rather than being
-sprinkled as a motif.
-
-**What this is not.** Not a consumer app, not a dashboard-as-cockpit, not a
-data-viz showcase. Density is fine. Ornament is not.
-
----
-
-## 2. Colour Palette & Roles
-
-### Brand foundation
-
-Sampled from `logo300.jpeg` by weighted centroid over each colour cluster —
-not estimated, and not read off a single pixel, because the source is JPEG and
-a single pixel is compression noise.
-
-| Role | Hex (shipped) | Original sampled centroid | Cluster size |
+| Role | CSS token | Hex | Use |
 |---|---|---|---|
-| **Primary — Navy** | `#0A2642` | `#012653` | 102,974 px |
-| **Secondary — Teal** | `#0D968B` | `#01888C` | 48,891 px |
-| Background | `#FFFFFF` | — | 87% of the mark |
+| Paper | `--canvas` | `#F6F2EB` | Page background |
+| Card | `--surface` | `#FFFCF7` | Cards, popovers, sheets |
+| Ink | `--ink`, `--navy-600` | `#1B2B4B` | Primary text, structure, primary actions |
+| Soft ink | `--ink-soft` | `#24344F` | Hover and secondary structure |
+| Muted ink | `--muted-ink` | `#5B6578` | Supporting text |
+| Line | `--border-token` | `#DDD6CB` | Dividers and passive borders |
+| Evidence teal | `--teal-600` | `#0F6B5C` | Evidence, citations, the logo centre |
+| High evidence | `--rating-1-bg` | `#DCEFE6` | Strong positive evidence surface |
+| Matching evidence | `--rating-2-bg` | `#E7EFE6` | Positive evidence surface |
+| Moderate evidence | `--rating-3-bg` | `#F3EAD3` | Qualified evidence surface |
+| Neutral surface | `--muted` | `#EDE7E0` | Quiet controls and disabled context |
 
-**Read the two columns as history, not as a discrepancy.** The right-hand column
-is the weighted centroid measured from `logo300.jpeg`, which is where this
-palette began and which spec-doc5 §C.1 recorded as `#012654` / `#00888A`. The
-left-hand column is what the product actually ships: the Master Implementation
-Directive Part 1 §3 moved the anchors to a slightly warmer, less saturated navy
-and a greener teal, `app/globals.css` was changed to match, and this file was
-not. It documented the pre-directive hexes for two releases.
+White is permitted for control interiors and text on dark ink. Red, amber and
+green remain available only for destructive, warning and operational states.
+They are not brand colours.
 
-**The shipped values are the truth.** They are computed from the HSL triples in
-`app/globals.css`, which are the strings the browser actually resolves, rather
-than transcribed by hand, and every ratio in the ramps below is computed the
-same way.
+### Semantic rules
 
-### The ramps
+- Navy is structure: navigation, primary actions, headings and frames.
+- Teal is evidence: verified facts, citations and the central evidence point.
+- Warm paper is the default field. Pure white never replaces the page canvas.
+- Muted text uses `#5B6578`; it must still pass WCAG AA on its surface.
+- Interactive boundaries may use a darker palette token when `#DDD6CB` would
+  fall below WCAG 1.4.11. This is an accessibility adaptation, not a new hue.
 
-Navy carries hue 213 at 98% saturation; teal carries hue 181 at 100%. Both
-ramps hold their hue and move lightness, so a tint of navy still reads as navy
-rather than drifting toward a generic blue.
+The optional dark theme is a navy inversion of the same semantic system. It
+does not introduce a new brand hue. Light mode is the reference presentation.
 
-| Token | Hex | Contrast on white | Use |
-|---|---|---|---|
-| `navy-50` | `#EFF5FB` | 1.10 | Selected row, subtle fill |
-| `navy-100` | `#D7E6F4` | 1.28 | Hover fill on a navy surface |
-| `navy-200` | `#A6C7E7` | 1.76 | Borders on navy fills |
-| `navy-400` | `#1361AE` | 6.27 | Link on white, focus ring |
-| `navy-500` | `#114274` | 10.19 | Hover on primary |
-| **`navy-600`** | **`#0A2642`** | **15.30** | **Primary action, active nav, brand mark** |
-| `navy-700` | `#081C31` | 17.21 | Pressed |
-| `navy-900` | `#030D16` | 19.58 | Dark-theme canvas |
+## 3. Brand mark
 
-| Token | Hex | Contrast on white | Use |
-|---|---|---|---|
-| `teal-50` | `#EBFAF9` | 1.07 | Evidence-supported fill |
-| `teal-100` | `#CEF3F0` | 1.19 | Accent fill |
-| `teal-400` | `#10B2A5` | 2.64 | Dark-theme accent, chart series 2 |
-| `teal-500` | `#0EA093` | 3.26 | Large text only (≥ 24px) |
-| **`teal-600`** | **`#0D968B`** | **3.65** | **Fills, rules, icons — see the warning** |
-| `teal-700` | `#096C64` | 6.29 | **Teal text on white uses this** |
-| `teal-900` | `#043430` | 13.71 | Dark-theme teal text |
+The Vivekium mark is four navy directional chevrons around one teal evidence
+point. The shared vector geometry is used in the header lockup, browser icon,
+Apple touch icon and social card. Do not embed the supplied raster references
+in the product and do not restore their purple centre.
 
-> **The brand teal does not pass AA for body text on white.** `#0D968B` measures
-> **3.65:1**, below the 4.5:1 WCAG AA needs for normal text, and the directive's
-> greener anchor made it WORSE rather than better: the original `#00888A`
-> measured 4.30. This is a measured
-> fact about the brand colour, not a preference, and it is the single most
-> important line in this file because the mistake it prevents — teal labels on
-> white cards — is the one a designer reaches for first.
->
-> The rule: **teal-600 is a FILL, a RULE and an ICON colour. Teal TEXT on white
-> is `teal-700`.** `scripts/check-contrast.mjs` computes both ratios from the
-> tokens and fails the build rather than trusting anyone to remember.
+The wordmark reads `Vivekium`. Product-facing copy must not use ReadyPick as a
+brand name. Infrastructure identifiers may retain the legacy name until they
+are migrated independently.
 
-### Semantic roles
+## 4. Typography
 
-| Role | Light | Dark | Note |
-|---|---|---|---|
-| `--canvas` page background | `#FBFCFE` | `#000E1E` (navy-900) | Dark canvas is navy, not neutral grey — the palette is navy-forward and a grey canvas would orphan it |
-| `--surface` card | `#FFFFFF` | `#011E42` (navy-700) | |
-| `--ink` all text | `#080F1C` | `#FFFFFF` | **Text is never grey** — see §3 |
-| `--border` | `#E2E8F2` | `#0A2E5C` | Non-text only |
-| `--primary` | navy-600 | navy-200 | Primary action |
-| `--accent` | teal-600 | teal-400 | Evidence, corroboration, the shared-stroke rule |
-| `--destructive` | `#B4232A` | `#FF8A8A` | |
-| `--warning` | `#8A5A00` | `#F5C86B` | Held for review |
+Typography is unchanged by the 2026-10-17 palette ruling.
 
-### Hard rules
-
-1. **No purple, no violet, no indigo, anywhere.** The palette that preceded this
-   one was indigo-violet `#5028E0`, which is precisely the tell Impeccable's
-   `ai-color-palette` detector flags — and it flagged four call sites in this
-   repo before the change. Replacing it is the point of the recolour.
-2. **No gradients between two hues.** A single-hue tint (navy-600 → navy-500)
-   is permitted for a hero surface. Blue-to-purple is the specific thing being
-   removed and must not return in another pairing.
-3. **Navy and teal are not interchangeable.** Navy is STRUCTURE — actions,
-   navigation, the frame. Teal is EVIDENCE — what is corroborated, what is
-   cited, where a claim rests on something. Using teal for a primary button
-   would spend the one colour that carries meaning on the one element that
-   needs none.
-4. **A grade is a word, never a colour alone.** The four grades may be tinted,
-   but colour never carries the grade on its own — that would put a hiring
-   decision behind colour vision.
-
----
-
-## 3. Typography Rules
-
-### The system (2026-09-28)
-
-**One typographic system, stated once, as tokens.** Every row below is a
-Tailwind font-size ROLE in `tailwind.config.ts` that carries its size, line
-height, tracking and weight together, or a component class in
-`app/globals.css` where a role needs more than that. Write the ROLE at a call
-site, never the four properties by hand: a heading spelled out by hand is how
-the product came to have eight different overline trackings and page titles
-at two sizes and two weights.
-
-| Role | Token | Family | Size / leading | Tracking | Weight |
-|---|---|---|---|---|---|
-| **Marketing** | | | | | |
-| Display (the hero h1 of a public page, one per page) | `type-display` | Hubot Sans | 40 / 52 / 64px, 1.05 to 1.02 | −0.025em to −0.03em | 600 |
-| Section title (landing h2, plain public page h1) | `type-section-title` | Mona Sans | 32 / 40 / 48px, 1.15 to 1.08 | −0.018em to −0.025em | 600 |
-| Lead (under a hero or section title) | `type-lead` | Mona Sans | 18/29, 20/32 from `sm`; 54ch | 0 | 400 |
-| Marketing prose | `type-prose-lg` | Mona Sans | 17/28; 65ch | 0 | 400 |
-| **Product** | | | | | |
-| Page title (the one h1 of a screen) | `type-page-title` | Mona Sans | 24/30 under `sm`, 28/34 from `sm` | −0.018em / −0.02em | 600 |
-| Section heading (page h2, dialog and sheet title, report section) | `text-heading` | Mona Sans | 20/28 | −0.012em | 600 |
-| Subsection heading, card title (h3) | `text-subheading` | Mona Sans | 16/24 | −0.006em | 600 |
-| Eyebrow / overline | `type-eyebrow` | Mona Sans | 12/16, uppercase | +0.1em | 600 |
-| Form label | `text-label` | Mona Sans | 14/20 | 0 | 500 |
-| Body, descriptions | `text-body` (= `text-sm`) | Mona Sans | 15/26 | 0 | 400 |
-| Body small, helper text | `text-body-sm` (= `text-xs`) | Mona Sans | 13/20 | 0 | 400 |
-| Metadata (timestamps, secondary lines) | `text-meta` | Mona Sans | 12/18 | +0.01em | 400 |
-| Table cell | `text-table` | Mona Sans | 14/20 | 0 | 400 |
-| Table header | `text-table-head` + `uppercase` | Mona Sans | 12/16 | +0.06em | 600 |
-| Chip (status, rating, evidence, count pill) | `text-chip` | Mona Sans | 11/16 | 0 | the chip's own |
-| Reference code, system id, filename, URL | `type-ref` | Geist Mono | 12/16, tabular | 0 | 500 |
-| Code (editor, JD markdown source, run output) | `font-mono` + a step | Geist Mono | the step it sits on | 0 | 400 |
-| Figures (stats, money, counts) | `tabular-nums` | Mona Sans | the step it sits on | the step's | 600 |
-
-- **Hierarchy is carried by size AND weight, never by colour.** Text is never
-  grey (below), so a helper line differs from body by being a step smaller, a
-  label from a value by being a step smaller and heavier, and a heading from a
-  label by size. Headings are 600, not 700: bold at 28px reads as shouting,
-  and the old page title was exactly that. The same holds on the public site,
-  where every section heading was 700 until 2026-09-28.
-- **Tracking follows size.** The raw steps `lg` to `5xl` carry negative
-  tracking that grows with the size (−0.006em at 18px to −0.028em at 64px);
-  text sizes keep the face's own spacing; uppercase gets positive tracking
-  (+0.06em to +0.1em) because capitals set tight collide. The old blanket
-  `tracking-tight` on every h1 to h4 crowded a 15px card heading to give a
-  32px title its spacing, and is gone: the base heading rule is −0.011em and
-  every sized step overrides it.
-- **A measure for running text.** Descriptions, report remarks, transcripts,
-  helper text and dialog descriptions stop at `max-w-prose` (65ch). Past that a
-  line stops being scannable and a paragraph reads as a wall. Tables, forms and
-  grids are not running text and are not capped.
-- **Headings balance, paragraphs are pretty.** `text-wrap: balance` on h1 to
-  h6 and `pretty` on paragraphs, list items, `dd` and captions, set once in the
-  base layer, so a two-line heading never ends on one orphaned word.
-- **Figures line up.** `table` and `time` are tabular by default; a stat, a
-  price or a count outside a table says `tabular-nums`.
-- **Density is a property of the role, not of the page.** Prose leading is
-  generous (15/26) because a remark is read; table leading is tight (14/20 in
-  a `py-3` cell, the 44px row of section 4) because a table is scanned. The
-  same page can and should carry both.
-- **tailwind-merge knows the roles.** `lib/utils.ts` registers them as SIZES;
-  otherwise `cn("text-label", "text-ink")` would file both as colours and keep
-  only the colour. `lib/utils.test.ts` reads the config and fails when a role
-  is added in one place and not the other.
-- **Vertical rhythm is the 8px grid of section 5**: 32px (`mb-8` or
-  `space-y-8`) between a page header and its content and between the sections
-  of a page, 24px (`space-y-6`) between the cards of one section, 16px
-  (`space-y-4`) between the blocks inside a card, and 8px or less inside a
-  block. A heading sits closer to what it introduces than to what precedes it.
-
-The raw steps (`text-2xs` to `text-5xl`) remain for dense bespoke surfaces and
-the odd marketing card. New work reaches for a role first, and no component
-sets a pixel or rem size by hand (`text-[11px]`): `lib/typography.test.ts`
-fails on one. The single exemption is `components/workflow-animation/`, which
-draws a miniature of the product at a fraction of its size, so its tiny sizes
-are geometry rather than typography.
-
-**Marketing is spacious, the product is dense.** The marketing roles are for
-the public site only and never appear on an app screen; a dashboard does not
-get more premium by getting bigger. The public site takes 48px section titles
-and 20px leads; a product screen tops out at a 28px page title.
-
-**The leading lives in the scale, not at the call site (2026-09-19).** Body was
-15/24 and small 13/18, and read congested in anything longer than a label. The
-line heights moved up in `tailwind.config.ts` (sm 26px, xs 20px, base 28px, lg
-30px) and the explicit `leading-6` / `leading-5` utilities that had been pinning
-the old heights beside `text-sm` / `text-xs` were removed, so the scale is the
-one place the rhythm is stated. A `leading-*` that survives next to a size is
-DELIBERATE: it is tighter or looser than the scale on purpose, and the dense
-candidate tables keep their density. The same pass gave prose a little more
-air: the page-header description sits at `mt-3` and `CardHeader` at
-`space-y-2`. Letter spacing did not move, body copy nowhere used
-`tracking-tight`; it stays a heading treatment. (AMENDED 2026-09-28 by the
-system above: `lg` is 28px, because it is overwhelmingly a heading size and a
-wrapped 18px heading at 30px read as two separate lines; the page-header
-description sits at `mt-2.5` under the smaller, lighter title; and heading
-tracking now follows size instead of one blanket `tracking-tight`.)
-
-**Three faces, one job each (2026-09-28).** Chosen for restraint and metrics
-rather than personality, and replacing Inter Tight, Fraunces and JetBrains Mono.
-
-- **Mona Sans** is the working face and the brand's voice: body, navigation,
-  buttons, forms, tables, cards, dialogs, reports, product page titles and
-  most marketing copy. A grotesque with open apertures and even colour, it
-  holds a dense 14px table and a 48px section title with the same drawing.
-  It is a touch wider than Inter Tight was, so a label that fit before is not
-  assumed to fit now.
-- **Hubot Sans** is the display face, and it stays rare: the hero h1 of the
-  home, About, Insights and Docs pages, through `type-display`, and nothing
-  else. Never a dashboard heading, a table, a form, a card, a dialog or a
-  report. It is bound only by the two public frames (`app/display-font.ts`,
-  imported by `landing-page.tsx` and `(public)/layout.tsx`), so no product
-  route downloads it; outside them `font-display` falls back to Mona Sans.
-- **Geist Mono** is the reference face: COMPANY-JOB-CANDIDATE codes, system
-  ids, filenames, URLs, model ids and code. A date, a count or a label is
-  metadata and stays in Mona Sans with `tabular-nums`; monospace is never used
-  to make ordinary text look technical.
-
-All three are variable fonts under the SIL Open Font License 1.1, which permits
-commercial use and self-hosting. They are loaded through next/font, which
-downloads them at BUILD time, subsets them to Latin, serves them from this
-origin and generates a metric-matched fallback face, so nothing is fetched from
-a font CDN at runtime, `font-src 'self'` in the CSP is complete, and the swap
-does not shift layout. `lib/typography.test.ts` keeps the retired faces out,
-keeps Hubot Sans behind `type-display` on the public site, and keeps
-`type-ref` monospace.
-
-**Not Inter-as-default.** Impeccable flags default Inter as a slop tell and it is
-right about the reason: it is the typeface a UI reaches for when nobody chose
-one. Until 2026-09-17 `app/layout.tsx` loaded plain `Inter` while this section
-said otherwise; the face in `app/layout.tsx` is the claim, and this section
-describes it.
-
-**Text is never grey.** A client decision from 2026-07-27 and it holds: every
-text token resolves to pure ink in light and pure white in dark, including
-`--muted-foreground`, which shadcn uses for descriptions, hints and table
-headers. Grey survives only on borders, input outlines and muted *backgrounds*.
-The single documented exception is `::placeholder`, dimmed so an empty field
-cannot be mistaken for a filled one. Enforced at the TOKEN, never at the call
-site — the shadcn primitives are not hand-edited, so the variable they already
-read is the only place a rule can be applied once.
-
-**No em dashes in any string** — labels, helper text, empty states, toasts,
-emails, page titles, generated JD text or seeded content. A standing rule since
-2026-07-28, enforced by `tests/test_platform_audit.py`.
-
----
-
-## 4. Component Stylings
-
-**Radius is ZERO, everywhere.** This supersedes the "radius 8" and "radius 12"
-this section used to state. The Master Implementation Directive Part 1 §7 moved
-the product to sharp rectangular geometry and `tailwind.config.ts` pins the whole
-scale (`sm` through `3xl`) to `0px`, so a `rounded-2xl` left at a call site
-renders square rather than quietly reintroducing soft corners. `rounded-full`
-keeps its default and is reserved for genuinely circular marks, an avatar or a
-status dot, and is NEVER a pill container.
-
-**Buttons.** Height 36 (`sm` 32, `lg` 40). Primary is navy-600 with white text;
-hover navy-500; pressed navy-700. Secondary is a navy-600 outline on
-transparent. Ghost has no border until hover. Destructive is the destructive
-token, never red-tinted navy.
-
-**Cards.** 1px border, `--surface` background, no shadow at rest.
-**No card inside a card** — Impeccable flags nesting and the reason is real: two
-borders 16px apart read as a rendering fault. A grouping inside a card is a
-horizontal rule and a heading.
-
-**Tables.** The densest surface in the product and the one recruiters live in.
-Row height 44 (14/20 `text-table` in a `py-3` cell), a 12px uppercase
-`text-table-head` header in ink, `navy-50` on hover, `navy-100` on
-selected. Sorted in SQL, never in JavaScript, and the header reflects the
-server's order.
-
-**Grade chips.** The word, in ink, on a tinted fill: Highly Matching `teal-100`,
-Matching `teal-50`, Moderately Matching `navy-50`, Not Matching a neutral fill
-with a `--warning` left rule. **The word is always present** — never the fill
-alone.
-
-**Form fields.** Height 36, and the border is `--field-border`
-(navy-tinted) rather than the divider hairline. A control boundary below 3:1
-against its surface is invisible, which WCAG 1.4.11 states and a user discovers
-by not finding the field. Verified by `scripts/check-contrast.mjs` from the
-token values; never adjusted by eye.
-
-**Icons.** Lucide, 16 or 20, 1.5 stroke, `currentColor`. **No rounded-square
-icon tile above a heading** — another Impeccable detector, and it is right: it
-is decoration that adds a shape without adding information.
-
-**Left rules.** `border-l-4` is flagged as a `side-tab` antipattern in generic
-use, and generic use is banned. It survives in exactly two places, where it is
-semantic rather than ornamental: the report's **Validation** section (marking
-the candidate's own unrated words) and the **posting-window** state. Both are
-documented in `.impeccable-exceptions.md` with their reason.
-
----
-
-## 5. Layout Principles
-
-- **12 columns, 1280 max, 24 gutter.** Content stops at 1280 even on a wide
-  monitor: a report line 2000px wide is unreadable regardless of resolution.
-- **8px spacing scale.** 4 for intra-component only.
-- **One primary action per view.** If a screen appears to need two, one is
-  secondary.
-- **The report is a document, not a dashboard.** Sections in the fixed order,
-  full width, one column, nothing beside them. Its order is pinned in code
-  (`REPORT_SECTION_ORDER` and `report_pdf.SECTION_ORDER`) and a test reads both
-  out of source and compares them, because the failure being prevented is a
-  recruiter approving on screen and mailing a PDF that reads differently.
-- **Navigation is per portal and never mixed.** Four portals — Provider,
-  Customer, Candidate, Business Development — and a nav item from one never
-  appears in another.
-
----
-
-## 6. Depth & Elevation
-
-Four levels, and three of them are borders.
-
-| Level | Tailwind token | Use |
+| Role | Face | Use |
 |---|---|---|
-| 0 | `shadow-card` (effectively flat) | Cards, panels, table containers — the default |
-| 1 | `shadow-overlay` | Dropdown, popover, select menu, combobox |
-| 2 | `shadow-modal` | Dialog, alert dialog, sheet, toast |
-| 3 | `shadow-hero` | The landing hero only |
+| Heading and wordmark | Fraunces | Semantic `h1` to `h6`, display titles, section titles, wordmark |
+| Body and interface | Outfit | Navigation, controls, prose, forms, tables, metadata |
+| Reference | Geist Mono | Codes, identifiers, filenames, URLs and code |
 
-**Elevation is for things that FLOAT, and for nothing else.** Two rules are in
-tension here and both are kept: Part 1 §7 says structure comes from borders, not
-elevation, which is why a card is still effectively flat; and a dialog carrying
-the same shadow as the card behind it does not read as being ABOVE the page,
-which is a spatial failure rather than a decorative one.
+Fonts are self-hosted through `next/font`. No runtime font CDN is allowed.
+Use semantic type roles from `frontend/tailwind.config.ts` and
+`frontend/app/globals.css`; do not invent component-local font sizes.
 
-**This table describes what shipped only after 2026-09-17.** Before then every
-one of these names resolved to the same near-flat card value, and the overlay
-primitives had quietly fallen back to Tailwind's stock `shadow-lg` / `shadow-md`,
-which are neutral BLACK. That is the specific mistake the next rule names.
+## 5. Shape, depth and spacing
 
-**Shadows are tinted navy, never black.** A neutral-black shadow over a
-navy-tinted canvas reads as dirt. Every token above is built on
-`hsl(var(--navy-600) / a)`. In dark mode elevation is a lighter surface rather
-than a shadow, because a shadow on a near-black canvas is invisible and the
-attempt to make it visible produces a halo; the tokens stay declared and simply
-do very little there.
+- Controls use the shared radius scale, normally 4 to 8 pixels.
+- Large cards may use 12 pixels. Pills are reserved for compact status chips.
+- Cards use `--surface`, one quiet border and little or no shadow.
+- Elevation comes from surface contrast before shadow.
+- Spacing follows the Tailwind scale. Product surfaces stay denser than the
+  public site because recruiters scan; candidate assessment surfaces stay calm
+  and mobile-first because candidates read and answer.
 
----
+## 6. Components
 
-## 7. Do's and Don'ts
+### Buttons
 
-**Do**
+Primary buttons use navy with white text. Secondary buttons use a warm surface,
+navy text and a visible border. Teal is not a generic call-to-action colour.
+Every state keeps a visible focus ring and a minimum 44 pixel touch target where
+the surrounding layout permits it.
 
-- Put the evidence next to the claim. The product's whole argument is that it
-  can say why.
-- Say "held for review" and show what triggered it. A flag with no reason reads
-  as an accusation.
-- Use teal to mark what is corroborated — it is the one colour with a meaning.
-- Keep the four grades as words everywhere, including in the PDF.
-- Let a dense table be dense. Recruiters scan; padding is not kindness.
+### Fields
 
-**Don't**
+Fields use a warm or white interior with an explicit boundary. Idle, hover,
+focus, error and disabled states must remain distinguishable without relying on
+placeholder text. Labels are always visible.
 
-- No purple or violet, and no two-hue gradients. That palette is the reason this
-  file exists.
-- No teal text on white below 24px — use `teal-700`.
-- No card inside a card.
-- No rounded-square icon tile above a heading.
-- No grey text. Ever. Placeholders only.
-- No em dash in any string, in either language.
-- **No number reaches a client.** Not a score, a percentage, a rank, a
-  confidence, a weight, or a "top 12%". The single documented exception is the
-  radar chart's band index, which is a rendering coordinate — a radar has no
-  geometry without a radius — and is never displayed as a number.
-- No `animate-bounce`, and no spring overshoot on anything a person is waiting
-  on. A grade arriving with a bounce is the product being cheerful about a
-  hiring decision.
+### Cards and tables
 
----
+Cards group one concept. A border does not justify a card by itself. Tables use
+real headers, stable alignment and quiet row separators. Dense data stays dense;
+mobile layouts expose the same information without horizontal page overflow.
 
-## 8. Responsive Behaviour
+### Evidence and status
 
-| Breakpoint | Width | Behaviour |
-|---|---|---|
-| `sm` | < 640 | Single column. Tables become stacked cards — never a horizontal scroll on a phone. Nav collapses to a sheet. |
-| `md` | 640–1024 | Two columns where content allows. Tables scroll horizontally inside their own container; the page body never does. |
-| `lg` | 1024–1440 | Full layout, persistent sidebar. |
-| `xl` | > 1440 | Content stays at 1280 and centres. |
+Evidence surfaces use the high, matching and moderate fills from the reference
+palette. Each state also carries text or an icon. Destructive and warning
+states use their semantic ramps and never masquerade as evidence grades.
 
-**The candidate assessment surface is mobile-first and it is the only one that
-is.** Candidates answer on phones; recruiters and CHROs work at a desk. The
-assessment page is designed at 375 and scaled up; every other surface is
-designed at 1280 and adapted down.
+## 7. Layout and responsive behaviour
 
-**Dark mode is not optional.** A standing enterprise-SaaS convention, and this
-palette supports it naturally — navy is already the dark surface. Both themes
-are a pure CSS variable swap; no component branches on theme.
+- Public pages use a maximum readable content width and generous section gaps.
+- Product pages prioritise the current task and the next permitted action.
+- Candidate assessment is one-column and mobile-first.
+- Recruiter tables may become stacked records on narrow screens, but no field
+  or action may disappear solely because the viewport is small.
+- Verify at 320, 768, 1024 and 1440 pixels.
 
----
+## 8. Motion and interaction
 
-## 9. Agent Prompt Guide
+Motion explains state change. Use short opacity, colour and small positional
+transitions. Avoid decorative looping motion, spring overshoot, parallax and
+large transforms. Respect `prefers-reduced-motion`.
 
-For an agent generating or modifying a Vivekium surface:
+Keyboard focus is visible on every interactive element. Dialogs restore focus,
+menus support arrow-key behaviour through their primitives, and async states
+announce useful progress or failure text.
 
-> Build for a B2B enterprise hiring-intelligence platform sold to CHROs.
-> Confident and precise, never playful. Navy `#0A2642` for structure — primary
-> actions, navigation, the frame. Teal `#0D968B` for evidence — what is
-> corroborated, what is cited. Never purple, never violet, never a two-hue
-> gradient. Teal text on white must be `#096C64`, because the brand teal
-> measures 3.65:1 and fails AA for body text. Mona Sans for everything, Hubot
-> Sans only for a public page's hero headline (`type-display`), Geist Mono only
-> for reference codes and code (`type-ref`), never default Inter. Set type
-> through the roles (`type-page-title`, `text-heading`, `text-subheading`,
-> `type-eyebrow`, `text-label`, `text-body`, `text-body-sm`, `text-meta`,
-> `text-table`, `text-chip`; on the public site `type-section-title`,
-> `type-lead`, `type-prose-lg`), headings at 600, running text capped at a
-> measure, and never a hand-written pixel size. Text is
-> never grey; grey is for borders and muted backgrounds only. Cards are a 1px
-> border and no shadow at rest, and never nested. No icon tile above a heading.
-> No `border-l-4` unless it is semantic and documented. 8px spacing scale, 1280
-> max width, one primary action per view. Dark mode must work and is a variable
-> swap. And the rule that outranks the rest: **no number ever reaches a client**
-> — not a score, a percentage, a rank or a confidence. Grades are the four
-> words: Highly Matching, Matching, Moderately Matching, Not Matching.
+## 9. Accessibility and enforcement
 
-**Before considering a surface done:** `/impeccable critique`, then
-`/impeccable audit`, then `/impeccable polish`. `npx impeccable detect --json .`
-runs in CI, so drift is caught mechanically rather than only by review.
+Normal text must meet WCAG AA at 4.5:1. Large text and non-text controls must
+meet 3:1. `frontend/scripts/check-contrast.mjs` enforces the token pairs. The
+typography contract is enforced by `frontend/lib/typography.test.ts`.
+
+Before release:
+
+1. Run `npm run contrast` in `frontend/`.
+2. Run the frontend test suite and production build.
+3. Inspect public and authenticated surfaces at mobile and desktop widths.
+4. Confirm the rendered logo, browser icon and social card use navy and teal.
+5. Search production source for retired purple literals and product-facing
+   ReadyPick copy.
