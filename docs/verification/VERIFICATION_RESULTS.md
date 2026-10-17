@@ -550,3 +550,39 @@ registering the prior immutable image URIs as new task-definition revisions,
 rolling the API and frontend services, updating the three image-backed Lambda
 functions to `sha-e25fdf15494d-fn`, then repeating migration, smoke, and digest
 verification.
+
+---
+
+# Vivekium landing-content deployment (2026-10-17)
+
+PR [#21](https://github.com/HanuLisa-Technologies-LLP/pickready/pull/21)
+merged to `main` as `0a658e33cde5f93d7734a5fe71a03b0e67161afe` after all
+required CI checks passed. The deployment copied the supplied home-page copy
+and section order into the existing Vivekium design system; it did not add the
+mock HTML's separate pages, alternate font, or client-side navigation.
+
+| Evidence | Observed result |
+|---|---|
+| Backend image | `sha-0a658e33cde5`, digest `sha256:bd7354dc0b20b5931ffef9bf6416fb101a667da65f7046fece77f3876eea2eec` |
+| Frontend image | `sha-0a658e33cde5`, digest `sha256:fb7869e2d305b4c25124a6db64e24c0477ec61b19688a103dd732e7d78efc020` |
+| Analysis image | unchanged tag `93ebfcb`, digest `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+| Migration | ECS task `2ee8dfc1691546959d6ff0ebeac63388` stopped with exit 0 |
+| ECS revisions | API `54`, frontend `44`, analysis `16`; services reached stable state |
+| Lambda images | `readypick-task-worker`, `readypick-jd-gen`, and `readypick-company-profile` read back `sha-0a658e33cde5-fn` after update |
+| Digest verification | every running API, frontend, and analysis task matched the expected immutable digest |
+| Live smoke test | `/health/live`, `/api/v1/dashboard/summary`, `/api/v1/jobs`, `/api/v1/auth/me`, and `/` returned 200; route-contract checks passed |
+| Desktop browser | the new "Know them before you contact them" hero, sample word-grade brief, existing palette, and Fraunces heading rendered; public plans loaded successfully and the document had no horizontal overflow |
+| Mobile browser | the responsive header, stacked hero actions, and mobile copy rendered without horizontal overflow; public plans loaded successfully |
+| Browser network | document, landing telemetry, public plans, and linked public routes succeeded; the only non-2xx responses were the expected unauthenticated `/auth/me` and `/auth/refresh` probes (401); no 5xx response was observed |
+
+## Rollback reference
+
+The pre-release backend and frontend tag is `sha-7dcd4e2b2e00`. Its backend
+digest is `sha256:f2d854850581e86d4bc00e2c4f620eaa8c4be7f7f684688449a9f8c371958075`
+and its frontend digest is
+`sha256:cfedf504b827b2f0b5c6f0b6cb8f177e0816d5f73d9dad496ea3ccb070f18846`.
+Analysis was not changed and remains on tag `93ebfcb`. Rollback means
+registering the prior immutable image URIs as new task-definition revisions,
+rolling the API and frontend services, updating the three image-backed Lambda
+functions to `sha-7dcd4e2b2e00-fn`, then repeating migration, smoke, and digest
+verification.
