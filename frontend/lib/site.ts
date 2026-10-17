@@ -29,7 +29,7 @@ export const SITE_NAME = "Vivekium";
  * The `ppi` identifiers in CODE stay exactly as they are; this is copy.
  */
 export const SITE_DESCRIPTION =
-  "Vivekium helps companies hire with confidence.";
+  "Know candidates before you contact them with evidence-led hiring briefs from Vivekium.";
 
 /**
  * How a company gets a ReadyPick workspace: it asks for one.

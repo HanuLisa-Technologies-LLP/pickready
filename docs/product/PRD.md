@@ -14,7 +14,7 @@ Vivekium (Varpitech LLP; formerly ReadyPick) is a multi-tenant hiring operations
 | Candidate | Applicants and sourced candidates | Reusable profile and resume, apply, take an invited assessment, track applications, message the company |
 | Business development | Vivekium BD users | Leads, AI-assisted reach, conversion of signed prospects into customers |
 
-The public site explains the product and shows pricing beside "Open a role". It also hosts registration, login, public job applications, outreach responses and employer pages.
+The public site explains the evidence-led brief, who it serves and the three-step hiring flow, then shows pricing beside "Open a role". It also hosts registration, login, public job applications, outreach responses and employer pages.
 
 ## 2. Principles
 
