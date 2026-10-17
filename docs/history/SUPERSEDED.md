@@ -56,3 +56,10 @@ Each entry: what it was, why it is obsolete, what replaced it, and the retrieval
 ## H. Old product and engineering descriptions (PRD and ESD parts removed 2026-10-14)
 
 Sections of `docs/product/PRD.md` and `docs/architecture/ESD.md` that described the matrix, the PPI framework review gate, retake, the approval state machine, Celery queues, the three-provider model router, Google Cloud deployment, SMS and OTP, and Company DNA were removed in place. The two files now describe current behaviour only; the removed text is recoverable with `git show 73103c3:docs/product/PRD.md` and `git show 73103c3:docs/architecture/ESD.md`.
+
+## I. Pre-reference visual systems (to 2026-10-17)
+
+- **What:** `DESIGN.md` accumulated several incompatible systems: the original R+P monogram sampled from `logo300.jpeg`, blue and teal ramps that did not match the later owner reference, a zero-radius rule, a "text is never grey" rule, and successive Hubot Sans, Mona Sans and DM Serif Display typography experiments.
+- **Why obsolete:** the owner supplied a definitive Vivekium HTML palette on 2026-10-17 and requested one current design contract. The product now uses the directional-chevron mark, warm paper palette and the already-approved Fraunces/Outfit typography.
+- **Replaced by:** root [../../DESIGN.md](../../DESIGN.md), implemented by `frontend/app/globals.css`, `frontend/tailwind.config.ts` and `frontend/components/brand/logo.tsx`.
+- **Original:** `git show 7f6f214:DESIGN.md` retrieves the last pre-reference document.
