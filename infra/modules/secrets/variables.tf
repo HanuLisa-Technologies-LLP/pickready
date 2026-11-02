@@ -52,6 +52,11 @@ variable "secret_names" {
     # pins both halves: present in this list, granted to no service.
     "LLM_KEY_ENCRYPTION_SECRET",
     "FIREBASE_SERVICE_ACCOUNT_JSON",
+    # HELD, AND INJECTED INTO NOTHING (2026-11-02, register I-20). Email is
+    # SES only, nothing reads an SMTP password and no service holds a grant on
+    # it. The container stays for the same reason as LLM_KEY_ENCRYPTION_SECRET
+    # above: destroying a secret has no undo once the recovery window passes,
+    # so it goes when the owner decides.
     "SMTP_PASSWORD",
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_WEBHOOK_SECRET",
@@ -163,7 +168,6 @@ variable "service_secrets" {
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
       "VOYAGE_RERANK_2_5",
-      "SMTP_PASSWORD",
       "TAVILY_API_KEY",
     ]
     "agent" = [

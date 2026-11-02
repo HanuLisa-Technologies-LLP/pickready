@@ -30,7 +30,7 @@ This file is append-only in practice. Add a row when you write code whose correc
 | 10 | Spoken-answer transcription and inbound reply email work in deployment. Observed 2026-11-01 (read-only): the task-worker Lambda has `TRANSCRIBE_ENABLED=true`, region ap-south-1 and the working bucket, but the API task definition has no `TRANSCRIBE_ENABLED`, so the microphone is never offered; and the Lambda grant allowed only `readypick-*` job names while the code named jobs `voice-*` (fixed in code, not yet deployed). No spoken answer has run end to end. | `transcribe_enabled`, `INBOUND_EMAIL_DOMAIN` | Enable, then observe a real answer and a real reply |
 | 11 | The CSP admits the Razorpay checkout and the Google sign-in popup; no secret still holds `PLACEHOLDER_NOT_CONFIGURED`; rate limits hold under load. | `frontend/`, `infra/` | A browser run of each flow; a secrets audit; a load test |
 | 12 | Restoring the database works within the stated target. The runbook was written, never rehearsed. | [../operations/DISASTER_RECOVERY.md](../operations/DISASTER_RECOVERY.md) | A rehearsal |
-| 13 | Decided and not built, so unproven by definition: the approval flow, the static-checker coding path, SES-only email, the retrieval injection screen. | register Pending changes | Build, then the tests named in the register |
+| 13 | Decided and not built, so unproven by definition: the approval flow, the static-checker coding path, the retrieval injection screen. | register Pending changes | Build, then the tests named in the register |
 
 ## Standing language rule
 

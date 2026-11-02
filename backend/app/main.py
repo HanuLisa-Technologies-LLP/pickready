@@ -65,15 +65,6 @@ async def lifespan(app: FastAPI):
     from app.core.db import get_session_factory
 
     get_session_factory()
-    # Delivery-credential preflight: log a loud WARNING (not a hard crash, dev
-    # without keys must still boot) if the Gmail SMTP config is
-    # missing. Gmail SMTP is the only outbound mail path (claude.md rule 5);
-    # legacy email-provider integrations have been removed from the codebase.
-    from app.core.config import preflight_delivery_config
-
-    missing = preflight_delivery_config()
-    if missing:
-        log.warning("delivery.preflight_missing_keys", missing=missing)
     yield
     # Stop the realtime subscription BEFORE disposing the engine, so the loop
     # is torn down with nothing still awaiting a socket on it. `leave()` only

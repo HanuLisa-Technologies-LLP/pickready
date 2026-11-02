@@ -234,17 +234,23 @@ variable "razorpay_key_id" {
   default     = ""
 }
 
-variable "platform_from_email" {
+variable "platform_sender_email" {
   description = <<-EOT
-    The From address for platform mail under the SES transport.
+    The From address of every non-security platform email, and the recorded
+    fallback for company mail when the company has no active sender (register
+    I-20).
 
     SES sends only for an identity the ACCOUNT has verified, so this is not a
-    free-text display address: an unverified value is refused per message with
-    MailFromDomainNotVerifiedException, which the delivery layer classifies as
-    permanent and does not retry.
+    free-text display address. The application refuses to boot on an address
+    outside readypick.ai.
   EOT
   type        = string
-  default     = ""
+  default     = "contact@readypick.ai"
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@readypick\\.ai$", var.platform_sender_email))
+    error_message = "platform_sender_email must be an address on readypick.ai."
+  }
 }
 
 variable "frontend_image_tag" {
@@ -388,13 +394,13 @@ variable "platform_security_sender_email" {
     account. Never a tenant sender. The readypick.ai domain identity is
     verified in SES in this account and region, and `ses_send` grants
     SendRawEmail on every verified identity, so no IAM change goes with it.
-    The application refuses to boot on a value without an "@".
+    The application refuses to boot on an address outside readypick.ai.
   EOT
   type        = string
-  default     = "contact@readypick.ai"
+  default     = "noreply@readypick.ai"
 
   validation {
-    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.platform_security_sender_email))
-    error_message = "platform_security_sender_email must be an email address."
+    condition     = can(regex("^[^@\\s]+@readypick\\.ai$", var.platform_security_sender_email))
+    error_message = "platform_security_sender_email must be an address on readypick.ai."
   }
 }

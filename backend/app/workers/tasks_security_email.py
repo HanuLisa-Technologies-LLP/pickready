@@ -55,7 +55,7 @@ async def _record_delivery(
     ),
     # Seconds of work, and time-sensitive: a person is waiting for the code.
     # A transient SES failure is retried quickly; a permanent one, or a
-    # refusal (unknown template, SMTP in production), is not retried at all.
+    # refusal (an unknown template or a malformed context), is not retried at all.
     max_attempts=3,
     backoff_seconds=3.0,
     backoff_max_seconds=10.0,

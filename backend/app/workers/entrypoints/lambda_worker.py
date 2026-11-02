@@ -11,7 +11,7 @@ WHY THE PLATFORM BUDGET IS PASSED INTO THE RETRY LOOP
 this invocation has left. Without it the retry loop would be reasoning about a
 budget it invented, and a delivery task with a sixty-second backoff would
 happily start a retry with forty seconds left and be killed mid-send. Killed
-mid-send is the expensive case: the SMTP conversation may already have been
+mid-send is the expensive case: the SES call may already have been
 accepted, so the retry that follows sends the message twice.
 
 WHY THE SCHEDULED SWEEPS ARRIVE HERE TOO

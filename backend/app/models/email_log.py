@@ -103,9 +103,9 @@ STATUS_FAILED = "failed"
 # ── Delivery-tracking statuses (Corporate Email System spec section 8) ───────
 # `processing` is the worker's claim on a row it is actively delivering;
 # `delivered`, `bounced` and `complaint` are provider-reported outcomes,
-# written by the SES event endpoint keyed on `provider_message_id`. Under the
-# SMTP transport a row terminates at `sent`, honestly: Gmail reports no
-# per-message delivery events back to this product.
+# written by the SES event endpoint keyed on `provider_message_id`. A row stays
+# at `sent` when no event destination is configured, or when it was sent over
+# the SMTP path retired by register I-20, which reported no delivery events.
 STATUS_PROCESSING = "processing"
 STATUS_DELIVERED = "delivered"
 STATUS_BOUNCED = "bounced"
@@ -181,7 +181,7 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # ── Delivery tracking (Corporate Email System spec section 8) ────────────
-    #: The provider's message id (SES MessageId, or the SMTP Message-ID). What
+    #: The provider's message id (the SES MessageId). What
     #: the SES delivery/bounce/complaint event is matched back on.
     provider_message_id: Mapped[str | None] = mapped_column(String(300))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -192,12 +192,17 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     #: took it and refused it. The two have different causes and different
     #: fixes, and one column would make them indistinguishable afterwards.
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: WHICH TRANSPORT ACTUALLY CARRIED THIS MESSAGE, recorded per row rather
-    #: than inferred from today's `settings.email_transport`. A deployment that
-    #: switches from smtp to ses would otherwise silently relabel every
-    #: historical row, and `sent` means something different under each: Gmail
-    #: reports no delivery outcome at all, so under smtp `sent` is terminal.
+    #: WHICH TRANSPORT ACTUALLY CARRIED THIS MESSAGE, recorded per row. Rows
+    #: sent before register I-20 went over SMTP and say so; `sent` meant
+    #: something different there (terminal: Gmail reports no delivery outcome).
     transport: Mapped[str | None] = mapped_column(String(20))
+    #: THE FROM ADDRESS AND WHERE IT CAME FROM (migration 0139, register I-20):
+    #: `company_sender` (the company's active sender), `platform_fallback` (the
+    #: company had none, so the mail left from the platform address under the
+    #: company name: a recorded fallback, never a silent one), `platform` or
+    #: `security`. NULL on rows sent before the migration.
+    from_email: Mapped[str | None] = mapped_column(String(320))
+    from_source: Mapped[str | None] = mapped_column(String(30))
     #: The template this body was rendered from. Stored so a bounce traces back
     #: to the copy that produced it without re-deriving it from `email_type`,
     #: which is a coarser thing: several templates share one type.

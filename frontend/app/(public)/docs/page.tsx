@@ -192,7 +192,7 @@ const STACK = [
   {
     icon: Boxes,
     title: "Integrations",
-    detail: "Firebase · Razorpay · Gmail SMTP · private S3",
+    detail: "Firebase · Razorpay · Amazon SES · private S3",
   },
 ] as const;
 

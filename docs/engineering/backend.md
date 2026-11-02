@@ -46,7 +46,7 @@ Product behaviour lives in [../spec/](../spec/); decisions in [../decisions/REGI
 
 - One writer of candidate email: `email_outbox.queue_candidate_email`, which resolves the sender (named active sender, else tenant default, else platform). A send is claimed (`queued` to `processing`) before the transport; a claimed row is never resent. Automatic emails are idempotent on `email_log.dedupe_key`. `email_log` is a delivery record, not a feed.
 - The candidate feed (`services/candidate_updates.py`) is a fixed catalogue: no model, no score, no number, relative link only. `apply_transition` writes it.
-- Transport today is `email_transport` = `smtp` or `ses`. **Decided (I-20), pending:** Amazon SES only, no SMTP; `noreply@readypick.ai` for security codes, `contact@readypick.ai` for other platform mail. Do not describe SES-only as built.
+- Transport is Amazon SES only (I-20); there is no SMTP path and no `email_transport`. The From of every email is decided by `services/email_sender_resolution`, never inline: `noreply@readypick.ai` for security codes, `contact@readypick.ai` for other platform mail, a company's active sender (display name the company) for mail on its behalf, else `contact@readypick.ai` under the company name with `email_log.from_source = platform_fallback`. Platform From addresses must be on `readypick.ai` (refused at boot). Tests fake the SES client.
 
 ## Quality bar
 

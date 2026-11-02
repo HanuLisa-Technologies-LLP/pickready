@@ -137,7 +137,7 @@ async def test_a_transient_failure_releases_the_claim_for_the_retry(
     row_id = await _queue(world)
 
     async def _flaky(**kwargs):
-        raise TransientDeliveryError("smtp", 421, "server_busy", "try later")
+        raise TransientDeliveryError("ses", 421, "server_busy", "try later")
 
     monkeypatch.setattr(tasks, "_deliver_email", _flaky)
     with pytest.raises(TransientDeliveryError):
@@ -197,7 +197,8 @@ async def test_an_active_sender_reaches_the_transport_door(world, monkeypatch) -
 
     monkeypatch.setattr(tasks, "_deliver_email", _transport)
     assert (await _send(row_id))["status"] == "sent"
-    assert seen["sender"].id == sender
+    assert seen["identity"].sender_id == sender
+    assert seen["identity"].source == "company_sender"
     row = await _row(row_id)
     assert row["provider_message_id"] == "provider-id-4"
 

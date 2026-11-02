@@ -150,7 +150,7 @@ def _notify(
 ) -> None:
     """Hand the notification to a background task once the message COMMITS.
 
-    Dispatched because a request handler must not wait on SMTP or SES (rule 4),
+    Dispatched because a request handler must not wait on SES (rule 4),
     and dispatched AFTER THE COMMIT (`dispatch_after_commit`, CONTRACT v5)
     because the task reads the thread and the message by id: dispatched before
     the commit it could start before either row was visible, and a request

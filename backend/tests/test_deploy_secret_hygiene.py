@@ -367,7 +367,7 @@ def _secret_names() -> list[str]:
 
 
 #: Held and injected into nothing. See `test_a_held_secret_is_granted_to_no_service`.
-HELD_UNGRANTED = "LLM_KEY_ENCRYPTION_SECRET"
+HELD_UNGRANTED = ("LLM_KEY_ENCRYPTION_SECRET", "SMTP_PASSWORD")
 ALL_ENVIRONMENT_ROOTS = [ROOT / "infra" / "environments" / "pilot" / "main.tf", STAGING, PRODUCTION]
 
 
@@ -383,13 +383,14 @@ def test_a_held_secret_is_granted_to_no_service() -> None:
     setting nothing reads (2026-09-24: the setting is deleted), which is reach
     no service's work needs.
     """
-    assert HELD_UNGRANTED in _secret_names()
-    holders = sorted(s for s, names in _service_secrets().items() if HELD_UNGRANTED in names)
-    assert not holders, f"{HELD_UNGRANTED} is granted to {holders}"
-    for root in ALL_ENVIRONMENT_ROOTS:
-        assert HELD_UNGRANTED not in _code(root), (
-            f"{root.relative_to(ROOT)} mounts {HELD_UNGRANTED} into a container"
-        )
+    for held in HELD_UNGRANTED:
+        assert held in _secret_names()
+        holders = sorted(s for s, names in _service_secrets().items() if held in names)
+        assert not holders, f"{held} is granted to {holders}"
+        for root in ALL_ENVIRONMENT_ROOTS:
+            assert held not in _code(root), (
+                f"{root.relative_to(ROOT)} mounts {held} into a container"
+            )
 
 
 def test_the_webhook_path_is_the_only_holder_of_the_webhook_secret() -> None:

@@ -11,12 +11,11 @@ security code must carry none of that (auth spec 10.3). So this module has:
   passes is checked key by key against the template's own list: an unknown
   key, or a code that is not six digits, is refused before anything renders.
 * ONE SENDER, `PLATFORM_SECURITY_SENDER_EMAIL` / `_NAME` (default
-  contact@readypick.ai, "Vivekium"). Never a tenant sender and never a From
-  address taken from a payload; the task signature has no field for one.
-* NO SMTP FALLBACK IN PRODUCTION. Under `ENVIRONMENT` production or pilot a
-  transport other than `ses` REFUSES with `SecurityEmailRefused`, which the
-  task does not retry. A misconfigured deployment fails loudly instead of
-  quietly sending a security code through a mailbox nobody chose.
+  noreply@readypick.ai, "Vivekium"; register I-20), resolved by
+  `email_sender_resolution.security_identity`. Never a tenant sender and
+  never a From address taken from a payload; the task signature has no field
+  for one.
+* SES ONLY, no other transport exists to fall back to.
 * NO LOGGED CONTEXT. The context holds the code; nothing here writes it to a
   log, an audit row or an exception message.
 
@@ -45,11 +44,6 @@ __all__ = [
 ]
 
 SECURITY_EMAIL_TASK = "pickready.send_security_email"
-
-#: Where a transport other than SES is refused. The pilot runs with
-#: ENVIRONMENT=production (infra/environments/pilot), and "pilot" is listed so
-#: a composition that ever sets its own name is covered too.
-_SES_ONLY_ENVIRONMENTS = frozenset({"production", "pilot"})
 
 _CODE_RE = re.compile(r"^\d{6}$")
 
@@ -164,54 +158,25 @@ def render(template: str, context: dict[str, Any]) -> tuple[str, str]:
     return subject, body.format(**values)
 
 
-def _sender() -> tuple[str, str]:
-    settings = get_settings()
-    return (
-        settings.platform_security_sender_email.strip(),
-        settings.platform_security_sender_name.strip() or "Vivekium",
-    )
-
-
 async def deliver(*, to: str, subject: str, html: str, text: str) -> str | None:
-    """Send through the deployment's ONE transport with the platform sender.
+    """Send through SES from the platform security sender.
 
-    In production a non-SES transport refuses rather than falling back.
     Raises the shared delivery taxonomy (`services/delivery_errors`) from the
     transport, so the task retries a transient failure and stops on a
     permanent one.
     """
-    settings = get_settings()
-    from_email, from_name = _sender()
-    environment = (settings.environment or "").strip().lower()
-    if settings.email_transport != "ses" and environment in _SES_ONLY_ENVIRONMENTS:
-        raise SecurityEmailRefused(
-            "security email refused: EMAIL_TRANSPORT must be ses in "
-            f"{environment}, and there is no SMTP fallback"
-        )
-    if settings.email_transport == "ses":
-        from app.services.ses_service import send_email_async as ses_send
+    from app.services import ses_service
+    from app.services.email_sender_resolution import security_identity
 
-        return await ses_send(
-            from_email=from_email,
-            from_name=from_name,
-            to=to,
-            subject=subject,
-            html=html,
-            text=text,
-            correlation={"kind": "security"},
-        )
-    # Development and tests only (refused above in production). Gmail refuses
-    # an arbitrary From on the authenticated mailbox, so the SMTP transport
-    # sends as its own mailbox, exactly as every other SMTP message does.
-    from app.services.smtp_service import send_email_async as smtp_send
-
-    return await smtp_send(
-        from_email=settings.smtp_from_email,
-        from_name=from_name,
+    identity = security_identity()
+    return await ses_service.send_email_async(
+        from_email=identity.email,
+        from_name=identity.name,
         to=to,
         subject=subject,
         html=html,
         text=text,
+        correlation={"kind": "security"},
     )
 
 

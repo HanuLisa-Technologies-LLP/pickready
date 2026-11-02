@@ -44,7 +44,7 @@ A DISPATCHED TASK IS RUN BY NAME, NEVER BY DRAINING
 -----------------------------------------------------
 `_run_dispatched(name)` runs every recorded dispatch of exactly that name that
 has not yet run, and refuses when there is none. Draining the whole record
-would run the mail worker against a real SMTP host and would hide a missing
+would run the mail worker against real SES and would hide a missing
 dispatch behind whatever else happened to be queued. Each gate names the work
 it expects to have been asked for.
 """

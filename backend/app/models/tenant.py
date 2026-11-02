@@ -36,11 +36,12 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     # Legacy: the tenant's email domain. Kept (harmless, and still the stable
     # UNIQUE key) but no longer collected in the onboarding UI — it is derived
-    # from the owner's email address. Outbound mail is SMTP, so there is no
-    # per-tenant sending domain to verify (claude.md rule 5).
+    # from the owner's email address. Outbound mail leaves from an approved
+    # sender (`client_email_senders`), so there is no per-tenant sending domain
+    # to verify.
     domain: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     # Legacy sending-domain verification state. Retained for schema stability;
-    # the SMTP sender does not consult it.
+    # sender resolution does not consult it.
     spf_dkim_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
 
     # ── Company profile (migration 0009) ─────────────────────────────────────

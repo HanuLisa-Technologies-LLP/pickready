@@ -1,9 +1,9 @@
 """The outbound delivery failure taxonomy, shared by every mail transport.
 
 Moved here on 2026-09-24 from the SMS sender module, where it had lived
-since the SMS path was the first transport to need it. Both email transports
-(`smtp_service`, `ses_service`) imported it from the SMS module, so retiring
-SMS would have taken the email path's failure classes with it. The classes and
+since the SMS path was the first transport to need it. The email transport
+(`ses_service`) imported it from the SMS module, so retiring SMS would have
+taken the email path's failure classes with it. The classes and
 `log_delivery_error` are unchanged; only their address moved.
 
 Every failure carries the provider's status and parsed body, and is one of:

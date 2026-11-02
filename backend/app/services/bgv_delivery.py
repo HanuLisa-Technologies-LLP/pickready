@@ -10,9 +10,9 @@ never showed it. Both the day-3 chase and the form link now key off
 
 `clock_start` falls back to the send stamp when no delivery was ever
 confirmed, and that fallback is EXPLICIT rather than silent because the
-alternative is worse in both directions: under the smtp transport Gmail
-reports no delivery events at all, so waiting for one would mean a form link
-that never expires (a standing credential in a third party's mailbox, exactly
+alternative is worse in both directions: a deployment with no SES
+event destination (or a row sent before SES-only) reports no delivery event, so
+waiting for one would mean a form link that never expires (a standing credential in a third party's mailbox, exactly
 what the TTL exists to prevent) and a chase that never fires.
 
 THE BINDING, AND WHY AN ADDRESS IS NOT ONE
@@ -62,8 +62,8 @@ def clock_start(
     """When the employer's three days began, or None if nothing was sent.
 
     Delivery when the provider confirmed one, the send stamp otherwise. The
-    second case is not a guess: under the smtp transport no delivery event
-    exists to wait for, so the send is the latest instant this product can
+    second case is not a guess: with no SES event destination no delivery
+    event exists to wait for, so the send is the latest instant this product can
     honestly claim the message was in the employer's hands, and keying a TTL
     on a timestamp that will never arrive would leave the link live for ever.
     """

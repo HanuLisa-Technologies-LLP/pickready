@@ -2,7 +2,16 @@
 
 **Status:** current. **Reviewed:** 2026-10-14. Normative for the surfaces it names; ranks with [HIRING_WORKFLOW.md](HIRING_WORKFLOW.md), below the RBAC Specification and the Runbook, above the PRD and the ESD. Where the two touch (the sourced stage, the Updates feed), the workflow governs the sequence and this document governs who the candidate is and how words reach them. Written 2026-09-24 for the Vivekium release.
 
-**Decided 2026-10-14, not built (register I-20):** Amazon SES only, no SMTP fallback. Security codes are sent from `noreply@readypick.ai`; every other platform email and fallback recruitment email is sent from `contact@readypick.ai`. A company's own approved sender is preserved for candidate lifecycle mail, also through SES. Wherever this document says the deployment transport is SMTP or SES, read that as today's behaviour. The two `pickready.app` addresses in the code are obsolete and await replacement (Pending change 3). SES identity verification and development and test mail are unresolved (T-03).
+**Built (register I-20, decided 2026-10-14):** Amazon SES is the only transport; the SMTP path and `email_transport` are removed. Which From an email carries is decided in one place, `services/email_sender_resolution`:
+
+| Mail | From | Display name |
+|---|---|---|
+| Security codes and the account notice | `noreply@readypick.ai` | Vivekium |
+| Mail sent on a company's behalf (candidate lifecycle mail, outreach, interview and offer mail, staff invitations, background-verification requests) with an ACTIVE company sender | the company's default active sender | the company name |
+| The same mail when the company has no active sender | `contact@readypick.ai` | the company name |
+| Every other platform email (customer invitation, credit notices, departmental inquiry, account-deletion confirmation, consent notices) | `contact@readypick.ai` | Vivekium |
+
+The company-name fallback is never silent: `email_log.from_source` is `platform_fallback` (`company_sender`, `platform` and `security` are the other values, with `from_email` beside it, migration 0139), the delivery audit row carries the same two fields, and each fallback logs `email.sender_fallback tenant_id=...`. Reply-To is unchanged: a conversation's own reply address when the email belongs to a thread, else none, so a reply goes to the From. The platform addresses must be on `readypick.ai` or the process refuses to boot (`PLATFORM_SENDER_EMAIL`, `PLATFORM_SECURITY_SENDER_EMAIL`). Tests use a fake SES client. The pilot AWS account already holds a `readypick.ai` SES domain identity in `SUCCESS` state (observed 2026-11-02 in ap-south-1 and ap-south-2 by listing identities; no live send is recorded in `docs/verification/`). Still unresolved: what local development sends without AWS credentials, and what `manjunath@readypick.ai` receives (T-03).
 
 ---
 
@@ -12,7 +21,7 @@ When a screen, a document or a person says a candidate or a recruiter was
 "emailed", it means exactly two things and nothing else:
 
 1. **Outbound email**, sent by the backend through the one deployment
-   transport (`email_transport`, SMTP or SES), recorded row by row in
+   transport (Amazon SES), recorded row by row in
    `email_log` with the copy actually sent.
 2. **In-portal threads** (`conversations`, `conversation_messages`), which a
    candidate reads under Messages and a recruiter reads on the candidate's
@@ -22,8 +31,8 @@ When a screen, a document or a person says a candidate or a recruiter was
 or corporate mailbox, never imports a sent folder and never mirrors a
 recruiter's personal correspondence. A reply reaches the product only through
 the reply address of section 5, and only where inbound mail is enabled. Copy
-that says "Gmail" to mean "email" is wrong on its face: Gmail is at most the
-SMTP relay a deployment happens to use.
+that says "Gmail" to mean "email" is wrong on its face: no Gmail mailbox is
+involved in sending.
 
 ---
 
@@ -169,8 +178,9 @@ working in production until that is done and observed.**
   emails alike. It dispatches the send after commit.
 - **Every row carries a sender.** The one a person chose (an ACTIVE sender of
   this tenant), else the tenant's default sender, else NULL, meaning the
-  Vivekium mailbox. The sender is re-validated at send time, so a sender
-  revoked between queueing and sending is not used.
+  recorded platform fallback of the table at the top. The sender is
+  re-validated at send time, so a sender revoked between queueing and sending
+  is not used.
 - **The default sender** is chosen on the Email senders card by a holder of
   `authorize_email_senders`. Only an ACTIVE sender may hold it, one per
   tenant, and any transition away from `active` clears it in the same
@@ -226,5 +236,4 @@ working in production until that is done and observed.**
 ## 9. What is NOT true yet
 
 - Candidate reply threading does not work on pilot (section 5).
-- Platform email through SES only is decided and not built (status note at the top).
 - The `/outreach` bulk email routes (`api/outreach.py`) and `/companies/me/email-templates` lost their last screen with the review page and the templates builder. A route nothing calls is deleted or declared in `tests/test_route_callers.py` with a reason; whether these two are still declared is not re-checked here.

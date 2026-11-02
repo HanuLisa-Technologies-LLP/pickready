@@ -48,7 +48,7 @@ Each entry: what it was, why it is obsolete, what replaced it, and the retrieval
 ## G. Operational notes that no longer apply
 
 - `docs/operations/DATABASE_CREDENTIAL_MIGRATION.md`: the 2026-08-24 fix for a `DATABASE_URL` composed at deploy time on Cloud Run. The platform is gone; the finding lives on as the per-service IAM scoping rule ([../engineering/infrastructure.md](../engineering/infrastructure.md)).
-- `docs/operations/PICKREADY_APP_ADDRESSES.md`: the two `pickready.app` mailboxes (`noreply@` as a config default, `hello@` on two billing-page links, and a test fixture). The owner ruled they are obsolete (register I-20); the replacement is Pending change 3.
+- `docs/operations/PICKREADY_APP_ADDRESSES.md`: the two `pickready.app` mailboxes (`noreply@` as a config default, `hello@` on two billing-page links, and a test fixture). The owner ruled them obsolete (register I-20); replaced by `contact@readypick.ai` and `noreply@readypick.ai` in the SES-only change (branch `feat/company-sender-ses`; the two billing-page links were already gone from the frontend). The SMTP path, `email_transport` and `validate_gmail_outreach` went with them.
 - `docs/operations/TEST_BASELINE.md`: test-suite counts recorded on 2026-08-29 against branch `feat/specdoc6-activation` (then 1755 passed, 10 failed, 51 skipped, all failures environmental). The numbers are long stale; current counts come from a run.
 - The GCP and Cloud Run deployment documents (`DEPLOY_GCP*.md`) were removed with the Cloud Run infrastructure; the AWS runbook replaced them.
 - Celery, Flower, LangSmith, Groq, Gemini and OpenRouter key rosters, the capacity registry, MSG91 SMS, login OTP, phone sign-in and Intercom: all deleted; see [RULINGS.md](RULINGS.md).

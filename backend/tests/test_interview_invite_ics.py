@@ -13,7 +13,7 @@ Nothing caught it because the claim lived in prose. The dead-code gate is what
 surfaced the unused function, and the unused function is what surfaced the gap.
 This file is the assertion that was missing: it reads the arguments the route
 hands the delivery task and checks an attachment is actually there, in the
-shape the task and `smtp_service` agree on.
+shape the task and `ses_service` agree on.
 
 No network and no database. The route is called directly with the same stubs
 `test_portal` uses, and the Celery send is captured rather than performed.
@@ -166,7 +166,7 @@ async def test_the_invite_carries_an_ics_attachment(monkeypatch) -> None:
     attachment = attachments[0]
     assert attachment["filename"].endswith(".ics")
 
-    # The contract `pickready.send_email` documents and `smtp_service` decodes:
+    # The contract `pickready.send_email` documents and `ses_service` decodes:
     # base64 text, not raw bytes.
     decoded = base64.b64decode(attachment["content"]).decode("utf-8")
     assert "BEGIN:VCALENDAR" in decoded

@@ -126,7 +126,7 @@ class StaffOut(BaseModel):
     flow: `invite_link` is returned for a freshly minted invitation so an admin
     can copy it manually when email delivery is not configured, and
     `email_dispatch` states honestly whether the invite email could actually be
-    delivered by the configured SMTP sender.
+    delivered through SES.
     """
     id: uuid.UUID  # user id
     email: str

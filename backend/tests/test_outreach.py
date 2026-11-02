@@ -183,29 +183,6 @@ def test_send_accepts_per_candidate_overrides() -> None:
 # ── Delivery-config transparency + the send_email template contract ──────────
 
 
-def test_missing_smtp_config_is_surfaced(monkeypatch) -> None:
-    monkeypatch.setattr(
-        outreach_api,
-        "get_settings",
-        lambda: type("S", (), {"missing_delivery_keys": lambda self: ["SMTP_HOST"]})(),
-    )
-    ok, warning = outreach_api._delivery_status()
-    assert ok is False and warning and "SMTP" in warning
-
-
-def test_present_smtp_config_has_no_warning(monkeypatch) -> None:
-    monkeypatch.setattr(
-        outreach_api,
-        "get_settings",
-        lambda: type(
-            # A missing NON-SMTP key must not read as an SMTP warning.
-            "S", (), {"missing_delivery_keys": lambda self: ["OTHER_PROVIDER_KEY"]}
-        )(),
-    )
-    ok, warning = outreach_api._delivery_status()
-    assert ok is True and warning is None
-
-
 def test_direct_template_is_a_faithful_pass_through() -> None:
     """The composed subject/body must survive send_email's template render."""
     subject = email_render.substitute(

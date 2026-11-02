@@ -30,5 +30,5 @@
 | A frontend surface | `frontend/app/(group)/` | `DESIGN.md` tokens; `can(...)` not roles; `docs/engineering/frontend.md` |
 | A candidate-facing upload | the relevant storage service | Validate, never execute, bound every ceiling in config |
 | An AI activity message | `services/activity/phrasing.py` | Fixed catalogue keyed by (task, event); never a timer |
-| Email sending | `services/email_outbox.py` | One writer; SES-only is decided and not built (I-20) |
+| Email sending | `services/email_outbox.py` | One writer; the From comes from `services/email_sender_resolution`, SES only (I-20) |
 | A decision or an open question | `docs/decisions/REGISTER.md`, `OPEN.md` | Date it; mark implemented or pending; update the owning spec in the same change |

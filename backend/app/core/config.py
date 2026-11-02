@@ -12,6 +12,11 @@
 #: (`workers/schedule`), so the same single definition still holds both.
 PLATFORM_TIMEZONE = "Asia/Kolkata"
 
+#: The one domain the platform's own From addresses may use (register I-20):
+#: the SES domain identity verified in the account. A company's approved
+#: sender is the only other From domain, and it is checked per message.
+PLATFORM_EMAIL_DOMAIN = "readypick.ai"
+
 #: What an unpopulated secret holds in Secrets Manager, and what this module
 #: turns back into "" before anything reads it.
 #:
@@ -21,8 +26,7 @@ PLATFORM_TIMEZONE = "Asia/Kolkata"
 #: string, so `infra/modules/secrets` seeds each one with this instead.
 #:
 #: WHY IT IS NORMALISED HERE AND NOWHERE ELSE. Every "is this configured"
-#: check in the product tests for a falsy value: `missing_delivery_keys`,
-#: `llm_router.key_for_model`, `checkout_ready`, the Tavily gate. Handing any of
+#: check in the product tests for a falsy value: `llm_router.key_for_model`, `checkout_ready`, the Tavily gate. Handing any of
 #: them a non-empty sentinel would make an unconfigured credential look
 #: configured and fail later, at a provider, with a 401 that reads like a
 #: revoked key. Turning it into "" at the boundary means the code that runs is
@@ -195,7 +199,7 @@ class Settings(BaseSettings):
     #
     # `serves_over_https` would be wrong too: it is true of staging, where
     # these diagnostics are wanted. So this is DEPLOYMENT DATA, the shape
-    # `email_transport` and `task_dispatch_backend` already use, with the
+    # `task_dispatch_backend` already uses, with the
     # default chosen so an environment nobody has thought about is safe.
     #
     # What it exposes when on: `Server-Timing` carrying an app and a SQL
@@ -334,15 +338,18 @@ class Settings(BaseSettings):
     # message, while "similar to our customers" keeps working.
     tavily_api_key: str = ""
 
-    # Gmail SMTP only. Values come from the environment and are validated below.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = "noreply@pickready.app"
-    smtp_from_name: str = "Vivekium"
-    smtp_starttls: bool = True
-    smtp_ssl: bool = False
+    # ── Outbound email: Amazon SES only (register I-20) ─────────────────────
+    #
+    # The platform's own From identities. A company's approved sender
+    # (`models/email_sender`) overrides the platform one for mail sent on its
+    # behalf; `services/email_sender_resolution` is the one place that decides.
+    # Both addresses must be on `PLATFORM_EMAIL_DOMAIN`, refused at boot
+    # (`validate_platform_senders`), because SES sends only for an identity the
+    # account has verified.
+    #: Every non-security platform email, and the fallback for company mail
+    #: when the company has no active sender.
+    platform_sender_email: str = "contact@readypick.ai"
+    platform_sender_name: str = "Vivekium"
 
     # ── Where a reply comes back to ──────────────────────────────────────────
     #
@@ -389,15 +396,7 @@ class Settings(BaseSettings):
     # thread re-arms it immediately. Zero notifies on every message.
     candidate_message_notify_debounce_minutes: int = 10
 
-    # ── Outbound email transport (Corporate Email System spec section 6) ────
-    #
-    # ONE transport per deployment, selected by DATA, never a fallback chain
-    # (the same discipline the model layer keeps). "smtp" is the existing Gmail
-    # path, unchanged; "ses" sends through Amazon SES via boto3 with the same
-    # permanent/transient failure taxonomy. Owner decision 2026-09-05: this
-    # narrows "Gmail SMTP is the only outbound mail path" to
-    # transport-as-deployment-data.
-    email_transport: str = "smtp"
+    # ── SES delivery tracking (Corporate Email System spec section 8) ───────
     #: The SNS topic SES publishes delivery/bounce/complaint events to. The
     #: webhook refuses any message whose TopicArn differs (spec section 8).
     #: Empty means the event endpoint refuses everything.
@@ -417,10 +416,9 @@ class Settings(BaseSettings):
     # own behalf: a security code for registration or a password change, and
     # the notice that an address already has an account. NEVER a tenant's
     # corporate sender and never an address a request supplied
-    # (`services/security_email`). Under SES the domain must be a verified
-    # identity in the account; in production a non-SES transport is refused
-    # outright rather than falling back to SMTP.
-    platform_security_sender_email: str = "contact@readypick.ai"
+    # (`services/security_email`). The domain must be a verified SES identity
+    # in the account (`PLATFORM_EMAIL_DOMAIN`).
+    platform_security_sender_email: str = "noreply@readypick.ai"
     platform_security_sender_name: str = "Vivekium"
 
     # ── Security codes (registration and password change or reset) ─────────
@@ -638,7 +636,7 @@ class Settings(BaseSettings):
     # only talks to it over HTTP inside the VPC.
     #
     # ONE BACKEND PER DEPLOYMENT, NEVER A FALLBACK CHAIN, the same shape as
-    # `email_transport` and `TASK_DISPATCH_BACKEND`. `disabled` is the default
+    # `TASK_DISPATCH_BACKEND`. `disabled` is the default
     # and a real state: every surface records "code execution unavailable"
     # rather than pretending a program ran. The test double is NOT selectable
     # here; it is installed only through `code_execution.override_provider`,
@@ -1117,7 +1115,7 @@ class Settings(BaseSettings):
     # ── Retrieval intelligence (RPN-AI-UP-001 W6) ───────────────────────────
     #
     # Deployment data, one value per deployment, never a fallback chain: the
-    # same shape as TASK_DISPATCH_BACKEND and email_transport. Read through a
+    # same shape as TASK_DISPATCH_BACKEND. Read through a
     # validator that RAISES on an unrecognised value, because the failure mode
     # of a wrong one is SILENT -- retrieval keeps working and simply gets
     # worse, which is indistinguishable from a tenant with thin evidence.
@@ -1246,27 +1244,22 @@ class Settings(BaseSettings):
     # (super_admin) role. Enforced in the API layer, not just seed/UI.
     owner_email: str = "manjuchro@gmail.com"
 
-    # Gmail's authenticated mailbox is always the From address.
-
     # Outbound-delivery retry cap. Email retries transient failures after a
     # fixed 60-second delay. Permanent failures never retry.
     delivery_max_retries: int = 3  # initial attempt + up to 3 retries
 
     @model_validator(mode="after")
-    def validate_gmail_smtp(self) -> "Settings":
-        configured = bool(self.smtp_host or self.smtp_user or self.smtp_password)
-        if not configured:
-            return self
-        if self.smtp_host != "smtp.gmail.com":
-            raise ValueError("SMTP_HOST must be smtp.gmail.com")
-        if self.smtp_port != 587 or not self.smtp_starttls or self.smtp_ssl:
-            raise ValueError(
-                "Gmail SMTP requires port 587 with STARTTLS enabled and SSL disabled"
-            )
-        if self.smtp_user and not self.smtp_user.lower().endswith("@gmail.com"):
-            raise ValueError("SMTP_USER must be a Gmail address")
-        if self.smtp_user and self.smtp_from_email.lower() != self.smtp_user.lower():
-            raise ValueError("SMTP_FROM_EMAIL must match SMTP_USER")
+    def validate_platform_senders(self) -> "Settings":
+        """Both platform From addresses are on the verified SES domain, or the
+        process refuses to boot. SES would reject every message from any other
+        domain at send time, one email at a time (register I-20)."""
+        for name, value in (
+            ("PLATFORM_SENDER_EMAIL", self.platform_sender_email),
+            ("PLATFORM_SECURITY_SENDER_EMAIL", self.platform_security_sender_email),
+        ):
+            local, _, domain = (value or "").strip().lower().partition("@")
+            if not local or domain != PLATFORM_EMAIL_DOMAIN:
+                raise ValueError(f"{name} must be an address @{PLATFORM_EMAIL_DOMAIN}")
         return self
 
     @property
@@ -1323,16 +1316,6 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_email_transport(self) -> "Settings":
-        """Exactly one of the two real transports; a typo must not silently
-        select anything (Corporate Email System spec section 6)."""
-        value = (self.email_transport or "").strip().lower()
-        if value not in {"smtp", "ses"}:
-            raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
-        object.__setattr__(self, "email_transport", value)
-        return self
-
-    @model_validator(mode="after")
     def validate_security_codes(self) -> "Settings":
         """A security code that expires at once, can never be entered, or can
         be re-sent without pause is not a security control. Refused at boot."""
@@ -1342,8 +1325,6 @@ class Settings(BaseSettings):
             raise ValueError("SECURITY_CODE_MAX_ATTEMPTS must be at least 1")
         if self.security_code_resend_seconds < 1:
             raise ValueError("SECURITY_CODE_RESEND_SECONDS must be at least 1")
-        if "@" not in (self.platform_security_sender_email or ""):
-            raise ValueError("PLATFORM_SECURITY_SENDER_EMAIL must be an email address")
         return self
 
     @model_validator(mode="after")
@@ -1606,47 +1587,6 @@ class Settings(BaseSettings):
         environment nobody has thought about yet.
         """
         return self.frontend_url.lower().startswith("https://")
-
-    def missing_delivery_keys(self) -> list[str]:
-        """Names of unset outbound-delivery credentials (for startup preflight).
-
-        Gmail SMTP (host/user/password) is the one credential set. The SMS
-        credentials left with the SMS sender on 2026-09-24.
-        """
-        checks = {
-            "SMTP_HOST": self.smtp_host,
-            "SMTP_USER": self.smtp_user,
-            "SMTP_PASSWORD": self.smtp_password,
-        }
-        return [name for name, value in checks.items() if not value]
-
-
-def preflight_delivery_config() -> list[str]:
-    """Log a loud WARNING for any missing email credential at startup.
-
-    ASSUMPTION: a missing key must NOT hard-crash the container in development:
-    local dev without SMTP keys has to remain possible (the sprint brief only
-    requires that a missing key not fail *silently*). In production the same
-    warning is emitted; enforcement/alerting on it is an ops concern, not a
-    process-exit here. Returns the list of missing key names so callers (or
-    tests) can assert on it.
-    """
-    import logging
-
-    settings = get_settings()
-    missing = settings.missing_delivery_keys()
-    if missing:
-        logging.getLogger(__name__).warning(
-            "delivery.preflight MISSING outbound credentials: %s  -  emails "
-            "using these will fail. Set them in the environment. env=%s",
-            ", ".join(missing),
-            settings.environment,
-        )
-    else:
-        logging.getLogger(__name__).info(
-            "delivery.preflight ok  -  SMTP credentials present"
-        )
-    return missing
 
 
 @lru_cache

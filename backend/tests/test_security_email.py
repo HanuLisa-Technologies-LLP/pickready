@@ -1,5 +1,5 @@
-"""The platform security email: fixed templates, the platform sender, SES only
-in production, and a context that is never logged (auth spec 9.3, 10)."""
+"""The platform security email: fixed templates, the noreply platform sender,
+SES only, and a context that is never logged (auth spec 9.3, 10)."""
 from __future__ import annotations
 
 import logging
@@ -61,30 +61,13 @@ def test_a_malformed_context_is_refused_before_anything_renders(template, contex
 @pytest.fixture
 def settings():
     value = get_settings()
-    before = (value.environment, value.email_transport)
+    before = value.environment
     yield value
-    object.__setattr__(value, "environment", before[0])
-    object.__setattr__(value, "email_transport", before[1])
-
-
-@pytest.mark.parametrize("environment", ["production", "pilot"])
-async def test_production_refuses_a_non_ses_transport(settings, environment, monkeypatch) -> None:
-    object.__setattr__(settings, "environment", environment)
-    object.__setattr__(settings, "email_transport", "smtp")
-    sent: list = []
-
-    async def _smtp(**kwargs):
-        sent.append(kwargs)
-
-    monkeypatch.setattr("app.services.smtp_service.send_email_async", _smtp)
-    with pytest.raises(security_email.SecurityEmailRefused):
-        await security_email.deliver(to="a@b.test", subject="s", html="<p>h</p>", text="t")
-    assert sent == [], "no SMTP fallback in production"
+    object.__setattr__(value, "environment", before)
 
 
 async def test_ses_sends_from_the_platform_sender_only(settings, monkeypatch) -> None:
     object.__setattr__(settings, "environment", "production")
-    object.__setattr__(settings, "email_transport", "ses")
     captured: list[dict] = []
 
     async def _ses(**kwargs):
@@ -96,7 +79,7 @@ async def test_ses_sends_from_the_platform_sender_only(settings, monkeypatch) ->
         to="person@x.test", subject="s", html="<p>h</p>", text="t"
     ) == "mid-1"
     assert captured[0]["from_email"] == settings.platform_security_sender_email
-    assert captured[0]["from_email"] == "contact@readypick.ai"
+    assert captured[0]["from_email"] == "noreply@readypick.ai"
     assert captured[0]["from_name"] == settings.platform_security_sender_name
     assert "reply_to" not in captured[0]
 

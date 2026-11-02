@@ -1,23 +1,19 @@
 """Outbound email delivery hardening tests (no network).
 
 Covers:
-  * sender-path selection: tenant verified vs unverified vs tenant_id=None,
-    and the development-environment override;
-  * the SMTP send path: success returns a message id, an auth failure is
-    permanent (not retried), a connection/timeout failure is transient
-    (retried), and missing SMTP creds fail fast as permanent;
+  * the From identity `_send_email_async` hands to SES: platform mail, tenant
+    mail with no active sender (a RECORDED fallback), and tenant_id=None;
   * that a permanent failure is NOT retried while a transient one IS;
-  * the missing-key startup preflight (SMTP_HOST/USER/PASSWORD).
+  * that every template name the app sends has a default.
 
-The network layer (aiosmtplib) is mocked throughout: these tests must
-never hit the network.
+SES is replaced by a fake client throughout: these tests must never hit the
+network. The resolver itself is proven in `test_company_sender_ses.py`.
 """
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
 
 @asynccontextmanager
@@ -31,9 +27,9 @@ from app.services.delivery_errors import (
 )
 
 
-# ── sender-path selection ────────────────────────────────────────────────────
-# Exercises the real _send_email_async selection logic with the DB/render/HTTP
-# boundaries stubbed, so we assert purely on which From/Reply-To/path is chosen.
+# ── From identity chosen by _send_email_async ────────────────────────────────
+# Exercises the real _send_email_async with the DB/render/SES boundaries
+# stubbed, so we assert purely on which From and which audit fields are chosen.
 
 class _FakeSession:
     async def get(self, model, ident):
@@ -46,15 +42,16 @@ class _FakeSession:
         return None
 
 
-async def _capture_sender(monkeypatch, *, tenant, environment):
-    """Run _send_email_async with dependencies stubbed and capture SMTP fields."""
+async def _capture_sender(monkeypatch, *, tenant):
+    """Run _send_email_async with dependencies stubbed and capture SES fields."""
+    from app.services import ses_service
     from app.workers import tasks
 
     captured = {}
 
-    async def _fake_smtp(
+    async def _fake_ses(
         from_email, from_name, to, subject, html, text=None, attachments=None,
-        reply_to=None,
+        reply_to=None, correlation=None,
     ):
         captured["from"] = from_email
         captured["from_name"] = from_name
@@ -70,18 +67,7 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
         captured["audit"] = meta
         return None
 
-    monkeypatch.setattr(tasks, "smtp_send", _fake_smtp)
-    monkeypatch.setattr(
-        tasks, "get_settings",
-        lambda: SimpleNamespace(
-            environment=environment,
-            smtp_from_email="sender@gmail.com",
-            smtp_from_name="PickReady",
-            # ONE transport per deployment (Corporate Email System spec,
-            # 2026-09-05); "smtp" is the default these tests exercise.
-            email_transport="smtp",
-        ),
-    )
+    monkeypatch.setattr(ses_service, "send_email_async", _fake_ses)
     monkeypatch.setattr(tasks, "_audit", _fake_audit)
 
     import app.services.email_render as er
@@ -96,271 +82,37 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
     return captured
 
 
-@pytest.mark.asyncio
-async def test_sender_tenant_verified_still_uses_gmail(monkeypatch):
-    tenant = SimpleNamespace(
-        id=uuid.uuid4(), domain="acme.com", spf_dkim_status="verified"
-    )
-    captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
-    assert captured["from"] == "sender@gmail.com"
-    assert captured["from_name"] == "PickReady"
-    assert captured["audit"]["sender_path"] == "smtp"
+@pytest.fixture(autouse=True)
+def _no_default_sender(monkeypatch):
+    """No tenant here has an active default sender."""
+    from app.services import email_sender_resolution
+
+    async def _none(session, tenant_id):
+        return None
+
+    monkeypatch.setattr(email_sender_resolution, "default_active_sender", _none)
 
 
 @pytest.mark.asyncio
-async def test_sender_tenant_unverified_uses_gmail(monkeypatch):
-    tenant = SimpleNamespace(
-        id=uuid.uuid4(), domain="acme.com", spf_dkim_status="pending"
-    )
-    captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
-    assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "smtp"
-
-
-@pytest.mark.asyncio
-async def test_sender_verified_development_uses_gmail(monkeypatch):
-    tenant = SimpleNamespace(
-        id=uuid.uuid4(), domain="acme.com", spf_dkim_status="verified"
-    )
-    captured = await _capture_sender(monkeypatch, tenant=tenant, environment="development")
-    # Even a verified domain must not send from the tenant in development.
-    assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "smtp"
+async def test_tenant_without_a_sender_falls_back_and_says_so(monkeypatch):
+    tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme Corp")
+    captured = await _capture_sender(monkeypatch, tenant=tenant)
+    assert captured["from"] == "contact@readypick.ai"
+    assert captured["from_name"] == "Acme Corp"
+    assert captured["audit"]["from_source"] == "platform_fallback"
+    assert captured["audit"]["from_email"] == "contact@readypick.ai"
 
 
 @pytest.mark.asyncio
 async def test_sender_tenant_none_does_not_crash(monkeypatch):
     # Platform users (Owner OTP) have tenant_id=None — this was a real past bug.
-    captured = await _capture_sender(monkeypatch, tenant=None, environment="production")
-    assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "smtp"
+    captured = await _capture_sender(monkeypatch, tenant=None)
+    assert captured["from"] == "contact@readypick.ai"
+    assert captured["from_name"] == "Vivekium"
+    assert captured["audit"]["from_source"] == "platform"
     # html body is derived from the plain-text body and sent alongside text.
     assert captured["text"] == "body"
     assert "body" in captured["html"]
-
-
-# ── SMTP send path (mocked aiosmtplib, no network) ───────────────────────────
-
-def _smtp_settings(**overrides):
-    base = dict(
-        smtp_host="smtp.example.test",
-        smtp_port=587,
-        smtp_user="apikey",
-        smtp_password="secret",
-        smtp_from_email="noreply@pickready.app",
-        smtp_from_name="PickReady",
-        smtp_starttls=True,
-        smtp_ssl=False,
-    )
-    base.update(overrides)
-    return SimpleNamespace(**base)
-
-
-def test_settings_reject_non_gmail_smtp_provider():
-    from app.core.config import Settings
-
-    with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            smtp_host="smtp.example.test",
-            smtp_port=587,
-            smtp_user="sender@example.test",
-            smtp_password="secret",
-            smtp_from_email="sender@example.test",
-            smtp_starttls=True,
-            smtp_ssl=False,
-        )
-
-
-def test_settings_accept_gmail_starttls_contract():
-    from app.core.config import Settings
-
-    settings = Settings(
-        _env_file=None,
-        smtp_host="smtp.gmail.com",
-        smtp_port=587,
-        smtp_user="sender@gmail.com",
-        smtp_password="secret",
-        smtp_from_email="sender@gmail.com",
-        smtp_starttls=True,
-        smtp_ssl=False,
-    )
-    assert settings.smtp_host == "smtp.gmail.com"
-
-
-@pytest.mark.asyncio
-async def test_smtp_success_returns_message_id(monkeypatch):
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        _fake_send.kwargs = kwargs
-        return ({}, "250 OK")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    mid = await smtp_service.send_email_async(
-        "noreply@pickready.app", "PickReady", "hr@corp.test", "subj", "<p>hi</p>", "hi"
-    )
-    # A Message-ID is generated for every sent message.
-    assert mid and mid.startswith("<") and mid.endswith(">")
-    # STARTTLS on 587, implicit SSL off.
-    assert _fake_send.kwargs["start_tls"] is True
-    assert _fake_send.kwargs["use_tls"] is False
-    assert _fake_send.kwargs["hostname"] == "smtp.example.test"
-    assert _fake_send.kwargs["port"] == 587
-
-
-@pytest.mark.asyncio
-async def test_smtp_ssl_465_disables_starttls(monkeypatch):
-    from app.services import smtp_service
-
-    monkeypatch.setattr(
-        smtp_service, "get_settings",
-        lambda: _smtp_settings(smtp_port=465, smtp_ssl=True, smtp_starttls=True),
-    )
-
-    async def _fake_send(message, **kwargs):
-        _fake_send.kwargs = kwargs
-        return ({}, "250 OK")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    await smtp_service.send_email_async(
-        "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-    )
-    # Implicit TLS from the start; STARTTLS must NOT be attempted on top of it.
-    assert _fake_send.kwargs["use_tls"] is True
-    assert _fake_send.kwargs["start_tls"] is False
-
-
-@pytest.mark.asyncio
-async def test_smtp_attachment_is_included(monkeypatch):
-    import base64
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        _fake_send.message = message
-        return ({}, "250 OK")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    ics = base64.b64encode(b"BEGIN:VCALENDAR").decode()
-    await smtp_service.send_email_async(
-        "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>", "h",
-        attachments=[{"filename": "invite.ics", "content": ics}],
-    )
-    # A multipart/mixed envelope carrying the attachment part.
-    assert _fake_send.message.is_multipart()
-    payload = _fake_send.message.as_string()
-    assert "invite.ics" in payload
-
-
-@pytest.mark.asyncio
-async def test_smtp_auth_error_is_permanent(monkeypatch):
-    import aiosmtplib
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        raise aiosmtplib.SMTPAuthenticationError(535, "Authentication failed")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    with pytest.raises(PermanentDeliveryError) as ei:
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-    assert "SMTP_USER" in ei.value.hint and "SMTP_PASSWORD" in ei.value.hint
-
-
-@pytest.mark.asyncio
-async def test_smtp_5xx_recipient_reject_is_permanent(monkeypatch):
-    import aiosmtplib
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        raise aiosmtplib.SMTPResponseException(550, "Sender address rejected")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    with pytest.raises(PermanentDeliveryError):
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-
-
-@pytest.mark.asyncio
-async def test_smtp_4xx_greylist_is_transient(monkeypatch):
-    import aiosmtplib
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        raise aiosmtplib.SMTPResponseException(451, "Greylisted, try again later")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    with pytest.raises(TransientDeliveryError):
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-
-
-@pytest.mark.asyncio
-async def test_smtp_connect_error_is_transient(monkeypatch):
-    import aiosmtplib
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        raise aiosmtplib.SMTPConnectError("cannot connect to host")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    with pytest.raises(TransientDeliveryError):
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-
-
-@pytest.mark.asyncio
-async def test_smtp_timeout_is_transient(monkeypatch):
-    import aiosmtplib
-
-    from app.services import smtp_service
-
-    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
-
-    async def _fake_send(message, **kwargs):
-        raise aiosmtplib.SMTPTimeoutError("timed out")
-
-    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
-    with pytest.raises(TransientDeliveryError):
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-
-
-@pytest.mark.asyncio
-async def test_smtp_missing_creds_is_permanent(monkeypatch):
-    from app.services import smtp_service
-
-    monkeypatch.setattr(
-        smtp_service, "get_settings",
-        lambda: _smtp_settings(smtp_host="", smtp_user="", smtp_password=""),
-    )
-    with pytest.raises(PermanentDeliveryError) as ei:
-        await smtp_service.send_email_async(
-            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
-        )
-    assert "SMTP_HOST" in ei.value.hint or "SMTP" in ei.value.hint
 
 
 # ── permanent failure is not retried; transient is ──────────────────────────
@@ -448,35 +200,6 @@ def test_the_exhausted_audit_fires_on_the_last_attempt_only(monkeypatch):
     with pytest.raises(TransientDeliveryError):
         tasks.send_email(_ctx(attempt=3, max_attempts=3), None, "a@b.test", "otp", {})
     assert len(audited) == 1
-
-
-# ── startup preflight ────────────────────────────────────────────────────────
-
-def test_preflight_reports_missing_keys(monkeypatch):
-    from app.core import config
-
-    config.get_settings.cache_clear()
-    monkeypatch.setenv("SMTP_HOST", "")
-    monkeypatch.setenv("SMTP_USER", "")
-    monkeypatch.setenv("SMTP_PASSWORD", "")
-    config.get_settings.cache_clear()
-    missing = config.preflight_delivery_config()
-    # SMTP is the whole credential set now: the SMS keys left with the sender.
-    assert missing == ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"]
-    config.get_settings.cache_clear()
-
-
-def test_preflight_ok_when_keys_present(monkeypatch):
-    from app.core import config
-
-    config.get_settings.cache_clear()
-    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
-    monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
-    monkeypatch.setenv("SMTP_PASSWORD", "secret")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "sender@gmail.com")
-    config.get_settings.cache_clear()
-    assert config.preflight_delivery_config() == []
-    config.get_settings.cache_clear()
 
 
 def test_every_template_name_the_app_sends_has_a_default() -> None:
@@ -636,7 +359,7 @@ def test_the_retry_loop_refuses_an_attempt_that_cannot_finish() -> None:
     """Predictive, not observational.
 
     A delivery task backing off sixty seconds with forty seconds of budget left
-    must not start the retry. Being killed mid-send is the expensive case: SMTP
+    must not start the retry. Being killed mid-send is the expensive case: SES
     may already have accepted the message, and the next attempt sends it twice.
     """
     from app.workers import runtime

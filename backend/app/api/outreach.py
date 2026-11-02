@@ -8,7 +8,7 @@ Two composition paths, one send path:
                     substituted per recipient.
 
 Sending is ALWAYS `pickready.send_email` enqueued once per recipient — never
-inline SMTP in the request handler (claude.md rule 4). Every endpoint is
+inline delivery in the request handler (claude.md rule 4). Every endpoint is
 capability-gated on SEND_OUTREACH and runs on the RLS tenant session
 (claude.md rules 1 and 3).
 """
@@ -21,7 +21,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
-from app.core.config import get_settings
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.company import EmailTemplate
 from app.models.job import Job
@@ -57,22 +56,8 @@ DIRECT_TEMPLATE_NAME = "outreach_direct"
 _DIRECT_SUBJECT = "{{subject}}"
 _DIRECT_BODY = "{{body}}"
 
-SMTP_KEYS = ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD")
-_SMTP_WARNING = (
-    "Email delivery is not configured on the server (SMTP credentials are "
-    "missing), so queued emails will not actually reach candidates until an "
-    "administrator sets them."
-)
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _delivery_status() -> tuple[bool, str | None]:
-    missing = [k for k in get_settings().missing_delivery_keys() if k in SMTP_KEYS]
-    if missing:
-        return False, _SMTP_WARNING
-    return True, None
 
 
 def _display_name(candidate: Candidate | None) -> str:
@@ -303,7 +288,6 @@ async def preview_outreach(
     """
     job = await _load_job(session, user, payload.job_id)
     recipients, skipped, company = await _resolve(session, user, payload, job)
-    smtp_ok, warning = _delivery_status()
     return OutreachPreviewOut(
         job_title=job.title,
         company=company,
@@ -311,8 +295,6 @@ async def preview_outreach(
         recipients=recipients,
         skipped=skipped,
         placeholders=list(MANUAL_PLACEHOLDERS),
-        smtp_configured=smtp_ok,
-        delivery_warning=warning,
     )
 
 
@@ -389,14 +371,11 @@ async def send_outreach(
         },
     )
 
-    smtp_ok, warning = _delivery_status()
     return OutreachSendOut(
         queued=len(queued),
         recipients=queued,
         task_ids=task_ids,
         skipped=skipped,
-        smtp_configured=smtp_ok,
-        delivery_warning=warning,
     )
 
 

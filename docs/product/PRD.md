@@ -117,7 +117,7 @@ The **Tatva Assessment** is the process; the **PRISM Report** is the document it
 ## 11. Pipeline, communications and verification
 
 - **Stages** (server-validated): Sourced, Applied, Assessment Invited, Assessment In Progress, Assessment Completed, Shortlisted, Interview Scheduled, Interview Completed, Offer Extended, Joined, Rejected, Hold. Rejected and Joined are terminal; the system alone moves a candidate to In Progress and Completed. Every move writes append-only history and a candidate Update.
-- **Email.** One outbound writer, a resolved sender (a named active company sender, else the tenant default, else the platform), idempotent per stage, claimed before sending. AI-drafted with a deterministic fallback, human-editable where composition is offered. Platform email goes through Amazon SES; SES-only is **decided, pending** (I-20).
+- **Email.** One outbound writer, a resolved sender (a named active company sender, else the tenant default, else `contact@readypick.ai` under the company name, recorded as a fallback), idempotent per stage, claimed before sending. AI-drafted with a deterministic fallback, human-editable where composition is offered. All email goes through Amazon SES; security codes come from `noreply@readypick.ai` (I-20).
 - **Background verification.** The candidate submits employers once, immutably; each hiring company runs its own verifications against that list. A request carries a reply address; a person reads the reply and marks Verified or Not verified; nothing infers a verdict. A candidate with declared employers cannot be moved to offer until each is verified; rejection is never blocked.
 - **Employer pages** list a company's in-window published jobs with a closed allowlist of fields.
 
@@ -149,4 +149,4 @@ Google or email and password through Firebase; the backend exchanges the verifie
 - Interview rounds are stored; feedback and round-completion tooling are thinner than scheduling.
 - Inbound reply email is inert on pilot; speech transcription is off until enabled.
 - AI fallbacks keep work moving; they do not replace human review of a hiring decision.
-- Decided but not built: the approval flow, SWOT timing, coding without a sandbox, SES-only email, the retrieval injection screen. Proposed: the Yukti five-part model. Unresolved: [../decisions/OPEN.md](../decisions/OPEN.md).
+- Decided but not built: the approval flow, SWOT timing, coding without a sandbox, the retrieval injection screen. Proposed: the Yukti five-part model. Unresolved: [../decisions/OPEN.md](../decisions/OPEN.md).
