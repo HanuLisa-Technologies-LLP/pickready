@@ -50,28 +50,27 @@ async function openApply() {
 }
 
 describe("the apply dialog", () => {
-  it("lists the job's skills by bucket name", async () => {
+  it("shows none of the internal skill tiers, even if a payload carries them", async () => {
     serve({
       jd_json: { description: "Build the warehouse." },
       skill_buckets: [
         { bucket: "must_have", label: "Must-have skills", names: ["Python"] },
         { bucket: "nice_to_have", label: "Nice-to-have skills", names: ["Terraform"] },
-        { bucket: "behavioural", label: "Behavioural competencies", names: [] },
+        { bucket: "behavioural", label: "Behavioural competencies", names: ["Ownership"] },
       ],
     });
     const dialog = await openApply();
 
-    const mustHave = await within(dialog).findByRole("region", { name: "Must-have skills" });
-    expect(within(mustHave).getByText("Python")).toBeTruthy();
-    expect(within(dialog).getByText("Terraform")).toBeTruthy();
-    expect(within(dialog).queryByText("Behavioural competencies")).toBeNull();
-  });
-
-  it("shows no skills section for a legacy job without saved skills", async () => {
-    serve({ jd_json: { description: "Build the warehouse." }, skill_buckets: [] });
-    const dialog = await openApply();
-
     await within(dialog).findByText("Build the warehouse.");
-    expect(within(dialog).queryByText("Must-have skills")).toBeNull();
+    for (const text of [
+      "Must-have skills",
+      "Nice-to-have skills",
+      "Behavioural competencies",
+      "Python",
+      "Terraform",
+      "Ownership",
+    ]) {
+      expect(within(dialog).queryByText(text)).toBeNull();
+    }
   });
 });

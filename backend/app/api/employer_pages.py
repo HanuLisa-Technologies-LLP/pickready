@@ -34,7 +34,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_public_db
-from app.api.jobs import posting_skill_buckets, public_job_url
+from app.api.jobs import public_job_url
 from app.models import Company, Job, Tenant
 from app.schemas.employer_pages import (
     EmployerCardOut,
@@ -42,7 +42,7 @@ from app.schemas.employer_pages import (
     EmployerPageOut,
     EmployerSearchOut,
 )
-from app.services import assessment_contract, job_posting
+from app.services import job_posting
 from app.services.employer_pages import visible_tenant_conditions
 from app.services.rate_limit import rate_limit
 
@@ -174,9 +174,6 @@ async def get_employer_page(
             job.posting_start_date, job.posting_end_date, closed_at=job.closed_at
         )
     ]
-    # The posting's skills by NAME (CONTRACT v10), from the one builder the
-    # apply page uses, in two queries for the whole careers list.
-    postings = await assessment_contract.posting_skills(session, live)
     open_roles = [
         EmployerOpenRoleOut(
             id=job.id,
@@ -186,7 +183,6 @@ async def get_employer_page(
             experience_max_years=job.experience_max_years,
             apply_path=f"/apply/{job.id}",
             apply_url=public_job_url(job.id),
-            skill_buckets=posting_skill_buckets(postings[job.id]),
         )
         for job in live
     ]

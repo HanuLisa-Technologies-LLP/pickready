@@ -5,18 +5,17 @@
   as a word, the experience band in words, the company narrative and the
   skills by NAME in three buckets, alphabetical, with nothing else about a
   skill: no evidence line, no priority, no role summary.
-* The PUBLIC posting (`GET /api/v1/jobs/public/{id}`) carries the SAVED skills
-  by name, or no skills section at all when none are saved; a frozen job shows
-  the snapshot's names, whatever the live rows say.
+* The PUBLIC posting (`GET /api/v1/jobs/public/{id}`) carries NO skill tier
+  (owner ruling 2026-11-02); a frozen job's preview shows the snapshot's names,
+  whatever the live rows say.
 * `/setup` reports the freeze: `frozen`, `frozen_at` and the verbatim
   `frozen_reason`, with `skills_locked` and `grade_locked` equal to it.
 
 Through the real routers on the RLS application role; stored state is written
 and read on SECOND connections.
 
-MUTATION CHECK, recorded: letting the public builder show unsaved rows
-(`include_unsaved` ignored) fails
-`test_the_public_posting_shows_saved_skills_only`.
+MUTATION CHECK, recorded: putting `skill_buckets` back on the public builder
+fails `test_the_public_posting_never_carries_the_skill_tiers`.
 """
 from __future__ import annotations
 
@@ -130,17 +129,31 @@ async def test_the_preview_is_the_posting_by_name_and_nothing_hidden(world) -> N
         assert hidden not in raw, f"{hidden!r} crossed into the preview"
 
 
-async def test_the_public_posting_shows_saved_skills_only(world) -> None:
-    unsaved = await world(saved=False)
+def test_no_candidate_facing_schema_declares_the_skill_tiers() -> None:
+    from app.schemas.employer_pages import EmployerOpenRoleOut
+    from app.schemas.jobs import PublicJobOut
+    from app.schemas.portal import PortalJobOut
+
+    for model in (PublicJobOut, PortalJobOut, EmployerOpenRoleOut):
+        assert "skill_buckets" not in model.model_fields, model.__name__
+
+
+async def test_the_public_posting_never_carries_the_skill_tiers(world) -> None:
+    """Owner ruling 2026-11-02: must-have, nice-to-have and behavioural skills
+    are the recruiting team's. The recruiter's preview keeps them (above)."""
     saved = await world(saved=True)
-    for w in (unsaved, saved):
-        await _publish(w)
+    await _publish(saved)
     async with http.api(saved) as api:
-        public_unsaved = await _public(api, unsaved.job)
-        public_saved = await _public(api, saved.job)
-    assert public_unsaved["skill_buckets"] == []
-    assert [bucket["label"] for bucket in public_saved["skill_buckets"]] == LABELS
-    assert _names(public_saved["skill_buckets"]) == EXPECTED
+        public = await _public(api, saved.job)
+        preview = (await api.http.get(PREVIEW.format(job=saved.job))).json()
+    assert "skill_buckets" not in public
+    raw = json.dumps(public).lower()
+    for hidden in ("must_have", "nice_to_have", "behavioural", "must-have skills",
+                   "python data engineering", "kafka stream processing",
+                   "airflow orchestration", "production incident ownership"):
+        assert hidden not in raw, f"{hidden!r} crossed into the public posting"
+    # The same job still carries every tier for the company.
+    assert _names(preview["skill_buckets"]) == EXPECTED
 
 
 async def test_a_frozen_posting_reads_the_snapshot_and_setup_reports_the_freeze(world) -> None:
@@ -168,7 +181,7 @@ async def test_a_frozen_posting_reads_the_snapshot_and_setup_reports_the_freeze(
         public = await _public(api, w.job)
         preview = (await api.http.get(PREVIEW.format(job=w.job))).json()
         setup = (await api.http.get(SETUP.format(job=w.job))).json()
-    assert _names(public["skill_buckets"]) == EXPECTED
+    assert "skill_buckets" not in public
     assert _names(preview["skill_buckets"]) == EXPECTED
     assert preview["frozen"] is True and preview["frozen_reason"] == frozen
     assert setup["frozen"] is True and setup["frozen_at"] is not None

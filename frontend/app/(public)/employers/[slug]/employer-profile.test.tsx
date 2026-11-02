@@ -52,27 +52,27 @@ const PAGE = {
       title: "Legacy Analyst",
       apply_path: "/apply/r2",
       apply_url: "https://readypick.ai/apply/r2",
-      skill_buckets: [],
     },
   ],
 };
 
 describe("open roles", () => {
-  it("lists a role's skills by bucket name, and none for a legacy role", async () => {
+  it("shows a role's title and band but none of the internal skill tiers", async () => {
     http.apiGet.mockResolvedValue(PAGE);
     render(<EmployerProfile slug="acrm" />);
 
     await screen.findByText("Data Engineer");
     expect(screen.getByText("3 to 6 years experience")).toBeTruthy();
-    // Level four: the role title on the card is the level-three heading.
-    const mustHave = screen.getByRole("region", { name: "Must-have skills" });
-    expect(within(mustHave).getByRole("heading", { level: 4 })).toBeTruthy();
-    expect(within(mustHave).getByText("Python")).toBeTruthy();
-    expect(screen.getByText("Nice-to-have skills")).toBeTruthy();
-    expect(screen.getByText("Behavioural competencies")).toBeTruthy();
-
-    // Two roles, one set of skills: the legacy role renders no section.
     expect(screen.getByText("Legacy Analyst")).toBeTruthy();
-    expect(screen.getAllByText("Must-have skills")).toHaveLength(1);
+    for (const text of [
+      "Must-have skills",
+      "Nice-to-have skills",
+      "Behavioural competencies",
+      "Python",
+      "Terraform",
+      "Owns incidents to closure",
+    ]) {
+      expect(screen.queryByText(text)).toBeNull();
+    }
   });
 });

@@ -470,15 +470,8 @@ async def test_public_read_returns_only_published(monkeypatch) -> None:
                     posting_start_date=datetime.now(timezone.utc),
                     created_by=uuid.uuid4(), created_at=datetime.now(timezone.utc))
 
-    async def _no_saved_skills(session, jobs, *, include_unsaved=False):
-        # The builder is a real-table question (`test_posting_preview.py`);
-        # here the job has no saved skills, so the posting shows none.
-        assert include_unsaved is False, "the public posting never shows unsaved skills"
-        return {job.id: () for job in jobs}
-
-    monkeypatch.setattr(jobs_api.assessment_contract, "posting_skills", _no_saved_skills)
     out = await jobs_api.get_public_job(published.id, session=_PublicSession(published))
-    assert out.skill_buckets == []
+    assert "skill_buckets" not in out.model_dump()
     assert out.title == "Data Eng"
     assert out.company_name == "Acme Corp"
     assert out.jd_json == {"role": "pipelines"}

@@ -141,7 +141,6 @@ def _portal_job_out(
     tenant: Tenant | None,
     company: Company | None,
     application_id: uuid.UUID | None,
-    skills: "tuple[assessment_contract.PostingBucket, ...]",
 ) -> PortalJobOut:
     """One place where a Job becomes the candidate-facing job payload.
 
@@ -150,11 +149,9 @@ def _portal_job_out(
     `/jobs/public/{id}`, plus the employer's About/Culture prose — a candidate
     deciding whether to apply is choosing the company as much as the role.
     Internal ATS fields (compensation, created_by, approval state, match
-    scores) are deliberately not carried over. The skills travel by NAME
-    only (CONTRACT v10), from `assessment_contract.posting_skills`.
+    scores) are deliberately not carried over, and neither are the skill tiers
+    (must-have, nice-to-have, behavioural): those are the recruiting team's.
     """
-    from app.api.jobs import posting_skill_buckets  # noqa: PLC0415
-
     return PortalJobOut(
         id=job.id,
         title=job.title,
@@ -176,7 +173,6 @@ def _portal_job_out(
         company_benefits=company.benefits_text if company else None,
         already_applied=application_id is not None,
         application_id=application_id,
-        skill_buckets=posting_skill_buckets(skills),
     )
 
 
@@ -405,14 +401,12 @@ async def portal_jobs(
     applications = await _applications_by_job(
         session, candidate.id, [job.id for job in jobs]
     )
-    postings = await assessment_contract.posting_skills(session, jobs)
     return PortalJobsOut(jobs=[
         _portal_job_out(
             job,
             tenants.get(job.tenant_id),
             companies.get(job.tenant_id),
             applications.get(job.id),
-            postings[job.id],
         )
         for job in jobs
     ])
@@ -436,8 +430,7 @@ async def portal_job(
         await session.execute(select(Company).where(Company.tenant_id == job.tenant_id))
     ).scalars().first()
     applications = await _applications_by_job(session, candidate.id, [job.id])
-    postings = await assessment_contract.posting_skills(session, [job])
-    return _portal_job_out(job, tenant, company, applications.get(job.id), postings[job.id])
+    return _portal_job_out(job, tenant, company, applications.get(job.id))
 
 
 # ── Self-service profile CRUD (Settings & Profile) ──────────────────────────
