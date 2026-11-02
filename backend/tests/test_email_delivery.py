@@ -98,7 +98,7 @@ async def test_tenant_without_a_sender_falls_back_and_says_so(monkeypatch):
     tenant = SimpleNamespace(id=uuid.uuid4(), name="Acme Corp")
     captured = await _capture_sender(monkeypatch, tenant=tenant)
     assert captured["from"] == "contact@readypick.ai"
-    assert captured["from_name"] == "Acme Corp"
+    assert captured["from_name"] == "Acme Corp via Vivekium"
     assert captured["audit"]["from_source"] == "platform_fallback"
     assert captured["audit"]["from_email"] == "contact@readypick.ai"
 

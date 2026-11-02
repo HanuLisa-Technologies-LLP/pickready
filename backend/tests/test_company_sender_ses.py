@@ -69,7 +69,7 @@ def test_no_sender_falls_back_to_contact_and_the_fallback_is_logged(caplog) -> N
     with caplog.at_level(logging.WARNING, logger=resolution.logger.name):
         identity = resolution.tenant_identity(TENANT, None)
     assert identity.email == "contact@readypick.ai"
-    assert identity.name == "Acme Corp"
+    assert identity.name == "Acme Corp via Vivekium"
     assert identity.source == resolution.SOURCE_PLATFORM_FALLBACK
     assert "email.sender_fallback" in caplog.text
     assert str(TENANT.id) in caplog.text
@@ -259,7 +259,7 @@ async def test_lifecycle_mail_with_no_sender_records_the_fallback(
         row = await _queue_and_send(world)
     [call] = fake_ses
     assert call["from_email"] == "contact@readypick.ai"
-    assert call["from_name"] == await _tenant_name(world)
+    assert call["from_name"] == f"{await _tenant_name(world)} via Vivekium"
     assert (row["transport"], row["from_email"], row["from_source"]) == (
         "ses", "contact@readypick.ai", "platform_fallback",
     )

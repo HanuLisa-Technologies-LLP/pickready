@@ -120,7 +120,12 @@ def tenant_identity(
         tenant.id,
         get_settings().platform_sender_email,
     )
-    return platform_identity(source=SOURCE_PLATFORM_FALLBACK, name=tenant.name)
+    # The address is the platform's, so the display name says so: a tenant name
+    # alone would present platform mail as the company's own.
+    return platform_identity(
+        source=SOURCE_PLATFORM_FALLBACK,
+        name=f"{tenant.name.strip()} via {get_settings().platform_sender_name.strip() or 'Vivekium'}",
+    )
 
 
 async def resolve_identity(
