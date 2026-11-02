@@ -39,11 +39,7 @@ import { Badge } from "@/components/ui/badge";
 import { PublicNotice, PublicShell } from "@/components/public-shell";
 import { JsonLd, compact } from "@/components/json-ld";
 import { JdDocument } from "@/components/jd-document";
-import {
-  POSTING_NARRATIVE,
-  PostingSkillsList,
-  postingSkillsFrom,
-} from "@/components/job-posting";
+import { POSTING_NARRATIVE } from "@/components/job-posting";
 import { Section } from "@/components/page-primitives";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -65,9 +61,6 @@ interface PublicJob {
   created_at?: string | null;
   /** The canonical candidate-facing document (PublicJobOut.jd_markdown). */
   jd_markdown?: string | null;
-  /** The job's skills by bucket, names only (CONTRACT v10): an empty list on
-   *  a job with no saved skills; read through `postingSkillsFrom`. */
-  skill_buckets?: unknown;
   /** The company narrative, resolved by the server through the per-job
    *  override and the company profile. Written for the applicant. */
   about_company?: string | null;
@@ -341,8 +334,6 @@ export default function PublicApplyPage() {
   const jdMarkdown = (job.jd_markdown ?? "").trim();
   const hasJdContent =
     Boolean(jdMarkdown) || Object.values(jd).some((v) => asLines(v).length > 0);
-  // Null for a legacy job with no saved skills: no skills section at all.
-  const postingSkills = postingSkillsFrom(job.skill_buckets);
   const narrative = POSTING_NARRATIVE.filter((section) =>
     (job[section.key] ?? "").trim()
   );
@@ -453,11 +444,6 @@ export default function PublicApplyPage() {
                         </div>
                       </section>
                     ) : null}
-                    <PostingSkillsList
-                      buckets={postingSkills}
-                      headingClassName={SECTION_HEADING}
-                      className="space-y-7"
-                    />
                     {narrative.map((section) => (
                       <JdBlock
                         key={section.key}
@@ -493,11 +479,6 @@ export default function PublicApplyPage() {
                       for this role yet. Reach out to them if you need more
                       context before applying.
                     </p>
-                    <PostingSkillsList
-                      buckets={postingSkills}
-                      headingClassName={SECTION_HEADING}
-                      className="space-y-7"
-                    />
                     {narrative.map((section) => (
                       <JdBlock
                         key={section.key}

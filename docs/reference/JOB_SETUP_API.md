@@ -96,15 +96,16 @@ priority order is not revealed).
 Preview skills: once frozen, the snapshot's names; otherwise the job's
 current active skills (saved or not; `skills_saved` says which).
 
-## 4. Public posting payloads: `skill_buckets`
+## 4. `skill_buckets`: recruiter preview only
 
-Added to:
+Since 2026-11-02 (owner statement, register J-02) the three tiers are the
+recruiting team's criteria. `skill_buckets` is carried ONLY by the posting
+preview above. It is NOT in `GET /api/v1/jobs/public/{id}` (`PublicJobOut`),
+`GET /api/v1/portal/jobs` or `.../{id}` (`PortalJobOut`), or the
+`open_roles[]` of `GET /api/v1/employers/{slug}` (`EmployerOpenRoleOut`), and
+no public page renders it (`tests/test_posting_preview.py`).
 
-* `GET /api/v1/jobs/public/{id}` (`PublicJobOut`, the `/apply/{job}` page),
-* `GET /api/v1/portal/jobs/{id}` and every job on `GET /api/v1/portal/jobs`
-  (`PortalJobOut`),
-* every `open_roles[]` entry of `GET /api/v1/employers/{slug}`
-  (`EmployerOpenRoleOut`).
+The preview's shape:
 
 ```jsonc
 "skill_buckets": [

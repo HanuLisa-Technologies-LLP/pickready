@@ -2181,11 +2181,6 @@ async def get_public_job(
     out.about_company = resolved["about_company"]
     out.work_life = resolved["work_life"]
     out.benefits = resolved["benefits"]
-    # The posting's skills by NAME (CONTRACT v10): the saved set, or the frozen
-    # snapshot's, or none at all. The one builder every posting surface uses.
-    out.skill_buckets = posting_skill_buckets(
-        (await assessment_contract.posting_skills(session, [job]))[job.id]
-    )
     await cache.set(cache_key, out.model_dump(mode="json"), ttl=cache.TTL_JOB_DESCRIPTION)
     return out
 
@@ -2193,9 +2188,9 @@ async def get_public_job(
 def posting_skill_buckets(
     buckets: tuple[assessment_contract.PostingBucket, ...],
 ) -> list[PostingSkillBucketOut]:
-    """`assessment_contract.PostingBucket`s as the response model every posting
-    surface declares: the public apply page, the portal, the employer page and
-    the recruiter's preview. The one conversion."""
+    """`assessment_contract.PostingBucket`s as the response model of the
+    recruiter's posting preview, the only surface that carries the skill tiers
+    (never a candidate-facing one). The one conversion."""
     return [
         PostingSkillBucketOut(bucket=bucket.bucket, label=bucket.label, names=list(bucket.names))
         for bucket in buckets
