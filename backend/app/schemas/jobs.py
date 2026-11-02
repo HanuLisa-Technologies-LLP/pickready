@@ -21,9 +21,10 @@ JobGrade = Literal["non_managerial", "managerial", "leadership", "cxo"]
 class PostingSkillBucketOut(BaseModel):
     """One bucket of a job posting's skills, by NAME only (CONTRACT v10).
 
-    The public posting (apply page, portal job view, employer page) and the
-    recruiter's Final Job Posting preview show the skills under three headings.
-    Nothing else about a skill crosses: never its evidence line, its priority
+    ONLY the recruiter's Final Job Posting preview carries it. The public apply
+    page, the portal job view and the employer page do not (owner ruling
+    2026-11-02): the three tiers are the recruiting team's criteria. Nothing
+    else about a skill crosses either: never its evidence line, its priority
     or the role summary, which are the hidden half of the assessment contract.
     Names are in alphabetical order, so the order does not reveal the hidden
     priority either. Built by `assessment_contract.posting_skills`.
@@ -412,9 +413,9 @@ class PublicJobOut(BaseModel):
     about_company: str | None = None
     work_life: str | None = None
     benefits: str | None = None
-    #: The posting's skills by name, three buckets in order, or EMPTY when the
-    #: job has no saved skills (CONTRACT v10). Frozen jobs read the snapshot.
-    skill_buckets: list[PostingSkillBucketOut] = []
+    #: No skill tiers here. Must-have, nice-to-have and behavioural skills are
+    #: the recruiting team's criteria (owner ruling 2026-11-02); the recruiter's
+    #: posting preview carries them, no candidate-facing payload does.
     created_at: datetime
 
     @computed_field  # type: ignore[prop-decorator]

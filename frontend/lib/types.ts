@@ -890,16 +890,13 @@ export interface PortalJob {
   company_culture?: string | null;
   company_industry?: string | null;
   company_benefits?: string | null;
-  /** The job's skills by bucket, names only (CONTRACT v10). An empty list on
-   *  a job with no SAVED skills; read through `postingSkillsFrom`. */
-  skill_buckets?: PostingSkillBucket[] | null;
 }
 
 /**
- * One bucket of a job's skills as a candidate reads them (CONTRACT v10,
- * point 2; `s4-api-shapes.md` section 4): the server's label and the skill
- * NAMES, alphabetical. The hidden evidence line, the priority and the role
- * summary are assessment context and never ride this shape.
+ * One bucket of a job's skills as the RECRUITER's posting preview shows it
+ * (CONTRACT v10): the server's label and the skill NAMES, alphabetical. No
+ * candidate-facing payload carries it (owner ruling 2026-11-02). The hidden
+ * evidence line, the priority and the role summary never ride this shape.
  */
 export interface PostingSkillBucket {
   bucket: "must_have" | "nice_to_have" | "behavioural";

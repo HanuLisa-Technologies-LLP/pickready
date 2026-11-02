@@ -65,8 +65,9 @@ describe("reading the job", () => {
   });
 });
 
-// CONTRACT v10, point 2: the public posting shows the skills by bucket name.
-describe("the posting's skills", () => {
+// Owner ruling 2026-11-02: the three skill tiers are the recruiting team's
+// criteria and never appear on the public posting, whatever a payload carries.
+describe("the posting's internal skill tiers", () => {
   const JOB = {
     id: "job-1",
     title: "Data Engineer",
@@ -74,34 +75,36 @@ describe("the posting's skills", () => {
     about_company: "We build payroll software.",
   };
 
-  it("lists the skills by bucket name, names only", async () => {
+  it("renders no tier section even when a payload carries the tiers", async () => {
     http.apiGet.mockResolvedValueOnce({
       ...JOB,
+      jd_json: { description: "Build the warehouse.", skills: ["Data modelling"] },
       skill_buckets: [
         { bucket: "must_have", label: "Must-have skills", names: ["Python", "SQL"] },
-        { bucket: "nice_to_have", label: "Nice-to-have skills", names: [] },
+        { bucket: "nice_to_have", label: "Nice-to-have skills", names: ["Terraform"] },
         {
           bucket: "behavioural",
           label: "Behavioural competencies",
           names: ["Owns incidents to closure"],
-          evidence_lines: ["hidden"],
         },
       ],
     });
     render(<PublicApplyPage />);
 
-    const mustHave = await screen.findByRole("region", { name: "Must-have skills" });
-    expect(within(mustHave).getByText("Python")).toBeTruthy();
-    expect(within(mustHave).getByText("SQL")).toBeTruthy();
-    expect(
-      within(screen.getByRole("region", { name: "Behavioural competencies" })).getByText(
-        "Owns incidents to closure",
-      ),
-    ).toBeTruthy();
-    // An empty bucket is not a heading over nothing, and nothing hidden leaks.
-    expect(screen.queryByText("Nice-to-have skills")).toBeNull();
-    expect(screen.queryByText("hidden")).toBeNull();
-    // The company narrative the preview promised is on the posting too.
+    await screen.findByText("Build the warehouse.");
+    for (const heading of [
+      "Must-have skills",
+      "Nice-to-have skills",
+      "Behavioural competencies",
+      "Behavioural skills",
+    ]) {
+      expect(screen.queryByText(heading)).toBeNull();
+    }
+    expect(screen.queryByText("Python")).toBeNull();
+    expect(screen.queryByText("Owns incidents to closure")).toBeNull();
+    // The general Skills section and the company narrative are unchanged.
+    expect(screen.getByText("Skills")).toBeTruthy();
+    expect(screen.getByText("Data modelling")).toBeTruthy();
     expect(screen.getByText("About the company")).toBeTruthy();
     expect(screen.getByText("We build payroll software.")).toBeTruthy();
   });
@@ -110,7 +113,6 @@ describe("the posting's skills", () => {
     http.apiGet.mockResolvedValueOnce({
       ...JOB,
       jd_markdown: "Own the event pipeline end to end.",
-      skill_buckets: [],
     });
     render(<PublicApplyPage />);
 
@@ -119,12 +121,4 @@ describe("the posting's skills", () => {
     expect(screen.queryByText("Build the warehouse.")).toBeNull();
   });
 
-  it("renders no skills section for a legacy job without saved skills", async () => {
-    http.apiGet.mockResolvedValueOnce({ ...JOB, skill_buckets: [] });
-    render(<PublicApplyPage />);
-
-    await screen.findByText("Build the warehouse.");
-    expect(screen.queryByText("Must-have skills")).toBeNull();
-    expect(screen.queryByText("Behavioural competencies")).toBeNull();
-  });
 });
