@@ -5,8 +5,8 @@ should have come from a real workflow  -  it fills fields that are NULL or empty
 on rows that already exist, and tops up the few collections (staff, reports,
 email log) whose emptiness would block a demo path.
 
-    docker exec pickready-backend-1 python -m app.scripts.seed_mock_data --dry-run
-    docker exec pickready-backend-1 python -m app.scripts.seed_mock_data
+    docker exec vivekium-backend-1 python -m app.scripts.seed_mock_data --dry-run
+    docker exec vivekium-backend-1 python -m app.scripts.seed_mock_data
 
 Two properties make it safe to run against the shared dev database:
 
