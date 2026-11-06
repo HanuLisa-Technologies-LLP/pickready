@@ -1,7 +1,7 @@
 # Local dev stack (ESD §15): postgres+pgvector, redis, the backend API, the
 # proctoring analysis service and the frontend dev server. Run from repo root:
 #   docker compose -f infra/docker-compose.yml up --build
-name: pickready
+name: vivekium
 
 services:
   postgres:

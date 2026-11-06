@@ -63,7 +63,7 @@ work that made them. None of it was data. All of it was reproducible.
 
 ### Docker
 
-- There is ONE Compose project, `pickready`, defined by `infra/docker-compose.yml`.
+- There is ONE Compose project, `vivekium`, defined by `infra/docker-compose.yml`.
   Many services inside it is correct.
 - Do not create persistent parallel projects (`pickready-test`, `readypick-test`,
   verify, rehearse, temporary copies). Reuse the canonical stack where safe. For
