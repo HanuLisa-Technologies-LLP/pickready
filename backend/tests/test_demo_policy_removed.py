@@ -46,7 +46,6 @@ async def test_a_stranger_gets_mail_while_demo_mode_is_on(monkeypatch) -> None:
     settings = security_email.get_settings().model_copy(update={
         "demo_mode": True,
         "demo_mode_confirm": "public-demo",
-        "email_transport": "ses",
     })
     monkeypatch.setattr(security_email, "get_settings", lambda: settings)
     sent: list[str] = []

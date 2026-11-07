@@ -36,7 +36,7 @@ from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 # candidate in words; neither is ever silently relabelled as success.
 
 STATUS_COLLECTED = "collected"                # employer + mailbox recorded
-STATUS_DISPATCHED = "dispatched"              # inquiry email accepted by SMTP
+STATUS_DISPATCHED = "dispatched"              # inquiry email accepted by SES
 STATUS_DISPATCH_FAILED = "dispatch_failed"    # delivery failed, visibly
 STATUS_RESPONSE_RECEIVED = "response_received"  # a reply arrived, parse queued
 STATUS_PARSED = "parsed"                      # seven fields extracted

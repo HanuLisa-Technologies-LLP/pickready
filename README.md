@@ -42,7 +42,7 @@ Next.js 16 frontend, FastAPI backend, Firebase identity, PostgreSQL with pgvecto
 | AI | One vendor, three endpoints: `gpt-5.6-terra` (judge and write), `gpt-5.6-luna` (extract and classify), `voyage-4` (embeddings), routed through `services/llm_router` with per-task timeouts, budgets and a circuit breaker |
 | Auth | Firebase Authentication (Google or email and password) plus session cookies backed by a Redis session record |
 | Payments | Razorpay: monthly plans and a Starter top-up today (per-credit pricing is decided, not built) |
-| Email | Amazon SES or SMTP today, one transport per deployment, with corporate senders per tenant (SES only is decided, not built; `noreply@` for security codes, `contact@` for other platform mail) |
+| Email | Amazon SES only, with a company's own approved sender per tenant (`noreply@readypick.ai` for security codes, `contact@readypick.ai` for other platform mail and as the recorded fallback) |
 | Object storage | Private S3 bucket, content-addressed, served through authenticated routes |
 | Deployment | AWS: ECS Fargate, Lambda, RDS PostgreSQL, ElastiCache, S3, ECR, Secrets Manager, Terraform in [infra/](infra/) |
 

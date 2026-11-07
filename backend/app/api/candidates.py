@@ -713,8 +713,8 @@ async def schedule_interview(
     user: CurrentUser = Depends(require_capability(caps.SCHEDULE_INTERVIEWS)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> InterviewOut:
-    """Interview invite with .ics, sent ONLY from the tenant's verified
-    sending domain (FR-8.3 / claude.md rule 5), never Gmail/Outlook."""
+    """Interview invite with .ics, sent from the company's approved sender,
+    else from the platform address under the company name (register I-20)."""
     link = await _get_link(session, user, link_id)
     candidate = await session.get(Candidate, link.candidate_id)
     tenant = await session.get(Tenant, user.tenant_id)
@@ -744,7 +744,7 @@ async def schedule_interview(
     # what surfaced the function, and the function is what surfaced the gap.
     #
     # `pickready.send_email` takes `attachments` as
-    # [{"filename": str, "content": <base64 str>}] and `smtp_service` decodes
+    # [{"filename": str, "content": <base64 str>}] and `ses_service` decodes
     # the base64 back to bytes for the MIME part.
     ics = email_render.build_ics(
         uid=ics_uid,

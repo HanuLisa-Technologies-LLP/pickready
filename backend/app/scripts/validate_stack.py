@@ -5,7 +5,7 @@
 
 Prints a PASS / FAIL / WARN line per check plus a summary table, and exits
 non-zero if any HARD check FAILED. WARN never fails the run  -  it flags a known,
-expected gap (e.g. the SMTP credentials the user hasn't added yet).
+expected gap (e.g. the embedding key the user hasn't added yet).
 
 Checks
 ------
@@ -15,7 +15,6 @@ Checks
   4. Required env present in the backend process
        - FIREBASE_SERVICE_ACCOUNT_JSON  (hard)
        - CLOUDINARY_URL                 (hard)
-       - SMTP_HOST / SMTP_USER / SMTP_PASSWORD (WARN only  -  user hasn't set them yet)
   5. Seeded data sane
        - exactly one super_admin, and it is the configured Owner
        - >= 25 candidates with a resume_url set (Cloudinary seed)
@@ -408,7 +407,7 @@ def _task_dispatch_check():
 
 
 def _env_check():
-    """Hard-required backend env present; SMTP credentials are WARN-only."""
+    """Hard-required backend env present."""
     settings = get_settings()
     hard = {
         "FIREBASE_SERVICE_ACCOUNT_JSON": settings.firebase_service_account_json,
@@ -450,25 +449,6 @@ def _embedding_check():
     )
 
 
-def _smtp_env_check():
-    """Outbound email now goes over SMTP from the backend (PRD v1.0, replaces the
-    Gmail SMTP). Missing credentials are warning-only so
-    dev must still boot without them (missing keys warn, never hard-crash)."""
-    settings = get_settings()
-    required = {
-        "SMTP_HOST": settings.smtp_host,
-        "SMTP_USER": settings.smtp_user,
-        "SMTP_PASSWORD": settings.smtp_password,
-    }
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        return WARN, (
-            f"{', '.join(missing)} not set, email delivery disabled (known gap; "
-            "configure Gmail SMTP with a Google app password)"
-        )
-    return PASS, f"SMTP configured (host={settings.smtp_host}, port={settings.smtp_port})"
-
-
 def _firebase_admin_initializes():
     """The service-account JSON must actually parse + be usable by firebase_admin
     (a malformed single-line JSON is a common deploy footgun)."""
@@ -503,7 +483,6 @@ def main() -> int:
     report.check("task_dispatch_reachable", _task_dispatch_check)
     report.check("required_env_present", _env_check)
     report.check("firebase_service_account_valid", _firebase_admin_initializes)
-    report.check("smtp_credentials_present", _smtp_env_check)
     report.check("embedding_model_configured", _embedding_check)
 
     # DB + seed sanity.

@@ -19,7 +19,7 @@ The 2026-10-14 rulings leave these open. None has an owner answer; none is assum
 |---|---|
 | T-01 | **Job state machine.** The exact database states, allowed transitions, correction and resubmission paths and the migration design for J-17. How the five names map onto the six states in `ck_jobs_lifecycle_state` (J-06). |
 | T-02 | **Coding checks (S-20).** Languages, static-checker tools per language, the scoring proportion between checker and AI review, and what feedback the candidate sees. |
-| T-03 | **Email (I-20).** SES identity verification for `noreply@` and `contact@`; what development and tests use once SMTP is removed; what `manjunath@readypick.ai` receives (inbound routing, support notices). |
+| T-03 | **Email (I-20), built.** Open: whether `noreply@` and `contact@` send successfully in production (the `readypick.ai` domain identity was seen verified in the pilot account on 2026-11-02, but no live send is recorded); what local development sends without AWS credentials (tests use a fake SES client; a local stack fails visibly rather than falling back); what `manjunath@readypick.ai` receives (inbound routing, support notices). |
 | T-04 | **Credit pricing (C-10).** Conversion rates for existing subscribers, treatment of unused plan benefits and rollover credits, customer notification terms, credit price, GST treatment, consumption, expiry, refunds and billing transitions. Settled: subscribers keep their paid period and move to credits at their next renewal. |
 | T-05 | **Scoring policy versioning (S-21).** What a policy version stores, and how a historical score is reproduced after the weights change. |
 | T-06 | **Assessment snapshot consistency (J-18, J-19).** How HR review of a post-publication SWOT change gates future assessments, how snapshots stay consistent with a live SWOT, and how concurrent edits to a job are handled. |
@@ -57,7 +57,7 @@ $(printf '%s' |
 | X-06 | The ESD named the approval state machine and the matching pipeline as "unchanged and authoritative". Both were replaced in 2026-09-25. | Resolved: ESD rewritten. |
 | X-07 | Deployment runbooks said "nothing has been executed" while pilot has been live since 2026-09. | Resolved: status banners corrected. |
 | X-08 | Instruction files claimed migrations 0001 to 0130; the head is 0136. | Resolved. |
-| X-09 | The 2026-09-06 rule allowed SMTP or SES; I-20 allows SES only. | Resolved by I-20; code pending. |
+| X-09 | The 2026-09-06 rule allowed SMTP or SES; I-20 allows SES only. | Resolved by I-20; built. |
 | X-10 | The "MANDATORY graphify query" instruction against W-20. | Resolved by W-20; Claude hook removed, Codex hook file pending. |
 | X-11 | C-10 (per-credit pricing) against the 2026-09-30 monthly plans and the live code. | Resolved in intent: per-credit replaces subscriptions; existing subscribers keep their paid period and move at next renewal. The code still runs the plans (Pending change 8); transition terms are T-04. |
 | X-12 | J-13 (a material SWOT change cancels approval) against J-18 (a post-publication SWOT change does not unpublish). | Resolved: pre-publication approval is invalidated by a material change; after publication the job stays live and HR review is needed before the change affects future assessments (J-18). The gating mechanics are T-06. |

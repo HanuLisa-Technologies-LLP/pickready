@@ -177,19 +177,6 @@ def test_no_resend_or_mailtrap_integration_survives() -> None:
     assert not offenders, f"legacy email provider still referenced in: {offenders}"
 
 
-def test_smtp_settings_only_accept_gmail() -> None:
-    from app.core.config import Settings
-
-    with pytest.raises(ValueError):
-        Settings(smtp_host="smtp.sendgrid.net", smtp_user="a@gmail.com",
-                 smtp_password="x", smtp_from_email="a@gmail.com")
-    with pytest.raises(ValueError):
-        # Port 465 / implicit SSL is not the sanctioned configuration.
-        Settings(smtp_host="smtp.gmail.com", smtp_port=465, smtp_ssl=True,
-                 smtp_starttls=False, smtp_user="a@gmail.com",
-                 smtp_password="x", smtp_from_email="a@gmail.com")
-
-
 # ── No OTP in any portal UI ────────────────────────────────────────────────
 
 def test_no_otp_copy_reaches_any_portal() -> None:

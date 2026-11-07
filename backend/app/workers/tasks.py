@@ -38,14 +38,16 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.core.config import get_settings, preflight_delivery_config
+from app.core.config import get_settings
+from app.services import email_sender_resolution as sender_resolution
+from app.services import ses_service
+from app.services.ses_service import TRANSPORT
 from app.services.delivery_errors import (
     DeliveryError,
     PermanentDeliveryError,
     TransientDeliveryError,
     log_delivery_error,
 )
-from app.services.smtp_service import send_email_async as smtp_send
 from app.models import (
     Candidate,
     Tenant,
@@ -61,15 +63,6 @@ from app.workers.runtime import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# -- Startup preflight -------------------------------------------------------
-# Celery ran this from a `worker_ready` signal, once per worker process. There
-# is no long-lived worker process any more, so it runs at MODULE IMPORT, which
-# in a Lambda execution environment is once per cold start and in a Fargate
-# task is once per run. Same guarantee it always gave: a loud WARNING when an
-# SMTP credential is missing, never a hard crash.
-preflight_delivery_config()
 
 
 async def _audit(
@@ -138,58 +131,29 @@ async def _deliver_email(
     html: str,
     text: str | None = None,
     attachments: list[dict] | None = None,
-    sender=None,
+    identity: sender_resolution.FromIdentity,
     correlation: dict | None = None,
     reply_to: str | None = None,
 ) -> str | None:
-    """One door to the outbound transport (Corporate Email System spec
-    section 6). The transport is DEPLOYMENT DATA (`settings.email_transport`,
-    "smtp" or "ses"), exactly one per deployment, never a fallback chain.
+    """One door to the outbound transport: Amazon SES, the only one (register
+    I-20). `identity` is the From the caller resolved through
+    `services/email_sender_resolution`, the one place that decides it.
+    Returns the provider message id.
 
-    `sender` is an ACTIVE ClientEmailSender row or None. Under SES an active
-    corporate sender IS the From address; under SMTP Gmail refuses arbitrary
-    From on the authenticated mailbox, so the corporate sender travels as
-    Reply-To and From stays the Gmail address (assumption recorded in
-    smtp_service._build_message). Returns the provider message id.
-
-    An EXPLICIT `reply_to` overrides both, and there is exactly one caller:
-    a conversation's own reply address, which is what routes an employer's
-    answer back into the thread it belongs to. It wins over the corporate
-    sender deliberately -- a reply that reached the sender's mailbox instead of
-    the thread is a reply the product cannot see, and a recruiter would sit
-    waiting for an answer that had already arrived somewhere else.
-
-    ASSUMPTION (spec section 6): under "ses" with no corporate sender, the
-    configured `smtp_from_email` address doubles as the platform's SES-verified
-    default identity; the deployment must verify it in the SES account.
+    An EXPLICIT `reply_to` is a conversation's own reply address, which is
+    what routes an employer's or a candidate's answer back into the thread it
+    belongs to. With none, a reply goes to the From address.
     """
-    settings = get_settings()
-    if settings.email_transport == "ses":
-        from app.services.ses_service import send_email_async as ses_send
-
-        return await ses_send(
-            from_email=sender.email if sender is not None else settings.smtp_from_email,
-            from_name=sender.name if sender is not None else settings.smtp_from_name,
-            to=to,
-            subject=subject,
-            html=html,
-            text=text,
-            attachments=attachments,
-            reply_to=reply_to,
-            # SES-ONLY, and deliberately not plumbed into the SMTP path: these
-            # become SES message tags, which have no SMTP equivalent. Handing
-            # them to Gmail would mean inventing headers nothing ever reads.
-            correlation=correlation,
-        )
-    return await smtp_send(
-        from_email=settings.smtp_from_email,
-        from_name=settings.smtp_from_name,
+    return await ses_service.send_email_async(
+        from_email=identity.email,
+        from_name=identity.name,
         to=to,
         subject=subject,
         html=html,
         text=text,
         attachments=attachments,
-        reply_to=reply_to or (sender.email if sender is not None else None),
+        reply_to=reply_to,
+        correlation=correlation,
     )
 
 
@@ -211,36 +175,18 @@ async def _send_email_async(
     # emails  -  the Owner/super_admin OTP has no tenant  -  and this path used to
     # crash with ValueError('badly formed hexadecimal UUID string') from
     # uuid.UUID(str(None)) before any email was sent. No tenant → skip the
-    # tenant lookup entirely: default templates + the default SMTP sender.
+    # tenant lookup entirely: default templates + the platform sender.
     tenant: Tenant | None = None
     if tenant_id:
         try:
             tenant = await session.get(Tenant, uuid.UUID(str(tenant_id)))
         except (ValueError, TypeError):
-            tenant = None  # invalid id → default-sender path, never a crash
+            tenant = None  # invalid id → platform-sender path, never a crash
         if tenant is None:
             logger.warning(
-                "email.tenant_missing template=%s tenant_id=%s  -  using default sender",
+                "email.tenant_missing template=%s tenant_id=%s  -  using platform sender",
                 template_name, tenant_id,
             )
-
-    # ONE transport per deployment (settings.email_transport): the platform's
-    # own identity is the From address on this template path either way, and
-    # tenant-domain sender substitution happens only through an ACTIVE
-    # corporate sender on the lifecycle path, never here.
-    sender_path = settings.email_transport
-
-    # Structured, secret-free log so delivery failures are diagnosable  -
-    # never the message body/context (may carry OTP codes, ESD §16).
-    logger.info(
-        "email.sender provider=%s path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
-        settings.email_transport,
-        sender_path,
-        template_name,
-        str(tenant.id) if tenant is not None else "-",
-        tenant.spf_dkim_status if tenant is not None else "-",
-        settings.environment,
-    )
 
     # Rendering happens INSIDE the audited block. It used to sit above the
     # try/finally, so a template that resolved to neither a tenant row nor a
@@ -255,7 +201,18 @@ async def _send_email_async(
     delivery_status = "sent"
     message_id = ""
     err_meta: dict = {}
+    identity: sender_resolution.FromIdentity | None = None
     try:
+        identity = await sender_resolution.resolve_identity(
+            session, tenant=tenant, template_name=template_name
+        )
+        # Structured, secret-free log so delivery failures are diagnosable  -
+        # never the message body/context (may carry OTP codes, ESD §16).
+        logger.info(
+            "email.sender transport=%s from=%s source=%s template=%s tenant_id=%s env=%s",
+            TRANSPORT, identity.email, identity.source, template_name,
+            str(tenant.id) if tenant is not None else "-", settings.environment,
+        )
         subject, body = await email_render.render(
             session, tenant.id if tenant is not None else None, template_name, context
         )
@@ -266,6 +223,7 @@ async def _send_email_async(
             html=html_body,
             text=body,
             attachments=attachments,
+            identity=identity,
             reply_to=reply_to,
         ) or ""
     except DeliveryError as err:
@@ -273,15 +231,15 @@ async def _send_email_async(
         err_meta = err.as_audit_metadata()
         log_delivery_error(
             "email", err,
-            template=template_name, to=to, sender_path=sender_path,
+            template=template_name, to=to,
+            sender_path=identity.source if identity is not None else "-",
         )
         raise  # task decides: permanent → no retry, transient → backoff
     except Exception as exc:  # unexpected (e.g. template/render error)
         delivery_status = "failed"
         err_meta = {"error_name": type(exc).__name__, "provider_message": str(exc)[:500]}
         logger.exception(
-            "email.delivery_failed kind=unexpected template=%s sender_path=%s",
-            template_name, sender_path,
+            "email.delivery_failed kind=unexpected template=%s", template_name,
         )
         raise
     finally:
@@ -301,6 +259,8 @@ async def _send_email_async(
                     "UPDATE email_log SET status = :status, "
                     " provider_message_id = COALESCE(:mid, provider_message_id), "
                     " transport = :transport, "
+                    " from_email = COALESCE(:from_email, from_email), "
+                    " from_source = COALESCE(:from_source, from_source), "
                     " sent_at = CASE WHEN :status = 'sent' THEN now() "
                     "            ELSE sent_at END, "
                     " failed_at = CASE WHEN :status = 'failed' THEN now() "
@@ -311,7 +271,9 @@ async def _send_email_async(
                     "id": email_log_id,
                     "status": delivery_status,
                     "mid": message_id or None,
-                    "transport": settings.email_transport,
+                    "transport": TRANSPORT,
+                    "from_email": identity.email if identity is not None else None,
+                    "from_source": identity.source if identity is not None else None,
                 },
             )
         # Log delivery to audit_log (ESD §11). NEVER include `context`  -  it may
@@ -326,7 +288,8 @@ async def _send_email_async(
                 "to": to,
                 "template": template_name,
                 "status": delivery_status,
-                "sender_path": sender_path,
+                "from_email": identity.email if identity is not None else None,
+                "from_source": identity.source if identity is not None else None,
                 **({"failure": err_meta} if err_meta else {}),
             },
         )
@@ -357,16 +320,17 @@ def send_email(
     reply_to: str | None = None,
     email_log_id: str | None = None,
 ):
-    """attachments: [{"filename": str, "content": <base64 str>}] (SMTP MIME part).
+    """attachments: [{"filename": str, "content": <base64 str>}] (a MIME part).
 
     `reply_to` is optional and TRAILING, so every existing four-argument
     dispatch keeps working unchanged -- including any message already in flight
     during a rolling deploy, which is the reason it is not inserted earlier in
     the list.
 
-    tenant_id None = platform-level email (e.g. Owner OTP): default template,
-    default SMTP sender. Interview invites and verification emails also route
-    through here, so they inherit the verified-domain/default-sender selection.
+    tenant_id None = platform-level email: default template, sent from
+    `contact@readypick.ai`. A tenant's mail leaves from its default ACTIVE
+    sender, else from the same platform address under the company name with
+    the fallback recorded (`services/email_sender_resolution`).
 
     Failure handling:
       * PermanentDeliveryError → swallowed after logging + audit (no retry).
@@ -481,10 +445,27 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             )
             return {"status": "failed", "error": "sender_not_active"}
 
+    # THE FROM IDENTITY, decided once (`email_sender_resolution`): the row's
+    # ACTIVE company sender, else the platform address under the company name,
+    # recorded on the row as `platform_fallback`.
+    tenant = await session.get(Tenant, row.tenant_id)
+    if tenant is None:
+        row.status = STATUS_FAILED
+        row.error = "Refused at send time: the tenant no longer exists"
+        row.failed_at = datetime.now(timezone.utc)
+        await email_outbox.settle_thread_message(
+            session, row.id, state=DELIVERY_FAILED, detail=row.error
+        )
+        await session.commit()
+        return {"status": "failed", "error": "tenant_missing"}
+    identity = sender_resolution.tenant_identity(tenant, sender)
+    row.from_email = identity.email
+    row.from_source = identity.source
+
     # THE THREAD'S OWN ADDRESS, when this email belongs to a conversation, so
     # an emailed answer lands in the thread rather than in a mailbox nobody
     # watches. None when the deployment receives no mail (pilot, 2026-09):
-    # the transport then keeps its previous Reply-To.
+    # no Reply-To is set and a reply goes to the From address.
     reply_to = None
     if row.conversation_id is not None:
         token = (
@@ -502,7 +483,7 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             subject=row.subject,
             html=to_html(row.body),
             text=row.body,
-            sender=sender,
+            identity=identity,
             reply_to=reply_to,
             # Correlation for the SES event that comes back minutes later.
             # `notification_id` IS the email_log row id: that is the record an
@@ -524,7 +505,7 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
         # STAMPED ON THE FAILURE PATH TOO. A row that failed still went out
         # over a transport, and knowing which one is most of the diagnosis.
         row.failed_at = datetime.now(timezone.utc)
-        row.transport = get_settings().email_transport
+        row.transport = TRANSPORT
         await email_outbox.settle_thread_message(
             session, row.id, state=DELIVERY_FAILED, detail=err.error_name
         )
@@ -547,15 +528,12 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
 
     row.status = STATUS_SENT
     row.sent_at = datetime.now(timezone.utc)
-    # RECORDED PER ROW, never inferred later from the current setting: a
-    # deployment that switches transport would otherwise relabel history, and
-    # `sent` means different things under each (terminal under smtp, awaiting
-    # a delivery event under ses).
-    row.transport = get_settings().email_transport
+    # RECORDED PER ROW, never inferred later: historical rows keep the
+    # transport that carried them (older ones also went over SMTP).
+    row.transport = TRANSPORT
     row.error = None
     # The provider id is what a later SES delivery/bounce/complaint event is
-    # matched back on (spec section 8). The SMTP Message-ID is recorded too;
-    # Gmail simply never reports events against it.
+    # matched back on (spec section 8).
     row.provider_message_id = provider_message_id
     await email_outbox.settle_thread_message(
         session, row.id, state=DELIVERY_SENT, detail=None
@@ -2913,10 +2891,10 @@ def send_bgv_inquiry(ctx: TaskContext, inquiry_id: str):
     the candidate's responsibility by design, so there is no reminder sweep.
 
     Every failure is visible on the row: a permanent delivery failure or an
-    unexpected error lands the inquiry in `dispatch_failed`; a transient SMTP
+    unexpected error lands the inquiry in `dispatch_failed`; a transient SES
     failure retries on the delivery budget and lands there when the budget is
     exhausted. Success stamps `dispatched` and `inquiry_sent_at` only after
-    SMTP accepted the message, because a timestamp is not evidence that work
+    SES accepted the message, because a timestamp is not evidence that work
     happened unless it is written after the work did.
     """
     from app.models.bgv import (

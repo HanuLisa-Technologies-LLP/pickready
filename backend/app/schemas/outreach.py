@@ -70,10 +70,6 @@ class OutreachPreviewOut(BaseModel):
     recipients: list[ResolvedEmail]
     skipped: list[SkippedRecipient] = []
     placeholders: list[str] = list(MANUAL_PLACEHOLDERS)
-    # Delivery-config transparency: a missing SMTP credential must surface in
-    # the UI rather than produce a silently undelivered email (claude.md r5).
-    smtp_configured: bool = True
-    delivery_warning: str | None = None
 
 
 class OutreachSendOut(BaseModel):
@@ -81,8 +77,6 @@ class OutreachSendOut(BaseModel):
     recipients: list[str] = []          # email addresses actually queued
     task_ids: list[str] = []
     skipped: list[SkippedRecipient] = []
-    smtp_configured: bool = True
-    delivery_warning: str | None = None
 
 
 class OutreachDeliveryStatusIn(BaseModel):

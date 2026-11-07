@@ -13,7 +13,9 @@ WHO IT IS FROM
 sender the caller named must be one of this tenant's ACTIVE senders (the early,
 actionable refusal; the worker re-checks at send time, which is the security
 boundary). No sender named means the tenant's DEFAULT active sender, and no
-default means None, which is the platform mailbox. So an automatic email with
+default means None: the worker then sends from the platform address under the
+company name and records the fallback (`email_sender_resolution`, register
+I-20). So an automatic email with
 no human behind it still goes out under the company's own address once the
 company has picked one.
 
@@ -77,6 +79,7 @@ from app.models.email_log import (
     EmailLog,
 )
 from app.models.email_sender import SENDER_ACTIVE, ClientEmailSender
+from app.services.email_sender_resolution import default_active_sender
 from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
@@ -141,15 +144,8 @@ async def resolve_sender(
                 "can be used for automated emails."
             )
         return sender.id
-    return (
-        await session.execute(
-            select(ClientEmailSender.id).where(
-                ClientEmailSender.tenant_id == tenant_id,
-                ClientEmailSender.is_default.is_(True),
-                ClientEmailSender.status == SENDER_ACTIVE,
-            )
-        )
-    ).scalar_one_or_none()
+    default = await default_active_sender(session, tenant_id)
+    return default.id if default is not None else None
 
 
 async def dedupe_key_exists(session: AsyncSession, key: str) -> bool:

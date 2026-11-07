@@ -1,8 +1,8 @@
 """Owner console schemas (API_CONTRACT.md `/admin`).
 
 Onboarding captures the company *profile* (industry / culture / details) — it
-no longer asks for a sending domain (SMTP replaced per-tenant verified
-domains, claude.md rule 5) and it never mentions OTP (Firebase owns
+no longer asks for a sending domain (approved senders replaced per-tenant
+verified domains) and it never mentions OTP (Firebase owns
 credentials, claude.md rule 2).
 """
 import re

@@ -171,10 +171,7 @@ export default function StaffPage() {
       setInviteResult(member);
       toast({
         title: "Team invitation created",
-        description:
-          member.email_dispatch === "queued"
-            ? "Email queued. You can also copy the invitation link."
-            : "Email delivery is not configured. Copy and share the invitation link.",
+        description: "Email queued. You can also copy the invitation link.",
       });
     } catch (error) {
       toast({

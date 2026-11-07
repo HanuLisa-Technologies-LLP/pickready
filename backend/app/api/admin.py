@@ -17,7 +17,7 @@ read-only-by-absence rule of 2026-07-27 forbids and which bypassed
 `test_provider_portal.PROVIDER_WRITES`.
 
 Auth is Firebase (claude.md rule 2): no OTP is ever generated here. Email is
-SMTP via the dispatched `pickready.send_email` task (rules 4 and 5).
+SES via the dispatched `pickready.send_email` task (rule 4).
 """
 import uuid
 from datetime import datetime, timezone
@@ -141,7 +141,7 @@ async def create_tenant(
 
     The admin signs in with email/password or Google via Firebase — Vivekium
     stores no password and issues no OTP (claude.md rule 2). No sending domain
-    is collected: outbound mail is SMTP (rule 5).
+    is collected: outbound mail is SES.
     """
     # Defensive owner invariant: no user-creating path may ever mint a
     # super_admin identity other than settings.owner_email (contract rev 2).
@@ -204,7 +204,7 @@ async def create_tenant(
         metadata={"name": name, "domain": domain, "industry": body.industry},
     )
     # Firebase owns credentials: the invite is an onboarding pointer, never a
-    # code. Sending is a dispatched task (rule 4) over SMTP (rule 5).
+    # code. Sending is a dispatched task (rule 4) over SES.
     #
     # The email used to carry only the tenant's name and NO acceptance link,
     # because no StaffInvite row was ever minted for the client owner — so the

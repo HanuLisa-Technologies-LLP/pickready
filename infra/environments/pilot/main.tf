@@ -1306,11 +1306,10 @@ module "ecs" {
     # thread and `record` runs nothing, and neither belongs on a deployed
     # service: `record` is refused in production by the dispatcher itself.
     TASK_DISPATCH_BACKEND = "aws"
-    # ONE TRANSPORT PER DEPLOYMENT, never a fallback chain: the same shape
-    # TASK_DISPATCH_BACKEND has. SES sends as the tenant's own verified
-    # sender, which is the whole point of the corporate-sender feature and
-    # something an authenticated Gmail mailbox structurally cannot do.
-    EMAIL_TRANSPORT = "ses"
+    # EMAIL IS AMAZON SES ONLY (register I-20); there is no transport setting.
+    # SES sends as the tenant's own verified sender, which is the whole point
+    # of the corporate-sender feature.
+    #
     # THE CONFIGURATION SET IS WHAT MAKES DELIVERY TRACKING EXIST. SES only
     # publishes events for a message sent under a configuration set that has an
     # event destination, so a send without this name attached is a send nobody
@@ -1320,11 +1319,15 @@ module "ecs" {
     SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
     # THE PLATFORM SECURITY SENDER. Every security code and account notice
     # leaves from this identity and never from a tenant's corporate sender
-    # (`services/security_email`); with ENVIRONMENT=production a transport
-    # other than SES refuses to send it. The API validates the value at boot;
-    # the task worker, which sends, carries the same two values.
+    # (`services/security_email`). The API validates the value at boot (it
+    # must be on readypick.ai); the task worker, which sends, carries the same
+    # values.
     PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
     PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
+    # THE PLATFORM SENDER: every other platform email, and the recorded
+    # fallback for company mail when the company has no active sender.
+    PLATFORM_SENDER_EMAIL = var.platform_sender_email
+    PLATFORM_SENDER_NAME  = "Vivekium"
     # THE DOMAIN A REPLY COMES BACK TO, and the domain the application builds a
     # thread's Reply-To on. Both halves read this ONE value, so the address a
     # verification request asks an employer to reply to and the address SES is
@@ -1334,7 +1337,7 @@ module "ecs" {
     # reply will arrive in the sending mailbox instead of in the thread.
     INBOUND_EMAIL_DOMAIN = local.has_inbound ? local.reply_domain : ""
     # ONE RERANKER PER DEPLOYMENT, never a fallback chain: the same shape
-    # TASK_DISPATCH_BACKEND and EMAIL_TRANSPORT have, validated against a
+    # TASK_DISPATCH_BACKEND has, validated against a
     # closed set by `reranker.configured_backend()`, which RAISES on anything
     # outside it rather than defaulting.
     #
@@ -1755,17 +1758,14 @@ module "lambda" {
         TASK_DISPATCH_BACKEND           = "aws"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
         # THE OUTBOUND MAIL HOP. Delivery is Route.LAMBDA, so this function is
-        # where a message actually leaves the platform. It reads the same
-        # single transport the services do; the Gmail app password is not
-        # mounted here any more, because a credential for a transport this
-        # deployment does not use is reach the function does not need.
-        EMAIL_TRANSPORT = "ses"
-        # SES sends only for an identity the ACCOUNT has verified, so this is
-        # not a free-text display address: it must be a verified sender.
-        SMTP_FROM_EMAIL = var.platform_from_email
-        SMTP_FROM_NAME  = "ReadyPick"
+        # where a message actually leaves the platform. SES sends only for an
+        # identity the ACCOUNT has verified, so the platform sender is not a
+        # free-text display address: it must be on readypick.ai (refused at
+        # boot otherwise).
+        PLATFORM_SENDER_EMAIL = var.platform_sender_email
+        PLATFORM_SENDER_NAME  = "Vivekium"
         # `pickready.send_security_email` runs here: the security codes and the
-        # account notice leave from this identity, SES only, never SMTP.
+        # account notice leave from this identity.
         PLATFORM_SECURITY_SENDER_EMAIL = var.platform_security_sender_email
         PLATFORM_SECURITY_SENDER_NAME  = "Vivekium"
         # This function is the hop that actually writes the Reply-To header, so

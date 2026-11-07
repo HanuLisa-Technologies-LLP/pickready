@@ -35,8 +35,8 @@ This module also carries the SES event webhook (spec section 8): SNS posts
 delivery/bounce/complaint events here, the message signature and TopicArn are
 validated against `ses_sns_topic_arn`, and `email_log` is updated by
 `provider_message_id`. It is mounted inside this router because the events
-exist only because corporate senders exist; under the SMTP transport the
-setting is empty and the endpoint refuses everything.
+exist only because corporate senders exist; with the setting empty the
+endpoint refuses everything.
 """
 from __future__ import annotations
 

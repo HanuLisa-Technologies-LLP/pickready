@@ -109,7 +109,7 @@ class EmailLogOut(BaseModel):
     created_at: datetime
     sent_at: datetime | None
     # Delivery tracking (Corporate Email System spec section 8). All optional
-    # so pre-0080 rows and SMTP deployments serialise unchanged.
+    # so pre-0080 rows serialise unchanged.
     sender_id: uuid.UUID | None = None
     delivered_at: datetime | None = None
     bounced_at: datetime | None = None

@@ -12,5 +12,5 @@ paths:
 - Model calls only through `services/llm_router.invoke_llm`; policy lives in `config/llm_providers.py`. Register every prompt builder in `tests/test_ctc_never_in_prompt.py`.
 - No bare `except`; a broad handler re-raises, logs or reads what it caught; absorb only `SQLAlchemyError`. Record every degradation.
 - No em dash in any string. No dead code, no dual paths. A new setting goes in `.env.example`.
-- Email today: `email_outbox` is the one writer; SES-only is decided and not built (register I-20).
+- Email: `email_outbox` is the one writer; SES only, and the From comes from `services/email_sender_resolution` (register I-20).
 - Read `docs/engineering/backend.md` before a non-trivial change.

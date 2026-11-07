@@ -235,7 +235,7 @@ export interface StaffMember {
   invite_sent_at?: string | null;
   invite_expires_at?: string | null;
   invite_link?: string | null;
-  email_dispatch?: "queued" | "not_configured" | null;
+  email_dispatch?: "queued" | null;
 }
 
 /**

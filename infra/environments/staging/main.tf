@@ -839,7 +839,6 @@ module "lambda" {
         OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
         VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-        SMTP_PASSWORD     = module.secrets.secret_arns["SMTP_PASSWORD"]
         TAVILY_API_KEY    = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
       environment = {

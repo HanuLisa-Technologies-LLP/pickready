@@ -13,4 +13,4 @@ paths:
 - IAM is per service and enumerated; no wildcards. Never delete state, tfvars, secrets, backend config or the lock file.
 - A new scheduled sweep needs the Python schedule entry AND the Terraform rule in every environment.
 - Never write credentials into a file. One Compose project; clean up temporary worktrees and containers (`docs/development-storage-policy.md`).
-- Email target is SES only (register I-20); not built yet.
+- Email is SES only (register I-20); Terraform sets `PLATFORM_SENDER_EMAIL` and `PLATFORM_SECURITY_SENDER_EMAIL`, both on `readypick.ai`.

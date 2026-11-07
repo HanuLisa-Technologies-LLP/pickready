@@ -45,7 +45,7 @@ flowchart TB
     API --> Analysis
 ```
 
-Four authenticated workspaces (Provider, Company, Candidate, Business Development) plus public token and link workflows. Email goes through Amazon SES; SES-only (no SMTP path) is decided and pending (register I-20). What runs where: [../operations/INFRA_TOPOLOGY.md](../operations/INFRA_TOPOLOGY.md).
+Four authenticated workspaces (Provider, Company, Candidate, Business Development) plus public token and link workflows. Email goes through Amazon SES only (register I-20). What runs where: [../operations/INFRA_TOPOLOGY.md](../operations/INFRA_TOPOLOGY.md).
 
 ## 3. Technology stack
 
@@ -162,7 +162,7 @@ The offer gate (a declared employer must be verified by a person before an offer
 
 ## 14. Communications and verification
 
-One writer of candidate email (`email_outbox.queue_candidate_email`) resolves the sender (a named active company sender, else the tenant default, else the platform mailbox), claims the row before sending, and is idempotent per stage. Content is AI-drafted with a deterministic fallback and editable where composition is offered. Today the transport is `email_transport` = `smtp` or `ses` (the pilot runs SES). **Decided, pending (I-20):** Amazon SES only, platform mail from `contact@readypick.ai`, company-sender mail unchanged. Security codes always come from the platform sender.
+One writer of candidate email (`email_outbox.queue_candidate_email`) resolves the sender (a named active company sender, else the tenant default, else `contact@readypick.ai` under the company name as a recorded fallback), claims the row before sending, and is idempotent per stage. Content is AI-drafted with a deterministic fallback and editable where composition is offered. The transport is Amazon SES only; `services/email_sender_resolution` decides the From (security codes `noreply@readypick.ai`, other platform mail `contact@readypick.ai`) and the fallback is recorded on `email_log`.
 
 Background verification: the candidate's employment history is submitted once and immutable; each hiring tenant runs its own verifications; a request carries a reply address; a person marks the result. Inbound reply threading is inert on pilot. Candidate chat is native: written to Postgres first and announced second, the socket accepts no write frame.
 

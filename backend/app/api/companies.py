@@ -14,7 +14,7 @@ INVITE LIFECYCLE — there is no password anywhere (claude.md rule 2):
     -> mint a single-use, 7-day, SHA-256-hashed token
     -> dispatch `pickready.send_email` (never inline — rule 4) with a
        /join?invite=<token> link, and ALSO return the link so an admin can
-       copy it when SMTP is not yet configured
+       copy it
     -> invitee opens /join, signs in with Firebase (Google / email+password)
     -> /auth/firebase/session links the Firebase uid to this row BY EMAIL and
        flips invited -> active
@@ -359,17 +359,9 @@ def _staff_out(
 
 # ── Invitations ──────────────────────────────────────────────────────────────
 
-def _email_dispatch_state() -> str:
-    """Honest reporting for the UI: is the SMTP sender actually configured?
-
-    The task is dispatched either way (rule 4/5 — the worker owns the
-    delivery taxonomy), but the admin is told up front when nothing can leave
-    the building, so the copyable invite link is understood as THE delivery
-    mechanism rather than a fallback nobody notices.
-    """
-    settings = get_settings()
-    configured = bool(settings.smtp_host and settings.smtp_user and settings.smtp_password)
-    return "queued" if configured else "not_configured"
+#: What the response says of the invite email: it is always a dispatched SES
+#: task (rule 4, register I-20), so there is no "not configured" state.
+EMAIL_DISPATCH_QUEUED = "queued"
 
 
 async def _latest_invites(
@@ -467,14 +459,6 @@ async def _issue_invite(
 
     link = build_invite_link(get_settings().frontend_url, token)
     await _ensure_invite_template(session, actor.tenant_id)
-    # `dispatch_state`, NOT `dispatch`. This local was called `dispatch` and it
-    # SHADOWED THE IMPORTED FUNCTION on the next line: `_email_dispatch_state()`
-    # returns a str, so the `dispatch(...)` call that stood below raised
-    # `TypeError: 'str' object is not callable` and POST /companies/me/staff
-    # answered 500 unconditionally. Staff invitation has been completely broken
-    # since 2026-09-05, and no test ever issued the request, so nothing caught
-    # it. The third return value is the STATE, which is what the caller wants.
-    dispatch_state = _email_dispatch_state()
     # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
     # After the COMMIT: the link carries a token whose hash is written above,
     # and an invitation mailed for a rolled-back invite would open onto
@@ -497,7 +481,7 @@ async def _issue_invite(
             },
         ],
     )
-    return invite, link, dispatch_state
+    return invite, link, EMAIL_DISPATCH_QUEUED
 
 
 async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> str:
@@ -833,7 +817,7 @@ async def resend_staff_invite(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> StaffOut:
     """Revoke the previous token and mint a fresh one (see INVITE_TTL_DAYS).
-    Returns the new link so it can be copied even when SMTP is unconfigured."""
+    Returns the new link so it can be copied as well as emailed."""
     staff_user = await _load_staff(session, user, user_id)
     ensure_can_manage(user.role, staff_user.role)
     if staff_user.status == UserStatus.disabled:

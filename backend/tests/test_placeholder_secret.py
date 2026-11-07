@@ -135,7 +135,9 @@ def test_every_secret_this_platform_creates_is_read_by_something() -> None:
 #: This exemption is earned by the test below and by
 #: `test_deploy_secret_hygiene.test_a_held_secret_is_granted_to_no_service`,
 #: which fails if any service is granted it or any root mounts it.
-HELD_WITHOUT_A_READER = {"LLM_KEY_ENCRYPTION_SECRET"}
+#: SMTP_PASSWORD joined it on 2026-11-02 (register I-20: email is SES only, so
+#: the setting is deleted and no service is granted the secret).
+HELD_WITHOUT_A_READER = {"LLM_KEY_ENCRYPTION_SECRET", "SMTP_PASSWORD"}
 
 
 def test_a_held_secret_really_has_no_reader() -> None:

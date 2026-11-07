@@ -35,7 +35,7 @@ signal that flags a real outage fire constantly and stop being read.
 WHICH BACKEND RUNS IS DEPLOYMENT DATA
 --------------------------------------
 One value per deployment, never a fallback chain, the same shape as
-`TASK_DISPATCH_BACKEND` and `email_transport`. `configured_backend` RAISES on a
+`TASK_DISPATCH_BACKEND`. `configured_backend` RAISES on a
 value outside the closed set, exactly as `retrieval._apply_scan_settings` does
 for `hnsw.iterative_scan`: the value came from deployment configuration, a
 wrong one is an operator error, and continuing on a default would leave ranking

@@ -1,12 +1,11 @@
-"""Outbound email over Amazon SES (Corporate Email System spec section 6).
+"""Outbound email over Amazon SES, the only transport (register I-20).
 
-The SECOND real transport, never a fallback: `settings.email_transport`
-selects "smtp" or "ses" per deployment, and the two are never chained. This
-module owns only the SES transport plus SES-specific failure classification;
-the resilience taxonomy (PermanentDeliveryError / TransientDeliveryError) is
-imported from `app.services.delivery_errors` exactly as `smtp_service` imports
-it, so the task layer's retry policy is identical whichever transport a
-deployment runs.
+This module owns the SES send plus SES-specific failure classification; the
+resilience taxonomy (PermanentDeliveryError / TransientDeliveryError) is
+imported from `app.services.delivery_errors`, so the task layer's retry policy
+is the same for every email. Which From identity a message carries is decided
+once, in `services/email_sender_resolution`; this module sends exactly the
+identity it is handed.
 
 ASSUMPTION (spec section 6): the spec's FastAPI -> SQS -> worker -> SES chain
 maps onto the EXISTING dispatch system. Email jobs already leave the request
@@ -15,12 +14,9 @@ to Route.LAMBDA, which is this platform's durable async stage; standing up a
 second queue for the same property would be two implementations of one
 concept. This module is only the last hop, worker -> SES.
 
-Under SES an ACTIVE corporate sender's address IS the From address, which is
-the whole point of the feature: SES sends for any identity the ACCOUNT has
-verified (domain or address), no mailbox password involved. Under SMTP that
-is impossible (Gmail refuses arbitrary From on an authenticated mailbox), so
-the tasks layer keeps Gmail's mailbox as From and carries the corporate
-sender as Reply-To instead.
+An ACTIVE corporate sender's address IS the From address: SES sends for any
+identity the ACCOUNT has verified (domain or address), no mailbox password
+involved.
 
 The boto3 client is built with explicit connect/read timeouts and a bounded
 retry count, same as `workers/dispatch`: botocore's default is a 60-second
@@ -33,8 +29,13 @@ role), and no message body, OTP or recipient list is ever logged.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr, make_msgid
 from typing import Any
 
 from app.core.config import get_settings
@@ -42,9 +43,11 @@ from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
 )
-from app.services.smtp_service import _build_message
 
 logger = logging.getLogger(__name__)
+
+#: Recorded on every `email_log` row (`transport`). There is one.
+TRANSPORT = "ses"
 
 #: SES error codes that mean "this exact message will fail forever": the
 #: identity is not verified, the account is paused, or SES rejected the
@@ -82,6 +85,54 @@ _TAG_KEYS: tuple[str, ...] = (
     "job_id",
     "notification_id",
 )
+
+
+def _build_message(
+    from_email: str,
+    from_name: str,
+    to: str,
+    subject: str,
+    html: str,
+    text: str | None,
+    attachments: list[dict] | None,
+    reply_to: str | None = None,
+) -> tuple[MIMEMultipart | MIMEText, str]:
+    """Assemble a MIME message. Returns (message, message_id).
+
+    Body is multipart/alternative (text + html) when a plain-text part is
+    supplied, else a single html part. When attachments are present the whole
+    thing is wrapped in a multipart/mixed envelope.
+    """
+    message_id = make_msgid()
+
+    if text:
+        body: MIMEMultipart | MIMEText = MIMEMultipart("alternative")
+        body.attach(MIMEText(text, "plain", "utf-8"))
+        body.attach(MIMEText(html, "html", "utf-8"))
+    else:
+        body = MIMEText(html, "html", "utf-8")
+
+    if attachments:
+        root: MIMEMultipart | MIMEText = MIMEMultipart("mixed")
+        root.attach(body)
+        for att in attachments:
+            # [{"filename": str, "content": <base64 str>}] (e.g. the .ics on an
+            # interview invite); MIMEApplication takes the decoded bytes.
+            raw = att["content"]
+            data = base64.b64decode(raw) if isinstance(raw, str) else raw
+            part = MIMEApplication(data, Name=att["filename"])
+            part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
+            root.attach(part)
+    else:
+        root = body
+
+    root["From"] = formataddr((from_name, from_email))
+    root["To"] = to
+    root["Subject"] = subject
+    root["Message-ID"] = message_id
+    if reply_to:
+        root["Reply-To"] = reply_to
+    return root, message_id
 
 
 def _message_tags(correlation: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -145,10 +196,8 @@ async def send_email_async(
 ) -> str | None:
     """Send one email through SES. Returns the SES MessageId on success.
 
-    Same signature contract as `smtp_service.send_email_async` (plus the
-    shared `reply_to`), so the task layer selects a transport without
-    reshaping the call. Raises PermanentDeliveryError or
-    TransientDeliveryError from the shared taxonomy; never logs a body.
+    Raises PermanentDeliveryError or TransientDeliveryError from the shared
+    taxonomy; never logs a body.
     """
     message, _mime_id = _build_message(
         from_email, from_name, to, subject, html, text, attachments,
